@@ -375,10 +375,10 @@ class DocumentRepository {
     final picked = await FilePicker.pickFiles(
       type: FileType.custom,
       allowedExtensions: ['pdf'],
-      withData: true,
     );
-    if (picked == null || picked.files.isEmpty) return;
-    final bytes = picked.files.single.bytes ?? await picked.files.single.readAsBytes();
+    if (picked.isEmpty) return;
+    final pickedFile = picked.single;
+    final bytes = await pickedFile.readAsBytes();
     if (bytes.length < 5 || String.fromCharCodes(bytes.take(5)) != '%PDF-') {
       throw StateError('The selected file is not a valid PDF.');
     }
@@ -452,7 +452,7 @@ class DocumentRepository {
           whereArgs: [document.id],
         );
         await _recordHistory(txn, document.id, 'relinked', {
-          'source_name': picked.files.single.name,
+          'source_name': pickedFile.name,
           'storage_uri': newUri,
         });
       });
