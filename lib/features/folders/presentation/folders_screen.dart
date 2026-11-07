@@ -348,6 +348,7 @@ class _FoldersScreenState extends State<FoldersScreen> {
           ),
         )
       ],
+      ),
     );
   }
 }
