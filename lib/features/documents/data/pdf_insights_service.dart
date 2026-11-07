@@ -101,7 +101,7 @@ class PdfInsightsService {
     if (lines.isEmpty) return null;
 
     final candidate = lines.first
-        .replaceAll(RegExp(r'[^\\p{L}\\p{N} ._()\\-]', unicode: true), '')
+        .replaceAll(RegExp(r'[<>:"/\\\\|?*]'), '_')
         .replaceAll(RegExp(r'\\s+'), ' ')
         .trim();
     if (candidate.length < 4) return null;
