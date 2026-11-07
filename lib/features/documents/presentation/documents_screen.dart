@@ -86,7 +86,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   }
 
   Future<void> _open(DocumentRecord document) async {
-    final isSafUri = document.storagePath.startsWith('content://');
+    final isSafUri = document.storagePath.startsWith('content://') || document.storagePath.startsWith('file://');
     if (!isSafUri) {
       final file = File(document.storagePath);
       if (!await file.exists()) {
@@ -483,7 +483,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
           _size(document.sizeBytes),
           document.categoryName ?? 'Uncategorised',
           if (document.tagNames.isNotEmpty) document.tagNames.join(', '),
-          (document.storagePath.startsWith('content://') || file.existsSync()) ? 'On this device' : 'File missing',
+          (document.storagePath.startsWith('content://') || document.storagePath.startsWith('file://') || file.existsSync()) ? 'On this device' : 'File missing',
         ].join(' · ')),
         trailing: PopupMenuButton<String>(
           onSelected: (value) async {
