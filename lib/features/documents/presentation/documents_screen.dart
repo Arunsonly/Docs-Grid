@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:open_filex/open_filex.dart';
 
 import '../data/document_repository.dart';
+import '../../../core/storage/storage_location_service.dart';
 import '../../categories/data/category_repository.dart';
 import '../../folders/data/folder_repository.dart';
 
@@ -85,20 +86,33 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   }
 
   Future<void> _open(DocumentRecord document) async {
-    final file = File(document.storagePath);
-    if (!await file.exists()) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('PDF file is missing from local storage.')),
-      );
-      return;
+    final isSafUri = document.storagePath.startsWith('content://');
+    if (!isSafUri) {
+      final file = File(document.storagePath);
+      if (!await file.exists()) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('PDF file is missing from local storage.')),
+        );
+        return;
+      }
     }
     await _repository.markOpened(document);
-    final result = await OpenFilex.open(document.storagePath);
-    if (mounted && result.type != ResultType.done) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(result.message.isEmpty ? 'No PDF viewer is available.' : result.message)),
-      );
+    if (isSafUri) {
+      try {
+        await StorageLocationService.instance.openPdf(document.storagePath);
+      } catch (error) {
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not open PDF: $error')),
+        );
+      }
+    } else {
+      final result = await OpenFilex.open(document.storagePath);
+      if (mounted && result.type != ResultType.done) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(result.message.isEmpty ? 'No PDF viewer is available.' : result.message)),
+        );
+      }
     }
     await _load();
   }
@@ -467,7 +481,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
           _size(document.sizeBytes),
           document.categoryName ?? 'Uncategorised',
           if (document.tagNames.isNotEmpty) document.tagNames.join(', '),
-          file.existsSync() ? 'On this device' : 'File missing',
+          (document.storagePath.startsWith('content://') || file.existsSync()) ? 'On this device' : 'File missing',
         ].join(' · ')),
         trailing: PopupMenuButton<String>(
           onSelected: (value) async {
