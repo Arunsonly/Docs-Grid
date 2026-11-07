@@ -69,7 +69,7 @@ class DocumentRepository {
   final AppDatabase _database;
   static const _uuid = Uuid();
 
-  Future<List<DocumentRecord>> list({String query = '', bool favoritesOnly = false}) async {
+  Future<List<DocumentRecord>> list({String query = '', bool favoritesOnly = false, bool recentOnly = false}) async {
     final db = await _database.database;
     final rows = await db.rawQuery(
       '''
@@ -80,10 +80,11 @@ class DocumentRepository {
       LEFT JOIN categories c ON c.id = d.category_id
       WHERE d.deleted_at IS NULL
         AND (? = 0 OR COALESCE(json_extract(d.metadata_json, '\$.favorite'), 0) = 1)
+        AND (? = 0 OR d.last_opened_at IS NOT NULL)
         AND d.name LIKE ?
       ORDER BY d.last_opened_at DESC, d.name COLLATE NOCASE ASC
       ''',
-      [favoritesOnly ? 1 : 0, '%${query.trim()}%'],
+      [favoritesOnly ? 1 : 0, recentOnly ? 1 : 0, '%${query.trim()}%'],
     );
     return rows.map(DocumentRecord.fromMap).toList();
   }
