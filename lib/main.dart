@@ -334,7 +334,7 @@ class _SettingsScreenState extends State<_SettingsScreen> {
           trailing: const Icon(Icons.chevron_right),
           onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => Scaffold(
             appBar: AppBar(title: const Text('Backup restore')),
-            body: const DocumentToolsScreen(section: 'backup'),
+            body: const DocumentToolsScreen(section: 'restore'),
           ))),
         ),
         const Divider(height: 1),
