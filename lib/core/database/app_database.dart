@@ -14,7 +14,7 @@ class AppDatabase {
     final dbPath = p.join(directory.path, 'docs_grid.db');
     _database = await openDatabase(
       dbPath,
-      version: 1,
+      version: 2,
       onConfigure: (db) async => db.execute('PRAGMA foreign_keys = ON'),
       onCreate: (db, version) async {
         await db.execute('''
@@ -84,12 +84,83 @@ class AppDatabase {
             applied_at TEXT NOT NULL
           )
         ''');
+        await _createV2Tables(db);
         await db.insert('schema_migrations', {
           'version': 1,
           'applied_at': DateTime.now().toUtc().toIso8601String(),
         });
+        await db.insert('schema_migrations', {
+          'version': 2,
+          'applied_at': DateTime.now().toUtc().toIso8601String(),
+        });
+      },
+      onUpgrade: (db, oldVersion, newVersion) async {
+        if (oldVersion < 2) {
+          await _createV2Tables(db);
+          await db.insert('schema_migrations', {
+            'version': 2,
+            'applied_at': DateTime.now().toUtc().toIso8601String(),
+          });
+        }
       },
     );
     return _database!;
+  }
+  Future<void> _createV2Tables(DatabaseExecutor db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS categories (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+        icon_key TEXT,
+        color_key TEXT,
+        is_builtin INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL
+      )
+    ''');
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS tags (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+        created_at TEXT NOT NULL
+      )
+    ''');
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS document_tags (
+        document_id TEXT NOT NULL,
+        tag_id TEXT NOT NULL,
+        PRIMARY KEY(document_id, tag_id),
+        FOREIGN KEY(document_id) REFERENCES documents(id) ON DELETE CASCADE,
+        FOREIGN KEY(tag_id) REFERENCES tags(id) ON DELETE CASCADE
+      )
+    ''');
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS history (
+        id TEXT PRIMARY KEY,
+        document_id TEXT,
+        action TEXT NOT NULL,
+        details_json TEXT,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY(document_id) REFERENCES documents(id) ON DELETE SET NULL
+      )
+    ''');
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS settings (
+        key TEXT PRIMARY KEY,
+        value_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )
+    ''');
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_categories_name ON categories(name COLLATE NOCASE)');
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_tags_name ON tags(name COLLATE NOCASE)');
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_history_document ON history(document_id, created_at)');
+    const defaults = ['Identity', 'Insurance', 'Finance', 'Medical', 'Property', 'Vehicle', 'Education', 'Other'];
+    for (final name in defaults) {
+      await db.insert('categories', {
+        'id': name.toLowerCase(),
+        'name': name,
+        'is_builtin': 1,
+        'created_at': DateTime.now().toUtc().toIso8601String(),
+      }, conflictAlgorithm: ConflictAlgorithm.ignore);
+    }
   }
 }
