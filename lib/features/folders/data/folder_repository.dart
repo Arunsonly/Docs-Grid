@@ -121,7 +121,8 @@ class FolderRepository {
 
     final folderUriUpdates = <String, String>{};
     final documentUriUpdates = <String, String>{};
-    if (renamedUri != null) {
+    try {
+      if (renamedUri != null) {
       Future<void> collectDescendants(String parentId, String parentUri) async {
         final childFolders = await db.query(
           'folders',
@@ -154,7 +155,6 @@ class FolderRepository {
       await collectDescendants(id, renamedUri);
     }
 
-    try {
       await db.transaction((txn) async {
         final now = DateTime.now().toUtc().toIso8601String();
         final count = await txn.update(
@@ -180,7 +180,7 @@ class FolderRepository {
           await txn.update(
             'documents',
             {'storage_uri': entry.value, 'updated_at': now},
-            where: 'id = ? AND deleted_at IS NULL',
+            where: 'id = ?',
             whereArgs: [entry.key],
           );
         }
