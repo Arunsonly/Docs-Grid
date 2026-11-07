@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'features/documents/presentation/documents_screen.dart';
+import 'features/categories/presentation/categories_screen.dart';
 import 'features/folders/presentation/folders_screen.dart';
 
 void main() {
