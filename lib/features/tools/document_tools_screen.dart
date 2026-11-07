@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter/material.dart';
 import 'package:path/path.dart' as p;
 
@@ -46,9 +47,18 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
   });
 
   Future<void> _backup() => _run(() async {
-    final file = await _tools.createBackup();
-    await _tools.shareFile(file.path, text: 'DocsGrid offline backup');
-    if (mounted) setState(() => _message = 'Backup created and opened in the share sheet.');
+    final archive = await _tools.createBackup();
+    final directory = await FilePicker.platform.getDirectoryPath(
+      dialogTitle: 'Choose where to save DocsGrid backup',
+    );
+    if (directory == null || directory.isEmpty) {
+      if (mounted) setState(() => _message = 'Backup was created temporarily. Choose a folder to save a permanent copy.');
+      return;
+    }
+    final stamp = DateTime.now().toIso8601String().replaceAll(':', '-').split('.').first;
+    final target = File(p.join(directory, 'DocsGrid_Backup_$stamp.zip'));
+    await archive.copy(target.path);
+    if (mounted) setState(() => _message = 'Offline backup saved successfully: ${target.path}');
   });
 
   Future<void> _verifyBackup() => _run(() async {
@@ -224,7 +234,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
         const Divider(height: 1),
         ListTile(leading: const Icon(Icons.backup_outlined),
           title: const Text('Create offline backup'),
-          subtitle: const Text('Build a ZIP archive with database metadata and locally accessible PDFs.'),
+          subtitle: const Text('Create a ZIP, then choose Internal storage or another folder to save it.'),
           trailing: const Icon(Icons.chevron_right),
           onTap: _busy ? null : _backup),
         const Divider(height: 1),
