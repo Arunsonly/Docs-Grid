@@ -209,6 +209,14 @@ class DocumentRepository {
       copiedToNewLocation = newStorageUri != sourceUri;
     }
 
+    String? relativePath;
+    if (!newStorageUri.startsWith('content://') &&
+        !newStorageUri.startsWith('file://')) {
+      final base = await getApplicationDocumentsDirectory();
+      final libraryRoot = p.join(base.path, 'DocsGrid', 'PDFs');
+      relativePath = p.relative(newStorageUri, from: libraryRoot);
+    }
+
     try {
       await db.transaction((txn) async {
         final count = await txn.update(
@@ -216,10 +224,7 @@ class DocumentRepository {
           {
             'folder_id': folderId,
             'storage_uri': newStorageUri,
-            'relative_path': newStorageUri.startsWith('content://') ||
-                    newStorageUri.startsWith('file://')
-                ? null
-                : p.basename(newStorageUri),
+            'relative_path': relativePath,
             'updated_at': DateTime.now().toUtc().toIso8601String(),
           },
           where: 'id = ? AND deleted_at IS NULL',
