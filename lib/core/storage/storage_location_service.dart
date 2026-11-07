@@ -8,7 +8,7 @@ class StorageLocationService {
   static const MethodChannel _channel = MethodChannel('docsgrid/storage');
 
   Future<Map<String, String>?> selectedFolder() async {
-    if (!Platform.isAndroid) return null;
+    if (!Platform.isAndroid && !Platform.isIOS) return null;
     final value = await _channel.invokeMapMethod<String, dynamic>('getSelectedFolder');
     if (value == null || value['uri'] == null) return null;
     return {'uri': value['uri'] as String, 'name': (value['name'] as String?) ?? 'Selected folder'};
