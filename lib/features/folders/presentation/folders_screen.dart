@@ -107,19 +107,24 @@ class _FoldersScreenState extends State<FoldersScreen> {
         ],
       ),
     );
+    // showDialog completes as soon as the route is popped; wait for the
+    // reverse transition's frame before disposing the TextField controller.
+    await WidgetsBinding.instance.endOfFrame;
     controller.dispose();
-    return result;
+    return result?.trim();
   }
 
   Future<void> _createFolder() async {
     final name = await _askName();
-    if (name == null) return;
+    if (!mounted || name == null || name.isEmpty) return;
+    final parentId = _currentFolderId;
     try {
-      await _repository.create(name: name, parentId: _currentFolderId);
+      await _repository.create(name: name, parentId: parentId);
       if (!mounted) return;
       setState(_load);
       _message('Folder created.');
     } catch (error) {
+      if (!mounted) return;
       _message(error.toString().replaceFirst('Invalid argument(s): ', ''));
     }
   }
