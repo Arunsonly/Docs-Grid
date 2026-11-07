@@ -16,6 +16,7 @@ import 'package:sqflite/sqflite.dart';
 import 'package:uuid/uuid.dart';
 
 import '../../core/database/app_database.dart';
+import '../reminders/data/reminder_notifications.dart';
 
 /// Local-only utilities for indexing, scanning, sharing and portable backups.
 /// This service never uploads document contents to a remote server.
@@ -166,7 +167,7 @@ class DocumentToolsService {
         Uint8List.fromList(utf8.encode(jsonEncode(rows)))));
     }
     final docs = await db.query('documents',
-      columns: ['id', 'name', 'storage_uri', 'sha256'], where: 'deleted_at IS NULL');
+      columns: ['id', 'name', 'storage_uri', 'sha256']);
     var completed = 0;
     for (final row in docs) {
       final uri = row['storage_uri'] as String?;
@@ -203,6 +204,109 @@ class DocumentToolsService {
     final output = File(p.join(backups.path, 'DocsGrid_${DateTime.now().toUtc().millisecondsSinceEpoch}.zip'));
     await output.writeAsBytes(zipped, flush: true);
     return output;
+  }
+
+
+  /// Additively restores a verified archive. Existing document/folder IDs are
+  /// never overwritten; any collision aborts the database transaction.
+  Future<int> restoreBackup(File zipFile) async {
+    await validateBackup(zipFile);
+    final decoded = ZipDecoder().decodeBytes(await zipFile.readAsBytes());
+    final manifestFile = decoded.findFile('manifest.json')!;
+    final manifest = jsonDecode(utf8.decode(manifestFile.content as List<int>)) as Map<String, dynamic>;
+    final tableNames = ['folders', 'documents', 'categories', 'tags',
+      'document_tags', 'reminders', 'history', 'settings'];
+    final rowsByTable = <String, List<Map<String, Object?>>>{};
+    for (final table in tableNames) {
+      final entry = decoded.findFile('$table.json');
+      if (entry == null) throw StateError('Backup is incomplete: missing $table metadata.');
+      final rows = jsonDecode(utf8.decode(entry.content as List<int>)) as List<dynamic>;
+      rowsByTable[table] = rows.map((e) => Map<String, Object?>.from(e as Map)).toList();
+    }
+
+    final root = Directory(p.join((await getApplicationDocumentsDirectory()).path, 'DocsGrid', 'Restored'));
+    if (await root.exists() && await root.list().isNotEmpty) {
+      // A unique restore root prevents overwriting a previous restore.
+    }
+    final restoreRoot = Directory(p.join(root.path, DateTime.now().microsecondsSinceEpoch.toString()));
+    await restoreRoot.create(recursive: true);
+    final fileRows = (manifest['files'] as List<dynamic>).cast<Map<String, dynamic>>();
+    final restoredPaths = <String, String>{};
+    final folderRows = rowsByTable['folders']!;
+    final folderPaths = <String, String>{};
+    String folderPath(String id) {
+      final known = folderPaths[id];
+      if (known != null) return known;
+      final row = folderRows.firstWhere((r) => r['id'] == id);
+      final parent = row['parent_id'] as String?;
+      final base = parent == null ? restoreRoot.path : folderPath(parent);
+      final path = p.join(base, 'folder_$id');
+      folderPaths[id] = path;
+      return path;
+    }
+
+    try {
+      for (final row in folderRows) {
+        await Directory(folderPath(row['id'] as String)).create(recursive: true);
+      }
+      for (final item in fileRows) {
+        final id = item['documentId'] as String;
+        final document = rowsByTable['documents']!.firstWhere((r) => r['id'] == id);
+        final folderId = document['folder_id'] as String?;
+        final destinationDir = folderId == null ? restoreRoot : Directory(folderPath(folderId));
+        await destinationDir.create(recursive: true);
+        final safeName = p.basename((item['originalName'] as String?) ?? 'document.pdf');
+        final destination = File(p.join(destinationDir.path, '${id}_$safeName'));
+        final entry = decoded.findFile(item['entry'] as String)!;
+        final bytes = entry.content as List<int>;
+        final digest = sha256.convert(bytes).toString();
+        if (digest != item['sha256']) throw StateError('PDF integrity check failed during restore.');
+        await destination.writeAsBytes(bytes, flush: true);
+        restoredPaths[id] = destination.path;
+      }
+
+      final db = await _database.database;
+      await db.transaction((txn) async {
+        for (final row in folderRows) {
+          final copy = Map<String, Object?>.from(row);
+          copy['storage_uri_or_relative_path'] = folderPath(row['id'] as String);
+          await txn.insert('folders', copy);
+        }
+        for (final row in rowsByTable['categories']!) {
+          await txn.insert('categories', row, conflictAlgorithm: ConflictAlgorithm.ignore);
+        }
+        for (final row in rowsByTable['tags']!) {
+          await txn.insert('tags', row);
+        }
+        for (final row in rowsByTable['documents']!) {
+          final copy = Map<String, Object?>.from(row);
+          final restored = restoredPaths[row['id']];
+          if (restored == null) throw StateError('Backup is missing PDF bytes for "${row['name']}".');
+          copy['storage_uri'] = restored;
+          await txn.insert('documents', copy);
+        }
+        for (final table in ['document_tags', 'reminders', 'history', 'settings']) {
+          for (final row in rowsByTable[table]!) {
+            await txn.insert(table, row);
+          }
+        }
+      });
+      for (final row in rowsByTable['reminders']!) {
+        if ((row['enabled'] as int? ?? 0) != 1 || row['status'] == 'completed') continue;
+        final at = DateTime.parse(row['remind_at_utc'] as String).toLocal();
+        await ReminderNotifications.instance.schedule(
+          id: row['id'] as String,
+          title: row['title'] as String,
+          body: row['note'] as String?,
+          at: at,
+          recurrence: row['recurrence_rule'] as String?,
+        );
+      }
+      return restoredPaths.length;
+    } catch (_) {
+      if (await restoreRoot.exists()) await restoreRoot.delete(recursive: true);
+      rethrow;
+    }
   }
 
   Future<int> validateBackup(File zipFile) async {
