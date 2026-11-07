@@ -153,7 +153,7 @@ class _SettingsScreen extends StatelessWidget {
         if (context.mounted) {
           Navigator.of(context, rootNavigator: true).pop();
           await progressDialog;
-          ScaffoldMessenger.of(context).showSnackBar(
+          messenger.showSnackBar(
             SnackBar(content: Text('Migration completed: $count PDFs moved and verified.')),
           );
         }
@@ -161,14 +161,14 @@ class _SettingsScreen extends StatelessWidget {
         if (context.mounted) {
           Navigator.of(context, rootNavigator: true).pop();
           await progressDialog;
-          ScaffoldMessenger.of(context).showSnackBar(
+          messenger.showSnackBar(
             SnackBar(content: Text('Migration stopped safely: $error')),
           );
         }
       }
     } catch (error) {
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
+        messenger.showSnackBar(
           SnackBar(content: Text('Storage operation stopped safely: $error')),
         );
       }
