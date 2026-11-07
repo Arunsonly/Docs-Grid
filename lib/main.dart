@@ -74,7 +74,7 @@ class _DocsGridHomeState extends State<DocsGridHome> {
 }
 
 class _SettingsScreen extends StatefulWidget {
-  const _SettingsScreen({super.key});
+  const _SettingsScreen();
 
   @override
   State<_SettingsScreen> createState() => _SettingsScreenState();
@@ -96,10 +96,12 @@ class _SettingsScreenState extends State<_SettingsScreen> {
       final status = await StorageLocationService.instance.checkStorageAccess();
       if (mounted) setState(() => _storageStatus = status);
     } catch (error) {
-      if (mounted) setState(() => _storageStatus = {
-        'status': 'unknown',
-        'message': 'Could not check storage access: $error',
-      });
+      if (mounted) {
+        setState(() => _storageStatus = {
+          'status': 'unknown',
+          'message': 'Could not check storage access: $error',
+        });
+      }
     } finally {
       if (mounted) setState(() => _checkingStorage = false);
     }
@@ -132,6 +134,7 @@ class _SettingsScreenState extends State<_SettingsScreen> {
       );
       if (!context.mounted) return;
       await _refreshStorageStatus();
+      if (!mounted) return;
       if (migrate != true) {
         messenger.showSnackBar(
           SnackBar(content: Text('Storage folder selected: ${folder['name']}. Existing PDFs were not moved.')),
