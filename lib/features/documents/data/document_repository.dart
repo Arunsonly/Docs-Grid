@@ -163,6 +163,25 @@ class DocumentRepository {
     }, where: 'id = ?', whereArgs: [document.id]);
   }
 
+  Future<List<DocumentRecord>> listTrash({String query = ''}) async {
+    final db = await _database.database;
+    final rows = await db.query(
+      'documents',
+      where: 'deleted_at IS NOT NULL AND name LIKE ?',
+      whereArgs: ['%${query.trim()}%'],
+      orderBy: 'deleted_at DESC',
+    );
+    return rows.map(DocumentRecord.fromMap).toList();
+  }
+
+  Future<void> restoreFromTrash(DocumentRecord document) async {
+    final db = await _database.database;
+    await db.update('documents', {
+      'deleted_at': null,
+      'updated_at': DateTime.now().toUtc().toIso8601String(),
+    }, where: 'id = ? AND deleted_at IS NOT NULL', whereArgs: [document.id]);
+  }
+
   Future<void> moveToTrash(DocumentRecord document) async {
     final db = await _database.database;
     await db.update('documents', {
