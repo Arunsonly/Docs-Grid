@@ -94,14 +94,14 @@ class PdfInsightsService {
 
   String? suggestName({required String currentName, required String text}) {
     final lines = text
-        .split(RegExp(r'[\\r\\n]+'))
-        .map((line) => line.replaceAll(RegExp(r'\\s+'), ' ').trim())
+        .split(RegExp(r'[\r\n]+'))
+        .map((line) => line.replaceAll(RegExp(r'\s+'), ' ').trim())
         .where((line) => line.length >= 4)
         .toList();
     if (lines.isEmpty) return null;
 
     final candidate = lines.first
-        .replaceAll(RegExp(r'[<>:"/\\\\|?*]'), '_')
+        .replaceAll(RegExp(r'[<>:"/\\|?*]'), '_')
         .replaceAll(RegExp(r'\\s+'), ' ')
         .trim();
     if (candidate.length < 4) return null;
