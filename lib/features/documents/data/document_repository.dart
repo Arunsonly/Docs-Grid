@@ -375,7 +375,7 @@ class DocumentRepository {
       withData: true,
     );
     if (picked == null || picked.files.isEmpty) return;
-    final bytes = picked.files.single.bytes ?? await picked.files.single.xFile.readAsBytes();
+    final bytes = picked.files.single.bytes ?? await picked.files.single.readAsBytes();
     if (bytes.length < 5 || String.fromCharCodes(bytes.take(5)) != '%PDF-') {
       throw StateError('The selected file is not a valid PDF.');
     }
