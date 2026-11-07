@@ -697,6 +697,49 @@ class DocumentRepository {
   }
 
 
+
+  Future<void> setExpiryDate(DocumentRecord document, DateTime expiryDate) async {
+    final db = await _database.database;
+    final expiry = DateTime(expiryDate.year, expiryDate.month, expiryDate.day, 9);
+    final now = DateTime.now();
+    const offsets = [30, 15, 7, 1, 0];
+    await db.transaction((txn) async {
+      await txn.update('documents', {
+        'expiry_date': DateTime(expiry.year, expiry.month, expiry.day).toIso8601String(),
+        'updated_at': DateTime.now().toUtc().toIso8601String(),
+      }, where: 'id = ? AND deleted_at IS NULL', whereArgs: [document.id]);
+
+      await txn.delete(
+        'reminders',
+        where: "document_id = ? AND title LIKE 'Expiry: %'",
+        whereArgs: [document.id],
+      );
+      for (final days in offsets) {
+        final remindAt = expiry.subtract(Duration(days: days));
+        if (!remindAt.isAfter(now)) continue;
+        final when = remindAt.toUtc().toIso8601String();
+        final label = days == 0 ? 'on expiry date' : '$days days before expiry';
+        await txn.insert('reminders', {
+          'id': _uuid.v4(),
+          'document_id': document.id,
+          'title': 'Expiry: ${document.name} ($label)',
+          'note': 'Document expiry date: ${expiry.day.toString().padLeft(2, '0')}/${expiry.month.toString().padLeft(2, '0')}/${expiry.year}',
+          'remind_at_utc': when,
+          'timezone_id': DateTime.now().timeZoneName,
+          'enabled': 1,
+          'status': 'scheduled',
+          'next_fire_at_utc': when,
+          'created_at': DateTime.now().toUtc().toIso8601String(),
+          'updated_at': DateTime.now().toUtc().toIso8601String(),
+        });
+      }
+      await _recordHistory(txn, document.id, 'expiry_date_set', {
+        'expiry_date': expiry.toIso8601String(),
+        'reminder_offsets_days': offsets,
+      });
+    });
+  }
+
   Future<void> indexDocument(DocumentRecord document) async {
     await PdfInsightsService(database: _database)
         .indexDocument(document.id, document.storagePath);
