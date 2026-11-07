@@ -80,10 +80,28 @@ class _SettingsScreen extends StatelessWidget {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        const ListTile(
-          leading: Icon(Icons.phonelink_lock_outlined),
-          title: Text('Offline storage'),
-          subtitle: Text('Choose a folder where newly imported PDFs will be saved.'),
+        ListTile(
+          leading: const Icon(Icons.phonelink_lock_outlined),
+          title: const Text('Offline storage'),
+          subtitle: const Text('Choose a folder where newly imported PDFs will be saved.'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () async {
+            try {
+              final folder = await StorageLocationService.instance.chooseFolder();
+              if (folder == null) return;
+              if (context.mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text('Storage folder selected: ${folder['name']}')),
+                );
+              }
+            } catch (error) {
+              if (context.mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text('Folder selection failed: $error')),
+                );
+              }
+            }
+          },
         ),
         const Divider(),
         ListTile(
