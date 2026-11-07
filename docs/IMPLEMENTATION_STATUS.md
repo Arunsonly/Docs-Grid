@@ -34,12 +34,12 @@ This is an implementation tracker, not a release claim. A green CI build does no
 - Android SAF permission revocation or an iOS Files provider revoking access can still require the user to reselect the storage folder and relink inaccessible individual PDFs. A full guided provider-permission repair screen is not yet complete.
 - iOS Files providers (including cloud providers) may need to download a file before it can be read; this behaviour requires real-device/provider testing.
 - App-private fallback files remain inside the app's container and may be removed on uninstall. Only files stored in a verified external Files location are independent of the app container.
-- The current implementation still reads PDF bytes into memory in import, move, migration, and relink paths. Large-file streaming and low-memory-device testing remain outstanding.
+- PDF import now uses streamed SHA-256 and native streamed copy when the picker supplies a local file path. Migration uses streamed hashing/copy verification, and app-private-to-selected-storage moves use native streamed copying. Relinking and moves from provider-backed storage into the app-private library still have byte-buffer paths; these need further streaming work and low-memory-device testing.
 
 ## Verification status
 
 - GitHub Actions runs Flutter analyze, widget/unit tests, Android debug APK build, and an unsigned iOS build.
-- The Android SAF and iOS Files integrations are now included in CI. The latest commit must pass both jobs before this work is considered build-verified.
+- The Android SAF and iOS Files integrations are now included in CI. The latest commit must pass both jobs before this work is considered build-verified. The 2026-11-07 run 42361098308 passed Android analyze/tests/debug APK build+artifact upload and iOS analyze/tests/unsigned build; later commits require a fresh CI run.
 - CI is not a substitute for testing on a real Android phone and iPhone. Folder picker grants, bookmark persistence after app restart, cloud-provider files, rename/move/delete, interrupted migration, and recovery must be exercised on physical devices.
 - Android release signing, iOS signing/TestFlight, large-PDF testing, and data-recovery tests remain outstanding.
 
