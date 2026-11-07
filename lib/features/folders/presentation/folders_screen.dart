@@ -23,6 +23,7 @@ class _FoldersScreenState extends State<FoldersScreen> {
   String? _currentFolderId;
   String _currentTitle = 'Folders';
   late Future<List<Folder>> _foldersFuture;
+  late Future<List<DocumentRecord>> _documentsFuture;
 
   @override
   void initState() {
@@ -32,6 +33,7 @@ class _FoldersScreenState extends State<FoldersScreen> {
 
   void _load() {
     _foldersFuture = _repository.childrenOf(_currentFolderId);
+    _documentsFuture = _documents.listInFolder(_currentFolderId);
   }
 
   Future<void> _refresh() async {
@@ -260,11 +262,11 @@ class _FoldersScreenState extends State<FoldersScreen> {
         Expanded(
           child: FutureBuilder<List<Folder>>(
             future: _foldersFuture,
-            builder: (context, snapshot) {
-              if (snapshot.connectionState == ConnectionState.waiting) {
+            builder: (context, folderSnapshot) {
+              if (folderSnapshot.connectionState == ConnectionState.waiting) {
                 return const Center(child: CircularProgressIndicator());
               }
-              if (snapshot.hasError) {
+              if (folderSnapshot.hasError) {
                 return Center(
                   child: Column(mainAxisSize: MainAxisSize.min, children: [
                     const Icon(Icons.error_outline, size: 40),
@@ -274,62 +276,120 @@ class _FoldersScreenState extends State<FoldersScreen> {
                   ]),
                 );
               }
-              final folders = snapshot.data ?? [];
-              if (folders.isEmpty) {
-                return Center(
-                  child: Padding(
-                    padding: const EdgeInsets.all(28),
-                    child: Column(mainAxisSize: MainAxisSize.min, children: [
-                      const Icon(Icons.folder_open_outlined, size: 52),
-                      const SizedBox(height: 12),
-                      Text(_currentFolderId == null ? 'No folders yet' : 'This folder is empty',
-                          style: Theme.of(context).textTheme.titleMedium),
-                      const SizedBox(height: 6),
-                      const Text('Create a folder to organise your PDFs.', textAlign: TextAlign.center),
-                      const SizedBox(height: 12),
-                      FilledButton.icon(
-                        onPressed: _createFolder,
-                        icon: const Icon(Icons.create_new_folder_outlined),
-                        label: const Text('Create folder'),
-                      ),
-                    ]),
-                  ),
-                );
-              }
-              return RefreshIndicator(
-                onRefresh: _refresh,
-                child: ListView.separated(
-                  padding: const EdgeInsets.fromLTRB(12, 8, 12, 24),
-                  itemCount: folders.length,
-                  separatorBuilder: (_, _) => const SizedBox(height: 4),
-                  itemBuilder: (context, index) {
-                    final folder = folders[index];
-                    return Card(
-                      elevation: 0,
-                      child: ListTile(
-                        leading: const CircleAvatar(child: Icon(Icons.folder_outlined)),
-                        title: Text(folder.name, maxLines: 1, overflow: TextOverflow.ellipsis),
-                        subtitle: const Text('Folder'),
-                        onTap: () => _openFolder(folder),
-                        trailing: PopupMenuButton<String>(
-                          tooltip: 'Folder actions',
-                          onSelected: (value) {
-                            if (value == 'rename') _renameFolder(folder);
-                            if (value == 'delete') _deleteFolder(folder);
-                          },
-                          itemBuilder: (_) => const [
-                            PopupMenuItem(value: 'rename', child: Text('Rename')),
-                            PopupMenuItem(value: 'delete', child: Text('Delete')),
-                          ],
-                        ),
+              final folders = folderSnapshot.data ?? const <Folder>[];
+              return FutureBuilder<List<DocumentRecord>>(
+                future: _documentsFuture,
+                builder: (context, documentSnapshot) {
+                  if (documentSnapshot.connectionState == ConnectionState.waiting) {
+                    return const Center(child: CircularProgressIndicator());
+                  }
+                  if (documentSnapshot.hasError) {
+                    return Center(child: Text('Could not load PDFs: ${documentSnapshot.error}'));
+                  }
+                  final documents = documentSnapshot.data ?? const <DocumentRecord>[];
+                  if (folders.isEmpty && documents.isEmpty) {
+                    return Center(
+                      child: Padding(
+                        padding: const EdgeInsets.all(28),
+                        child: Column(mainAxisSize: MainAxisSize.min, children: [
+                          const Icon(Icons.folder_open_outlined, size: 52),
+                          const SizedBox(height: 12),
+                          Text(_currentFolderId == null ? 'No folders or PDFs yet' : 'This folder is empty',
+                              style: Theme.of(context).textTheme.titleMedium),
+                          const SizedBox(height: 6),
+                          const Text('Create a folder or import a PDF to get started.', textAlign: TextAlign.center),
+                          const SizedBox(height: 12),
+                          FilledButton.icon(
+                            onPressed: _createFolder,
+                            icon: const Icon(Icons.create_new_folder_outlined),
+                            label: const Text('Create folder'),
+                          ),
+                        ]),
                       ),
                     );
-                  },
-                ),
+                  }
+                  return RefreshIndicator(
+                    onRefresh: _refresh,
+                    child: ListView(
+                      padding: const EdgeInsets.fromLTRB(12, 8, 12, 24),
+                      children: [
+                        if (folders.isNotEmpty) ...[
+                          Padding(
+                            padding: const EdgeInsets.fromLTRB(4, 8, 4, 4),
+                            child: Text('FOLDERS', style: Theme.of(context).textTheme.labelLarge),
+                          ),
+                          for (final folder in folders)
+                            Card(
+                              elevation: 0,
+                              child: ListTile(
+                                leading: const CircleAvatar(child: Icon(Icons.folder_outlined)),
+                                title: Text(folder.name, maxLines: 1, overflow: TextOverflow.ellipsis),
+                                subtitle: const Text('Folder'),
+                                onTap: () => _openFolder(folder),
+                                trailing: PopupMenuButton<String>(
+                                  tooltip: 'Folder actions',
+                                  onSelected: (value) {
+                                    if (value == 'rename') _renameFolder(folder);
+                                    if (value == 'delete') _deleteFolder(folder);
+                                  },
+                                  itemBuilder: (_) => const [
+                                    PopupMenuItem(value: 'rename', child: Text('Rename')),
+                                    PopupMenuItem(value: 'delete', child: Text('Delete')),
+                                  ],
+                                ),
+                              ),
+                            ),
+                        ],
+                        if (documents.isNotEmpty) ...[
+                          Padding(
+                            padding: const EdgeInsets.fromLTRB(4, 18, 4, 4),
+                            child: Text('PDF DOCUMENTS', style: Theme.of(context).textTheme.labelLarge),
+                          ),
+                          for (final document in documents)
+                            Card(
+                              elevation: 0,
+                              child: ListTile(
+                                leading: const Icon(Icons.picture_as_pdf_outlined),
+                                title: Text('${document.name}.pdf', maxLines: 1, overflow: TextOverflow.ellipsis),
+                                subtitle: Text(_size(document.sizeBytes)),
+                                onTap: () async {
+                                  final shared = document.storagePath.startsWith('content://') ||
+                                      document.storagePath.startsWith('file://');
+                                  if (!shared && !await File(document.storagePath).exists()) {
+                                    if (mounted) _message('PDF file is missing from local storage.');
+                                    return;
+                                  }
+                                  await _documents.markOpened(document);
+                                  if (shared) {
+                                    await StorageLocationService.instance.openPdf(document.storagePath);
+                                  } else {
+                                    await OpenFilex.open(document.storagePath);
+                                  }
+                                },
+                                trailing: IconButton(
+                                  tooltip: 'Share PDF',
+                                  icon: const Icon(Icons.share_outlined),
+                                  onPressed: () async {
+                                    try {
+                                      await DocumentToolsService().shareStoredPdf(
+                                        document.storagePath, '${document.name}.pdf',
+                                      );
+                                    } catch (error) {
+                                      if (mounted) _message('Could not share PDF: $error');
+                                    }
+                                  },
+                                ),
+                              ),
+                            ),
+                        ],
+                      ],
+                    ),
+                  );
+                },
               );
             },
           ),
-        ),
+        )
       ],
     );
   }
