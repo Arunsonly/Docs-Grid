@@ -19,6 +19,7 @@ class DocumentRecord {
     required this.isFavorite,
     this.categoryId,
     this.categoryName,
+    this.tagNames = const [],
   });
 
   final String id;
@@ -29,6 +30,7 @@ class DocumentRecord {
   final bool isFavorite;
   final String? categoryId;
   final String? categoryName;
+  final List<String> tagNames;
 
   factory DocumentRecord.fromMap(Map<String, Object?> row) {
     final metadata = jsonDecode((row['metadata_json'] as String?) ?? '{}')
@@ -42,6 +44,9 @@ class DocumentRecord {
       isFavorite: metadata['favorite'] == true,
       categoryId: row['category_id'] as String?,
       categoryName: row['category_name'] as String?,
+      tagNames: ((row['tag_names'] as String?) ?? '').isEmpty
+          ? const []
+          : (row['tag_names'] as String).split(', '),
     );
   }
 }
@@ -64,7 +69,9 @@ class DocumentRepository {
     final db = await _database.database;
     final rows = await db.rawQuery(
       '''
-      SELECT d.*, c.name AS category_name
+      SELECT d.*, c.name AS category_name,
+        (SELECT GROUP_CONCAT(t.name, ', ') FROM document_tags dt
+          INNER JOIN tags t ON t.id = dt.tag_id WHERE dt.document_id = d.id) AS tag_names
       FROM documents d
       LEFT JOIN categories c ON c.id = d.category_id
       WHERE d.deleted_at IS NULL
