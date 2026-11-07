@@ -73,8 +73,37 @@ class _DocsGridHomeState extends State<DocsGridHome> {
   }
 }
 
-class _SettingsScreen extends StatelessWidget {
-  const _SettingsScreen();
+class _SettingsScreen extends StatefulWidget {
+  const _SettingsScreen({super.key});
+
+  @override
+  State<_SettingsScreen> createState() => _SettingsScreenState();
+}
+
+class _SettingsScreenState extends State<_SettingsScreen> {
+  Map<String, String>? _storageStatus;
+  bool _checkingStorage = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _refreshStorageStatus();
+  }
+
+  Future<void> _refreshStorageStatus() async {
+    setState(() => _checkingStorage = true);
+    try {
+      final status = await StorageLocationService.instance.checkStorageAccess();
+      if (mounted) setState(() => _storageStatus = status);
+    } catch (error) {
+      if (mounted) setState(() => _storageStatus = {
+        'status': 'unknown',
+        'message': 'Could not check storage access: $error',
+      });
+    } finally {
+      if (mounted) setState(() => _checkingStorage = false);
+    }
+  }
 
   Future<void> _chooseStorage(BuildContext context) async {
     final messenger = ScaffoldMessenger.of(context);
@@ -102,6 +131,7 @@ class _SettingsScreen extends StatelessWidget {
         ),
       );
       if (!context.mounted) return;
+      await _refreshStorageStatus();
       if (migrate != true) {
         messenger.showSnackBar(
           SnackBar(content: Text('Storage folder selected: ${folder['name']}. Existing PDFs were not moved.')),
@@ -180,10 +210,33 @@ class _SettingsScreen extends StatelessWidget {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
+        Card(
+          child: ListTile(
+            leading: Icon(_storageStatus?['status'] == 'available'
+                ? Icons.cloud_done_outlined
+                : _storageStatus?['status'] == 'revoked'
+                    ? Icons.warning_amber_rounded
+                    : Icons.storage_outlined),
+            title: const Text('Storage access health'),
+            subtitle: Text(_checkingStorage
+                ? 'Checking saved folder permission…'
+                : _storageStatus?['message'] ?? 'Storage status not checked yet.'),
+            trailing: IconButton(
+              tooltip: 'Check again',
+              onPressed: _checkingStorage ? null : _refreshStorageStatus,
+              icon: const Icon(Icons.refresh),
+            ),
+          ),
+        ),
+        const SizedBox(height: 8),
         ListTile(
           leading: const Icon(Icons.phonelink_lock_outlined),
-          title: const Text('Offline storage'),
-          subtitle: const Text('Choose a folder for PDFs and safely migrate your existing library.'),
+          title: Text(_storageStatus?['status'] == 'revoked'
+              ? 'Repair storage permission'
+              : 'Offline storage'),
+          subtitle: Text(_storageStatus?['status'] == 'revoked'
+              ? 'Select the same folder again to restore access. Existing PDF records will not be deleted.'
+              : 'Choose a folder for PDFs and safely migrate your existing library.'),
           trailing: const Icon(Icons.chevron_right),
           onTap: () => _chooseStorage(context),
         ),
