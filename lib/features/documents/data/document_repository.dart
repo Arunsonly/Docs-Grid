@@ -551,7 +551,7 @@ class DocumentRepository {
   }
 
 
-  Future<ImportSummary> importScannedPdf(File source, {String? displayName, String? targetFolderUri}) async {
+  Future<ImportSummary> importScannedPdf(File source, {String? displayName, String? targetFolderUri, String? targetFolderId, String sourceType = 'scanner'}) async {
     if (!await source.exists()) throw StateError('Scanned PDF is not available.');
     final header = await source.openRead(0, 5).fold<List<int>>(<int>[], (a, b) => a..addAll(b));
     if (header.length < 5 || String.fromCharCodes(header) != '%PDF-') {
@@ -573,7 +573,10 @@ class DocumentRepository {
     final id = _uuid.v4();
     late final String uri;
     String? relativePath;
-    final destinationUri = targetFolderUri ?? selected?['uri'];
+    final folderUri = targetFolderId == null
+        ? null
+        : await FolderRepository().ensurePhysicalStorageUri(targetFolderId);
+    final destinationUri = targetFolderUri ?? folderUri ?? selected?['uri'];
     if (destinationUri != null) {
       uri = await storage.copyPdf(
         sourceUri: Uri.file(source.path).toString(),
@@ -611,7 +614,7 @@ class DocumentRepository {
           'created_at': now,
           'updated_at': now,
           'metadata_json': '{}',
-          'source': 'scanner',
+          'source': sourceType,
         });
         await _recordHistory(txn, id, 'scanned', {'name': safeName});
       });
