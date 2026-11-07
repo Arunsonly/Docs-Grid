@@ -60,13 +60,25 @@ UI widgets must not directly manipulate files or SQL. Screens call use cases; us
 - `categories`: id, name, icon_key, color_key, is_builtin, created_at.
 - `tags`: id, name, created_at.
 - `document_tags`: document_id, tag_id (unique pair).
-- `reminders`: id, document_id, remind_at, offset_days, enabled, notification_id, created_at.
+- `reminders`: id, document_id (nullable only for a general app reminder; otherwise required), title, note, remind_at_utc, timezone_id, recurrence_rule, recurrence_end_at, lead_days, enabled, status (scheduled/snoozed/completed/cancelled), snoozed_until, next_fire_at_utc, notification_id, created_at, updated_at, completed_at. Support multiple reminder rows per document; index document_id, next_fire_at_utc, status. Store enough recurrence/timezone data to recalculate the next occurrence safely.
 - `history`: id, document_id, action, details_json, created_at.
 - `favorites`: document_id, created_at.
 - `settings`: key, value_json.
 - `schema_migrations`: version, applied_at.
 
 Use foreign keys, indexes for names/folder/category/dates/hash, transactions for multi-step metadata changes, and versioned migrations. Store large PDF bytes in the selected file folder, not in SQLite.
+
+## Cross-platform permissions & notification compliance
+
+- Ask for notification authorization only when the user first saves a reminder that needs a notification, after a short in-app explanation; never block document management if permission is declined.
+- Android 13+ (API 33+) must declare and request `POST_NOTIFICATIONS` at runtime. Check permission/channel state again when the app resumes because the user can change it in system Settings. Android versions below 13 do not show this runtime prompt, but app-level notification settings can still disable delivery.
+- Do not request `USE_EXACT_ALARM` or `SCHEDULE_EXACT_ALARM` by default. Ordinary document reminders can use inexact local scheduling. Only add exact-alarm access if a later, explicitly justified user-facing requirement truly needs minute-precise delivery and the applicable Android/Google Play policy permits it; otherwise avoid the extra permission and settings burden.
+- iOS must request notification authorization in context before scheduling alerts, and re-check `UNNotificationSettings`/authorization when the app becomes active. If denied, provide a Settings deep-link/help state rather than repeatedly prompting (iOS does not re-show the initial prompt after a decision).
+- Use local notifications only; configure notification channels on Android and appropriate alert/sound/badge options on iOS. Handle permission denied, provisional/quiet authorization where available, disabled channels, and OS scheduling failures without losing the reminder record.
+- Rebuild the OS pending-notification queue from the SQLite reminder source of truth when the app starts/resumes and after edits, restore, timezone changes, clock changes, reboot, or app upgrade. Use stable notification IDs and cancel obsolete schedules before replacing them. For recurring reminders, calculate and persist the next occurrence rather than assuming the OS will repeat forever.
+- Account for platform scheduling limits by scheduling the nearest upcoming reminders and replenishing the queue as reminders fire or the app next opens. Keep all future and overdue reminders in the app database regardless of the OS queue.
+- Keep permission requests least-privilege: no contacts, location, microphone, or broad file access for reminders. Camera permission is only for scanning; file/folder access follows the platform storage picker rules above.
+- Test Android API 32 and 33+ permission flows, denied/revoked permission, notification channel disabled, reboot/timezone change, and iOS authorized/denied/provisional states on real devices.
 
 ## Important interaction standards
 
