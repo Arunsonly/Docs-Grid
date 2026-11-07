@@ -33,7 +33,7 @@ class StorageLocationService {
       'name': name,
       'bytes': bytes,
     });
-    if (uri == null) throw StateError('Android did not return the saved PDF location.');
+    if (uri == null) throw StateError('The platform did not return the saved PDF location.');
     return uri;
   }
 
@@ -42,7 +42,7 @@ class StorageLocationService {
       'parentUri': parentUri,
       'name': name,
     });
-    if (result == null) throw StateError('Android did not return the created folder location.');
+    if (result == null) throw StateError('The platform did not return the created folder location.');
     return result;
   }
 
@@ -56,13 +56,13 @@ class StorageLocationService {
       'parentUri': parentUri,
       'name': name,
     });
-    if (result == null) throw StateError('Android did not return the copied PDF location.');
+    if (result == null) throw StateError('The platform did not return the copied PDF location.');
     return result;
   }
 
   Future<Uint8List> readPdf(String uri) async {
     final result = await _channel.invokeMethod<Uint8List>('readPdf', {'uri': uri});
-    if (result == null) throw StateError('Android did not return PDF bytes.');
+    if (result == null) throw StateError('The platform did not return PDF bytes.');
     return result;
   }
 
@@ -71,19 +71,19 @@ class StorageLocationService {
       'parentUri': parentUri,
       'name': name,
     });
-    if (result == null) throw StateError('Android could not resolve a child storage location.');
+    if (result == null) throw StateError('The platform could not resolve a child storage location.');
     return result;
   }
 
   Future<String> renamePdf({required String uri, required String name}) async {
     final result = await _channel.invokeMethod<String>('renamePdf', {'uri': uri, 'name': name});
-    if (result == null) throw StateError('Android did not return the renamed PDF location.');
+    if (result == null) throw StateError('The platform did not return the renamed PDF location.');
     return result;
   }
 
   Future<void> deletePdf(String uri) async {
     final deleted = await _channel.invokeMethod<bool>('deletePdf', {'uri': uri});
-    if (deleted != true) throw StateError('Android could not delete the PDF.');
+    if (deleted != true) throw StateError('The platform could not delete the PDF.');
   }
 
   Future<void> openPdf(String uri) async {
