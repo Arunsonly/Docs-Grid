@@ -33,8 +33,8 @@ This is an implementation tracker, not a release claim. A green CI build does no
 
 ## Verification status
 
-- Latest verified CI commit: `bf9574b45dfc667046c7a680db3bec739fe6385d`.
-- GitHub Actions run [42364129247](https://github.com/Arunsonly/Docs-Grid/actions/runs/42364129247) completed successfully: Android analyze, widget/unit tests, debug APK build and artifact upload; iOS analyze, widget/unit tests and unsigned build.
+- Latest fully successful CI run before the current review fixes: [42369846464](https://github.com/Arunsonly/Docs-Grid/actions/runs/42369846464), commit `b7c199f320c337db9b30050e0da74aa82e28e02b`. Android analyze, tests, debug APK build and artifact upload succeeded; iOS analyze, tests and unsigned build succeeded.
+- A subsequent five-pass source review identified and fixed the legacy v1 database-upgrade tracking-table failure, iOS Files `file://` URI handling for OCR/sharing, and stale Settings feature-status copy. These newer commits require a fresh CI run before their APK is considered verified.
 - CI does not verify OS permission prompts, real provider behaviour, cloud downloads, app restart persistence or real-device file operations.
 - Physical Android and iPhone checks have not yet been performed. They require actual devices with the app installed and cannot be certified by a hosted CI runner.
 - Android release signing, iOS signing/TestFlight, large-PDF stress tests and data-recovery drills remain outstanding.
@@ -63,6 +63,6 @@ The following changes are on `feature/complete-ten-features` and remain subject 
 
 ### Current branch verification
 
-- The first implementation CI pass (before the latest notification, restore, scanner and duplicate-review changes) passed Android analyze, tests and debug APK build.
-- The same run passed iOS analyze and tests but iOS unsigned build failed because the generated deployment target was below the ML Kit minimum. The workflow was updated to raise both Xcode project and Podfile targets to iOS 15.5; that correction still requires a fresh successful CI run.
-- The latest branch changes have not yet been certified by a complete fresh CI run or real-device tests. Do not mark all ten features release-ready until both are complete.
+- The latest pre-review CI run passed Android analyze, tests and debug APK build/upload, and iOS analyze, tests and unsigned build.
+- The current source-review fixes have been committed after that run and must pass a fresh Android/iOS CI run.
+- No hosted CI run can certify Android SAF permissions, iOS security-scoped bookmark persistence, physical notification delivery, cloud-provider access or real-device recovery. These remain manual device test gates.
