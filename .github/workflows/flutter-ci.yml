@@ -30,6 +30,37 @@ jobs:
           cache: true
       - name: Generate native platform scaffolding
         run: flutter create --platforms=android,ios --org com.docsgrid .
+      - name: Enable Android core library desugaring for scheduled notifications
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          candidates = [Path('android/app/build.gradle.kts'), Path('android/app/build.gradle')]
+          gradle = next((p for p in candidates if p.exists()), None)
+          if gradle is None:
+              raise SystemExit('Flutter did not generate android/app/build.gradle(.kts)')
+          s = gradle.read_text()
+          if gradle.suffix == '.kts':
+              if 'isCoreLibraryDesugaringEnabled' not in s:
+                  s, count = re.subn(r'(compileOptions\\s*\\{)', r'\\1\\n        isCoreLibraryDesugaringEnabled = true', s, count=1)
+                  if count != 1:
+                      raise SystemExit('Could not locate Android compileOptions block')
+              dependency = 'coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")'
+          else:
+              if 'coreLibraryDesugaringEnabled' not in s:
+                  s, count = re.subn(r'(compileOptions\\s*\\{)', r'\\1\\n        coreLibraryDesugaringEnabled true', s, count=1)
+                  if count != 1:
+                      raise SystemExit('Could not locate Android compileOptions block')
+              dependency = "coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.1.4'"
+          if dependency not in s:
+              match = re.search(r'dependencies\\s*\\{', s)
+              if match:
+                  s = s[:match.end()] + '\\n    ' + dependency + s[match.end():]
+              else:
+                  s += '\\ndependencies {\\n    ' + dependency + '\\n}\\n'
+          gradle.write_text(s)
+          print(f'Enabled core library desugaring in {gradle}')
+          PY
       - name: Configure Android camera and notification permissions
         run: |
           python3 - <<'PY'
