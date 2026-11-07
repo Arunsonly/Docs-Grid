@@ -318,7 +318,7 @@ class _SettingsScreenState extends State<_SettingsScreen> {
         const Padding(
           padding: EdgeInsets.all(16),
           child: Text(
-            'Scheduled notifications, recurring reminders and transactional backup restore are still being developed.',
+            'DocsGrid stores documents and reminders on this device. Reminders support one-time, daily and weekly schedules; backup and restore verify archive contents before restoring. Physical-device notification and storage-permission checks are still required.',
             style: TextStyle(color: Colors.black54),
           ),
         ),
