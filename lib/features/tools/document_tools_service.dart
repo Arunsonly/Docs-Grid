@@ -4,7 +4,6 @@ import 'dart:typed_data';
 
 import 'package:archive/archive.dart';
 import 'package:crypto/crypto.dart';
-import 'package:flutter/material.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:path/path.dart' as p;
@@ -193,7 +192,6 @@ class DocumentToolsService {
     final manifestBytes = utf8.encode(jsonEncode(manifest));
     archive.addFile(ArchiveFile('manifest.json', manifestBytes.length, manifestBytes));
     final zipped = ZipEncoder().encode(archive);
-    if (zipped == null) throw StateError('Could not create backup archive.');
     final directory = await getApplicationDocumentsDirectory();
     final backups = Directory(p.join(directory.path, 'DocsGrid', 'Backups'));
     await backups.create(recursive: true);
