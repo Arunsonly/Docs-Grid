@@ -9,7 +9,7 @@ This is an implementation tracker, not a release claim. A green CI build does no
 | Area | Status | Implemented |
 |---|---|---|
 | PDF import | Partial | Multi-file PDF picker, PDF header check, SHA-256 duplicate check; newly imported PDFs can be written to an Android SAF-selected folder, opened, renamed and permanently deleted through content URIs; legacy private-folder imports remain supported |
-| Folder organisation | Partial | Nested folder CRUD, move PDF to folder, view/open PDFs in a folder |
+| Folder organisation | Partial | Nested folder CRUD; on Android with a selected SAF root, folders/subfolders are mirrored as real directories; moving PDFs uses copy-and-SHA-256 verification before source deletion; view/open PDFs in a folder |
 | Categories and tags | Partial | Built-in/custom categories, custom tags, rename/delete, assign to PDFs |
 | Search | Partial | PDF filename search; stale async results guarded |
 | Duplicate detection | Partial | Exact SHA-256 duplicate detection; no review/merge workflow |
@@ -21,11 +21,12 @@ This is an implementation tracker, not a release claim. A green CI build does no
 
 ## Important storage limitation
 
-Imported PDFs currently live in the app-private ApplicationDocumentsDirectory/DocsGrid/PDFs folder. Android SAF folder selection and persistable tree permission are now wired through a native MethodChannel. New imports use the selected folder and are stored as real provider documents; open, rename and permanent delete use the content URI. Existing PDFs are not automatically migrated when a folder is selected. Physical folder/subfolder mirroring, relinking after permission revocation, a displayed current-folder name, and iOS Files security-scoped storage are **not implemented yet**. This Android integration still requires a successful CI build and real-device validation. Do not treat the current storage implementation as the final storage design or promise that files survive app uninstall.
+Imported PDFs currently live in the app-private ApplicationDocumentsDirectory/DocsGrid/PDFs folder. Android SAF folder selection and persistable tree permission are now wired through a native MethodChannel. New imports use the selected folder and are stored as real provider documents; open, rename and permanent delete use the content URI. Existing PDFs are not automatically migrated when a folder is selected. Physical folder/subfolder mirroring and verified PDF moves have now been added to the Android SAF path. Existing folders/PDFs are not automatically migrated. Moving a SAF PDF back into app-private storage, relinking after permission revocation, a displayed current-folder name, and iOS Files security-scoped storage are **not implemented yet**. The latest SAF folder/move changes are awaiting CI and real-device validation. Do not treat the current storage implementation as the final storage design or promise that files survive app uninstall.
 
 ## Verification status
 
 - GitHub Actions runs Flutter analyze, widget tests, Android debug APK build, and an unsigned iOS build check.
+- Latest baseline CI (commit `f601d199`) passed Flutter analyze, tests, Android debug APK, and unsigned iOS build on both platform jobs. New SAF folder/move commits are still running through CI.
 - CI is not a substitute for testing on a real Android phone and iPhone.
 - Android release signing, iOS signing/TestFlight, permission flows, large-PDF testing, and data recovery tests remain outstanding.
 
