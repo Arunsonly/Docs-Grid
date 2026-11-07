@@ -37,6 +37,29 @@ class StorageLocationService {
     return uri;
   }
 
+  Future<String> createDirectory({required String parentUri, required String name}) async {
+    final result = await _channel.invokeMethod<String>('createDirectory', {
+      'parentUri': parentUri,
+      'name': name,
+    });
+    if (result == null) throw StateError('Android did not return the created folder location.');
+    return result;
+  }
+
+  Future<String> movePdf({
+    required String sourceUri,
+    required String parentUri,
+    required String name,
+  }) async {
+    final result = await _channel.invokeMethod<String>('movePdf', {
+      'sourceUri': sourceUri,
+      'parentUri': parentUri,
+      'name': name,
+    });
+    if (result == null) throw StateError('Android did not return the moved PDF location.');
+    return result;
+  }
+
   Future<String> renamePdf({required String uri, required String name}) async {
     final result = await _channel.invokeMethod<String>('renamePdf', {'uri': uri, 'name': name});
     if (result == null) throw StateError('Android did not return the renamed PDF location.');
