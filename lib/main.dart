@@ -95,7 +95,6 @@ class _DocsGridHomeState extends State<DocsGridHome> {
           ListTile(leading: const Icon(Icons.document_scanner_outlined), title: const Text('Scan using camera'), onTap: () => Navigator.pop(sheetContext, 'camera')),
           ListTile(leading: const Icon(Icons.photo_library_outlined), title: const Text('Create PDF from gallery'), onTap: () => Navigator.pop(sheetContext, 'gallery')),
           ListTile(leading: const Icon(Icons.manage_search_outlined), title: const Text('On-device text indexing & search'), onTap: () => Navigator.pop(sheetContext, 'tools')),
-          ListTile(leading: const Icon(Icons.backup_outlined), title: const Text('Create offline backup'), onTap: () => Navigator.pop(sheetContext, 'backup')),
           ListTile(leading: const Icon(Icons.notifications_active_outlined), title: const Text('Set a reminder'), onTap: () => Navigator.pop(sheetContext, 'reminder')),
         ]),
       ),
@@ -377,6 +376,21 @@ class _SettingsScreenState extends State<_SettingsScreen> {
           trailing: const Icon(Icons.chevron_right),
           onTap: () => Navigator.of(context).push(
             MaterialPageRoute(builder: (_) => const HistoryScreen()),
+          ),
+        ),
+        const Divider(),
+        ListTile(
+          leading: const Icon(Icons.backup_outlined),
+          title: const Text('Offline backup & restore'),
+          subtitle: const Text('Create a ZIP backup and choose its save folder, or restore a backup.'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () => Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (_) => Scaffold(
+                appBar: AppBar(title: const Text('Offline backup & restore')),
+                body: const DocumentToolsScreen(),
+              ),
+            ),
           ),
         ),
         const Divider(),
