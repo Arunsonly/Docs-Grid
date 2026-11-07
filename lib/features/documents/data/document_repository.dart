@@ -655,7 +655,10 @@ class DocumentRepository {
           final temp = await getTemporaryDirectory();
           stagedSource = File(p.join(temp.path, 'docsgrid_import_\${_uuid.v4()}.pdf'));
           await stagedSource!.create(recursive: true);
-          await stagedSource!.openWrite().addStream(picked.readStream!);
+          final sink = stagedSource!.openWrite();
+          await sink.addStream(picked.readStream!);
+          await sink.flush();
+          await sink.close();
           sourceFile = stagedSource;
         } else if (sourceFile == null) {
           fallbackBytes = await picked.readAsBytes();
