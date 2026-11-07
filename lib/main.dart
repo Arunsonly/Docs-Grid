@@ -77,6 +77,7 @@ class _SettingsScreen extends StatelessWidget {
   const _SettingsScreen();
 
   Future<void> _chooseStorage(BuildContext context) async {
+    final messenger = ScaffoldMessenger.of(context);
     try {
       final folder = await StorageLocationService.instance.chooseFolder();
       if (folder == null || !context.mounted) return;
@@ -102,7 +103,7 @@ class _SettingsScreen extends StatelessWidget {
       );
       if (!context.mounted) return;
       if (migrate != true) {
-        ScaffoldMessenger.of(context).showSnackBar(
+        messenger.showSnackBar(
           SnackBar(content: Text('Storage folder selected: ${folder['name']}. Existing PDFs were not moved.')),
         );
         return;
