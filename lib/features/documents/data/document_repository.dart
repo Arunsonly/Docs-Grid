@@ -546,6 +546,81 @@ class DocumentRepository {
     }
   }
 
+
+  Future<ImportSummary> importScannedPdf(File source) async {
+    if (!await source.exists()) throw StateError('Scanned PDF is not available.');
+    final header = await source.openRead(0, 5).fold<List<int>>(<int>[], (a, b) => a..addAll(b));
+    if (header.length < 5 || String.fromCharCodes(header) != '%PDF-') {
+      throw StateError('Scanner output is not a valid PDF.');
+    }
+    final digest = (await sha256.bind(source.openRead()).first).toString();
+    final db = await _database.database;
+    final duplicate = await db.query('documents',
+      columns: ['id'], where: 'sha256 = ? AND deleted_at IS NULL',
+      whereArgs: [digest], limit: 1);
+    if (duplicate.isNotEmpty) return const ImportSummary(added: 0, duplicates: 1, failed: 0);
+
+    final storage = StorageLocationService.instance;
+    final selected = await storage.selectedFolder();
+    final safeName = _safePdfName(p.basename(source.path));
+    final id = _uuid.v4();
+    late final String uri;
+    String? relativePath;
+    if (selected != null) {
+      uri = await storage.copyPdf(
+        sourceUri: Uri.file(source.path).toString(),
+        parentUri: selected['uri']!,
+        name: safeName,
+      );
+    } else {
+      final base = await getApplicationDocumentsDirectory();
+      final library = Directory(p.join(base.path, 'DocsGrid', 'PDFs'));
+      await library.create(recursive: true);
+      final target = await _uniqueFile(library, safeName);
+      await source.copy(target.path);
+      final copiedDigest = (await sha256.bind(target.openRead()).first).toString();
+      if (copiedDigest != digest) {
+        await target.delete();
+        throw StateError('Scanned PDF verification failed.');
+      }
+      uri = target.path;
+      relativePath = p.relative(target.path, from: library.path);
+    }
+
+    final now = DateTime.now().toUtc().toIso8601String();
+    try {
+      await db.transaction((txn) async {
+        await txn.insert('documents', {
+          'id': id,
+          'name': p.basenameWithoutExtension(safeName),
+          'original_name': safeName,
+          'storage_uri': uri,
+          'relative_path': relativePath,
+          'mime_type': 'application/pdf',
+          'size_bytes': await source.length(),
+          'sha256': digest,
+          'extracted_text_status': 'pending',
+          'created_at': now,
+          'updated_at': now,
+          'metadata_json': '{}',
+          'source': 'scanner',
+        });
+        await _recordHistory(txn, id, 'scanned', {'name': safeName});
+      });
+    } catch (_) {
+      try {
+        if (uri.startsWith('content://') || uri.startsWith('file://')) {
+          await storage.deletePdf(uri);
+        } else {
+          final file = File(uri);
+          if (await file.exists()) await file.delete();
+        }
+      } catch (_) {}
+      rethrow;
+    }
+    return const ImportSummary(added: 1, duplicates: 0, failed: 0);
+  }
+
   Future<ImportSummary> importPdfs() async {
     final pickedFiles = await FilePicker.pickFiles(
       type: FileType.custom,
