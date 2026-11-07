@@ -525,6 +525,7 @@ class DocumentRepository {
     final pickedFiles = await FilePicker.pickFiles(
       type: FileType.custom,
       allowedExtensions: ['pdf'],
+      withData: false,
     );
     if (pickedFiles.isEmpty) {
       return const ImportSummary(added: 0, duplicates: 0, failed: 0);
@@ -544,13 +545,27 @@ class DocumentRepository {
     var failed = 0;
 
     for (final picked in pickedFiles) {
+      String? createdUri;
       try {
-        final bytes = await picked.readAsBytes();
-        if (bytes.length < 5 || String.fromCharCodes(bytes.take(5)) != '%PDF-') {
+        final sourcePath = picked.path;
+        final sourceFile = sourcePath == null ? null : File(sourcePath);
+        final fallbackBytes = sourceFile == null ? await picked.readAsBytes() : null;
+        if (sourceFile != null && !await sourceFile.exists()) {
+          throw StateError('The selected PDF is no longer accessible.');
+        }
+        final header = sourceFile != null
+            ? await sourceFile.openRead(0, 5).fold<List<int>>(<int>[], (a, b) => a..addAll(b))
+            : fallbackBytes!.take(5).toList();
+        if (header.length < 5 || String.fromCharCodes(header) != '%PDF-') {
           failed++;
           continue;
         }
-        final digest = sha256.convert(bytes).toString();
+        final digest = sourceFile != null
+            ? (await sha256.bind(sourceFile.openRead()).first).toString()
+            : sha256.convert(fallbackBytes!).toString();
+        final sizeBytes = sourceFile != null
+            ? await sourceFile.length()
+            : fallbackBytes!.length;
         final existing = await db.query(
           'documents',
           columns: ['id'],
@@ -562,45 +577,73 @@ class DocumentRepository {
           duplicates++;
           continue;
         }
+
         final safeName = _safePdfName(picked.name);
-        late final String storageUri;
         late final String storedName;
         late final String? relativePath;
         if (selectedFolder != null) {
-          storageUri = await storage.savePdf(
-            treeUri: selectedFolder['uri']!,
-            name: safeName,
-            bytes: bytes,
-          );
+          createdUri = sourceFile != null
+              ? await storage.copyPdf(
+                  sourceUri: Uri.file(sourceFile.path).toString(),
+                  parentUri: selectedFolder['uri']!,
+                  name: safeName,
+                )
+              : await storage.savePdf(
+                  treeUri: selectedFolder['uri']!,
+                  name: safeName,
+                  bytes: fallbackBytes!,
+                );
           storedName = p.basenameWithoutExtension(safeName);
           relativePath = null;
         } else {
           final target = await _uniqueFile(library!, safeName);
-          await target.writeAsBytes(bytes, flush: true);
-          storageUri = target.path;
+          if (sourceFile != null) {
+            await sourceFile.copy(target.path);
+          } else {
+            await target.writeAsBytes(fallbackBytes!, flush: true);
+          }
+          final copiedDigest = (await sha256.bind(target.openRead()).first).toString();
+          if (copiedDigest != digest) {
+            await target.delete();
+            throw StateError('Imported PDF verification failed.');
+          }
+          createdUri = target.path;
           storedName = p.basenameWithoutExtension(target.path);
           relativePath = p.relative(target.path, from: library.path);
         }
+
         final now = DateTime.now().toUtc().toIso8601String();
         final documentId = _uuid.v4();
-        await db.insert('documents', {
-          'id': documentId,
-          'name': storedName,
-          'original_name': picked.name,
-          'storage_uri': storageUri,
-          'relative_path': relativePath,
-          'mime_type': 'application/pdf',
-          'size_bytes': bytes.length,
-          'sha256': digest,
-          'extracted_text_status': 'pending',
-          'created_at': now,
-          'updated_at': now,
-          'metadata_json': '{}',
-          'source': 'file_picker',
+        await db.transaction((txn) async {
+          await txn.insert('documents', {
+            'id': documentId,
+            'name': storedName,
+            'original_name': picked.name,
+            'storage_uri': createdUri,
+            'relative_path': relativePath,
+            'mime_type': 'application/pdf',
+            'size_bytes': sizeBytes,
+            'sha256': digest,
+            'extracted_text_status': 'pending',
+            'created_at': now,
+            'updated_at': now,
+            'metadata_json': '{}',
+            'source': 'file_picker',
+          });
+          await _recordHistory(txn, documentId, 'imported', {'name': storedName});
         });
-        await _recordHistory(db, documentId, 'imported', {'name': storedName});
         added++;
       } catch (_) {
+        if (createdUri != null) {
+          try {
+            if (createdUri.startsWith('content://') || createdUri.startsWith('file://')) {
+              await storage.deletePdf(createdUri);
+            } else {
+              final orphan = File(createdUri);
+              if (await orphan.exists()) await orphan.delete();
+            }
+          } catch (_) {}
+        }
         failed++;
       }
     }
