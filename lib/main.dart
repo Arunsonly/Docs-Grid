@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import 'features/folders/presentation/folders_screen.dart';
+
 void main() {
   runApp(const DocsGridApp());
 }
@@ -50,7 +52,9 @@ class _DocsGridHomeState extends State<DocsGridHome> {
       body: SafeArea(
         child: _selectedIndex == 0
             ? _dashboard()
-            : _placeholder(_titles[_selectedIndex]),
+            : _selectedIndex == 1
+                ? const FoldersScreen()
+                : _placeholder(_titles[_selectedIndex]),
       ),
       floatingActionButton: _selectedIndex == 0
           ? FloatingActionButton.extended(
