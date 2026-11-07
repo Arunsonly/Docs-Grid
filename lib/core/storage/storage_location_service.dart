@@ -46,17 +46,23 @@ class StorageLocationService {
     return result;
   }
 
-  Future<String> movePdf({
+  Future<String> copyPdf({
     required String sourceUri,
     required String parentUri,
     required String name,
   }) async {
-    final result = await _channel.invokeMethod<String>('movePdf', {
+    final result = await _channel.invokeMethod<String>('copyPdf', {
       'sourceUri': sourceUri,
       'parentUri': parentUri,
       'name': name,
     });
-    if (result == null) throw StateError('Android did not return the moved PDF location.');
+    if (result == null) throw StateError('Android did not return the copied PDF location.');
+    return result;
+  }
+
+  Future<Uint8List> readPdf(String uri) async {
+    final result = await _channel.invokeMethod<Uint8List>('readPdf', {'uri': uri});
+    if (result == null) throw StateError('Android did not return PDF bytes.');
     return result;
   }
 
