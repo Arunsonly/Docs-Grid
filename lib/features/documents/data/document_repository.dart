@@ -366,6 +366,105 @@ class DocumentRepository {
     return migrated;
   }
 
+  /// Reconnects a missing or inaccessible PDF to a user-selected copy.
+  /// If the record has a SHA-256 value, the replacement must match exactly.
+  Future<void> relinkDocument(DocumentRecord document) async {
+    final picked = await FilePicker.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: ['pdf'],
+      withData: true,
+    );
+    if (picked == null || picked.files.isEmpty) return;
+    final bytes = picked.files.single.bytes ?? await picked.files.single.xFile.readAsBytes();
+    if (bytes.length < 5 || String.fromCharCodes(bytes.take(5)) != '%PDF-') {
+      throw StateError('The selected file is not a valid PDF.');
+    }
+    final digest = sha256.convert(bytes).toString();
+    final db = await _database.database;
+    final rows = await db.query(
+      'documents',
+      columns: ['sha256', 'folder_id'],
+      where: 'id = ?',
+      whereArgs: [document.id],
+      limit: 1,
+    );
+    if (rows.isEmpty) throw StateError('PDF record no longer exists.');
+    final expected = rows.first['sha256'] as String?;
+    if (expected != null && expected.isNotEmpty && expected != digest) {
+      throw StateError('This PDF does not match the original document (SHA-256 mismatch).');
+    }
+
+    final folderId = rows.first['folder_id'] as String?;
+    String? destinationUri;
+    if (folderId == null) {
+      destinationUri = (await StorageLocationService.instance.selectedFolder())?['uri'];
+    } else {
+      final folderRows = await db.query(
+        'folders',
+        columns: ['storage_uri_or_relative_path'],
+        where: 'id = ? AND deleted_at IS NULL',
+        whereArgs: [folderId],
+        limit: 1,
+      );
+      destinationUri = folderRows.isEmpty
+          ? null
+          : folderRows.first['storage_uri_or_relative_path'] as String?;
+    }
+
+    late final String newUri;
+    String? relativePath;
+    if (destinationUri != null) {
+      newUri = await StorageLocationService.instance.savePdf(
+        treeUri: destinationUri,
+        name: '${document.name}.pdf',
+        bytes: bytes,
+      );
+    } else {
+      final base = await getApplicationDocumentsDirectory();
+      final library = Directory(p.join(base.path, 'DocsGrid', 'PDFs'));
+      await library.create(recursive: true);
+      final target = await _uniqueFile(library, '${document.name}.pdf');
+      await target.writeAsBytes(bytes, flush: true);
+      if (sha256.convert(await target.readAsBytes()).toString() != digest) {
+        await target.delete();
+        throw StateError('Replacement PDF verification failed.');
+      }
+      newUri = target.path;
+      relativePath = p.relative(target.path, from: library.path);
+    }
+
+    try {
+      await db.transaction((txn) async {
+        await txn.update(
+          'documents',
+          {
+            'storage_uri': newUri,
+            'relative_path': relativePath,
+            'size_bytes': bytes.length,
+            'sha256': digest,
+            'updated_at': DateTime.now().toUtc().toIso8601String(),
+          },
+          where: 'id = ?',
+          whereArgs: [document.id],
+        );
+        await _recordHistory(txn, document.id, 'relinked', {
+          'source_name': picked.files.single.name,
+          'storage_uri': newUri,
+        });
+      });
+    } catch (_) {
+      try {
+        if (newUri.startsWith('content://') || newUri.startsWith('file://')) {
+          await StorageLocationService.instance.deletePdf(newUri);
+        } else {
+          final file = File(newUri);
+          if (await file.exists()) await file.delete();
+        }
+      } catch (_) {}
+      rethrow;
+    }
+  }
+
   Future<ImportSummary> importPdfs() async {
     final pickedFiles = await FilePicker.pickFiles(
       type: FileType.custom,
