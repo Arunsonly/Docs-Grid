@@ -58,6 +58,32 @@ import CryptoKit
                 let parent = try urlArg(args, "parentUri")
                 let name = try stringArg(args, "name")
                 result(try copyPdf(source: source, parent: parent, name: name).absoluteString)
+            case "copyPdfToPath":
+                let source = try urlArg(args, "sourceUri")
+                let destinationPath = try stringArg(args, "destinationPath")
+                let destination = URL(fileURLWithPath: destinationPath)
+                try withAllBookmarkAccess {
+                    let accessed = source.startAccessingSecurityScopedResource()
+                    defer { if accessed { source.stopAccessingSecurityScopedResource() } }
+                    try FileManager.default.createDirectory(
+                        at: destination.deletingLastPathComponent(),
+                        withIntermediateDirectories: true
+                    )
+                    if FileManager.default.fileExists(atPath: destination.path) {
+                        try FileManager.default.removeItem(at: destination)
+                    }
+                    let input = try FileHandle(forReadingFrom: source)
+                    defer { try? input.close() }
+                    FileManager.default.createFile(atPath: destination.path, contents: nil)
+                    let output = try FileHandle(forWritingTo: destination)
+                    defer { try? output.close() }
+                    while true {
+                        let chunk = try input.read(upToCount: 64 * 1024) ?? Data()
+                        if chunk.isEmpty { break }
+                        try output.write(contentsOf: chunk)
+                    }
+                }
+                result(true)
             case "sha256Pdf":
                 let url = try urlArg(args, "uri")
                 result(try sha256Pdf(url: url))
