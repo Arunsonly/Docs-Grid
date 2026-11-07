@@ -60,6 +60,14 @@ class StorageLocationService {
     return result;
   }
 
+  Future<void> copyPdfToPath({required String sourceUri, required String destinationPath}) async {
+    final copied = await _channel.invokeMethod<bool>('copyPdfToPath', {
+      'sourceUri': sourceUri,
+      'destinationPath': destinationPath,
+    });
+    if (copied != true) throw StateError('The platform could not copy the PDF into app storage.');
+  }
+
   Future<String> sha256Pdf(String uri) async {
     final result = await _channel.invokeMethod<String>('sha256Pdf', {'uri': uri});
     if (result == null) throw StateError('The platform did not return a PDF checksum.');
