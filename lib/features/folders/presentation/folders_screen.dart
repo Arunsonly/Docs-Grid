@@ -1,4 +1,9 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
+import 'package:open_filex/open_filex.dart';
+
+import '../../documents/data/document_repository.dart';
 
 import '../data/folder_repository.dart';
 import '../domain/folder.dart';
@@ -12,6 +17,7 @@ class FoldersScreen extends StatefulWidget {
 
 class _FoldersScreenState extends State<FoldersScreen> {
   final FolderRepository _repository = FolderRepository();
+  final DocumentRepository _documents = DocumentRepository();
   final List<Folder> _ancestors = [];
   String? _currentFolderId;
   String _currentTitle = 'Folders';
@@ -65,6 +71,61 @@ class _FoldersScreenState extends State<FoldersScreen> {
       _currentTitle = folder.name;
       _load();
     });
+  }
+
+  Future<void> _showFolderDocuments() async {
+    final documents = await _documents.listInFolder(_currentFolderId);
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(_currentFolderId == null ? 'PDFs in root' : 'PDFs in $_currentTitle'),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: documents.isEmpty
+              ? const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 18),
+                  child: Text('No PDFs in this folder yet.'),
+                )
+              : SizedBox(
+                  height: 360,
+                  child: ListView.separated(
+                    shrinkWrap: true,
+                    itemCount: documents.length,
+                    separatorBuilder: (_, _) => const Divider(height: 1),
+                    itemBuilder: (context, index) {
+                      final document = documents[index];
+                      return ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        leading: const Icon(Icons.picture_as_pdf_outlined),
+                        title: Text('${document.name}.pdf', maxLines: 1, overflow: TextOverflow.ellipsis),
+                        subtitle: Text(_size(document.sizeBytes)),
+                        onTap: () async {
+                          final file = File(document.storagePath);
+                          if (!await file.exists()) {
+                            if (mounted) _message('PDF file is missing from local storage.');
+                            return;
+                          }
+                          await _documents.markOpened(document);
+                          await OpenFilex.open(document.storagePath);
+                          if (dialogContext.mounted) Navigator.pop(dialogContext);
+                        },
+                      );
+                    },
+                  ),
+                ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Close')),
+        ],
+      ),
+    );
+  }
+
+  String _size(int bytes) {
+    if (bytes < 1024) return '$bytes B';
+    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
   }
 
   Future<String?> _askName({String title = 'New folder', String initial = ''}) async {
@@ -161,6 +222,11 @@ class _FoldersScreenState extends State<FoldersScreen> {
               Expanded(
                 child: Text(_currentTitle,
                     style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700)),
+              ),
+              IconButton(
+                tooltip: 'PDFs in this folder',
+                onPressed: _showFolderDocuments,
+                icon: const Icon(Icons.picture_as_pdf_outlined),
               ),
               IconButton(
                 tooltip: 'Create folder',
