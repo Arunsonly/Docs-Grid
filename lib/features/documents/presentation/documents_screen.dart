@@ -7,6 +7,7 @@ import '../data/document_repository.dart';
 import '../../../core/storage/storage_location_service.dart';
 import '../../categories/data/category_repository.dart';
 import '../../folders/data/folder_repository.dart';
+import '../../tools/document_tools_service.dart';
 
 class DocumentsScreen extends StatefulWidget {
   const DocumentsScreen({super.key, this.favoritesOnly = false, this.recentOnly = false});
@@ -21,6 +22,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   final _repository = DocumentRepository();
   final _categoryRepository = CategoryRepository();
   final _folderRepository = FolderRepository();
+  final _tools = DocumentToolsService();
   final _search = TextEditingController();
   List<DocumentRecord> _documents = [];
   bool _loading = true;
@@ -117,6 +119,17 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
       }
     }
     await _load();
+  }
+
+
+  Future<void> _share(DocumentRecord document) async {
+    try {
+      await _tools.shareStoredPdf(document.storagePath, '${document.name}.pdf');
+    } catch (error) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not share PDF: $error')),
+      );
+    }
   }
 
   Future<void> _relink(DocumentRecord document) async {
@@ -516,6 +529,8 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
               await _chooseCategory(document);
             } else if (value == 'rename') {
               await _rename(document);
+            } else if (value == 'share') {
+              await _share(document);
             } else if (value == 'relink') {
               await _relink(document);
             } else if (value == 'trash') {
@@ -529,6 +544,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
             const PopupMenuItem(value: 'move', child: Text('Move to folder')),
             const PopupMenuItem(value: 'tags', child: Text('Edit tags')),
             const PopupMenuItem(value: 'rename', child: Text('Rename')),
+            const PopupMenuItem(value: 'share', child: Text('Share PDF')), 
             const PopupMenuItem(value: 'relink', child: Text('Relink / Replace PDF')),
             const PopupMenuItem(value: 'trash', child: Text('Move to Recycle Bin')),
           ],
