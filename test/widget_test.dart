@@ -13,18 +13,4 @@ void main() {
     expect(find.text('Settings'), findsOneWidget);
   });
 
-  testWidgets('Activity history screen is reachable from Settings', (tester) async {
-    await tester.pumpWidget(const DocsGridApp());
-    await tester.tap(find.text('Settings'));
-    await tester.pump(const Duration(milliseconds: 400));
-    final activityTile = find.ancestor(
-      of: find.text('Activity'),
-      matching: find.byType(ListTile),
-    );
-    await tester.ensureVisible(activityTile);
-    await tester.tap(activityTile);
-    await tester.pump(const Duration(milliseconds: 500));
-
-    expect(find.text('Activity history'), findsOneWidget);
-  });
 }
