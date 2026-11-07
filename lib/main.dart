@@ -134,7 +134,7 @@ class _SettingsScreenState extends State<_SettingsScreen> {
       );
       if (!context.mounted) return;
       await _refreshStorageStatus();
-      if (!mounted) return;
+      if (!context.mounted) return;
       if (migrate != true) {
         messenger.showSnackBar(
           SnackBar(content: Text('Storage folder selected: ${folder['name']}. Existing PDFs were not moved.')),
