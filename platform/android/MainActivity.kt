@@ -58,6 +58,19 @@ class MainActivity : FlutterActivity() {
                             val name = call.argument<String>("name")!!
                             result.success(copyPdf(source, parent, name).toString())
                         }
+                        "copyPdfToPath" -> {
+                            val source = Uri.parse(call.argument<String>("sourceUri")!!)
+                            val destinationPath = call.argument<String>("destinationPath")!!
+                            val destination = java.io.File(destinationPath)
+                            destination.parentFile?.mkdirs()
+                            contentResolver.openInputStream(source)?.use { input ->
+                                destination.outputStream().buffered().use { output ->
+                                    input.copyTo(output, 64 * 1024)
+                                    output.flush()
+                                }
+                            } ?: throw IllegalStateException("Could not read the source PDF.")
+                            result.success(true)
+                        }
                         "sha256Pdf" -> {
                             val uri = Uri.parse(call.argument<String>("uri")!!)
                             result.success(digest(uri).joinToString("") { "%02x".format(it) })
