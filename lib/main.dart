@@ -5,6 +5,7 @@ import 'features/categories/presentation/categories_screen.dart';
 import 'features/history/presentation/history_screen.dart';
 import 'features/reminders/presentation/reminders_screen.dart';
 import 'features/folders/presentation/folders_screen.dart';
+import 'core/storage/storage_location_service.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -82,7 +83,7 @@ class _SettingsScreen extends StatelessWidget {
         const ListTile(
           leading: Icon(Icons.phonelink_lock_outlined),
           title: Text('Offline storage'),
-          subtitle: Text('Current location: app-private storage. User-selectable Files folder is not ready yet.'),
+          subtitle: Text('Choose a folder where newly imported PDFs will be saved.'),
         ),
         const Divider(),
         ListTile(
