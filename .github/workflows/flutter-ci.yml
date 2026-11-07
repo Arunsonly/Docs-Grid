@@ -129,9 +129,9 @@ jobs:
           for gradle in candidates:
               s = gradle.read_text()
               if gradle.suffix == '.kts':
-                  s, count = re.subn(r'compileSdk\\s*=\\s*(?:[0-9]+|flutter\\.compileSdkVersion)', 'compileSdk = 36', s, count=1)
+                  s, count = re.subn(r'compileSdk\s*=\s*(?:[0-9]+|flutter\.compileSdkVersion)', 'compileSdk = 36', s, count=1)
               else:
-                  s, count = re.subn(r'compileSdkVersion\\s+(?:[0-9]+|flutter\\.compileSdkVersion)', 'compileSdkVersion 36', s, count=1)
+                  s, count = re.subn(r'compileSdkVersion\s+(?:[0-9]+|flutter\.compileSdkVersion)', 'compileSdkVersion 36', s, count=1)
               if count != 1:
                   raise SystemExit(f'Could not update image_cropper compileSdk in {gradle}')
               gradle.write_text(s)
