@@ -47,7 +47,7 @@ jobs:
           if count != 1:
               raise SystemExit(f'Could not locate compileSdk declaration in {gradle}')
           gradle.write_text(s)
-          print(f'Configured compileSdk 35 in {gradle}')
+          print(f'Configured app compileSdk 36 in {gradle}')
           PY
       - name: Enable Android core library desugaring for scheduled notifications
         run: |
@@ -117,6 +117,26 @@ jobs:
           cp platform/android/MainActivity.kt android/app/src/main/kotlin/com/docsgrid/docs_grid/MainActivity.kt
       - name: Install packages
         run: flutter pub get
+      - name: Raise image_cropper Android library compile SDK
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          root = Path.home() / '.pub-cache/hosted/pub.dev'
+          candidates = sorted(root.glob('image_cropper-*/android/build.gradle*'))
+          if not candidates:
+              raise SystemExit('image_cropper Android Gradle file was not found in pub cache')
+          for gradle in candidates:
+              s = gradle.read_text()
+              if gradle.suffix == '.kts':
+                  s, count = re.subn(r'compileSdk\\s*=\\s*(?:[0-9]+|flutter\\.compileSdkVersion)', 'compileSdk = 36', s, count=1)
+              else:
+                  s, count = re.subn(r'compileSdkVersion\\s+(?:[0-9]+|flutter\\.compileSdkVersion)', 'compileSdkVersion 36', s, count=1)
+              if count != 1:
+                  raise SystemExit(f'Could not update image_cropper compileSdk in {gradle}')
+              gradle.write_text(s)
+              print(f'Configured image_cropper compileSdk 36 in {gradle}')
+          PY
       - name: Analyze
         run: flutter analyze
       - name: Widget and unit tests
