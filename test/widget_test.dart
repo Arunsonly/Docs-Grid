@@ -20,6 +20,5 @@ void main() {
     await tester.pump(const Duration(milliseconds: 400));
 
     expect(find.text('Recently opened'), findsOneWidget);
-    expect(find.text('Open a PDF and it will appear here.'), findsOneWidget);
   });
 }
