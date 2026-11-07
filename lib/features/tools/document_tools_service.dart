@@ -103,6 +103,27 @@ class DocumentToolsService {
     return text.length;
   }
 
+
+  Future<int> indexPdfTextFromUri(String documentId, String storageUri) async {
+    if (storageUri.startsWith('content://')) {
+      final temp = await getTemporaryDirectory();
+      final file = File(p.join(temp.path, 'ocr_source_${_uuid.v4()}.pdf'));
+      try {
+        await StorageLocationService.instance.copyPdfToPath(
+          sourceUri: storageUri,
+          destinationPath: file.path,
+        );
+        return await indexPdfText(documentId, file.path);
+      } finally {
+        if (await file.exists()) await file.delete();
+      }
+    }
+    final path = storageUri.startsWith('file://')
+        ? Uri.parse(storageUri).toFilePath()
+        : storageUri;
+    return indexPdfText(documentId, path);
+  }
+
   Future<List<Map<String, Object?>>> searchText(String query) async {
     final q = query.trim();
     if (q.isEmpty) return [];
