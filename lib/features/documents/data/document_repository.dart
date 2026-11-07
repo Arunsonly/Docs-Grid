@@ -221,6 +221,150 @@ class DocumentRepository {
     }
   }
 
+  /// Moves the existing document library into the currently selected platform
+  /// folder. Each file is copied and verified, its DB reference is committed,
+  /// and only then is the old copy removed. Safe to retry after interruption.
+  Future<int> migrateExistingLibraryToSelectedStorage() async {
+    final storage = StorageLocationService.instance;
+    final selected = await storage.selectedFolder();
+    if (selected == null) {
+      throw StateError('Choose a storage folder before starting migration.');
+    }
+    final rootUri = selected['uri']!;
+    final db = await _database.database;
+    final folderUris = <String, String>{};
+
+    Future<void> mirrorFolders(String? parentId, String parentUri) async {
+      final rows = await db.query(
+        'folders',
+        columns: ['id', 'name'],
+        where: parentId == null
+            ? 'parent_id IS NULL AND deleted_at IS NULL'
+            : 'parent_id = ? AND deleted_at IS NULL',
+        whereArgs: parentId == null ? null : [parentId],
+        orderBy: 'name COLLATE NOCASE ASC',
+      );
+      for (final row in rows) {
+        final id = row['id'] as String;
+        final name = row['name'] as String;
+        String childUri;
+        try {
+          childUri = await storage.findChildUri(parentUri: parentUri, name: name);
+        } catch (_) {
+          childUri = await storage.createDirectory(parentUri: parentUri, name: name);
+        }
+        folderUris[id] = childUri;
+        await db.update(
+          'folders',
+          {
+            'storage_uri_or_relative_path': childUri,
+            'updated_at': DateTime.now().toUtc().toIso8601String(),
+          },
+          where: 'id = ? AND deleted_at IS NULL',
+          whereArgs: [id],
+        );
+        await mirrorFolders(id, childUri);
+      }
+    }
+
+    await mirrorFolders(null, rootUri);
+
+    final rows = await db.query(
+      'documents',
+      columns: ['id', 'name', 'storage_uri', 'folder_id', 'sha256'],
+      orderBy: 'created_at ASC',
+    );
+    var migrated = 0;
+    for (final row in rows) {
+      final id = row['id'] as String;
+      final name = row['name'] as String;
+      final sourceUri = row['storage_uri'] as String?;
+      if (sourceUri == null || sourceUri.isEmpty) {
+        throw StateError('PDF "$name" has no saved storage location. Migration stopped without deleting it.');
+      }
+      final folderId = row['folder_id'] as String?;
+      final parentUri = folderId == null ? rootUri : folderUris[folderId];
+      if (parentUri == null) {
+        throw StateError('Destination folder for "$name" could not be prepared. Migration can be retried safely.');
+      }
+
+      final sourceIsShared = sourceUri.startsWith('content://') || sourceUri.startsWith('file://');
+      final sourceBytes = sourceIsShared
+          ? await storage.readPdf(sourceUri)
+          : await File(sourceUri).readAsBytes();
+      final sourceDigest = sha256.convert(sourceBytes).toString();
+
+      String? destinationUri;
+      try {
+        final existingUri = await storage.findChildUri(
+          parentUri: parentUri,
+          name: '$name.pdf',
+        );
+        final existingBytes = await storage.readPdf(existingUri);
+        if (sha256.convert(existingBytes).toString() == sourceDigest) {
+          destinationUri = existingUri;
+        }
+      } catch (_) {
+        // No matching file in the destination; a new verified copy is made below.
+      }
+
+      destinationUri ??= sourceIsShared
+          ? await storage.copyPdf(
+              sourceUri: sourceUri,
+              parentUri: parentUri,
+              name: '$name.pdf',
+            )
+          : await storage.savePdf(
+              treeUri: parentUri,
+              name: '$name.pdf',
+              bytes: sourceBytes,
+            );
+
+      try {
+        await db.transaction((txn) async {
+          final count = await txn.update(
+            'documents',
+            {
+              'storage_uri': destinationUri,
+              'relative_path': null,
+              'updated_at': DateTime.now().toUtc().toIso8601String(),
+            },
+            where: 'id = ?',
+            whereArgs: [id],
+          );
+          if (count == 0) throw StateError('PDF record "$name" disappeared during migration.');
+          await _recordHistory(txn, id, 'storage_migrated', {
+            'from': sourceUri,
+            'to': destinationUri,
+          });
+        });
+      } catch (_) {
+        if (destinationUri != sourceUri) {
+          try { await storage.deletePdf(destinationUri); } catch (_) {}
+        }
+        rethrow;
+      }
+
+      if (destinationUri != sourceUri) {
+        try {
+          if (sourceIsShared) {
+            await storage.deletePdf(sourceUri);
+          } else {
+            final oldFile = File(sourceUri);
+            if (await oldFile.exists()) await oldFile.delete();
+          }
+        } catch (_) {
+          throw StateError(
+            '"$name.pdf" was copied and verified and the library now points to the new copy, '
+            'but the old copy could not be removed. Both copies were retained.',
+          );
+        }
+      }
+      migrated++;
+    }
+    return migrated;
+  }
+
   Future<ImportSummary> importPdfs() async {
     final pickedFiles = await FilePicker.pickFiles(
       type: FileType.custom,
