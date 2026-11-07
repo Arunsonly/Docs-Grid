@@ -100,6 +100,15 @@ class AppDatabase {
         });
       },
       onUpgrade: (db, oldVersion, newVersion) async {
+        // Databases created by the original v1 app predate schema_migrations.
+        // Create the tracking table before recording the first upgrade so an
+        // existing user's database can migrate without a missing-table crash.
+        await db.execute('''
+          CREATE TABLE IF NOT EXISTS schema_migrations (
+            version INTEGER PRIMARY KEY,
+            applied_at TEXT NOT NULL
+          )
+        ''');
         if (oldVersion < 2) {
           await _createV2Tables(db);
           await db.insert('schema_migrations', {
