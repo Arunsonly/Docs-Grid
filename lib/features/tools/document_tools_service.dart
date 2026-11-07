@@ -225,9 +225,6 @@ class DocumentToolsService {
     }
 
     final root = Directory(p.join((await getApplicationDocumentsDirectory()).path, 'DocsGrid', 'Restored'));
-    if (await root.exists() && await root.list().isNotEmpty) {
-      // A unique restore root prevents overwriting a previous restore.
-    }
     final restoreRoot = Directory(p.join(root.path, DateTime.now().microsecondsSinceEpoch.toString()));
     await restoreRoot.create(recursive: true);
     final fileRows = (manifest['files'] as List<dynamic>).cast<Map<String, dynamic>>();
