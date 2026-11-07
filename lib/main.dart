@@ -7,6 +7,7 @@ import 'features/history/presentation/history_screen.dart';
 import 'features/reminders/presentation/reminders_screen.dart';
 import 'features/folders/presentation/folders_screen.dart';
 import 'core/storage/storage_location_service.dart';
+import 'features/tools/document_tools_screen.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -294,6 +295,21 @@ class _SettingsScreenState extends State<_SettingsScreen> {
           ),
         ),
         const Divider(),
+        ListTile(
+          leading: const Icon(Icons.build_circle_outlined),
+          title: const Text('Document tools'),
+          subtitle: const Text('On-device OCR, scan to PDF, duplicate review and backup tools.'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () => Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (_) => Scaffold(
+                appBar: AppBar(title: const Text('Document tools')),
+                body: const DocumentToolsScreen(),
+              ),
+            ),
+          ),
+        ),
+        const Divider(),
         const ListTile(
           leading: Icon(Icons.info_outline),
           title: Text('About DocsGrid'),
@@ -302,7 +318,7 @@ class _SettingsScreenState extends State<_SettingsScreen> {
         const Padding(
           padding: EdgeInsets.all(16),
           child: Text(
-            'User-selected storage, scheduled notifications, recurring reminders, backup and restore are still being developed.',
+            'Scheduled notifications, recurring reminders and transactional backup restore are still being developed.',
             style: TextStyle(color: Colors.black54),
           ),
         ),
