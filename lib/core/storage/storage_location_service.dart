@@ -14,6 +14,20 @@ class StorageLocationService {
     return {'uri': value['uri'] as String, 'name': (value['name'] as String?) ?? 'Selected folder'};
   }
 
+  /// Checks whether the OS still grants access to the saved external folder.
+  /// This does not modify the selected folder or any document record.
+  Future<Map<String, String>> checkStorageAccess() async {
+    if (!Platform.isAndroid && !Platform.isIOS) {
+      return {'status': 'unsupported', 'message': 'External folder storage is unavailable on this platform.'};
+    }
+    final value = await _channel.invokeMapMethod<String, dynamic>('checkStorageAccess');
+    return {
+      'status': (value?['status'] as String?) ?? 'unknown',
+      'message': (value?['message'] as String?) ?? 'Storage access could not be verified.',
+      if (value?['name'] is String) 'name': value!['name'] as String,
+    };
+  }
+
   Future<Map<String, String>?> chooseFolder() async {
     if (!Platform.isAndroid && !Platform.isIOS) {
       throw UnsupportedError('Choosing a storage folder is not supported on this device.');
