@@ -110,6 +110,7 @@ class DocumentRepository {
   Future<void> moveToFolder(DocumentRecord document, String? folderId) async {
     final db = await _database.database;
     final storage = StorageLocationService.instance;
+
     String? destinationUri;
     if (folderId == null) {
       destinationUri = (await storage.selectedFolder())?['uri'];
@@ -125,42 +126,99 @@ class DocumentRepository {
       destinationUri = rows.first['storage_uri_or_relative_path'] as String?;
     }
 
-    var newStorageUri = document.storagePath;
-    if (destinationUri != null && document.storagePath.startsWith('content://')) {
-      newStorageUri = await storage.movePdf(
+    final sourceIsShared = document.storagePath.startsWith('content://');
+    String newStorageUri = document.storagePath;
+    var copiedToNewLocation = false;
+
+    // Copy first, verify bytes, and keep the original until SQLite commits.
+    if (destinationUri != null && sourceIsShared) {
+      newStorageUri = await storage.copyPdf(
         sourceUri: document.storagePath,
         parentUri: destinationUri,
-        name: '\${document.name}.pdf',
+        name: '${document.name}.pdf',
       );
-    } else if (destinationUri != null && !document.storagePath.startsWith('content://')) {
+      copiedToNewLocation = true;
+    } else if (destinationUri != null && !sourceIsShared) {
       final source = File(document.storagePath);
-      if (!await source.exists()) throw StateError('Original PDF is missing; it was not moved.');
+      if (!await source.exists()) {
+        throw StateError('Original PDF is missing; it was not moved.');
+      }
       final bytes = await source.readAsBytes();
       newStorageUri = await storage.savePdf(
         treeUri: destinationUri,
-        name: '\${document.name}.pdf',
+        name: '${document.name}.pdf',
         bytes: bytes,
       );
-      await source.delete();
-    } else if (document.storagePath.startsWith('content://')) {
-      throw UnsupportedError('Moving a PDF from Android shared storage to app-private folders is not supported yet. The original file was kept.');
+      copiedToNewLocation = true;
+    } else if (sourceIsShared) {
+      // Moving from Android SAF back to app-private storage is supported by
+      // reading the provider stream, verifying the local copy, then updating
+      // the database before removing the provider document.
+      final base = await getApplicationDocumentsDirectory();
+      final library = Directory(p.join(base.path, 'DocsGrid', 'PDFs'));
+      await library.create(recursive: true);
+      final bytes = await storage.readPdf(document.storagePath);
+      final target = await _uniqueFile(library, '${document.name}.pdf');
+      await target.writeAsBytes(bytes, flush: true);
+      final sourceDigest = sha256.convert(bytes).toString();
+      final savedDigest = sha256.convert(await target.readAsBytes()).toString();
+      if (sourceDigest != savedDigest) {
+        await target.delete();
+        throw StateError('PDF verification failed; original file was kept.');
+      }
+      newStorageUri = target.path;
+      copiedToNewLocation = true;
     }
 
-    final count = await db.update(
-      'documents',
-      {
-        'folder_id': folderId,
-        'storage_uri': newStorageUri,
-        'updated_at': DateTime.now().toUtc().toIso8601String(),
-      },
-      where: 'id = ? AND deleted_at IS NULL',
-      whereArgs: [document.id],
-    );
-    if (count == 0) throw StateError('PDF record no longer exists.');
-    await _recordHistory(db, document.id, 'moved_to_folder', {
-      'folder_id': folderId,
-      'storage_uri': newStorageUri,
-    });
+    try {
+      await db.transaction((txn) async {
+        final count = await txn.update(
+          'documents',
+          {
+            'folder_id': folderId,
+            'storage_uri': newStorageUri,
+            'updated_at': DateTime.now().toUtc().toIso8601String(),
+          },
+          where: 'id = ? AND deleted_at IS NULL',
+          whereArgs: [document.id],
+        );
+        if (count == 0) throw StateError('PDF record no longer exists.');
+        await _recordHistory(txn, document.id, 'moved_to_folder', {
+          'folder_id': folderId,
+          'storage_uri': newStorageUri,
+        });
+      });
+    } catch (_) {
+      if (copiedToNewLocation && newStorageUri != document.storagePath) {
+        try {
+          if (newStorageUri.startsWith('content://')) {
+            await storage.deletePdf(newStorageUri);
+          } else {
+            final target = File(newStorageUri);
+            if (await target.exists()) await target.delete();
+          }
+        } catch (_) {
+          // Preserve the original even if cleanup of the unreferenced copy fails.
+        }
+      }
+      rethrow;
+    }
+
+    if (copiedToNewLocation && newStorageUri != document.storagePath) {
+      try {
+        if (sourceIsShared) {
+          await storage.deletePdf(document.storagePath);
+        } else {
+          final source = File(document.storagePath);
+          if (await source.exists()) await source.delete();
+        }
+      } catch (_) {
+        throw StateError(
+          'PDF was moved and verified, but the old copy could not be removed. '
+          'Your data is safe; check both locations before deleting either copy.',
+        );
+      }
+    }
   }
 
   Future<ImportSummary> importPdfs() async {
