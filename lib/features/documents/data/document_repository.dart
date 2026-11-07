@@ -539,30 +539,70 @@ class DocumentRepository {
   Future<void> rename(DocumentRecord document, String newName) async {
     final cleaned = newName.trim();
     if (cleaned.isEmpty) throw ArgumentError('Name cannot be empty.');
-    final safeBase = p.basenameWithoutExtension(cleaned).replaceAll(RegExp(r'[<>:"/\\|?*]'), '_');
+    final safeBase = p.basenameWithoutExtension(cleaned)
+        .replaceAll(RegExp(r'[<>:"/\\|?*]'), '_')
+        .trim();
+    if (safeBase.isEmpty) throw ArgumentError('Name is not valid.');
     final safeName = '$safeBase.pdf';
+    final isShared = document.storagePath.startsWith('content://') ||
+        document.storagePath.startsWith('file://');
     late final String newStorageUri;
-    if (document.storagePath.startsWith('content://') || document.storagePath.startsWith('file://')) {
+
+    if (isShared) {
       newStorageUri = await StorageLocationService.instance.renamePdf(
         uri: document.storagePath,
         name: safeName,
       );
     } else {
       final oldFile = File(document.storagePath);
+      if (!await oldFile.exists()) {
+        throw StateError('Original PDF is missing. The database name was not changed.');
+      }
       final newFile = File(p.join(oldFile.parent.path, safeName));
       if (await newFile.exists() && newFile.path != oldFile.path) {
         throw StateError('A file with this name already exists.');
       }
-      if (await oldFile.exists()) await oldFile.rename(newFile.path);
+      await oldFile.rename(newFile.path);
       newStorageUri = newFile.path;
     }
+
     final db = await _database.database;
-    await db.update('documents', {
-      'name': safeBase,
-      'storage_uri': newStorageUri,
-      'updated_at': DateTime.now().toUtc().toIso8601String(),
-    }, where: 'id = ?', whereArgs: [document.id]);
-    await _recordHistory(db, document.id, 'renamed', {'from': document.name, 'to': safeBase});
+    try {
+      await db.transaction((txn) async {
+        final now = DateTime.now().toUtc().toIso8601String();
+        final count = await txn.update(
+          'documents',
+          {
+            'name': safeBase,
+            'storage_uri': newStorageUri,
+            'updated_at': now,
+          },
+          where: 'id = ? AND deleted_at IS NULL',
+          whereArgs: [document.id],
+        );
+        if (count == 0) throw StateError('PDF record no longer exists.');
+        await _recordHistory(txn, document.id, 'renamed', {
+          'from': document.name,
+          'to': safeBase,
+        });
+      });
+    } catch (_) {
+      try {
+        if (isShared) {
+          await StorageLocationService.instance.renamePdf(
+            uri: newStorageUri,
+            name: '${document.name}.pdf',
+          );
+        } else {
+          final renamedFile = File(newStorageUri);
+          final oldFile = File(document.storagePath);
+          if (await renamedFile.exists()) await renamedFile.rename(oldFile.path);
+        }
+      } catch (_) {
+        // Keep both the original DB reference and the recovery copy if rollback fails.
+      }
+      rethrow;
+    }
   }
 
   Future<void> permanentlyDelete(DocumentRecord document) async {
