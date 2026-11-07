@@ -13,7 +13,7 @@ This is an implementation tracker, not a release claim. A green CI build does no
 | Categories and tags | Partial | Built-in/custom categories, custom tags, rename/delete, assign to PDFs |
 | Search | Partial | PDF filename search; stale async results guarded |
 | Duplicate detection | Partial | Exact SHA-256 duplicate detection; no review/merge workflow |
-| Saved and recent | Partial | Favorites and last-opened timestamp; dedicated recent view not complete |
+| Saved and recent | Partial | Favorites and last-opened timestamp; Recently opened screen and query added; sorting/filter polish and device verification remain |
 | Reminders | Partial | On-device reminder create/list/edit/enable/disable/complete/snooze/duplicate/delete UI and SQLite storage; scheduled notifications, recurring reminders, and expiry-linked reminders still missing |
 | Scanner and sharing | Not implemented | No scanner or native share flow yet |
 | History and recycle bin | Partial | Activity history, soft delete, restore, confirmed permanent delete |
