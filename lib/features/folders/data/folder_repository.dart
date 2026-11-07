@@ -4,6 +4,12 @@ import 'package:uuid/uuid.dart';
 import '../../../core/database/app_database.dart';
 import '../domain/folder.dart';
 
+class FolderOption {
+  const FolderOption({required this.folder, required this.path});
+  final Folder folder;
+  final String path;
+}
+
 class FolderRepository {
   FolderRepository({AppDatabase? database})
       : _database = database ?? AppDatabase.instance;
@@ -20,6 +26,20 @@ class FolderRepository {
       orderBy: 'name COLLATE NOCASE ASC',
     );
     return rows.map(Folder.fromMap).toList();
+  }
+
+  Future<List<FolderOption>> allFoldersWithPaths() async {
+    final result = <FolderOption>[];
+    Future<void> visit(String? parentId, String prefix) async {
+      final children = await childrenOf(parentId);
+      for (final folder in children) {
+        final path = prefix.isEmpty ? folder.name : '$prefix / ${folder.name}';
+        result.add(FolderOption(folder: folder, path: path));
+        await visit(folder.id, path);
+      }
+    }
+    await visit(null, '');
+    return result;
   }
 
   Future<Folder> create({required String name, String? parentId}) async {
