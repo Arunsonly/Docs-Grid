@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'features/documents/presentation/documents_screen.dart';
 import 'features/categories/presentation/categories_screen.dart';
 import 'features/history/presentation/history_screen.dart';
+import 'features/reminders/presentation/reminders_screen.dart';
 import 'features/folders/presentation/folders_screen.dart';
 
 void main() {
@@ -100,6 +101,16 @@ class _SettingsScreen extends StatelessWidget {
         ),
         const Divider(),
         ListTile(
+          leading: const Icon(Icons.notifications_active_outlined),
+          title: const Text('Reminders'),
+          subtitle: const Text('Create and manage dates and times saved on this device.'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () => Navigator.of(context).push(
+            MaterialPageRoute(builder: (_) => const RemindersScreen()),
+          ),
+        ),
+        const Divider(),
+        ListTile(
           leading: const Icon(Icons.history),
           title: const Text('Activity history'),
           subtitle: const Text('Review recent document actions stored on this device.'),
@@ -117,7 +128,7 @@ class _SettingsScreen extends StatelessWidget {
         const Padding(
           padding: EdgeInsets.all(16),
           child: Text(
-            'Storage location selection, backup and restore, reminders and other settings are not implemented yet.',
+            'User-selected storage, scheduled notifications, recurring reminders, backup and restore are still being developed.',
             style: TextStyle(color: Colors.black54),
           ),
         ),
