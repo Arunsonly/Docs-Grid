@@ -42,6 +42,8 @@ import CryptoKit
                 window?.rootViewController?.present(picker, animated: true)
             case "getSelectedFolder":
                 result(try selectedFolder())
+            case "checkStorageAccess":
+                result(checkStorageAccess())
             case "savePdf":
                 let parent = try urlArg(args, "treeUri")
                 guard let typed = args["bytes"] as? FlutterStandardTypedData else {
@@ -167,6 +169,28 @@ import CryptoKit
         }
         defer { started.forEach { $0.stopAccessingSecurityScopedResource() } }
         return try work()
+    }
+
+    private func checkStorageAccess() -> [String: String] {
+        guard let data = UserDefaults.standard.data(forKey: currentBookmarkKey) else {
+            return ["status": "not_configured", "message": "No external folder has been selected. App-private storage is available."]
+        }
+        do {
+            var stale = false
+            let root = try URL(resolvingBookmarkData: data, options: [], relativeTo: nil, bookmarkDataIsStale: &stale)
+            let accessed = root.startAccessingSecurityScopedResource()
+            defer { if accessed { root.stopAccessingSecurityScopedResource() } }
+            guard accessed || FileManager.default.fileExists(atPath: root.path) else {
+                return ["status": "revoked", "message": "iOS could not reopen the saved Files folder. Select it again; existing PDF records will be preserved."]
+            }
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: root.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+                return ["status": "revoked", "message": "The saved Files folder is unavailable. Select the folder again."]
+            }
+            return ["status": "available", "message": stale ? "Files access is available; the bookmark will be refreshed on use." : "Saved Files folder access is active.", "name": root.lastPathComponent]
+        } catch {
+            return ["status": "revoked", "message": "The saved Files permission is no longer valid. Select the folder again; existing PDF records will be preserved."]
+        }
     }
 
     private func selectedFolder() throws -> [String: String]? {
