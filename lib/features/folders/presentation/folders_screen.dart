@@ -53,7 +53,10 @@ class _FoldersScreenState extends State<FoldersScreen> {
   void _goToAncestor(int index) {
     setState(() {
       if (index < 0) {
-        _goToRoot();
+        _ancestors.clear();
+        _currentFolderId = null;
+        _currentTitle = 'Folders';
+        _load();
         return;
       }
       final folder = _ancestors[index];
