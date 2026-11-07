@@ -8,7 +8,7 @@ This is an implementation tracker, not a release claim. A green CI build does no
 
 | Area | Status | Implemented |
 |---|---|---|
-| PDF import | Partial | Multi-file PDF picker, PDF header check, SHA-256 duplicate check, local copy |
+| PDF import | Partial | Multi-file PDF picker, PDF header check, SHA-256 duplicate check; newly imported PDFs can be written to an Android SAF-selected folder, opened, renamed and permanently deleted through content URIs; legacy private-folder imports remain supported |
 | Folder organisation | Partial | Nested folder CRUD, move PDF to folder, view/open PDFs in a folder |
 | Categories and tags | Partial | Built-in/custom categories, custom tags, rename/delete, assign to PDFs |
 | Search | Partial | PDF filename search; stale async results guarded |
@@ -21,7 +21,7 @@ This is an implementation tracker, not a release claim. A green CI build does no
 
 ## Important storage limitation
 
-Imported PDFs currently live in the app-private ApplicationDocumentsDirectory/DocsGrid/PDFs folder. The user-selected persistent Android SAF folder and iOS Files security-scoped folder are **not implemented yet**. Do not treat the current storage implementation as the final storage design or promise that files survive app uninstall.
+Imported PDFs currently live in the app-private ApplicationDocumentsDirectory/DocsGrid/PDFs folder. Android SAF folder selection and persistable tree permission are now wired through a native MethodChannel. New imports use the selected folder and are stored as real provider documents; open, rename and permanent delete use the content URI. Existing PDFs are not automatically migrated when a folder is selected. Physical folder/subfolder mirroring, relinking after permission revocation, a displayed current-folder name, and iOS Files security-scoped storage are **not implemented yet**. This Android integration still requires a successful CI build and real-device validation. Do not treat the current storage implementation as the final storage design or promise that files survive app uninstall.
 
 ## Verification status
 
