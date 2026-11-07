@@ -14,7 +14,7 @@ This is an implementation tracker, not a release claim. A green CI build does no
 | Search | Partial | PDF filename search; stale async results guarded |
 | Duplicate detection | Partial | Exact SHA-256 duplicate detection; no review/merge workflow |
 | Saved and recent | Partial | Favorites and last-opened timestamp; dedicated recent view not complete |
-| Expiry reminders | Not implemented | Database table exists; reminder UI and local notifications missing |
+| Reminders | Partial | On-device reminder create/list/enable/disable/complete/delete UI and SQLite storage; scheduled notifications, edit/snooze/recurrence and expiry-linked reminders still missing |
 | Scanner and sharing | Not implemented | No scanner or native share flow yet |
 | History and recycle bin | Partial | Activity history, soft delete, restore, confirmed permanent delete |
 | Backup and restore | Not implemented | No ZIP backup/restore yet |
