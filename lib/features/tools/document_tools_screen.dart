@@ -293,7 +293,8 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
           title: const Text('Create offline backup'),
           trailing: const Icon(Icons.chevron_right),
           onTap: _busy ? null : _backup),
-        const Divider(height: 1),
+      ])),
+      if (widget.section == 'restore') Card(child: Column(children: [
         ListTile(leading: const Icon(Icons.settings_backup_restore_outlined),
           title: const Text('Restore backup'),
           trailing: const Icon(Icons.chevron_right),
