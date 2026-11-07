@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:open_filex/open_filex.dart';
 
 import '../../documents/data/document_repository.dart';
+import '../../../core/storage/storage_location_service.dart';
 
 import '../data/folder_repository.dart';
 import '../domain/folder.dart';
@@ -101,13 +102,20 @@ class _FoldersScreenState extends State<FoldersScreen> {
                         title: Text('${document.name}.pdf', maxLines: 1, overflow: TextOverflow.ellipsis),
                         subtitle: Text(_size(document.sizeBytes)),
                         onTap: () async {
-                          final file = File(document.storagePath);
-                          if (!await file.exists()) {
-                            if (mounted) _message('PDF file is missing from local storage.');
-                            return;
+                          final isSafUri = document.storagePath.startsWith('content://');
+                          if (!isSafUri) {
+                            final file = File(document.storagePath);
+                            if (!await file.exists()) {
+                              if (mounted) _message('PDF file is missing from local storage.');
+                              return;
+                            }
                           }
                           await _documents.markOpened(document);
-                          await OpenFilex.open(document.storagePath);
+                          if (isSafUri) {
+                            await StorageLocationService.instance.openPdf(document.storagePath);
+                          } else {
+                            await OpenFilex.open(document.storagePath);
+                          }
                           if (dialogContext.mounted) Navigator.pop(dialogContext);
                         },
                       );
