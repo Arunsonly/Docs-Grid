@@ -272,7 +272,9 @@ class DocumentRepository {
   /// Moves the existing document library into the currently selected platform
   /// folder. Each file is copied and verified, its DB reference is committed,
   /// and only then is the old copy removed. Safe to retry after interruption.
-  Future<int> migrateExistingLibraryToSelectedStorage() async {
+  Future<int> migrateExistingLibraryToSelectedStorage({
+    void Function(int completed, int total, String current)? onProgress,
+  }) async {
     final storage = StorageLocationService.instance;
     final selected = await storage.selectedFolder();
     if (selected == null) {
@@ -323,6 +325,7 @@ class DocumentRepository {
       orderBy: 'created_at ASC',
     );
     var migrated = 0;
+    onProgress?.call(0, rows.length, 'Preparing migration');
     for (final row in rows) {
       final id = row['id'] as String;
       final name = row['name'] as String;
@@ -413,6 +416,7 @@ class DocumentRepository {
         }
       }
       migrated++;
+      onProgress?.call(migrated, rows.length, '$name.pdf');
     }
     return migrated;
   }
