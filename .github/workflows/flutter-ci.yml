@@ -90,37 +90,6 @@ jobs:
           permissions = '    <uses-permission android:name="android.permission.CAMERA"/>\n    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>\n    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>\n    '
           s = s.replace(marker, permissions + marker, 1)
           receivers = '''\n    <receiver android:exported="false" android:name="com.dexterous.flutterlocalnotifications.ScheduledNotificationReceiver"/>\n    <receiver android:enabled="true" android:exported="false" android:name="com.dexterous.flutterlocalnotifications.ScheduledNotificationBootReceiver">\n        <intent-filter>\n            <action android:name="android.intent.action.BOOT_COMPLETED"/>\n            <action android:name="android.intent.action.MY_PACKAGE_REPLACED"/>\n            <action android:name="android.intent.action.QUICKBOOT_POWERON"/>\n        </intent-filter>\n    </receiver>\n    '''
-          # image_cropper 9.x requires an explicit UCropActivity declaration
-          # and the Ucrop.CropTheme migration from its 9.0.0 Android guide.
-          cropper_activity = '''
-              <activity
-                  android:name="com.yalantis.ucrop.UCropActivity"
-                  android:screenOrientation="portrait"
-                  android:theme="@style/Ucrop.CropTheme"
-                  android:exported="false"/>
-          '''
-          if 'com.yalantis.ucrop.UCropActivity' not in s:
-              s = s.replace('</application>', receivers + cropper_activity + '</application>', 1)
-          else:
-              s = s.replace('</application>', receivers + '</application>', 1)
-
-          # The standard theme supports older Android versions; API 35+
-          # opts out of enforced edge-to-edge for the crop activity as required by uCrop 9.x.
-          values = Path('android/app/src/main/res/values')
-          values.mkdir(parents=True, exist_ok=True)
-          (values / 'styles.xml').write_text('''<resources>
-              <style name="Ucrop.CropTheme" parent="Theme.AppCompat.Light.NoActionBar"/>
-          </resources>
-          ''')
-          values_v35 = Path('android/app/src/main/res/values-v35')
-          values_v35.mkdir(parents=True, exist_ok=True)
-          (values_v35 / 'styles.xml').write_text('''<resources>
-              <style name="Ucrop.CropTheme" parent="Theme.AppCompat.Light.NoActionBar">
-                  <item name="android:windowOptOutEdgeToEdgeEnforcement">true</item>
-              </style>
-          </resources>
-          ''')
-
           # Make DocsGrid appear in Android's Share sheet for PDF attachments.
           # The incoming URI is granted by the sending app; users can then
           # choose DocsGrid and import the shared PDF from the picker.
@@ -154,26 +123,6 @@ jobs:
           mkdir -p assets
           rsvg-convert -w 1024 -h 1024 assets/docsgrid_icon.svg -o assets/docsgrid_icon.png
           dart run flutter_launcher_icons
-      - name: Raise image_cropper Android library compile SDK
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          import re
-          root = Path.home() / '.pub-cache/hosted/pub.dev'
-          candidates = sorted(root.glob('image_cropper-*/android/build.gradle*'))
-          if not candidates:
-              raise SystemExit('image_cropper Android Gradle file was not found in pub cache')
-          for gradle in candidates:
-              s = gradle.read_text()
-              if gradle.suffix == '.kts':
-                  s, count = re.subn(r'compileSdk\s*=\s*(?:[0-9]+|flutter\.compileSdkVersion)', 'compileSdk = 36', s, count=1)
-              else:
-                  s, count = re.subn(r'compileSdkVersion\s+(?:[0-9]+|flutter\.compileSdkVersion)', 'compileSdkVersion 36', s, count=1)
-              if count != 1:
-                  raise SystemExit(f'Could not update image_cropper compileSdk in {gradle}')
-              gradle.write_text(s)
-              print(f'Configured image_cropper compileSdk 36 in {gradle}')
-          PY
       - name: Analyze
         run: flutter analyze
       - name: Widget and unit tests
