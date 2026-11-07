@@ -75,57 +75,48 @@ class _FoldersScreenState extends State<FoldersScreen> {
   }
 
   Future<void> _showFolderDocuments() async {
-    final documents = await _documents.listInFolder(_currentFolderId);
+    final folderId = _currentFolderId;
+    final title = folderId == null ? 'Root PDFs' : 'PDFs in $_currentTitle';
+    final documents = await _documents.listInFolder(folderId);
     if (!mounted) return;
-    await showDialog<void>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: Text(_currentFolderId == null ? 'PDFs in root' : 'PDFs in $_currentTitle'),
-        content: SizedBox(
-          width: double.maxFinite,
-          child: documents.isEmpty
-              ? const Padding(
-                  padding: EdgeInsets.symmetric(vertical: 18),
-                  child: Text('No PDFs in this folder yet.'),
-                )
-              : SizedBox(
-                  height: 360,
-                  child: ListView.separated(
-                    shrinkWrap: true,
-                    itemCount: documents.length,
-                    separatorBuilder: (_, _) => const Divider(height: 1),
-                    itemBuilder: (context, index) {
-                      final document = documents[index];
-                      return ListTile(
-                        contentPadding: EdgeInsets.zero,
-                        leading: const Icon(Icons.picture_as_pdf_outlined),
-                        title: Text('${document.name}.pdf', maxLines: 1, overflow: TextOverflow.ellipsis),
-                        subtitle: Text(_size(document.sizeBytes)),
-                        onTap: () async {
-                          final isSafUri = document.storagePath.startsWith('content://') || document.storagePath.startsWith('file://');
-                          if (!isSafUri) {
-                            final file = File(document.storagePath);
-                            if (!await file.exists()) {
-                              if (mounted) _message('PDF file is missing from local storage.');
-                              return;
-                            }
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (pageContext) => Scaffold(
+          appBar: AppBar(title: Text(title)),
+          body: documents.isEmpty
+              ? const Center(child: Text('No PDFs in this folder yet.'))
+              : ListView.separated(
+                  padding: const EdgeInsets.all(12),
+                  itemCount: documents.length,
+                  separatorBuilder: (_, _) => const Divider(height: 1),
+                  itemBuilder: (context, index) {
+                    final document = documents[index];
+                    return ListTile(
+                      leading: const Icon(Icons.picture_as_pdf_outlined),
+                      title: Text('${document.name}.pdf', maxLines: 1, overflow: TextOverflow.ellipsis),
+                      subtitle: Text(_size(document.sizeBytes)),
+                      onTap: () async {
+                        final isSafUri = document.storagePath.startsWith('content://') ||
+                            document.storagePath.startsWith('file://');
+                        if (!isSafUri && !await File(document.storagePath).exists()) {
+                          if (pageContext.mounted) {
+                            ScaffoldMessenger.of(pageContext).showSnackBar(
+                              const SnackBar(content: Text('PDF file is missing from local storage.')),
+                            );
                           }
-                          await _documents.markOpened(document);
-                          if (isSafUri) {
-                            await StorageLocationService.instance.openPdf(document.storagePath);
-                          } else {
-                            await OpenFilex.open(document.storagePath);
-                          }
-                          if (dialogContext.mounted) Navigator.pop(dialogContext);
-                        },
-                      );
-                    },
-                  ),
+                          return;
+                        }
+                        await _documents.markOpened(document);
+                        if (isSafUri) {
+                          await StorageLocationService.instance.openPdf(document.storagePath);
+                        } else {
+                          await OpenFilex.open(document.storagePath);
+                        }
+                      },
+                    );
+                  },
                 ),
         ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Close')),
-        ],
       ),
     );
   }
