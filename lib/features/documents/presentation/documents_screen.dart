@@ -8,8 +8,9 @@ import '../../categories/data/category_repository.dart';
 import '../../folders/data/folder_repository.dart';
 
 class DocumentsScreen extends StatefulWidget {
-  const DocumentsScreen({super.key, this.favoritesOnly = false});
+  const DocumentsScreen({super.key, this.favoritesOnly = false, this.recentOnly = false});
   final bool favoritesOnly;
+  final bool recentOnly;
 
   @override
   State<DocumentsScreen> createState() => _DocumentsScreenState();
@@ -46,6 +47,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
       final docs = await _repository.list(
         query: _search.text,
         favoritesOnly: widget.favoritesOnly,
+        recentOnly: widget.recentOnly,
       );
       if (!mounted || generation != _loadGeneration) return;
       setState(() {
@@ -439,11 +441,11 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
         children: [
           const Icon(Icons.picture_as_pdf_outlined, size: 58),
           const SizedBox(height: 12),
-          Text(widget.favoritesOnly ? 'No saved PDFs yet' : 'Your library is empty',
+          Text(widget.favoritesOnly ? 'No saved PDFs yet' : widget.recentOnly ? 'No recently opened PDFs' : 'Your library is empty',
               style: Theme.of(context).textTheme.titleLarge),
           const SizedBox(height: 6),
-          const Text('Import PDF files from your phone to get started.', textAlign: TextAlign.center),
-          if (!widget.favoritesOnly) ...[
+          Text(widget.recentOnly ? 'Open a PDF and it will appear here.' : 'Import PDF files from your phone to get started.', textAlign: TextAlign.center),
+          if (!widget.favoritesOnly && !widget.recentOnly) ...[
             const SizedBox(height: 16),
             FilledButton.icon(onPressed: _importing ? null : _import,
               icon: const Icon(Icons.add), label: const Text('Import PDFs')),
