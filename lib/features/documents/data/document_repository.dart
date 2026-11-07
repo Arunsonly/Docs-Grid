@@ -10,6 +10,7 @@ import 'package:uuid/uuid.dart';
 
 import '../../../core/database/app_database.dart';
 import '../../../core/storage/storage_location_service.dart';
+import '../../folders/data/folder_repository.dart';
 
 class DocumentRecord {
   const DocumentRecord({
@@ -125,6 +126,7 @@ class DocumentRepository {
       );
       if (rows.isEmpty) throw StateError('Destination folder no longer exists.');
       destinationUri = rows.first['storage_uri_or_relative_path'] as String?;
+      destinationUri ??= await FolderRepository().ensurePhysicalStorageUri(folderId);
     }
 
     final sourceIsShared = document.storagePath.startsWith('content://') || document.storagePath.startsWith('file://');
@@ -409,6 +411,7 @@ class DocumentRepository {
       destinationUri = folderRows.isEmpty
           ? null
           : folderRows.first['storage_uri_or_relative_path'] as String?;
+      destinationUri ??= await FolderRepository().ensurePhysicalStorageUri(folderId);
     }
 
     late final String newUri;
