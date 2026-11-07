@@ -62,6 +62,8 @@ jobs:
           cache: true
       - name: Generate native platform scaffolding
         run: flutter create --platforms=ios --org com.docsgrid .
+      - name: Install iOS Files host integration
+        run: cp platform/ios/AppDelegate.swift ios/Runner/AppDelegate.swift
       - name: Install packages
         run: flutter pub get
       - name: Analyze
