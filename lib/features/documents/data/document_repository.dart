@@ -188,19 +188,27 @@ class DocumentRepository {
       final targetDirectory = await _privateFolderFor(folderId);
       final target = await _uniqueFile(targetDirectory, '${document.name}.pdf');
       if (sourceIsShared) {
-        final bytes = await storage.readPdf(sourceUri);
-        await target.writeAsBytes(bytes, flush: true);
-        if (sha256.convert(bytes).toString() !=
-            sha256.convert(await target.readAsBytes()).toString()) {
-          await target.delete();
-          throw StateError('PDF verification failed; original file was kept.');
+        try {
+          await storage.copyPdfToPath(
+            sourceUri: sourceUri,
+            destinationPath: target.path,
+          );
+          final sourceDigest = await storage.sha256Pdf(sourceUri);
+          final copiedDigest = (await sha256.bind(target.openRead()).first).toString();
+          if (sourceDigest != copiedDigest) {
+            throw StateError('PDF verification failed; original file was kept.');
+          }
+        } catch (_) {
+          try { if (await target.exists()) await target.delete(); } catch (_) {}
+          rethrow;
         }
       } else {
         final source = File(sourceUri);
         if (!await source.exists()) throw StateError('Original PDF is missing; it was not moved.');
         await source.copy(target.path);
-        if (sha256.convert(await source.readAsBytes()).toString() !=
-            sha256.convert(await target.readAsBytes()).toString()) {
+        final sourceDigest = (await sha256.bind(source.openRead()).first).toString();
+        final copiedDigest = (await sha256.bind(target.openRead()).first).toString();
+        if (sourceDigest != copiedDigest) {
           await target.delete();
           throw StateError('PDF verification failed; original file was kept.');
         }
