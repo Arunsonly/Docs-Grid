@@ -12,7 +12,7 @@ This is an implementation tracker, not a release claim. A green CI build does no
 | iOS Files storage | Implemented in code; CI/device validation pending | Native Files folder picker, persisted security-scoped bookmarks (including previously selected roots), folder/file create/copy/read/rename/delete, and native PDF preview |
 | PDF import | Partial | Multi-file PDF picker, PDF header validation, SHA-256 duplicate check, writes to selected Android/iOS storage or app-private fallback; filename collision handling |
 | Folder organisation | Partial | Nested folder CRUD; physical folders on selected storage; safe folder rename updates descendant folder and PDF URIs; empty-folder deletion rolls back metadata if physical deletion fails |
-| PDF move and migration | Implemented in code; CI/device validation pending | Cross-storage copy/verify → SQLite transaction → source deletion; moves between private and selected storage; guided migration of existing folder tree and PDFs; retry-safe migration |
+| PDF move | Partial; CI build passes, device validation pending | Move PDFs into selected physical folders and update metadata; cross-storage failure/rollback edge cases still need hardening and testing. Bulk migration of the existing library is not implemented |
 | PDF recovery | Partial | User can relink a PDF from Files; PDF header and existing SHA-256 are verified before database reference changes |
 | Categories and tags | Partial | Built-in/custom categories, custom tags, rename/delete, assign to PDFs |
 | Search | Partial | PDF filename search; full-text search and local OCR remain missing |
@@ -27,15 +27,14 @@ This is an implementation tracker, not a release claim. A green CI build does no
 
 - Android uses the Storage Access Framework and retains the user's selected folder permission. PDFs and folders are real provider files; broad storage permission is not requested.
 - iOS uses the Files folder picker and security-scoped bookmarks. Previously selected bookmarks are retained so a user can select a new root and migrate files from an older selected root while its access remains valid.
-- In Settings → Offline storage, the user can choose a folder and either use it for new imports only or migrate the existing PDF library and folder tree. Migration is retryable: each PDF is copied and verified, its database reference is committed, and only then is the previous copy removed.
-- If a migration is interrupted, already-migrated records point to their new verified location and a retry checks for matching destination files by SHA-256.
-- PDF moves between app-private storage and selected storage use copy/verify → database transaction → old-copy deletion. If database update fails, the original remains. If source deletion fails after the database commit, both copies are retained and the user is warned.
+- A user can select a storage folder for new imports. A guided bulk migration of PDFs and the folder tree from an existing library to a newly selected storage location is not yet implemented.
+- Cross-storage PDF moves have basic copy/verification support, but database-failure rollback and source-cleanup edge cases still need hardening before they can be described as fully data-safe.
 - Folder rename refreshes all descendant folder and PDF storage references. Empty-folder deletion updates the database first and restores the visible record if physical deletion fails.
 - A PDF can be relinked from a user-selected copy. When a saved SHA-256 exists, the replacement must match exactly.
 - Android SAF permission revocation or an iOS Files provider revoking access can still require the user to reselect the storage folder and relink inaccessible individual PDFs. A full guided provider-permission repair screen is not yet complete.
 - iOS Files providers (including cloud providers) may need to download a file before it can be read; this behaviour requires real-device/provider testing.
 - App-private fallback files remain inside the app's container and may be removed on uninstall. Only files stored in a verified external Files location are independent of the app container.
-- The current implementation reads PDF bytes into memory during several copy/migration paths. Large-file streaming and low-memory-device testing remain outstanding.
+- The current implementation reads PDF bytes into memory during copy paths. Large-file streaming and low-memory-device testing remain outstanding.
 
 ## Verification status
 
