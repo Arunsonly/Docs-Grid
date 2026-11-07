@@ -108,6 +108,37 @@ class DocumentRepository {
     return rows.map(DocumentRecord.fromMap).toList();
   }
 
+  Future<Directory> _privateFolderFor(String? folderId) async {
+    final base = await getApplicationDocumentsDirectory();
+    final root = Directory(p.join(base.path, 'DocsGrid', 'PDFs'));
+    await root.create(recursive: true);
+    if (folderId == null) return root;
+
+    final db = await _database.database;
+    final segments = <String>[];
+    String? currentId = folderId;
+    final seen = <String>{};
+    while (currentId != null) {
+      if (!seen.add(currentId)) throw StateError('Folder hierarchy contains a cycle.');
+      final rows = await db.query(
+        'folders',
+        columns: ['name', 'parent_id'],
+        where: 'id = ? AND deleted_at IS NULL',
+        whereArgs: [currentId],
+        limit: 1,
+      );
+      if (rows.isEmpty) throw StateError('Destination folder no longer exists.');
+      segments.add(rows.first['name'] as String);
+      currentId = rows.first['parent_id'] as String?;
+    }
+    var directory = root;
+    for (final segment in segments.reversed) {
+      directory = Directory(p.join(directory.path, segment));
+      await directory.create(recursive: true);
+    }
+    return directory;
+  }
+
   Future<void> moveToFolder(DocumentRecord document, String? folderId) async {
     if (document.folderId == folderId) return;
     final db = await _database.database;
@@ -129,48 +160,53 @@ class DocumentRepository {
       destinationUri ??= await FolderRepository().ensurePhysicalStorageUri(folderId);
     }
 
-    final sourceIsShared = document.storagePath.startsWith('content://') || document.storagePath.startsWith('file://');
-    String newStorageUri = document.storagePath;
+    final sourceUri = document.storagePath;
+    final sourceIsShared = sourceUri.startsWith('content://') || sourceUri.startsWith('file://');
+    String newStorageUri = sourceUri;
     var copiedToNewLocation = false;
 
-    // Copy first, verify bytes, and keep the original until SQLite commits.
-    if (destinationUri != null && sourceIsShared) {
-      newStorageUri = await storage.copyPdf(
-        sourceUri: document.storagePath,
-        parentUri: destinationUri,
-        name: '${document.name}.pdf',
-      );
-      copiedToNewLocation = true;
-    } else if (destinationUri != null && !sourceIsShared) {
-      final source = File(document.storagePath);
-      if (!await source.exists()) {
-        throw StateError('Original PDF is missing; it was not moved.');
+    if (destinationUri != null) {
+      if (sourceIsShared) {
+        newStorageUri = await storage.copyPdf(
+          sourceUri: sourceUri,
+          parentUri: destinationUri,
+          name: '${document.name}.pdf',
+        );
+      } else {
+        final source = File(sourceUri);
+        if (!await source.exists()) throw StateError('Original PDF is missing; it was not moved.');
+        newStorageUri = await storage.savePdf(
+          treeUri: destinationUri,
+          name: '${document.name}.pdf',
+          bytes: await source.readAsBytes(),
+        );
       }
-      final bytes = await source.readAsBytes();
-      newStorageUri = await storage.savePdf(
-        treeUri: destinationUri,
-        name: '${document.name}.pdf',
-        bytes: bytes,
-      );
-      copiedToNewLocation = true;
-    } else if (sourceIsShared) {
-      // Moving from Android SAF back to app-private storage is supported by
-      // reading the provider stream, verifying the local copy, then updating
-      // the database before removing the provider document.
-      final base = await getApplicationDocumentsDirectory();
-      final library = Directory(p.join(base.path, 'DocsGrid', 'PDFs'));
-      await library.create(recursive: true);
-      final bytes = await storage.readPdf(document.storagePath);
-      final target = await _uniqueFile(library, '${document.name}.pdf');
-      await target.writeAsBytes(bytes, flush: true);
-      final sourceDigest = sha256.convert(bytes).toString();
-      final savedDigest = sha256.convert(await target.readAsBytes()).toString();
-      if (sourceDigest != savedDigest) {
-        await target.delete();
-        throw StateError('PDF verification failed; original file was kept.');
+      copiedToNewLocation = newStorageUri != sourceUri;
+    } else {
+      // With no external folder selected, preserve the same folder hierarchy
+      // inside the app-private PDF library rather than changing metadata only.
+      final targetDirectory = await _privateFolderFor(folderId);
+      final target = await _uniqueFile(targetDirectory, '${document.name}.pdf');
+      if (sourceIsShared) {
+        final bytes = await storage.readPdf(sourceUri);
+        await target.writeAsBytes(bytes, flush: true);
+        if (sha256.convert(bytes).toString() !=
+            sha256.convert(await target.readAsBytes()).toString()) {
+          await target.delete();
+          throw StateError('PDF verification failed; original file was kept.');
+        }
+      } else {
+        final source = File(sourceUri);
+        if (!await source.exists()) throw StateError('Original PDF is missing; it was not moved.');
+        await source.copy(target.path);
+        if (sha256.convert(await source.readAsBytes()).toString() !=
+            sha256.convert(await target.readAsBytes()).toString()) {
+          await target.delete();
+          throw StateError('PDF verification failed; original file was kept.');
+        }
       }
       newStorageUri = target.path;
-      copiedToNewLocation = true;
+      copiedToNewLocation = newStorageUri != sourceUri;
     }
 
     try {
@@ -180,7 +216,10 @@ class DocumentRepository {
           {
             'folder_id': folderId,
             'storage_uri': newStorageUri,
-            'relative_path': null,
+            'relative_path': newStorageUri.startsWith('content://') ||
+                    newStorageUri.startsWith('file://')
+                ? null
+                : p.basename(newStorageUri),
             'updated_at': DateTime.now().toUtc().toIso8601String(),
           },
           where: 'id = ? AND deleted_at IS NULL',
@@ -193,7 +232,7 @@ class DocumentRepository {
         });
       });
     } catch (_) {
-      if (copiedToNewLocation && newStorageUri != document.storagePath) {
+      if (copiedToNewLocation && newStorageUri != sourceUri) {
         try {
           if (newStorageUri.startsWith('content://') || newStorageUri.startsWith('file://')) {
             await storage.deletePdf(newStorageUri);
@@ -202,24 +241,24 @@ class DocumentRepository {
             if (await target.exists()) await target.delete();
           }
         } catch (_) {
-          // Preserve the original even if cleanup of the unreferenced copy fails.
+          // Keep the original; an orphaned verified copy is safer than data loss.
         }
       }
       rethrow;
     }
 
-    if (copiedToNewLocation && newStorageUri != document.storagePath) {
+    if (copiedToNewLocation && newStorageUri != sourceUri) {
       try {
         if (sourceIsShared) {
-          await storage.deletePdf(document.storagePath);
+          await storage.deletePdf(sourceUri);
         } else {
-          final source = File(document.storagePath);
+          final source = File(sourceUri);
           if (await source.exists()) await source.delete();
         }
       } catch (_) {
         throw StateError(
           'PDF was moved and verified, but the old copy could not be removed. '
-          'Your data is safe; check both locations before deleting either copy.',
+          'The library now points to the new copy; check both locations before deleting either.',
         );
       }
     }
