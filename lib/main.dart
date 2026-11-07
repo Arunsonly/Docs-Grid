@@ -86,6 +86,21 @@ class _SettingsScreen extends StatelessWidget {
         ),
         const Divider(),
         ListTile(
+          leading: const Icon(Icons.history_toggle_off_outlined),
+          title: const Text('Recently opened'),
+          subtitle: const Text('Open documents you viewed most recently.'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () => Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (_) => Scaffold(
+                appBar: AppBar(title: const Text('Recently opened')),
+                body: const DocumentsScreen(recentOnly: true),
+              ),
+            ),
+          ),
+        ),
+        const Divider(),
+        ListTile(
           leading: const Icon(Icons.category_outlined),
           title: const Text('Categories & tags'),
           subtitle: const Text('Create and manage document categories and tags.'),
