@@ -109,15 +109,58 @@ class DocumentRepository {
 
   Future<void> moveToFolder(DocumentRecord document, String? folderId) async {
     final db = await _database.database;
-    await db.update(
+    final storage = StorageLocationService.instance;
+    String? destinationUri;
+    if (folderId == null) {
+      destinationUri = (await storage.selectedFolder())?['uri'];
+    } else {
+      final rows = await db.query(
+        'folders',
+        columns: ['storage_uri_or_relative_path'],
+        where: 'id = ? AND deleted_at IS NULL',
+        whereArgs: [folderId],
+        limit: 1,
+      );
+      if (rows.isEmpty) throw StateError('Destination folder no longer exists.');
+      destinationUri = rows.first['storage_uri_or_relative_path'] as String?;
+    }
+
+    var newStorageUri = document.storagePath;
+    if (destinationUri != null && document.storagePath.startsWith('content://')) {
+      newStorageUri = await storage.movePdf(
+        sourceUri: document.storagePath,
+        parentUri: destinationUri,
+        name: '\${document.name}.pdf',
+      );
+    } else if (destinationUri != null && !document.storagePath.startsWith('content://')) {
+      final source = File(document.storagePath);
+      if (!await source.exists()) throw StateError('Original PDF is missing; it was not moved.');
+      final bytes = await source.readAsBytes();
+      newStorageUri = await storage.savePdf(
+        treeUri: destinationUri,
+        name: '\${document.name}.pdf',
+        bytes: bytes,
+      );
+      await source.delete();
+    } else if (document.storagePath.startsWith('content://')) {
+      throw UnsupportedError('Moving a PDF from Android shared storage to app-private folders is not supported yet. The original file was kept.');
+    }
+
+    final count = await db.update(
       'documents',
       {
         'folder_id': folderId,
+        'storage_uri': newStorageUri,
         'updated_at': DateTime.now().toUtc().toIso8601String(),
       },
       where: 'id = ? AND deleted_at IS NULL',
       whereArgs: [document.id],
     );
+    if (count == 0) throw StateError('PDF record no longer exists.');
+    await _recordHistory(db, document.id, 'moved_to_folder', {
+      'folder_id': folderId,
+      'storage_uri': newStorageUri,
+    });
   }
 
   Future<ImportSummary> importPdfs() async {
