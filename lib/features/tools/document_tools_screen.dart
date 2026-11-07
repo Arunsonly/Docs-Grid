@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:path/path.dart' as p;
 
 import '../../core/database/app_database.dart';
+import '../documents/data/document_repository.dart';
 import 'document_tools_service.dart';
 
 class DocumentToolsScreen extends StatefulWidget {
@@ -35,8 +36,11 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
   Future<void> _scan({bool camera = false}) => _run(() async {
     final file = await _tools.scanToPdf(useCamera: camera);
     if (file == null) return;
+    final imported = await DocumentRepository().importScannedPdf(file);
     await _tools.shareFile(file.path, text: 'Scanned with DocsGrid');
-    if (mounted) setState(() => _message = 'Scan PDF created: ${p.basename(file.path)}');
+    if (mounted) setState(() => _message = imported.added == 1
+      ? 'Scan saved in My Documents and shared: ${p.basename(file.path)}'
+      : 'This scan already exists in My Documents. A copy was shared.');
   });
 
   Future<void> _backup() => _run(() async {
