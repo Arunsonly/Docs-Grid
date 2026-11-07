@@ -23,6 +23,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   List<DocumentRecord> _documents = [];
   bool _loading = true;
   bool _importing = false;
+  int _loadGeneration = 0;
   String? _error;
 
   @override
@@ -40,19 +41,20 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   }
 
   Future<void> _load() async {
+    final generation = ++_loadGeneration;
     try {
       final docs = await _repository.list(
         query: _search.text,
         favoritesOnly: widget.favoritesOnly,
       );
-      if (!mounted) return;
+      if (!mounted || generation != _loadGeneration) return;
       setState(() {
         _documents = docs;
         _loading = false;
         _error = null;
       });
     } catch (error) {
-      if (!mounted) return;
+      if (!mounted || generation != _loadGeneration) return;
       setState(() {
         _loading = false;
         _error = error.toString();
