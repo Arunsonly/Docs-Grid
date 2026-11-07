@@ -32,8 +32,8 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
     }
   }
 
-  Future<void> _scan() => _run(() async {
-    final file = await _tools.scanToPdf();
+  Future<void> _scan({bool camera = false}) => _run(() async {
+    final file = await _tools.scanToPdf(useCamera: camera);
     if (file == null) return;
     await _tools.shareFile(file.path, text: 'Scanned with DocsGrid');
     if (mounted) setState(() => _message = 'Scan PDF created: ${p.basename(file.path)}');
@@ -108,8 +108,13 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
       ),
       Card(child: Column(children: [
         ListTile(leading: const Icon(Icons.document_scanner_outlined),
-          title: const Text('Scan pages to PDF'),
-          subtitle: const Text('Select multiple images from your device and combine them into one PDF.'),
+          title: const Text('Scan using camera'),
+          subtitle: const Text('Capture a page and create a PDF.'),
+          onTap: _busy ? null : () => _scan(camera: true)),
+        const Divider(height: 1),
+        ListTile(leading: const Icon(Icons.photo_library_outlined),
+          title: const Text('Create PDF from gallery images'),
+          subtitle: const Text('Select multiple images and combine them into one PDF.'),
           onTap: _busy ? null : _scan),
         const Divider(height: 1),
         ListTile(leading: const Icon(Icons.share_outlined),
