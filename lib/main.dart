@@ -76,6 +76,104 @@ class _DocsGridHomeState extends State<DocsGridHome> {
 class _SettingsScreen extends StatelessWidget {
   const _SettingsScreen();
 
+  Future<void> _chooseStorage(BuildContext context) async {
+    try {
+      final folder = await StorageLocationService.instance.chooseFolder();
+      if (folder == null || !context.mounted) return;
+      final migrate = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('Move existing PDF library?'),
+          content: Text(
+            'Use “${folder['name']}” for new imports and move your existing PDFs and folder structure there? '
+            'Every PDF is verified before its old copy is removed.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('New imports only'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('Move existing library'),
+            ),
+          ],
+        ),
+      );
+      if (!context.mounted) return;
+      if (migrate != true) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Storage folder selected: ${folder['name']}. Existing PDFs were not moved.')),
+        );
+        return;
+      }
+
+      var completed = 0;
+      var total = 0;
+      var current = 'Preparing migration…';
+      StateSetter? updateProgress;
+      final progressDialog = showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (dialogContext) => StatefulBuilder(
+          builder: (dialogContext, setDialogState) {
+            updateProgress = setDialogState;
+            final value = total == 0 ? null : completed / total;
+            return AlertDialog(
+              title: const Text('Migrating PDF library'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  LinearProgressIndicator(value: value),
+                  const SizedBox(height: 14),
+                  Text(total == 0 ? 'Scanning documents…' : '$completed of $total PDFs processed'),
+                  const SizedBox(height: 6),
+                  Text(current, maxLines: 2, overflow: TextOverflow.ellipsis,
+                      style: Theme.of(dialogContext).textTheme.bodySmall),
+                  const SizedBox(height: 8),
+                  const Text('Keep DocsGrid open. Original files are removed only after verification and database update.'),
+                ],
+              ),
+            );
+          },
+        ),
+      );
+      await Future<void>.delayed(Duration.zero);
+      try {
+        final count = await DocumentRepository().migrateExistingLibraryToSelectedStorage(
+          onProgress: (done, all, name) {
+            completed = done;
+            total = all;
+            current = name;
+            updateProgress?.call(() {});
+          },
+        );
+        if (context.mounted) {
+          Navigator.of(context, rootNavigator: true).pop();
+          await progressDialog;
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Migration completed: $count PDFs moved and verified.')),
+          );
+        }
+      } catch (error) {
+        if (context.mounted) {
+          Navigator.of(context, rootNavigator: true).pop();
+          await progressDialog;
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Migration stopped safely: $error')),
+          );
+        }
+      }
+    } catch (error) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Storage operation stopped safely: $error')),
+        );
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return ListView(
@@ -84,55 +182,9 @@ class _SettingsScreen extends StatelessWidget {
         ListTile(
           leading: const Icon(Icons.phonelink_lock_outlined),
           title: const Text('Offline storage'),
-          subtitle: const Text('Choose a folder where newly imported PDFs will be saved.'),
+          subtitle: const Text('Choose a folder for PDFs and safely migrate your existing library.'),
           trailing: const Icon(Icons.chevron_right),
-          onTap: () async {
-            try {
-              final folder = await StorageLocationService.instance.chooseFolder();
-              if (folder == null || !context.mounted) return;
-              final migrate = await showDialog<bool>(
-                context: context,
-                builder: (dialogContext) => AlertDialog(
-                  title: const Text('Move existing PDF library?'),
-                  content: Text(
-                    'Use “${folder['name']}” for new imports and move your existing PDFs and folder structure there? '
-                    'Files are verified before the old copies are removed.',
-                  ),
-                  actions: [
-                    TextButton(
-                      onPressed: () => Navigator.pop(dialogContext, false),
-                      child: const Text('New imports only'),
-                    ),
-                    FilledButton(
-                      onPressed: () => Navigator.pop(dialogContext, true),
-                      child: const Text('Move existing library'),
-                    ),
-                  ],
-                ),
-              );
-              if (migrate == true && context.mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Moving PDFs safely. Keep the app open until this finishes.')),
-                );
-                final count = await DocumentRepository().migrateExistingLibraryToSelectedStorage();
-                if (context.mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text('Storage migration completed: $count PDFs moved and verified.')),
-                  );
-                }
-              } else if (context.mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text('Storage folder selected: ${folder['name']}. Existing PDFs were not moved.')),
-                );
-              }
-            } catch (error) {
-              if (context.mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text('Storage operation stopped safely: $error')),
-                );
-              }
-            }
-          },
+          onTap: () => _chooseStorage(context),
         ),
         const Divider(),
         ListTile(
