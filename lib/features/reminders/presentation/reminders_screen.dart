@@ -18,9 +18,11 @@ class _RemindersScreenState extends State<RemindersScreen> {
   Future<void> _requestNotificationPermission() async {
     try {
       await ReminderNotifications.instance.requestPermission();
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Notification permission request completed. Check Android notification settings if reminders remain silent.')),
-      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Notification permission request completed. Check Android notification settings if reminders remain silent.')),
+        );
+      }
     } catch (error) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not request notification permission: $error')));
     }
