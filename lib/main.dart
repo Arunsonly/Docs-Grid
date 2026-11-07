@@ -90,9 +90,9 @@ class _SettingsScreen extends StatelessWidget {
           trailing: const Icon(Icons.chevron_right),
           onTap: () => Navigator.of(context).push(
             MaterialPageRoute(
-              builder: (_) => const Scaffold(
-                appBar: AppBar(title: Text('Categories & tags')),
-                body: CategoriesScreen(),
+              builder: (_) => Scaffold(
+                appBar: AppBar(title: const Text('Categories & tags')),
+                body: const CategoriesScreen(),
               ),
             ),
           ),
