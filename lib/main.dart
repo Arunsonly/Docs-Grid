@@ -76,19 +76,34 @@ class _SettingsScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return ListView(
       padding: const EdgeInsets.all(16),
-      children: const [
-        ListTile(
+      children: [
+        const ListTile(
           leading: Icon(Icons.phonelink_lock_outlined),
           title: Text('Offline storage'),
           subtitle: Text('Your imported PDFs and library database are stored on this device.'),
         ),
-        Divider(),
+        const Divider(),
         ListTile(
+          leading: const Icon(Icons.category_outlined),
+          title: const Text('Categories & tags'),
+          subtitle: const Text('Create and manage document categories and tags.'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () => Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (_) => const Scaffold(
+                appBar: AppBar(title: Text('Categories & tags')),
+                body: CategoriesScreen(),
+              ),
+            ),
+          ),
+        ),
+        const Divider(),
+        const ListTile(
           leading: Icon(Icons.info_outline),
           title: Text('About DocsGrid'),
           subtitle: Text('Personal document organiser · Version 0.1.0'),
         ),
-        Padding(
+        const Padding(
           padding: EdgeInsets.all(16),
           child: Text(
             'Storage location selection, backup and restore, reminders and other settings are not implemented yet.',
