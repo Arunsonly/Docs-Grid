@@ -58,6 +58,10 @@ class MainActivity : FlutterActivity() {
                             val name = call.argument<String>("name")!!
                             result.success(copyPdf(source, parent, name).toString())
                         }
+                        "sha256Pdf" -> {
+                            val uri = Uri.parse(call.argument<String>("uri")!!)
+                            result.success(digest(uri).joinToString("") { "%02x".format(it) })
+                        }
                         "readPdf" -> {
                             val uri = Uri.parse(call.argument<String>("uri")!!)
                             val bytes = contentResolver.openInputStream(uri)?.use { it.readBytes() }
