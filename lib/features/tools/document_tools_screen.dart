@@ -10,7 +10,8 @@ import 'document_tools_service.dart';
 import '../../core/storage/storage_location_service.dart';
 
 class DocumentToolsScreen extends StatefulWidget {
-  const DocumentToolsScreen({super.key});
+  const DocumentToolsScreen({super.key, this.quickAction});
+  final String? quickAction;
 
   @override
   State<DocumentToolsScreen> createState() => _DocumentToolsScreenState();
@@ -22,6 +23,20 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
   List<Map<String, Object?>> _results = [];
   bool _busy = false;
   String? _message;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      switch (widget.quickAction) {
+        case 'camera': _scan(camera: true); break;
+        case 'gallery': _scan(); break;
+        case 'backup': _backup(); break;
+        case 'tools': break;
+      }
+    });
+  }
 
   Future<void> _run(Future<void> Function() action) async {
     setState(() { _busy = true; _message = null; });
