@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'features/documents/presentation/documents_screen.dart';
 import 'features/documents/data/document_repository.dart';
@@ -14,27 +15,68 @@ void main() {
   runApp(const DocsGridApp());
 }
 
-class DocsGridApp extends StatelessWidget {
+class DocsGridApp extends StatefulWidget {
   const DocsGridApp({super.key});
 
   @override
+  State<DocsGridApp> createState() => _DocsGridAppState();
+}
+
+class _DocsGridAppState extends State<DocsGridApp> {
+  ThemeMode _themeMode = ThemeMode.system;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadTheme();
+  }
+
+  Future<void> _loadTheme() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (!mounted) return;
+    setState(() => _themeMode = prefs.getBool('dark_mode') == true
+        ? ThemeMode.dark
+        : ThemeMode.light);
+  }
+
+  Future<void> _setDarkMode(bool enabled) async {
+    setState(() => _themeMode = enabled ? ThemeMode.dark : ThemeMode.light);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('dark_mode', enabled);
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final scheme = ColorScheme.fromSeed(seedColor: const Color(0xFF2457C5));
     return MaterialApp(
       title: 'DocsGrid',
       debugShowCheckedModeBanner: false,
+      themeMode: _themeMode,
       theme: ThemeData(
         useMaterial3: true,
-        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF2457C5)),
+        colorScheme: scheme,
         scaffoldBackgroundColor: const Color(0xFFF6F7FB),
         cardTheme: const CardThemeData(color: Colors.white),
       ),
-      home: const DocsGridHome(),
+      darkTheme: ThemeData(
+        useMaterial3: true,
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: const Color(0xFF8EA9FF),
+          brightness: Brightness.dark,
+        ),
+      ),
+      home: DocsGridHome(
+        darkMode: _themeMode == ThemeMode.dark,
+        onDarkModeChanged: _setDarkMode,
+      ),
     );
   }
 }
 
 class DocsGridHome extends StatefulWidget {
-  const DocsGridHome({super.key});
+  const DocsGridHome({super.key, required this.darkMode, required this.onDarkModeChanged});
+  final bool darkMode;
+  final ValueChanged<bool> onDarkModeChanged;
 
   @override
   State<DocsGridHome> createState() => _DocsGridHomeState();
@@ -57,7 +99,7 @@ class _DocsGridHomeState extends State<DocsGridHome> {
           0 => const DocumentsScreen(),
           1 => const FoldersScreen(),
           2 => const DocumentsScreen(favoritesOnly: true),
-          _ => const _SettingsScreen(),
+          _ => _SettingsScreen(darkMode: widget.darkMode, onDarkModeChanged: widget.onDarkModeChanged),
         },
       ),
       bottomNavigationBar: NavigationBar(
@@ -75,7 +117,9 @@ class _DocsGridHomeState extends State<DocsGridHome> {
 }
 
 class _SettingsScreen extends StatefulWidget {
-  const _SettingsScreen();
+  const _SettingsScreen({required this.darkMode, required this.onDarkModeChanged});
+  final bool darkMode;
+  final ValueChanged<bool> onDarkModeChanged;
 
   @override
   State<_SettingsScreen> createState() => _SettingsScreenState();
@@ -214,6 +258,14 @@ class _SettingsScreenState extends State<_SettingsScreen> {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
+        SwitchListTile(
+          secondary: const Icon(Icons.dark_mode_outlined),
+          title: const Text('Dark appearance'),
+          subtitle: const Text('Use a dark theme throughout DocsGrid.'),
+          value: widget.darkMode,
+          onChanged: widget.onDarkModeChanged,
+        ),
+        const Divider(),
         Card(
           child: ListTile(
             leading: Icon(_storageStatus?['status'] == 'available'
