@@ -2,23 +2,26 @@
 
 Offline-first personal document organiser for Android and iPhone.
 
-## Product direction
+## Approved product direction
 - One Flutter codebase for Android and iOS.
-- Documents stay on the device by default; no mandatory account, cloud, or AI API.
-- Import multiple PDFs, review suggested names/categories, and organise into folders.
-- Search, favourites, recent files, reminders, sharing, recycle bin, and backup/restore.
-- Portable ZIP backup with a JSON manifest for moving documents to another phone.
+- Ten connected feature modules: smart import/rename, folders/subfolders, categories/tags, search/OCR, duplicate detection, favourites/recent, expiry reminders, scanner/share, history/recycle bin, backup/restore.
+- No mandatory account, cloud service, or paid AI API for core operation.
+- One canonical PDF file per document; the app manages it and keeps metadata in a local database.
 
-## Important platform notes
-- Android: use the system document picker / Storage Access Framework; request notification permission only when needed.
-- iOS: use the iOS document picker and share sheet. iPhone builds/signing require macOS with Xcode.
-- WhatsApp originals are not deleted automatically. DocsGrid can only offer a user-confirmed handoff to WhatsApp.
-- App-private files may be removed when the app is uninstalled. Users should export a backup before uninstalling or changing phones.
+## Storage policy
+- Android: use a user-visible `Documents/DocsGrid` folder (or a user-selected equivalent) through the Storage Access Framework. Persist access grants where supported.
+- iOS: use Files document-picker access. iOS sandbox and uninstall behaviour differ: files inside the app's own container may be removed on uninstall. For uninstall-independent storage, the user must select/export to a Files location outside the app container.
+- The app stores metadata, indexes, settings, and access references locally. PDFs are not duplicated as a normal workflow.
+- If a file is moved, deleted, or access is revoked outside DocsGrid, provide a repair/relink flow rather than silently losing its record.
+- WhatsApp originals are never deleted automatically; any deletion handoff must be user-controlled.
+
+## Architecture
+See [docs/PRODUCT_ARCHITECTURE.md](docs/PRODUCT_ARCHITECTURE.md) for the approved modules, database model, interaction standards, platform storage rules, and delivery plan.
 
 ## Project status
-This repository currently contains the initial Flutter app shell. PDF import, local database, indexing, OCR, reminders, and backup/restore will be added in later steps and tested on real devices.
+The repository currently contains an initial Flutter UI shell and the approved product architecture. The ten feature modules are not yet fully implemented. Each module will be built and tested incrementally on Android and iOS.
 
 ## Run
-1. Install Flutter SDK.
+1. Install the current stable Flutter SDK.
 2. Run `flutter pub get`.
-3. Run `flutter run` on an Android or iOS development device.
+3. Run `flutter run` on an Android or iOS development device (iOS build/signing requires macOS with Xcode).
