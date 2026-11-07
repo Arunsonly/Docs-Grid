@@ -164,6 +164,95 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     }
   }
 
+
+  Future<void> _autoRename(DocumentRecord document) async {
+    try {
+      final suggestion = await _repository.suggestAutoName(document);
+      if (!mounted) return;
+      if (suggestion == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No readable text was found. Scanned PDFs need OCR to suggest a name.')),
+        );
+        return;
+      }
+      final controller = TextEditingController(text: suggestion);
+      final value = await showDialog<String>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('Auto Rename suggestion'),
+          content: TextField(
+            controller: controller,
+            autofocus: true,
+            decoration: const InputDecoration(labelText: 'Suggested PDF name', suffixText: '.pdf'),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Cancel')),
+            FilledButton(onPressed: () => Navigator.pop(dialogContext, controller.text), child: const Text('Apply name')),
+          ],
+        ),
+      );
+      controller.dispose();
+      if (value == null || value.trim().isEmpty) return;
+      await _repository.rename(document, value);
+      await _load();
+    } catch (error) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Auto Rename failed: $error')),
+      );
+    }
+  }
+
+  Future<void> _smartCategory(DocumentRecord document) async {
+    try {
+      final suggestion = await _repository.suggestSmartCategory(document);
+      if (!mounted) return;
+      if (suggestion == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No reliable category suggestion found.')),
+        );
+        return;
+      }
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('Smart Category'),
+          content: Text('Suggested category: $suggestion\\n\\nApply this category?'),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Not now')),
+            FilledButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Apply')),
+          ],
+        ),
+      );
+      if (confirmed == true) {
+        await _repository.applySuggestedCategory(document, suggestion);
+        await _load();
+      }
+    } catch (error) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Smart Category failed: $error')),
+      );
+    }
+  }
+
+  Future<void> _share(DocumentRecord document) async {
+    try {
+      await _repository.shareDocument(document);
+    } catch (error) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not share PDF: $error')),
+      );
+    }
+  }
+
+  Future<void> _indexText(DocumentRecord document) async {
+    await _repository.indexDocument(document);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('PDF text indexing finished. Search this PDF by its text.')),
+    );
+    await _load();
+  }
+
   Future<void> _showTrash() async {
     var trashed = await _repository.listTrash();
     if (!mounted) return;
@@ -421,7 +510,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                   child: TextField(
                     controller: _search,
                     decoration: InputDecoration(
-                      hintText: 'Search PDF names',
+                      hintText: 'Search PDF names and text',
                       prefixIcon: const Icon(Icons.search),
                       suffixIcon: _search.text.isEmpty
                           ? null
@@ -520,6 +609,14 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
               await _relink(document);
             } else if (value == 'trash') {
               await _trash(document);
+            } else if (value == 'auto_rename') {
+              await _autoRename(document);
+            } else if (value == 'smart_category') {
+              await _smartCategory(document);
+            } else if (value == 'share') {
+              await _share(document);
+            } else if (value == 'index_text') {
+              await _indexText(document);
             }
           },
           itemBuilder: (_) => [
@@ -529,6 +626,10 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
             const PopupMenuItem(value: 'move', child: Text('Move to folder')),
             const PopupMenuItem(value: 'tags', child: Text('Edit tags')),
             const PopupMenuItem(value: 'rename', child: Text('Rename')),
+            const PopupMenuItem(value: 'auto_rename', child: Text('Suggest Auto Rename')),
+            const PopupMenuItem(value: 'smart_category', child: Text('Suggest Smart Category')),
+            const PopupMenuItem(value: 'index_text', child: Text('Index PDF text for search')),
+            const PopupMenuItem(value: 'share', child: Text('Share PDF')),
             const PopupMenuItem(value: 'relink', child: Text('Relink / Replace PDF')),
             const PopupMenuItem(value: 'trash', child: Text('Move to Recycle Bin')),
           ],
