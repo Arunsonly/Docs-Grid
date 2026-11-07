@@ -18,12 +18,24 @@ class _RemindersScreenState extends State<RemindersScreen> {
     final title = TextEditingController(text: existing?.title ?? '');
     final note = TextEditingController(text: existing?.note ?? '');
     DateTime selected = existing?.remindAt ?? DateTime.now().add(const Duration(hours: 1));
+    String recurrence = existing?.recurrenceRule ?? 'none';
     final result = await showDialog<bool>(context: context, builder: (dialogContext) => StatefulBuilder(
       builder: (context, setDialogState) => AlertDialog(
         title: Text(existing == null ? 'New reminder' : 'Edit reminder'),
         content: Column(mainAxisSize: MainAxisSize.min, children: [
           TextField(controller: title, autofocus: true, decoration: const InputDecoration(labelText: 'Reminder title')),
           TextField(controller: note, maxLines: 2, decoration: const InputDecoration(labelText: 'Note (optional)')),
+          DropdownButtonFormField<String>(
+            value: recurrence,
+            decoration: const InputDecoration(labelText: 'Repeat'),
+            items: const [
+              DropdownMenuItem(value: 'none', child: Text('Does not repeat')),
+              DropdownMenuItem(value: 'daily', child: Text('Daily')),
+              DropdownMenuItem(value: 'weekly', child: Text('Weekly')),
+            ],
+            onChanged: (value) => setDialogState(() => recurrence = value ?? 'none'),
+          ),
+          const SizedBox(height: 8),
           ListTile(contentPadding: EdgeInsets.zero, leading: const Icon(Icons.calendar_month_outlined),
             title: const Text('Date & time'),
             subtitle: Text('${selected.day.toString().padLeft(2, '0')}/${selected.month.toString().padLeft(2, '0')}/${selected.year} · ${selected.hour.toString().padLeft(2, '0')}:${selected.minute.toString().padLeft(2, '0')}'),
@@ -40,9 +52,9 @@ class _RemindersScreenState extends State<RemindersScreen> {
     ));
     if (result == true) {
       if (existing == null) {
-        await _repository.create(title: title.text, note: note.text, remindAt: selected);
+        await _repository.create(title: title.text, note: note.text, remindAt: selected, recurrenceRule: recurrence == 'none' ? null : recurrence);
       } else {
-        await _repository.update(id: existing.id, title: title.text, note: note.text, remindAt: selected);
+        await _repository.update(id: existing.id, title: title.text, note: note.text, remindAt: selected, recurrenceRule: recurrence == 'none' ? null : recurrence);
       }
       await _refresh();
     }
@@ -72,7 +84,7 @@ class _RemindersScreenState extends State<RemindersScreen> {
           final item = items[index]; final date = item.remindAt;
           final label = '${date.day.toString().padLeft(2, '0')}/${date.month.toString().padLeft(2, '0')}/${date.year} · ${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')}';
           return Card(elevation: 0, child: ListTile(leading: CircleAvatar(child: Icon(item.status == 'completed' ? Icons.check : Icons.alarm)),
-            title: Text(item.title), subtitle: Text([if (item.note?.isNotEmpty == true) item.note!, label, if (item.status == 'completed') 'Completed', if (item.enabled && date.isBefore(DateTime.now()) && item.status != 'completed') 'Past due'].join('\n')),
+            title: Text(item.title), subtitle: Text([if (item.note?.isNotEmpty == true) item.note!, if (item.recurrenceRule != null) 'Repeats ${item.recurrenceRule}', label, if (item.status == 'completed') 'Completed', if (item.enabled && date.isBefore(DateTime.now()) && item.status != 'completed') 'Past due'].join('\n')),
             trailing: PopupMenuButton<String>(onSelected: (value) async {
               if (value == 'toggle') await _repository.setEnabled(item, !item.enabled);
               if (value == 'complete') await _repository.complete(item.id);
