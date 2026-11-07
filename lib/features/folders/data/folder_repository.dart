@@ -139,7 +139,7 @@ class FolderRepository {
         final docs = await db.query(
           'documents',
           columns: ['id', 'name'],
-          where: 'folder_id = ? AND deleted_at IS NULL',
+          where: 'folder_id = ?',
           whereArgs: [parentId],
         );
         for (final doc in docs) {
@@ -209,7 +209,7 @@ class FolderRepository {
       'SELECT COUNT(*) FROM folders WHERE parent_id = ? AND deleted_at IS NULL', [id],
     )) ?? 0;
     final documents = Sqflite.firstIntValue(await db.rawQuery(
-      'SELECT COUNT(*) FROM documents WHERE folder_id = ? AND deleted_at IS NULL', [id],
+      'SELECT COUNT(*) FROM documents WHERE folder_id = ?', [id],
     )) ?? 0;
     if (childFolders > 0 || documents > 0) {
       throw StateError('Folder is not empty. Move its contents before deleting it.');
