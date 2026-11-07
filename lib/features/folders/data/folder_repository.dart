@@ -115,7 +115,7 @@ class FolderRepository {
       if (existingUri != null) return existingUri;
       final ancestorId = row['parent_id'] as String?;
       final ancestorUri = ancestorId == null
-          ? selectedRoot?['uri']
+          ? (selectedRoot == null ? null : selectedRoot['uri'])
           : await ensurePhysicalFolder(ancestorId);
       if (ancestorUri == null) return null;
       final createdUri = await storage.createDirectory(
@@ -311,4 +311,4 @@ class FolderRepository {
       }
     }
   }
-}}
+}
