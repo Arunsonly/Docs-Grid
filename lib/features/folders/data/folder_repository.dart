@@ -43,6 +43,55 @@ class FolderRepository {
     return result;
   }
 
+  /// Ensures a virtual folder and its ancestors exist in the selected
+  /// physical storage tree. Returns null when the library is app-private.
+  Future<String?> ensurePhysicalStorageUri(String folderId) async {
+    final db = await _database.database;
+    final selectedRoot = await StorageLocationService.instance.selectedFolder();
+    if (selectedRoot == null) return null;
+
+    Future<String?> ensure(String id) async {
+      final rows = await db.query(
+        'folders',
+        columns: ['name', 'parent_id', 'storage_uri_or_relative_path'],
+        where: 'id = ? AND deleted_at IS NULL',
+        whereArgs: [id],
+        limit: 1,
+      );
+      if (rows.isEmpty) throw StateError('Folder no longer exists.');
+      final row = rows.first;
+      final currentUri = row['storage_uri_or_relative_path'] as String?;
+      if (currentUri != null) return currentUri;
+      final parentId = row['parent_id'] as String?;
+      final parentUri = parentId == null ? selectedRoot['uri'] : await ensure(parentId);
+      if (parentUri == null) return null;
+      String childUri;
+      try {
+        childUri = await StorageLocationService.instance.findChildUri(
+          parentUri: parentUri,
+          name: row['name'] as String,
+        );
+      } catch (_) {
+        childUri = await StorageLocationService.instance.createDirectory(
+          parentUri: parentUri,
+          name: row['name'] as String,
+        );
+      }
+      await db.update(
+        'folders',
+        {
+          'storage_uri_or_relative_path': childUri,
+          'updated_at': DateTime.now().toUtc().toIso8601String(),
+        },
+        where: 'id = ? AND deleted_at IS NULL',
+        whereArgs: [id],
+      );
+      return childUri;
+    }
+
+    return ensure(folderId);
+  }
+
   Future<Folder> create({required String name, String? parentId}) async {
     final cleaned = name.trim();
     if (cleaned.isEmpty) throw ArgumentError('Folder name cannot be empty.');
