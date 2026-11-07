@@ -51,6 +51,9 @@ class _HistoryScreenState extends State<HistoryScreen> {
       case 'restored': return 'Restored from Recycle Bin';
       case 'moved_to_recycle_bin': return 'Moved to Recycle Bin';
       case 'renamed': return 'PDF renamed';
+      case 'shared': return 'PDF shared';
+      case 'smart_category_applied': return 'Smart category applied';
+      case 'expiry_date_set': return 'Expiry date and reminders saved';
       case 'permanently_deleted': return 'PDF permanently deleted';
       default: return record.action.replaceAll('_', ' ');
     }
@@ -66,6 +69,9 @@ class _HistoryScreenState extends State<HistoryScreen> {
       case 'moved_to_recycle_bin':
       case 'permanently_deleted': return Icons.delete_outline;
       case 'renamed': return Icons.drive_file_rename_outline;
+      case 'shared': return Icons.share_outlined;
+      case 'smart_category_applied': return Icons.auto_awesome_outlined;
+      case 'expiry_date_set': return Icons.event_available_outlined;
       default: return Icons.history;
     }
   }
