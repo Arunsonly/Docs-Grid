@@ -19,6 +19,6 @@ void main() {
     await tester.tap(find.text('Activity'));
     await tester.pump(const Duration(milliseconds: 400));
 
-    expect(find.text('Activity'), findsOneWidget);
+    expect(find.text('Activity history'), findsOneWidget);
   });
 }
