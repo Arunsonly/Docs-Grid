@@ -551,7 +551,7 @@ class DocumentRepository {
   }
 
 
-  Future<ImportSummary> importScannedPdf(File source) async {
+  Future<ImportSummary> importScannedPdf(File source, {String? displayName, String? targetFolderUri}) async {
     if (!await source.exists()) throw StateError('Scanned PDF is not available.');
     final header = await source.openRead(0, 5).fold<List<int>>(<int>[], (a, b) => a..addAll(b));
     if (header.length < 5 || String.fromCharCodes(header) != '%PDF-') {
@@ -566,14 +566,18 @@ class DocumentRepository {
 
     final storage = StorageLocationService.instance;
     final selected = await storage.selectedFolder();
-    final safeName = _safePdfName(p.basename(source.path));
+    final requestedName = displayName?.trim();
+    final safeName = _safePdfName(requestedName == null || requestedName.isEmpty
+        ? p.basename(source.path)
+        : (requestedName.toLowerCase().endsWith('.pdf') ? requestedName : '$requestedName.pdf'));
     final id = _uuid.v4();
     late final String uri;
     String? relativePath;
-    if (selected != null) {
+    final destinationUri = targetFolderUri ?? selected?['uri'];
+    if (destinationUri != null) {
       uri = await storage.copyPdf(
         sourceUri: Uri.file(source.path).toString(),
-        parentUri: selected['uri']!,
+        parentUri: destinationUri,
         name: safeName,
       );
     } else {
