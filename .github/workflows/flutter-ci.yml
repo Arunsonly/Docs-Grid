@@ -90,7 +90,37 @@ jobs:
           permissions = '    <uses-permission android:name="android.permission.CAMERA"/>\n    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>\n    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>\n    '
           s = s.replace(marker, permissions + marker, 1)
           receivers = '''\n    <receiver android:exported="false" android:name="com.dexterous.flutterlocalnotifications.ScheduledNotificationReceiver"/>\n    <receiver android:enabled="true" android:exported="false" android:name="com.dexterous.flutterlocalnotifications.ScheduledNotificationBootReceiver">\n        <intent-filter>\n            <action android:name="android.intent.action.BOOT_COMPLETED"/>\n            <action android:name="android.intent.action.MY_PACKAGE_REPLACED"/>\n            <action android:name="android.intent.action.QUICKBOOT_POWERON"/>\n        </intent-filter>\n    </receiver>\n    '''
-          s = s.replace('</application>', receivers + '</application>', 1)
+          # image_cropper 9.x requires an explicit UCropActivity declaration
+          # and the Ucrop.CropTheme migration from its 9.0.0 Android guide.
+          cropper_activity = '''
+              <activity
+                  android:name="com.yalantis.ucrop.UCropActivity"
+                  android:screenOrientation="portrait"
+                  android:theme="@style/Ucrop.CropTheme"
+                  android:exported="false"/>
+          '''
+          if 'com.yalantis.ucrop.UCropActivity' not in s:
+              s = s.replace('</application>', receivers + cropper_activity + '</application>', 1)
+          else:
+              s = s.replace('</application>', receivers + '</application>', 1)
+
+          # The standard theme supports older Android versions; API 35+
+          # opts out of enforced edge-to-edge for the crop activity as required by uCrop 9.x.
+          values = Path('android/app/src/main/res/values')
+          values.mkdir(parents=True, exist_ok=True)
+          (values / 'styles.xml').write_text('''<resources>
+              <style name="Ucrop.CropTheme" parent="Theme.AppCompat.Light.NoActionBar"/>
+          </resources>
+          ''')
+          values_v35 = Path('android/app/src/main/res/values-v35')
+          values_v35.mkdir(parents=True, exist_ok=True)
+          (values_v35 / 'styles.xml').write_text('''<resources>
+              <style name="Ucrop.CropTheme" parent="Theme.AppCompat.Light.NoActionBar">
+                  <item name="android:windowOptOutEdgeToEdgeEnforcement">true</item>
+              </style>
+          </resources>
+          ''')
+
           # Make DocsGrid appear in Android's Share sheet for PDF attachments.
           # The incoming URI is granted by the sending app; users can then
           # choose DocsGrid and import the shared PDF from the picker.
@@ -107,7 +137,7 @@ jobs:
                       <data android:mimeType="application/pdf"/>
                   </intent-filter>
               '''
-              s = s.replace('</activity>', share_filter + '\\n            </activity>', 1)
+              s = s.replace('</activity>', share_filter + '\n            </activity>', 1)
           p.write_text(s)
           PY
       - name: Install Android SAF host integration
