@@ -52,11 +52,17 @@ class MainActivity : FlutterActivity() {
                             val name = call.argument<String>("name")!!
                             result.success(createDirectory(parent, name).toString())
                         }
-                        "movePdf" -> {
+                        "copyPdf" -> {
                             val source = Uri.parse(call.argument<String>("sourceUri")!!)
                             val parent = Uri.parse(call.argument<String>("parentUri")!!)
                             val name = call.argument<String>("name")!!
-                            result.success(movePdf(source, parent, name).toString())
+                            result.success(copyPdf(source, parent, name).toString())
+                        }
+                        "readPdf" -> {
+                            val uri = Uri.parse(call.argument<String>("uri")!!)
+                            val bytes = contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                                ?: throw IllegalStateException("Could not read the selected PDF.")
+                            result.success(bytes)
                         }
                         "renamePdf" -> {
                             val uri = Uri.parse(call.argument<String>("uri")!!)
@@ -120,7 +126,9 @@ class MainActivity : FlutterActivity() {
         return md.digest()
     }
 
-    private fun movePdf(source: Uri, parentUri: Uri, name: String): Uri {
+    // Copy and verify without deleting the source. Dart updates SQLite first,
+    // then explicitly deletes the source after the metadata transaction commits.
+    private fun copyPdf(source: Uri, parentUri: Uri, name: String): Uri {
         val destination = DocumentsContract.createDocument(
             contentResolver, resolveParentUri(parentUri), "application/pdf", name
         ) ?: throw IllegalStateException("Could not create the destination PDF.")
@@ -132,10 +140,7 @@ class MainActivity : FlutterActivity() {
                 } ?: throw IllegalStateException("Could not write the destination PDF.")
             } ?: throw IllegalStateException("Could not read the source PDF.")
             if (!digest(source).contentEquals(digest(destination))) {
-                throw IllegalStateException("PDF verification failed; original file was kept.")
-            }
-            if (!DocumentsContract.deleteDocument(contentResolver, source)) {
-                throw IllegalStateException("Verified copy created, but original could not be removed. Both files were kept.")
+                throw IllegalStateException("PDF verification failed; both source and destination were retained.")
             }
             return destination
         } catch (error: Exception) {
