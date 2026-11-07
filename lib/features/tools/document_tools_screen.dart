@@ -38,9 +38,11 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
     if (file == null) return;
     final imported = await DocumentRepository().importScannedPdf(file);
     await _tools.shareFile(file.path, text: 'Scanned with DocsGrid');
-    if (mounted) setState(() => _message = imported.added == 1
-      ? 'Scan saved in My Documents and shared: ${p.basename(file.path)}'
-      : 'This scan already exists in My Documents. A copy was shared.');
+    if (mounted) {
+      setState(() => _message = imported.added == 1
+        ? 'Scan saved in My Documents and shared: ${p.basename(file.path)}'
+        : 'This scan already exists in My Documents. A copy was shared.');
+    }
   });
 
   Future<void> _backup() => _run(() async {
@@ -118,14 +120,18 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
         content: SizedBox(width: 440, child: ListView(shrinkWrap: true, children: [
           const Text('Choose the copy to keep. All other copies will be moved to Recycle Bin, not permanently deleted.'),
           const SizedBox(height: 8),
-          for (final doc in docs)
-            RadioListTile<String>(
-              value: doc.id,
-              groupValue: keepId,
-              onChanged: (value) => refresh(() => keepId = value!),
-              title: Text('${doc.name}.pdf'),
-              subtitle: Text('${doc.sizeBytes} bytes · ${doc.storagePath}'),
-            ),
+          RadioGroup<String>(
+            groupValue: keepId,
+            onChanged: (value) { if (value != null) refresh(() => keepId = value); },
+            child: Column(children: [
+              for (final doc in docs)
+                RadioListTile<String>(
+                  value: doc.id,
+                  title: Text('${doc.name}.pdf'),
+                  subtitle: Text('${doc.sizeBytes} bytes · ${doc.storagePath}'),
+                ),
+            ]),
+          ),
         ])),
         actions: [
           TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')),
