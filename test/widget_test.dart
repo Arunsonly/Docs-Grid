@@ -15,9 +15,9 @@ void main() {
   testWidgets('Recently opened screen is reachable from Settings', (tester) async {
     await tester.pumpWidget(const DocsGridApp());
     await tester.tap(find.text('Settings'));
-    await tester.pumpAndSettle();
+    await tester.pump(const Duration(milliseconds: 400));
     await tester.tap(find.text('Recently opened'));
-    await tester.pumpAndSettle();
+    await tester.pump(const Duration(milliseconds: 400));
 
     expect(find.text('Recently opened'), findsOneWidget);
     expect(find.text('Open a PDF and it will appear here.'), findsOneWidget);
