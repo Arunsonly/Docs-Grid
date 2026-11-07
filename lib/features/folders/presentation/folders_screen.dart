@@ -77,52 +77,6 @@ class _FoldersScreenState extends State<FoldersScreen> {
     });
   }
 
-  Future<void> _showFolderDocuments() async {
-    final folderId = _currentFolderId;
-    final title = folderId == null ? 'Root PDFs' : 'PDFs in $_currentTitle';
-    final documents = await _documents.listInFolder(folderId);
-    if (!mounted) return;
-    await Navigator.of(context).push(
-      MaterialPageRoute<void>(
-        builder: (pageContext) => Scaffold(
-          appBar: AppBar(title: Text(title)),
-          body: documents.isEmpty
-              ? const Center(child: Text('No PDFs in this folder yet.'))
-              : ListView.separated(
-                  padding: const EdgeInsets.all(12),
-                  itemCount: documents.length,
-                  separatorBuilder: (_, _) => const Divider(height: 1),
-                  itemBuilder: (context, index) {
-                    final document = documents[index];
-                    return ListTile(
-                      leading: const Icon(Icons.picture_as_pdf_outlined),
-                      title: Text('${document.name}.pdf', maxLines: 1, overflow: TextOverflow.ellipsis),
-                      subtitle: Text(_size(document.sizeBytes)),
-                      onTap: () async {
-                        final isSafUri = document.storagePath.startsWith('content://') ||
-                            document.storagePath.startsWith('file://');
-                        if (!isSafUri && !await File(document.storagePath).exists()) {
-                          if (pageContext.mounted) {
-                            ScaffoldMessenger.of(pageContext).showSnackBar(
-                              const SnackBar(content: Text('PDF file is missing from local storage.')),
-                            );
-                          }
-                          return;
-                        }
-                        await _documents.markOpened(document);
-                        if (isSafUri) {
-                          await StorageLocationService.instance.openPdf(document.storagePath);
-                        } else {
-                          await OpenFilex.open(document.storagePath);
-                        }
-                      },
-                    );
-                  },
-                ),
-        ),
-      ),
-    );
-  }
 
   String _size(int bytes) {
     if (bytes < 1024) return '$bytes B';
@@ -224,11 +178,6 @@ class _FoldersScreenState extends State<FoldersScreen> {
               Expanded(
                 child: Text(_currentTitle,
                     style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700)),
-              ),
-              IconButton(
-                tooltip: 'PDFs in this folder',
-                onPressed: _showFolderDocuments,
-                icon: const Icon(Icons.picture_as_pdf_outlined),
               ),
               IconButton(
                 tooltip: 'Create folder',
