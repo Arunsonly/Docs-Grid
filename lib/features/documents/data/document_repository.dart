@@ -20,6 +20,7 @@ class DocumentRecord {
     this.categoryId,
     this.categoryName,
     this.tagNames = const [],
+    this.folderId,
   });
 
   final String id;
@@ -31,6 +32,7 @@ class DocumentRecord {
   final String? categoryId;
   final String? categoryName;
   final List<String> tagNames;
+  final String? folderId;
 
   factory DocumentRecord.fromMap(Map<String, Object?> row) {
     final metadata = jsonDecode((row['metadata_json'] as String?) ?? '{}')
@@ -47,6 +49,7 @@ class DocumentRecord {
       tagNames: ((row['tag_names'] as String?) ?? '').isEmpty
           ? const []
           : (row['tag_names'] as String).split(', '),
+      folderId: row['folder_id'] as String?,
     );
   }
 }
