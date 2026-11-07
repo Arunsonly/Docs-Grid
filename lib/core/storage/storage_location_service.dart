@@ -7,6 +7,33 @@ class StorageLocationService {
   static final StorageLocationService instance = StorageLocationService._();
   static const MethodChannel _channel = MethodChannel('docsgrid/storage');
 
+  /// Converts the native access-check response into a stable, testable shape.
+  /// Unknown native values fail closed instead of being treated as available.
+  static Map<String, String> normalizeAccessStatus(
+    Map<String, dynamic>? value,
+  ) {
+    const allowedStatuses = {
+      'available',
+      'not_configured',
+      'revoked',
+      'unsupported',
+    };
+    final rawStatus = value?['status'];
+    final status = rawStatus is String && allowedStatuses.contains(rawStatus)
+        ? rawStatus
+        : 'unknown';
+    final rawMessage = value?['message'];
+    final message = rawMessage is String && rawMessage.isNotEmpty
+        ? rawMessage
+        : 'Storage access could not be verified.';
+    final rawName = value?['name'];
+    return {
+      'status': status,
+      'message': message,
+      if (rawName is String && rawName.isNotEmpty) 'name': rawName,
+    };
+  }
+
   Future<Map<String, String>?> selectedFolder() async {
     if (!Platform.isAndroid && !Platform.isIOS) return null;
     final value = await _channel.invokeMapMethod<String, dynamic>('getSelectedFolder');
@@ -18,14 +45,13 @@ class StorageLocationService {
   /// This does not modify the selected folder or any document record.
   Future<Map<String, String>> checkStorageAccess() async {
     if (!Platform.isAndroid && !Platform.isIOS) {
-      return {'status': 'unsupported', 'message': 'External folder storage is unavailable on this platform.'};
+      return normalizeAccessStatus({
+        'status': 'unsupported',
+        'message': 'External folder storage is unavailable on this platform.',
+      });
     }
     final value = await _channel.invokeMapMethod<String, dynamic>('checkStorageAccess');
-    return {
-      'status': (value?['status'] as String?) ?? 'unknown',
-      'message': (value?['message'] as String?) ?? 'Storage access could not be verified.',
-      if (value?['name'] is String) 'name': value!['name'] as String,
-    };
+    return normalizeAccessStatus(value);
   }
 
   Future<Map<String, String>?> chooseFolder() async {
