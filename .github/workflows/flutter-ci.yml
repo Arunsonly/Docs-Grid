@@ -72,6 +72,23 @@ jobs:
           s = s.replace(marker, permissions + marker, 1)
           receivers = '''\n    <receiver android:exported="false" android:name="com.dexterous.flutterlocalnotifications.ScheduledNotificationReceiver"/>\n    <receiver android:enabled="true" android:exported="false" android:name="com.dexterous.flutterlocalnotifications.ScheduledNotificationBootReceiver">\n        <intent-filter>\n            <action android:name="android.intent.action.BOOT_COMPLETED"/>\n            <action android:name="android.intent.action.MY_PACKAGE_REPLACED"/>\n            <action android:name="android.intent.action.QUICKBOOT_POWERON"/>\n        </intent-filter>\n    </receiver>\n    '''
           s = s.replace('</application>', receivers + '</application>', 1)
+          # Make DocsGrid appear in Android's Share sheet for PDF attachments.
+          # The incoming URI is granted by the sending app; users can then
+          # choose DocsGrid and import the shared PDF from the picker.
+          if 'android.intent.action.SEND' not in s:
+              share_filter = '''
+                  <intent-filter>
+                      <action android:name="android.intent.action.SEND"/>
+                      <category android:name="android.intent.category.DEFAULT"/>
+                      <data android:mimeType="application/pdf"/>
+                  </intent-filter>
+                  <intent-filter>
+                      <action android:name="android.intent.action.SEND_MULTIPLE"/>
+                      <category android:name="android.intent.category.DEFAULT"/>
+                      <data android:mimeType="application/pdf"/>
+                  </intent-filter>
+              '''
+              s = s.replace('</activity>', share_filter + '\\n            </activity>', 1)
           p.write_text(s)
           PY
       - name: Install Android SAF host integration
