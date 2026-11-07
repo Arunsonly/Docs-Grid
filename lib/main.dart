@@ -287,141 +287,95 @@ class _SettingsScreenState extends State<_SettingsScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final status = _storageStatus?['status'];
     return ListView(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
       children: [
         SwitchListTile(
           secondary: const Icon(Icons.dark_mode_outlined),
           title: const Text('Dark appearance'),
-          subtitle: const Text('Use a dark theme throughout DocsGrid.'),
           value: widget.darkMode,
           onChanged: widget.onDarkModeChanged,
         ),
-        const Divider(),
-        Card(
-          child: ListTile(
-            leading: Icon(_storageStatus?['status'] == 'available'
-                ? Icons.cloud_done_outlined
-                : _storageStatus?['status'] == 'revoked'
-                    ? Icons.warning_amber_rounded
-                    : Icons.storage_outlined),
-            title: const Text('Storage access health'),
-            subtitle: Text(_checkingStorage
-                ? 'Checking saved folder permission…'
-                : _storageStatus?['message'] ?? 'Storage status not checked yet.'),
-            trailing: IconButton(
-              tooltip: 'Check again',
-              onPressed: _checkingStorage ? null : _refreshStorageStatus,
-              icon: const Icon(Icons.refresh),
-            ),
-          ),
-        ),
-        const SizedBox(height: 8),
+        const Divider(height: 1),
         ListTile(
-          leading: const Icon(Icons.phonelink_lock_outlined),
-          title: Text(_storageStatus?['status'] == 'revoked'
-              ? 'Repair storage permission'
-              : 'Offline storage'),
-          subtitle: Text(_storageStatus?['status'] == 'revoked'
-              ? 'Select the same folder again to restore access. Existing PDF records will not be deleted.'
-              : 'Choose a folder for PDFs and safely migrate your existing library.'),
+          leading: const Icon(Icons.health_and_safety_outlined),
+          title: const Text('Storage access health'),
+          trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+            if (_checkingStorage) const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
+            if (!_checkingStorage) Text(status == 'available' ? 'OK' : status == 'revoked' ? 'Repair' : 'Check',
+              style: TextStyle(color: status == 'available' ? Colors.green : null)),
+            IconButton(tooltip: 'Refresh', onPressed: _checkingStorage ? null : _refreshStorageStatus,
+              icon: const Icon(Icons.refresh)),
+          ]),
+          onTap: _refreshStorageStatus,
+        ),
+        const Divider(height: 1),
+        ListTile(
+          leading: const Icon(Icons.sd_storage_outlined),
+          title: const Text('Choose storage location'),
           trailing: const Icon(Icons.chevron_right),
           onTap: () => _chooseStorage(context),
         ),
-        const Divider(),
-        ListTile(
-          leading: const Icon(Icons.history_toggle_off_outlined),
-          title: const Text('Recently opened'),
-          subtitle: const Text('Open documents you viewed most recently.'),
-          trailing: const Icon(Icons.chevron_right),
-          onTap: () => Navigator.of(context).push(
-            MaterialPageRoute(
-              builder: (_) => Scaffold(
-                appBar: AppBar(title: const Text('Recently opened')),
-                body: const DocumentsScreen(recentOnly: true),
-              ),
-            ),
-          ),
-        ),
-        const Divider(),
-        ListTile(
-          leading: const Icon(Icons.category_outlined),
-          title: const Text('Categories & tags'),
-          subtitle: const Text('Create and manage document categories and tags.'),
-          trailing: const Icon(Icons.chevron_right),
-          onTap: () => Navigator.of(context).push(
-            MaterialPageRoute(
-              builder: (_) => Scaffold(
-                appBar: AppBar(title: const Text('Categories & tags')),
-                body: const CategoriesScreen(),
-              ),
-            ),
-          ),
-        ),
-        const Divider(),
-        ListTile(
-          leading: const Icon(Icons.notifications_active_outlined),
-          title: const Text('Reminders'),
-          subtitle: const Text('Create and manage dates and times saved on this device.'),
-          trailing: const Icon(Icons.chevron_right),
-          onTap: () => Navigator.of(context).push(
-            MaterialPageRoute(builder: (_) => const RemindersScreen()),
-          ),
-        ),
-        const Divider(),
-        ListTile(
-          leading: const Icon(Icons.history),
-          title: const Text('Activity history'),
-          subtitle: const Text('Review recent document actions stored on this device.'),
-          trailing: const Icon(Icons.chevron_right),
-          onTap: () => Navigator.of(context).push(
-            MaterialPageRoute(builder: (_) => const HistoryScreen()),
-          ),
-        ),
-        const Divider(),
+        const Divider(height: 1),
         ListTile(
           leading: const Icon(Icons.backup_outlined),
-          title: const Text('Offline backup & restore'),
-          subtitle: const Text('Create a ZIP backup and choose its save folder, or restore a backup.'),
+          title: const Text('Backup'),
           trailing: const Icon(Icons.chevron_right),
-          onTap: () => Navigator.of(context).push(
-            MaterialPageRoute(
-              builder: (_) => Scaffold(
-                appBar: AppBar(title: const Text('Offline backup & restore')),
-                body: const DocumentToolsScreen(),
-              ),
-            ),
-          ),
+          onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => Scaffold(
+            appBar: AppBar(title: const Text('Backup')),
+            body: const DocumentToolsScreen(section: 'backup', quickAction: 'backup'),
+          ))),
         ),
-        const Divider(),
+        const Divider(height: 1),
         ListTile(
-          leading: const Icon(Icons.build_circle_outlined),
-          title: const Text('Document tools'),
-          subtitle: const Text('On-device OCR, scan to PDF, duplicate review and backup tools.'),
+          leading: const Icon(Icons.settings_backup_restore_outlined),
+          title: const Text('Backup restore'),
           trailing: const Icon(Icons.chevron_right),
-          onTap: () => Navigator.of(context).push(
-            MaterialPageRoute(
-              builder: (_) => Scaffold(
-                appBar: AppBar(title: const Text('Document tools')),
-                body: const DocumentToolsScreen(),
-              ),
-            ),
-          ),
+          onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => Scaffold(
+            appBar: AppBar(title: const Text('Backup restore')),
+            body: const DocumentToolsScreen(section: 'backup'),
+          ))),
         ),
-        const Divider(),
+        const Divider(height: 1),
+        ListTile(
+          leading: const Icon(Icons.build_outlined),
+          title: const Text('Document tools'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => Scaffold(
+            appBar: AppBar(title: const Text('Document tools')),
+            body: const DocumentToolsScreen(section: 'tools'),
+          ))),
+        ),
+        const Divider(height: 1),
+        ListTile(
+          leading: const Icon(Icons.history),
+          title: const Text('Activity'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const HistoryScreen())),
+        ),
+        const Divider(height: 1),
+        ListTile(
+          leading: const Icon(Icons.notifications_active_outlined),
+          title: const Text('Reminder'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const RemindersScreen())),
+        ),
+        const Divider(height: 1),
+        ListTile(
+          leading: const Icon(Icons.sell_outlined),
+          title: const Text('Category & Tag'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => Scaffold(
+            appBar: AppBar(title: const Text('Category & Tag')),
+            body: const CategoriesScreen(),
+          ))),
+        ),
+        const Divider(height: 1),
         const ListTile(
           leading: Icon(Icons.info_outline),
-          title: Text('About DocsGrid'),
-          subtitle: Text('Personal document organiser · Version 0.1.0'),
-        ),
-        const Padding(
-          padding: EdgeInsets.all(16),
-          child: Text(
-            'DocsGrid stores documents and reminders on this device. Reminders support one-time, daily and weekly schedules; backup and restore verify archive contents before restoring. Physical-device notification and storage-permission checks are still required.',
-            style: TextStyle(color: Colors.black54),
-          ),
+          title: Text('About'),
         ),
       ],
     );
-  }
-}
+  }}
