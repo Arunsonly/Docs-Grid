@@ -20,7 +20,7 @@ dependencies:
   open_filex: ^4.7.0
   archive: ^4.0.7
   image_picker: ^1.2.0
-  image_cropper: ^9.1.0
+  crop_your_image: ^2.0.1
   pdf: ^3.11.3
   pdfx: ^2.9.2
   google_mlkit_text_recognition: ^0.15.0
