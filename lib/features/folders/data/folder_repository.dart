@@ -95,6 +95,9 @@ class FolderRepository {
   Future<Folder> create({required String name, String? parentId}) async {
     final cleaned = name.trim();
     if (cleaned.isEmpty) throw ArgumentError('Folder name cannot be empty.');
+    if (cleaned == '.' || cleaned == '..') {
+      throw ArgumentError('Folder name cannot be . or ..');
+    }
     if (cleaned.contains('/') || cleaned.contains('\\')) {
       throw ArgumentError('Folder name cannot contain / or \\.');
     }
