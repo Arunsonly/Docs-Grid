@@ -30,6 +30,8 @@ jobs:
           cache: true
       - name: Generate native platform scaffolding
         run: flutter create --platforms=android,ios --org com.docsgrid .
+      - name: Add Android notification permission
+        run: python3 -c "from pathlib import Path; p=Path('android/app/src/main/AndroidManifest.xml'); s=p.read_text(); s=s.replace('<manifest ', '<manifest xmlns:android=\\\"http://schemas.android.com/apk/res/android\\\" ', 1) if 'xmlns:android=' not in s else s; s=s.replace('<application', '<uses-permission android:name=\\\"android.permission.POST_NOTIFICATIONS\\\"/>\\n    <application', 1); p.write_text(s)"
       - name: Install Android SAF host integration
         if: runner.os == 'Linux'
         run: |
