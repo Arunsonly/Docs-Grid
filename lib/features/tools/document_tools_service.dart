@@ -214,14 +214,26 @@ class DocumentToolsService {
     var completed = 0;
     for (final row in docs) {
       final uri = row['storage_uri'] as String?;
-      if (uri == null || uri.isEmpty || uri.startsWith('content://')) {
-        throw StateError('Backup cannot be complete: "${row['name']}" is stored in a provider location that cannot currently be streamed into the archive. Copy it to app-accessible storage first.');
+      if (uri == null || uri.isEmpty) {
+        throw StateError('Backup cannot be complete: "${row['name']}" has no storage reference.');
       }
-      final file = File(uri.startsWith('file://') ? Uri.parse(uri).toFilePath() : uri);
-      if (!await file.exists()) {
-        throw StateError('Backup cannot be complete: "${row['name']}" is unavailable. Repair storage access and retry.');
+      File? stagedProviderFile;
+      final File file;
+      if (uri.startsWith('content://')) {
+        final temp = await getTemporaryDirectory();
+        stagedProviderFile = File(p.join(temp.path, 'backup_${_uuid.v4()}.pdf'));
+        await StorageLocationService.instance.copyPdfToPath(
+          sourceUri: uri,
+          destinationPath: stagedProviderFile.path,
+        );
+        file = stagedProviderFile;
+      } else {
+        file = File(uri.startsWith('file://') ? Uri.parse(uri).toFilePath() : uri);
       }
-      {
+      try {
+        if (!await file.exists()) {
+          throw StateError('Backup cannot be complete: "${row['name']}" is unavailable. Repair storage access and retry.');
+        }
         final bytes = await file.readAsBytes();
         final digest = sha256.convert(bytes).toString();
         final expected = row['sha256'] as String?;
@@ -234,6 +246,10 @@ class DocumentToolsService {
           'documentId': row['id'], 'entry': entry, 'sha256': digest,
           'originalName': row['name'],
         });
+      } finally {
+        if (stagedProviderFile != null && await stagedProviderFile.exists()) {
+          await stagedProviderFile.delete();
+        }
       }
       completed++;
       onProgress?.call(completed, docs.length);
