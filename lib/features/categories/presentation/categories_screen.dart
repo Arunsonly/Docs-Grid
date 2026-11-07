@@ -115,6 +115,17 @@ class _CategoriesScreenState extends State<CategoriesScreen> {
     }
   }
 
+  Future<void> _renameTag(TagRecord tag) async {
+    final name = await _nameDialog(title: 'Rename tag', initial: tag.name);
+    if (name == null) return;
+    try {
+      await _repository.renameTag(tag, name);
+      await _load();
+    } catch (error) {
+      _showError(error);
+    }
+  }
+
   Future<void> _deleteTag(TagRecord tag) async {
     final confirmed = await _confirm(
       'Delete tag?',
@@ -206,6 +217,7 @@ class _CategoriesScreenState extends State<CategoriesScreen> {
                         for (final tag in _tags)
                           InputChip(
                             label: Text(tag.name),
+                            onPressed: () => _renameTag(tag),
                             onDeleted: () => _deleteTag(tag),
                           ),
                       ],
