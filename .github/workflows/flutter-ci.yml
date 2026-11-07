@@ -30,6 +30,11 @@ jobs:
           cache: true
       - name: Generate native platform scaffolding
         run: flutter create --platforms=android,ios --org com.docsgrid .
+      - name: Install Android SAF host integration
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p android/app/src/main/kotlin/com/docsgrid/docs_grid
+          cp platform/android/MainActivity.kt android/app/src/main/kotlin/com/docsgrid/docs_grid/MainActivity.kt
       - name: Install packages
         run: flutter pub get
       - name: Analyze
