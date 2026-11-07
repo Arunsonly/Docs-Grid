@@ -30,6 +30,25 @@ jobs:
           cache: true
       - name: Generate native platform scaffolding
         run: flutter create --platforms=android,ios --org com.docsgrid .
+      - name: Set Android compile SDK for image cropper dependencies
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          candidates = [Path('android/app/build.gradle.kts'), Path('android/app/build.gradle')]
+          gradle = next((p for p in candidates if p.exists()), None)
+          if gradle is None:
+              raise SystemExit('Flutter did not generate android/app/build.gradle(.kts)')
+          s = gradle.read_text()
+          if gradle.suffix == '.kts':
+              s, count = re.subn(r'compileSdk\\s*=\\s*(?:flutter\\.compileSdkVersion|[0-9]+)', 'compileSdk = 35', s, count=1)
+          else:
+              s, count = re.subn(r'compileSdkVersion\\s+(?:flutter\\.compileSdkVersion|[0-9]+)', 'compileSdkVersion 35', s, count=1)
+          if count != 1:
+              raise SystemExit(f'Could not locate compileSdk declaration in {gradle}')
+          gradle.write_text(s)
+          print(f'Configured compileSdk 35 in {gradle}')
+          PY
       - name: Enable Android core library desugaring for scheduled notifications
         run: |
           python3 - <<'PY'
