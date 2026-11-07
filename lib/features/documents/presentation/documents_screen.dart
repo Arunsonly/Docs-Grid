@@ -27,6 +27,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   List<DocumentRecord> _documents = [];
   bool _loading = true;
   bool _importing = false;
+  bool _searchInsideText = false;
   int _loadGeneration = 0;
   String? _error;
 
@@ -47,11 +48,16 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   Future<void> _load() async {
     final generation = ++_loadGeneration;
     try {
-      final docs = await _repository.list(
-        query: _search.text,
+      var docs = await _repository.list(
+        query: _searchInsideText ? '' : _search.text,
         favoritesOnly: widget.favoritesOnly,
         recentOnly: widget.recentOnly,
       );
+      if (_searchInsideText && _search.text.trim().isNotEmpty) {
+        final matches = await _tools.searchText(_search.text);
+        final matchedIds = matches.map((row) => row['id'] as String).toSet();
+        docs = docs.where((document) => matchedIds.contains(document.id)).toList();
+      }
       if (!mounted || generation != _loadGeneration) return;
       setState(() {
         _documents = docs;
@@ -436,8 +442,19 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                   child: TextField(
                     controller: _search,
                     decoration: InputDecoration(
-                      hintText: 'Search PDF names',
-                      prefixIcon: const Icon(Icons.search),
+                      hintText: _searchInsideText ? 'Search text inside PDFs' : 'Search PDF names',
+                      prefixIcon: PopupMenuButton<String>(
+                        tooltip: 'Choose search type',
+                        icon: const Icon(Icons.search),
+                        onSelected: (value) {
+                          setState(() => _searchInsideText = value == 'text');
+                          _load();
+                        },
+                        itemBuilder: (_) => [
+                          PopupMenuItem(value: 'name', child: Row(children: [Icon(_searchInsideText ? Icons.circle_outlined : Icons.check_circle, size: 18), const SizedBox(width: 8), const Text('File name') ])),
+                          PopupMenuItem(value: 'text', child: Row(children: [Icon(_searchInsideText ? Icons.check_circle : Icons.circle_outlined, size: 18), const SizedBox(width: 8), const Text('Text inside PDF') ])),
+                        ],
+                      ),
                       suffixIcon: _search.text.isEmpty
                           ? null
                           : IconButton(onPressed: _search.clear, icon: const Icon(Icons.close)),
