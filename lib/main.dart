@@ -81,7 +81,7 @@ class _SettingsScreen extends StatelessWidget {
         const ListTile(
           leading: Icon(Icons.phonelink_lock_outlined),
           title: Text('Offline storage'),
-          subtitle: Text('Your imported PDFs and library database are stored on this device.'),
+          subtitle: Text('Current location: app-private storage. User-selectable Files folder is not ready yet.'),
         ),
         const Divider(),
         ListTile(
