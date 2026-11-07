@@ -12,7 +12,6 @@ import '../../../core/database/app_database.dart';
 import '../../../core/storage/storage_location_service.dart';
 import '../../folders/data/folder_repository.dart';
 import 'pdf_insights_service.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 
 class DocumentRecord {
