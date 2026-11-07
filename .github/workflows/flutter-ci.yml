@@ -37,7 +37,7 @@ jobs:
           p = Path('android/app/src/main/AndroidManifest.xml')
           s = p.read_text()
           marker = '<application'
-          permissions = '    <uses-permission android:name="android.permission.CAMERA"/>\\n    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>\\n    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>\\n    '
+          permissions = '    <uses-permission android:name="android.permission.CAMERA"/>\n    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>\n    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>\n    '
           s = s.replace(marker, permissions + marker, 1)
           receivers = '''\n    <receiver android:exported="false" android:name="com.dexterous.flutterlocalnotifications.ScheduledNotificationReceiver"/>\n    <receiver android:enabled="true" android:exported="false" android:name="com.dexterous.flutterlocalnotifications.ScheduledNotificationBootReceiver">\n        <intent-filter>\n            <action android:name="android.intent.action.BOOT_COMPLETED"/>\n            <action android:name="android.intent.action.MY_PACKAGE_REPLACED"/>\n            <action android:name="android.intent.action.QUICKBOOT_POWERON"/>\n        </intent-filter>\n    </receiver>\n    '''
           s = s.replace('</application>', receivers + '</application>', 1)
