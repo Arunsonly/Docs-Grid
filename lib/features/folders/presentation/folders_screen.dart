@@ -102,7 +102,7 @@ class _FoldersScreenState extends State<FoldersScreen> {
                         title: Text('${document.name}.pdf', maxLines: 1, overflow: TextOverflow.ellipsis),
                         subtitle: Text(_size(document.sizeBytes)),
                         onTap: () async {
-                          final isSafUri = document.storagePath.startsWith('content://');
+                          final isSafUri = document.storagePath.startsWith('content://') || document.storagePath.startsWith('file://');
                           if (!isSafUri) {
                             final file = File(document.storagePath);
                             if (!await file.exists()) {
