@@ -316,7 +316,7 @@ class DocumentRepository {
       'storage_uri': newStorageUri,
       'updated_at': DateTime.now().toUtc().toIso8601String(),
     }, where: 'id = ?', whereArgs: [document.id]);
-    await _recordHistory(db, document.id, 'renamed', {'from': document.name, 'to': p.basenameWithoutExtension(newFile.path)});
+    await _recordHistory(db, document.id, 'renamed', {'from': document.name, 'to': safeBase});
   }
 
   Future<void> permanentlyDelete(DocumentRecord document) async {
