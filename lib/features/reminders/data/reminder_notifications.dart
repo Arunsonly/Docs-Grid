@@ -1,4 +1,5 @@
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:flutter_timezone/flutter_timezone.dart';
 import 'package:timezone/data/latest.dart' as tzdata;
 import 'package:timezone/timezone.dart' as tz;
 
@@ -13,8 +14,8 @@ class ReminderNotifications {
   Future<void> initialize() async {
     if (_ready) return;
     tzdata.initializeTimeZones();
-    final offset = DateTime.now().timeZoneOffset;
-    tz.setLocalLocation(tz.Location('device-local', [tz.TimeZone(offset.inMilliseconds)]));
+    final deviceTimeZone = await FlutterTimezone.getLocalTimezone();
+    tz.setLocalLocation(tz.getLocation(deviceTimeZone.identifier));
     const settings = InitializationSettings(
       android: AndroidInitializationSettings('@mipmap/ic_launcher'),
       iOS: DarwinInitializationSettings(
