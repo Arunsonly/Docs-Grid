@@ -338,6 +338,7 @@ class DocumentRepository {
       final sourceDigest = sha256.convert(sourceBytes).toString();
 
       String? destinationUri;
+      var createdDestination = false;
       try {
         final existingUri = await storage.findChildUri(
           parentUri: parentUri,
@@ -348,20 +349,23 @@ class DocumentRepository {
           destinationUri = existingUri;
         }
       } catch (_) {
-        // No matching file in the destination; a new verified copy is made below.
+        // No verified matching file in the destination; create a new copy below.
       }
 
-      destinationUri ??= sourceIsShared
-          ? await storage.copyPdf(
-              sourceUri: sourceUri,
-              parentUri: parentUri,
-              name: '$name.pdf',
-            )
-          : await storage.savePdf(
-              treeUri: parentUri,
-              name: '$name.pdf',
-              bytes: sourceBytes,
-            );
+      if (destinationUri == null) {
+        destinationUri = sourceIsShared
+            ? await storage.copyPdf(
+                sourceUri: sourceUri,
+                parentUri: parentUri,
+                name: '$name.pdf',
+              )
+            : await storage.savePdf(
+                treeUri: parentUri,
+                name: '$name.pdf',
+                bytes: sourceBytes,
+              );
+        createdDestination = true;
+      }
 
       try {
         await db.transaction((txn) async {
@@ -382,7 +386,7 @@ class DocumentRepository {
           });
         });
       } catch (_) {
-        if (destinationUri != sourceUri) {
+        if (createdDestination && destinationUri != sourceUri) {
           try { await storage.deletePdf(destinationUri); } catch (_) {}
         }
         rethrow;
