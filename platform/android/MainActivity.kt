@@ -6,7 +6,7 @@ import android.database.Cursor
 import android.net.Uri
 import android.os.Bundle
 import android.provider.DocumentsContract
-import android.provider.OpenableColumns
+import java.security.MessageDigest
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -47,6 +47,17 @@ class MainActivity : FlutterActivity() {
                             val bytes = call.argument<ByteArray>("bytes")!!
                             result.success(createPdf(tree, name, bytes).toString())
                         }
+                        "createDirectory" -> {
+                            val parent = Uri.parse(call.argument<String>("parentUri")!!)
+                            val name = call.argument<String>("name")!!
+                            result.success(createDirectory(parent, name).toString())
+                        }
+                        "movePdf" -> {
+                            val source = Uri.parse(call.argument<String>("sourceUri")!!)
+                            val parent = Uri.parse(call.argument<String>("parentUri")!!)
+                            val name = call.argument<String>("name")!!
+                            result.success(movePdf(source, parent, name).toString())
+                        }
                         "renamePdf" -> {
                             val uri = Uri.parse(call.argument<String>("uri")!!)
                             val name = call.argument<String>("name")!!
@@ -73,6 +84,59 @@ class MainActivity : FlutterActivity() {
                     result.error("STORAGE_ERROR", error.message ?: "Storage operation failed.", null)
                 }
             }
+    }
+
+    private fun resolveParentUri(uri: Uri): Uri {
+        return try {
+            val treeId = DocumentsContract.getTreeDocumentId(uri)
+            DocumentsContract.buildDocumentUriUsingTree(uri, treeId)
+        } catch (_: IllegalArgumentException) {
+            uri
+        }
+    }
+
+    private fun createDirectory(parentUri: Uri, name: String): Uri {
+        return DocumentsContract.createDocument(
+            contentResolver, resolveParentUri(parentUri),
+            DocumentsContract.Document.MIME_TYPE_DIR, name
+        ) ?: throw IllegalStateException("Could not create folder in the selected storage location.")
+    }
+
+    private fun digest(uri: Uri): ByteArray {
+        val md = MessageDigest.getInstance("SHA-256")
+        contentResolver.openInputStream(uri)?.use { input ->
+            val buffer = ByteArray(64 * 1024)
+            while (true) {
+                val count = input.read(buffer)
+                if (count < 0) break
+                md.update(buffer, 0, count)
+            }
+        } ?: throw IllegalStateException("Could not read PDF for verification.")
+        return md.digest()
+    }
+
+    private fun movePdf(source: Uri, parentUri: Uri, name: String): Uri {
+        val destination = DocumentsContract.createDocument(
+            contentResolver, resolveParentUri(parentUri), "application/pdf", name
+        ) ?: throw IllegalStateException("Could not create the destination PDF.")
+        try {
+            contentResolver.openInputStream(source)?.use { input ->
+                contentResolver.openOutputStream(destination, "w")?.use { output ->
+                    input.copyTo(output)
+                    output.flush()
+                } ?: throw IllegalStateException("Could not write the destination PDF.")
+            } ?: throw IllegalStateException("Could not read the source PDF.")
+            if (!digest(source).contentEquals(digest(destination))) {
+                throw IllegalStateException("PDF verification failed; original file was kept.")
+            }
+            if (!DocumentsContract.deleteDocument(contentResolver, source)) {
+                throw IllegalStateException("Verified copy created, but original could not be removed. Both files were kept.")
+            }
+            return destination
+        } catch (error: Exception) {
+            try { DocumentsContract.deleteDocument(contentResolver, destination) } catch (_: Exception) {}
+            throw error
+        }
     }
 
     private fun createPdf(treeUri: Uri, requestedName: String, bytes: ByteArray): Uri {
