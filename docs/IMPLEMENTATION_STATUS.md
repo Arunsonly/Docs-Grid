@@ -12,8 +12,8 @@ This is an implementation tracker, not a release claim. A green CI build does no
 | iOS Files storage | Implemented in code; CI/device validation pending | Native Files folder picker, persisted security-scoped bookmarks (including previously selected roots), folder/file create/copy/read/rename/delete, and native PDF preview |
 | PDF import | Partial | Multi-file PDF picker, PDF header validation, SHA-256 duplicate check, writes to selected Android/iOS storage or app-private fallback; filename collision handling |
 | Folder organisation | Partial | Nested folder CRUD; physical folders on selected storage; safe folder rename updates descendant folder and PDF URIs; empty-folder deletion rolls back metadata if physical deletion fails |
-| PDF move | Partial; CI build passes, device validation pending | Move PDFs into selected physical folders and update metadata; cross-storage failure/rollback edge cases still need hardening and testing. Bulk migration of the existing library is not implemented |
-| PDF recovery | Partial | User can relink a PDF from Files; PDF header and existing SHA-256 are verified before database reference changes |
+| PDF move | Implemented in code; CI/device validation pending | Copy-and-verify moves between app-private folders and selected Android/iOS folders; SQLite metadata commits before source cleanup; failed metadata commits clean up newly created copies while retaining the source. A failed source cleanup is reported without losing the new database reference. |
+| PDF recovery | Partial | User can relink a PDF from Files; PDF header and existing SHA-256 are verified before database reference changes. Guided repair for revoked provider permissions remains outstanding |
 | Categories and tags | Partial | Built-in/custom categories, custom tags, rename/delete, assign to PDFs |
 | Search | Partial | PDF filename search; full-text search and local OCR remain missing |
 | Duplicate detection | Partial | Exact SHA-256 duplicate detection; no review/merge workflow |
@@ -27,14 +27,14 @@ This is an implementation tracker, not a release claim. A green CI build does no
 
 - Android uses the Storage Access Framework and retains the user's selected folder permission. PDFs and folders are real provider files; broad storage permission is not requested.
 - iOS uses the Files folder picker and security-scoped bookmarks. Previously selected bookmarks are retained so a user can select a new root and migrate files from an older selected root while its access remains valid.
-- A user can select a storage folder for new imports. A guided bulk migration of PDFs and the folder tree from an existing library to a newly selected storage location is not yet implemented.
-- Cross-storage PDF moves have basic copy/verification support, but database-failure rollback and source-cleanup edge cases still need hardening before they can be described as fully data-safe.
+- A user can select a storage folder for new imports or start a guided migration from Settings. Migration mirrors the folder tree, copies each PDF, verifies SHA-256, commits its new database location, and only then removes the old copy. It can be retried after interruption; duplicate destination files are checked by digest before reusing them.
+- PDF moves first copy and verify, then commit the database location, then remove the old file. A failed database transaction removes only a newly created destination copy; a pre-existing verified destination is preserved. If source cleanup fails after commit, the app reports that both copies may remain.
 - Folder rename refreshes all descendant folder and PDF storage references. Empty-folder deletion updates the database first and restores the visible record if physical deletion fails.
 - A PDF can be relinked from a user-selected copy. When a saved SHA-256 exists, the replacement must match exactly.
 - Android SAF permission revocation or an iOS Files provider revoking access can still require the user to reselect the storage folder and relink inaccessible individual PDFs. A full guided provider-permission repair screen is not yet complete.
 - iOS Files providers (including cloud providers) may need to download a file before it can be read; this behaviour requires real-device/provider testing.
 - App-private fallback files remain inside the app's container and may be removed on uninstall. Only files stored in a verified external Files location are independent of the app container.
-- The current implementation reads PDF bytes into memory during copy paths. Large-file streaming and low-memory-device testing remain outstanding.
+- The current implementation still reads PDF bytes into memory in import, move, migration, and relink paths. Large-file streaming and low-memory-device testing remain outstanding.
 
 ## Verification status
 
