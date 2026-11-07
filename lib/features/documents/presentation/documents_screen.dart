@@ -126,9 +126,11 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     try {
       await _tools.shareStoredPdf(document.storagePath, '${document.name}.pdf');
     } catch (error) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Could not share PDF: $error')),
-      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not share PDF: $error')),
+        );
+      }
     }
   }
 
