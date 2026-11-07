@@ -30,8 +30,6 @@ jobs:
           cache: true
       - name: Generate native platform scaffolding
         run: flutter create --platforms=android,ios --org com.docsgrid .
-      - name: Add Android notification permission
-        run: python3 -c "from pathlib import Path; p=Path('android/app/src/main/AndroidManifest.xml'); s=p.read_text(); s=s.replace('<manifest ', '<manifest xmlns:android=\\\"http://schemas.android.com/apk/res/android\\\" ', 1) if 'xmlns:android=' not in s else s; s=s.replace('<application', '<uses-permission android:name=\\\"android.permission.POST_NOTIFICATIONS\\\"/>\\n    <application', 1); p.write_text(s)"
       - name: Configure Android camera and notification permissions
         run: |
           python3 - <<'PY'
@@ -82,7 +80,7 @@ jobs:
           p = Path('ios/Runner/Info.plist')
           s = p.read_text()
           keys = '''\n          <key>NSCameraUsageDescription</key>\n          <string>DocsGrid uses the camera to scan document pages into PDFs.</string>\n          <key>NSPhotoLibraryUsageDescription</key>\n          <string>DocsGrid uses selected photos to create PDF documents.</string>\n          '''
-          s = s.replace('</dict>', keys + '\\n</dict>', 1)
+          s = s.replace('</dict>', keys + '\n</dict>', 1)
           p.write_text(s)
           PY
       - name: Install iOS Files host integration
