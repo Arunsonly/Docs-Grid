@@ -1,6 +1,5 @@
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
 import 'package:file_picker/file_picker.dart';
@@ -646,23 +645,10 @@ class DocumentRepository {
 
     for (final picked in pickedFiles) {
       String? createdUri;
-      File? stagedSource;
       try {
         final sourcePath = picked.path;
-        File? sourceFile = sourcePath == null ? null : File(sourcePath);
-        Uint8List? fallbackBytes;
-        if (sourceFile == null && picked.readStream != null) {
-          final temp = await getTemporaryDirectory();
-          stagedSource = File(p.join(temp.path, 'docsgrid_import_\${_uuid.v4()}.pdf'));
-          await stagedSource!.create(recursive: true);
-          final sink = stagedSource!.openWrite();
-          await sink.addStream(picked.readStream!);
-          await sink.flush();
-          await sink.close();
-          sourceFile = stagedSource;
-        } else if (sourceFile == null) {
-          fallbackBytes = await picked.readAsBytes();
-        }
+        final sourceFile = sourcePath == null ? null : File(sourcePath);
+        final fallbackBytes = sourceFile == null ? await picked.readAsBytes() : null;
         if (sourceFile != null && !await sourceFile.exists()) {
           throw StateError('The selected PDF is no longer accessible.');
         }
@@ -758,10 +744,6 @@ class DocumentRepository {
           } catch (_) {}
         }
         failed++;
-      } finally {
-        if (stagedSource != null && await stagedSource.exists()) {
-          try { await stagedSource.delete(); } catch (_) {}
-        }
       }
     }
     return ImportSummary(added: added, duplicates: duplicates, failed: failed);
