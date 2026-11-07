@@ -154,8 +154,27 @@ class MainActivity : FlutterActivity() {
     // Copy and verify without deleting the source. Dart updates SQLite first,
     // then explicitly deletes the source after the metadata transaction commits.
     private fun copyPdf(source: Uri, parentUri: Uri, name: String): Uri {
+        val parent = resolveParentUri(parentUri)
+        val parentId = DocumentsContract.getDocumentId(parent)
+        val children = DocumentsContract.buildChildDocumentsUriUsingTree(parentUri, parentId)
+        val existing = mutableSetOf<String>()
+        contentResolver.query(
+            children,
+            arrayOf(DocumentsContract.Document.COLUMN_DISPLAY_NAME),
+            null, null, null
+        )?.use { cursor ->
+            val index = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+            while (cursor.moveToNext()) if (index >= 0) existing.add(cursor.getString(index))
+        }
+        val base = name.removeSuffix(".pdf")
+        var candidate = "$base.pdf"
+        var suffix = 1
+        while (existing.contains(candidate)) {
+            candidate = "$base ($suffix).pdf"
+            suffix++
+        }
         val destination = DocumentsContract.createDocument(
-            contentResolver, resolveParentUri(parentUri), "application/pdf", name
+            contentResolver, parent, "application/pdf", candidate
         ) ?: throw IllegalStateException("Could not create the destination PDF.")
         try {
             contentResolver.openInputStream(source)?.use { input ->
