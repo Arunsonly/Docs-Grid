@@ -5,6 +5,7 @@ import 'package:crypto/crypto.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
+import 'package:sqflite/sqflite.dart';
 import 'package:uuid/uuid.dart';
 
 import '../../../core/database/app_database.dart';
@@ -157,8 +158,9 @@ class DocumentRepository {
         final target = await _uniqueFile(library, safeName);
         await target.writeAsBytes(bytes, flush: true);
         final now = DateTime.now().toUtc().toIso8601String();
+        final documentId = _uuid.v4();
         await db.insert('documents', {
-          'id': _uuid.v4(),
+          'id': documentId,
           'name': p.basenameWithoutExtension(target.path),
           'original_name': picked.name,
           'storage_uri': target.path,
@@ -172,6 +174,7 @@ class DocumentRepository {
           'metadata_json': '{}',
           'source': 'file_picker',
         });
+        await _recordHistory(db, documentId, 'imported', {'name': p.basenameWithoutExtension(target.path)});
         added++;
       } catch (_) {
         failed++;
@@ -220,6 +223,7 @@ class DocumentRepository {
       where: 'id = ? AND deleted_at IS NULL',
       whereArgs: [document.id],
     );
+    await _recordHistory(db, document.id, favorite ? 'favorited' : 'unfavorited', {});
   }
 
   Future<void> markOpened(DocumentRecord document) async {
@@ -227,6 +231,7 @@ class DocumentRepository {
     await db.update('documents', {
       'last_opened_at': DateTime.now().toUtc().toIso8601String(),
     }, where: 'id = ?', whereArgs: [document.id]);
+    await _recordHistory(db, document.id, 'opened', {});
   }
 
   Future<List<DocumentRecord>> listTrash({String query = ''}) async {
@@ -250,6 +255,7 @@ class DocumentRepository {
       'deleted_at': null,
       'updated_at': DateTime.now().toUtc().toIso8601String(),
     }, where: 'id = ? AND deleted_at IS NOT NULL', whereArgs: [document.id]);
+    await _recordHistory(db, document.id, 'restored', {});
   }
 
   Future<void> moveToTrash(DocumentRecord document) async {
@@ -258,6 +264,7 @@ class DocumentRepository {
       'deleted_at': DateTime.now().toUtc().toIso8601String(),
       'updated_at': DateTime.now().toUtc().toIso8601String(),
     }, where: 'id = ?', whereArgs: [document.id]);
+    await _recordHistory(db, document.id, 'moved_to_recycle_bin', {});
   }
 
   Future<void> rename(DocumentRecord document, String newName) async {
@@ -277,12 +284,29 @@ class DocumentRepository {
       'storage_uri': newFile.path,
       'updated_at': DateTime.now().toUtc().toIso8601String(),
     }, where: 'id = ?', whereArgs: [document.id]);
+    await _recordHistory(db, document.id, 'renamed', {'from': document.name, 'to': p.basenameWithoutExtension(newFile.path)});
   }
 
   Future<void> permanentlyDelete(DocumentRecord document) async {
     final file = File(document.storagePath);
     if (await file.exists()) await file.delete();
     final db = await _database.database;
+    await _recordHistory(db, null, 'permanently_deleted', {'document_id': document.id, 'name': document.name});
     await db.delete('documents', where: 'id = ?', whereArgs: [document.id]);
+  }
+
+  Future<void> _recordHistory(
+    DatabaseExecutor db,
+    String? documentId,
+    String action,
+    Map<String, Object?> details,
+  ) async {
+    await db.insert('history', {
+      'id': _uuid.v4(),
+      'document_id': documentId,
+      'action': action,
+      'details_json': jsonEncode(details),
+      'created_at': DateTime.now().toUtc().toIso8601String(),
+    });
   }
 }
