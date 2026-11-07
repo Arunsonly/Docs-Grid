@@ -59,7 +59,7 @@ The following changes are on `feature/complete-ten-features` and remain subject 
 | 7 | Expiry Reminder System | Device-local scheduled notifications; Android notification permission and reboot receivers; daily and weekly repeating reminders; disable, snooze, complete and delete cancel/reschedule notifications | Monthly recurrence not yet available; iOS/Android notification delivery and reboot must be tested on physical devices; Android uses inexact scheduling |
 | 8 | Document Scanner & Quick Share | Camera single-page scan and multi-image gallery-to-PDF; scanner output imported into the library; document menu shares local and provider-backed PDFs | No perspective crop/edge detection or multi-page camera capture workflow yet |
 | 9 | Document History & Recycle Bin | Existing action history, soft delete, restore and confirmed permanent delete retained; duplicate cleanup uses Recycle Bin | Verify rollback and history consistency after app restart |
-| 10 | Backup & Restore | ZIP backup includes DB tables and local PDFs; manifest and SHA-256 verification; additive restore stages files, inserts metadata transactionally and aborts on ID conflicts | Backup deliberately stops for provider URIs it cannot stream; no silent partial backup. Test large archives, rollback, and restore across fresh installs |
+| 10 | Backup & Restore | ZIP backup includes DB tables and local PDFs; manifest and SHA-256 verification; additive restore stages files, inserts metadata transactionally and aborts on ID conflicts | Provider-backed content URIs are copied to temporary local files for inclusion; unavailable providers stop the backup rather than creating a partial archive. Test large archives, rollback, and restore across fresh installs |
 
 ### Current branch verification
 
