@@ -245,6 +245,74 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     await _load();
   }
 
+  Future<void> _editTags(DocumentRecord document) async {
+    final tags = await _categoryRepository.listTags();
+    if (!mounted) return;
+    final current = await _categoryRepository.tagsForDocument(document.id);
+    if (!mounted) return;
+    final selected = current.map((tag) => tag.id).toSet();
+    final result = await showModalBottomSheet<Set<String>>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (sheetContext) => StatefulBuilder(
+        builder: (context, refresh) => SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const ListTile(
+                  title: Text('Document tags'),
+                  subtitle: Text('Select one or more reusable tags.'),
+                ),
+                if (tags.isEmpty)
+                  const Padding(
+                    padding: EdgeInsets.all(20),
+                    child: Text('No tags created yet. Add tags in Settings → Categories & tags.'),
+                  )
+                else
+                  ConstrainedBox(
+                    constraints: const BoxConstraints(maxHeight: 360),
+                    child: ListView(
+                      shrinkWrap: true,
+                      children: [
+                        for (final tag in tags)
+                          CheckboxListTile(
+                            value: selected.contains(tag.id),
+                            title: Text(tag.name),
+                            onChanged: (checked) => refresh(() {
+                              if (checked == true) {
+                                selected.add(tag.id);
+                              } else {
+                                selected.remove(tag.id);
+                              }
+                            }),
+                          ),
+                      ],
+                    ),
+                  ),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: SizedBox(
+                    width: double.infinity,
+                    child: FilledButton(
+                      onPressed: () => Navigator.pop(sheetContext, selected),
+                      child: const Text('Save tags'),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+    if (result == null) return;
+    await _categoryRepository.setDocumentTags(document.id, result.toList());
+    await _load();
+  }
+
   Future<void> _trash(DocumentRecord document) async {
     final confirmed = await showDialog<bool>(
       context: context,
@@ -354,6 +422,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
         subtitle: Text([
           _size(document.sizeBytes),
           document.categoryName ?? 'Uncategorised',
+          if (document.tagNames.isNotEmpty) document.tagNames.join(', '),
           file.existsSync() ? 'On this device' : 'File missing',
         ].join(' · ')),
         trailing: PopupMenuButton<String>(
@@ -361,6 +430,8 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
             if (value == 'favorite') {
               await _repository.setFavorite(document, !document.isFavorite);
               await _load();
+            } else if (value == 'tags') {
+              await _editTags(document);
             } else if (value == 'category') {
               await _chooseCategory(document);
             } else if (value == 'rename') {
@@ -373,6 +444,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
             PopupMenuItem(value: 'favorite',
               child: Text(document.isFavorite ? 'Remove from Saved' : 'Add to Saved')),
             const PopupMenuItem(value: 'category', child: Text('Set category')),
+            const PopupMenuItem(value: 'tags', child: Text('Edit tags')),
             const PopupMenuItem(value: 'rename', child: Text('Rename')),
             const PopupMenuItem(value: 'trash', child: Text('Move to Recycle Bin')),
           ],
