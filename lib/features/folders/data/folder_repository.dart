@@ -2,6 +2,7 @@ import 'package:sqflite/sqflite.dart';
 import 'package:uuid/uuid.dart';
 
 import '../../../core/database/app_database.dart';
+import '../../../core/storage/storage_location_service.dart';
 import '../domain/folder.dart';
 
 class FolderOption {
@@ -49,21 +50,50 @@ class FolderRepository {
       throw ArgumentError('Folder name cannot contain / or \\.');
     }
     final db = await _database.database;
+    final storage = StorageLocationService.instance;
+    final selectedRoot = await storage.selectedFolder();
+    String? parentStorageUri;
+    if (parentId != null) {
+      final parentRows = await db.query(
+        'folders',
+        columns: ['storage_uri_or_relative_path'],
+        where: 'id = ? AND deleted_at IS NULL',
+        whereArgs: [parentId],
+        limit: 1,
+      );
+      if (parentRows.isEmpty) throw StateError('Parent folder no longer exists.');
+      parentStorageUri = parentRows.first['storage_uri_or_relative_path'] as String?;
+    } else {
+      parentStorageUri = selectedRoot?['uri'];
+    }
+    String? physicalUri;
+    if (parentStorageUri != null) {
+      physicalUri = await storage.createDirectory(parentUri: parentStorageUri, name: cleaned);
+    }
     final now = DateTime.now().toUtc().toIso8601String();
     final folder = Folder(
       id: _uuid.v4(),
       name: cleaned,
       parentId: parentId,
+      storageUri: physicalUri,
       createdAt: DateTime.parse(now),
       updatedAt: DateTime.parse(now),
     );
-    await db.insert('folders', {
-      'id': folder.id,
-      'name': folder.name,
-      'parent_id': folder.parentId,
-      'created_at': now,
-      'updated_at': now,
-    });
+    try {
+      await db.insert('folders', {
+        'id': folder.id,
+        'name': folder.name,
+        'parent_id': folder.parentId,
+        'storage_uri_or_relative_path': physicalUri,
+        'created_at': now,
+        'updated_at': now,
+      });
+    } catch (_) {
+      if (physicalUri != null) {
+        try { await storage.deletePdf(physicalUri); } catch (_) {}
+      }
+      rethrow;
+    }
     return folder;
   }
 
@@ -74,9 +104,25 @@ class FolderRepository {
       throw ArgumentError('Folder name cannot contain / or \\.');
     }
     final db = await _database.database;
+    final rows = await db.query(
+      'folders',
+      columns: ['storage_uri_or_relative_path'],
+      where: 'id = ? AND deleted_at IS NULL',
+      whereArgs: [id],
+      limit: 1,
+    );
+    if (rows.isEmpty) throw StateError('Folder no longer exists.');
+    final storageUri = rows.first['storage_uri_or_relative_path'] as String?;
+    final renamedUri = storageUri == null
+        ? null
+        : await StorageLocationService.instance.renamePdf(uri: storageUri, name: cleaned);
     final count = await db.update(
       'folders',
-      {'name': cleaned, 'updated_at': DateTime.now().toUtc().toIso8601String()},
+      {
+        'name': cleaned,
+        'storage_uri_or_relative_path': renamedUri,
+        'updated_at': DateTime.now().toUtc().toIso8601String(),
+      },
       where: 'id = ? AND deleted_at IS NULL',
       whereArgs: [id],
     );
@@ -95,6 +141,10 @@ class FolderRepository {
     )) ?? 0;
     if (childFolders > 0 || documents > 0) {
       throw StateError('Folder is not empty. Move its contents before deleting it.');
+    }
+    final storageUri = folder.first['storage_uri_or_relative_path'] as String?;
+    if (storageUri != null) {
+      await StorageLocationService.instance.deletePdf(storageUri);
     }
     await db.update('folders', {
       'deleted_at': DateTime.now().toUtc().toIso8601String(),
