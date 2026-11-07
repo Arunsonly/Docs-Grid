@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'features/documents/presentation/documents_screen.dart';
 import 'features/categories/presentation/categories_screen.dart';
+import 'features/history/presentation/history_screen.dart';
 import 'features/folders/presentation/folders_screen.dart';
 
 void main() {
@@ -95,6 +96,16 @@ class _SettingsScreen extends StatelessWidget {
                 body: const CategoriesScreen(),
               ),
             ),
+          ),
+        ),
+        const Divider(),
+        ListTile(
+          leading: const Icon(Icons.history),
+          title: const Text('Activity history'),
+          subtitle: const Text('Review recent document actions stored on this device.'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () => Navigator.of(context).push(
+            MaterialPageRoute(builder: (_) => const HistoryScreen()),
           ),
         ),
         const Divider(),
