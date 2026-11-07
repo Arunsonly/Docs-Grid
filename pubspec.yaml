@@ -17,6 +17,8 @@ dependencies:
   uuid: ^4.6.0
   intl: ^0.20.3
   open_filex: ^4.7.0
+  pdfrx: ^2.11.0
+  share_plus: ^13.3.1
 
 dev_dependencies:
   flutter_test:
