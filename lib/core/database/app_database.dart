@@ -14,7 +14,7 @@ class AppDatabase {
     final dbPath = p.join(directory.path, 'docs_grid.db');
     _database = await openDatabase(
       dbPath,
-      version: 2,
+      version: 3,
       onConfigure: (db) async => db.execute('PRAGMA foreign_keys = ON'),
       onCreate: (db, version) async {
         await db.execute('''
@@ -85,6 +85,7 @@ class AppDatabase {
           )
         ''');
         await _createV2Tables(db);
+        await _createV3Tables(db);
         await db.insert('schema_migrations', {
           'version': 1,
           'applied_at': DateTime.now().toUtc().toIso8601String(),
@@ -102,10 +103,31 @@ class AppDatabase {
             'applied_at': DateTime.now().toUtc().toIso8601String(),
           });
         }
+        if (oldVersion < 3) {
+          await _createV3Tables(db);
+          await db.insert('schema_migrations', {
+            'version': 3,
+            'applied_at': DateTime.now().toUtc().toIso8601String(),
+          });
+        }
       },
     );
     return _database!;
   }
+  Future<void> _createV3Tables(DatabaseExecutor db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS document_text_index (
+        document_id TEXT PRIMARY KEY,
+        extracted_text TEXT NOT NULL DEFAULT '',
+        indexed_at TEXT NOT NULL,
+        page_count INTEGER NOT NULL DEFAULT 0,
+        FOREIGN KEY(document_id) REFERENCES documents(id) ON DELETE CASCADE
+      )
+    ''');
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_documents_sha256 ON documents(sha256)');
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_documents_expiry ON documents(expiry_date, deleted_at)');
+  }
+
   Future<void> _createV2Tables(DatabaseExecutor db) async {
     await db.execute('''
       CREATE TABLE IF NOT EXISTS categories (
