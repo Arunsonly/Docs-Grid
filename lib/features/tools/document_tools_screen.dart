@@ -53,7 +53,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
     final picked = await FilePicker.pickFiles(type: FileType.custom, allowedExtensions: ['zip']);
     if (picked.isEmpty || picked.single.path == null) return;
     final count = await _tools.validateBackup(File(picked.single.path!));
-    if (mounted) setState(() => _message = 'Backup integrity verified. $count PDF file(s) found. Restore is not enabled yet.');
+    if (mounted) setState(() => _message = 'Backup integrity verified. $count PDF file(s) found.');
   });
 
 
@@ -103,6 +103,45 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
     if (mounted) setState(() => _message = 'OCR indexing finished: $done indexed, $skipped skipped or failed. Cloud/provider PDFs need local device access.');
   });
 
+
+  Future<void> _reviewDuplicateGroup(String sha) async {
+    final db = await AppDatabase.instance.database;
+    final rows = await db.query('documents',
+      where: 'sha256 = ? AND deleted_at IS NULL', whereArgs: [sha],
+      orderBy: 'created_at ASC');
+    final docs = rows.map(DocumentRecord.fromMap).toList();
+    if (docs.length < 2 || !mounted) return;
+    String keepId = docs.first.id;
+    final remove = await showDialog<bool>(context: context, builder: (dialogContext) => StatefulBuilder(
+      builder: (context, refresh) => AlertDialog(
+        title: const Text('Review duplicate PDFs'),
+        content: SizedBox(width: 440, child: ListView(shrinkWrap: true, children: [
+          const Text('Choose the copy to keep. All other copies will be moved to Recycle Bin, not permanently deleted.'),
+          const SizedBox(height: 8),
+          for (final doc in docs)
+            RadioListTile<String>(
+              value: doc.id,
+              groupValue: keepId,
+              onChanged: (value) => refresh(() => keepId = value!),
+              title: Text('${doc.name}.pdf'),
+              subtitle: Text('${doc.sizeBytes} bytes · ${doc.storagePath}'),
+            ),
+        ])),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Keep selected copy')),
+        ],
+      ),
+    ));
+    if (remove != true) return;
+    for (final doc in docs) {
+      if (doc.id != keepId) await DocumentRepository().moveToTrash(doc);
+    }
+    if (mounted) {
+      setState(() => _message = 'Duplicate review complete. Kept 1 copy and moved ${docs.length - 1} copy/copies to Recycle Bin.');
+    }
+  }
+
   Future<void> _showDuplicates() async {
     final groups = await _tools.findExactDuplicates();
     if (!mounted) return;
@@ -113,6 +152,11 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
         : ListView(shrinkWrap: true, children: groups.map((g) => ListTile(
             title: Text('${g['copies']} identical copies'),
             subtitle: Text((g['names'] ?? '').toString()),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () {
+              Navigator.pop(context);
+              _reviewDuplicateGroup(g['sha256'] as String);
+            },
           )).toList())),
       actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('Close'))],
     ));
