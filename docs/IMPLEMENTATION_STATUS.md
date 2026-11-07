@@ -4,45 +4,41 @@ Last updated: 2026-11-07
 
 This is an implementation tracker, not a release claim. A green CI build does not mean physical-device testing has passed.
 
-## Current status
+## Core Storage and PDF Management
 
-| Area | Status | Implemented |
+| Area | Current implementation | Remaining verification |
 |---|---|---|
-| Android storage | Implemented in code; CI/device validation pending | SAF folder picker, persisted tree permission, visible folder storage, physical nested folders, verified PDF writes/copies, rename/delete/open, and folder/document URI reconciliation after folder rename |
-| iOS Files storage | Implemented in code; CI/device validation pending | Native Files folder picker, persisted security-scoped bookmarks (including previously selected roots), folder/file create/copy/read/rename/delete, and native PDF preview |
-| PDF import | Partial | Multi-file PDF picker, PDF header validation, SHA-256 duplicate check, writes to selected Android/iOS storage or app-private fallback; filename collision handling |
-| Folder organisation | Partial | Nested folder CRUD; physical folders on selected storage; safe folder rename updates descendant folder and PDF URIs; empty-folder deletion rolls back metadata if physical deletion fails |
-| PDF move | Implemented in code; CI/device validation pending | Copy-and-verify moves between app-private folders and selected Android/iOS folders; SQLite metadata commits before source cleanup; failed metadata commits clean up newly created copies while retaining the source. A failed source cleanup is reported without losing the new database reference. |
-| PDF recovery | Partial | User can relink a PDF from Files; PDF header and existing SHA-256 are verified before database reference changes. Guided repair for revoked provider permissions remains outstanding |
-| Categories and tags | Partial | Built-in/custom categories, custom tags, rename/delete, assign to PDFs |
-| Search | Partial | PDF filename search; full-text search and local OCR remain missing |
-| Duplicate detection | Partial | Exact SHA-256 duplicate detection; no review/merge workflow |
-| Saved and recent | Partial | Favorites and last-opened timestamp; Recently opened screen and query added |
-| Reminders | Partial | On-device reminder create/list/edit/enable/disable/complete/snooze/duplicate/delete UI and SQLite storage; scheduled notifications and recurring reminders still missing |
-| Scanner and sharing | Not implemented | No scanner or native share flow yet |
-| History and recycle bin | Partial | Activity history, soft delete, restore, confirmed permanent delete |
-| Backup and restore | Not implemented | No ZIP backup/restore yet |
+| Android storage | SAF folder picker, persisted tree permission, physical nested folders, file create/copy/read/rename/delete/open, permission health check and repair entry point | Real Android device: grant, restart persistence, revoke, reselect, provider removal |
+| iOS Files storage | Files folder picker, persisted security-scoped bookmarks, physical folders/files, native PDF preview, permission health check and repair entry point | Real iPhone: bookmark persistence after restart, stale/revoked bookmark, cloud provider download and reconnect |
+| PDF import | Multi-file picker, PDF header validation, SHA-256 duplicate detection, safe filename collision handling, external selected storage or private fallback | Large files, provider-backed files and low-memory behaviour on devices |
+| Folder organisation | Nested folder CRUD, physical folder creation, descendant folder/PDF URI reconciliation after rename, empty-folder delete rollback | Device test across nested trees and provider-specific rename behaviour |
+| PDF move | Copy-and-verify, database commit before source cleanup, rollback cleanup on metadata failure, streamed provider-to-private copy | Device test every direction, interrupted copy and source cleanup failure |
+| PDF recovery | Relink verifies PDF header and original SHA-256 before changing DB reference; Settings reports storage access health and reopens folder selection for repair | Device test lost/revoked access and relinking from local and cloud Files providers |
+| Migration | Mirrors nested folders, streams and verifies PDF copies, commits each new DB reference before deleting old source, supports safe retry after interruption | Device test interruption, app restart, duplicate destination, provider disconnect and large PDFs |
+| Automated checks | Flutter analyze, widget/unit tests, status normalization tests, Android debug APK and unsigned iOS build | Keep CI green on final commit; add platform integration coverage as test harness permits |
 
 ## Storage behaviour and limitations
 
-- Android uses the Storage Access Framework and retains the user's selected folder permission. PDFs and folders are real provider files; broad storage permission is not requested.
-- iOS uses the Files folder picker and security-scoped bookmarks. Previously selected bookmarks are retained so a user can select a new root and migrate files from an older selected root while its access remains valid.
-- A user can select a storage folder for new imports or start a guided migration from Settings. The migration dialog reports completed/total PDFs and the current filename. Migration mirrors the folder tree, copies each PDF, verifies SHA-256, commits its new database location, and only then removes the old copy. It can be retried after interruption; duplicate destination files are checked by digest before reusing them.
-- PDF moves first copy and verify, then commit the database location, then remove the old file. A failed database transaction removes only a newly created destination copy; a pre-existing verified destination is preserved. If source cleanup fails after commit, the app reports that both copies may remain.
-- Folder rename refreshes all descendant folder and PDF storage references. Empty-folder deletion updates the database first and restores the visible record if physical deletion fails.
-- A PDF can be relinked from a user-selected copy. When a saved SHA-256 exists, the replacement must match exactly.
-- Android SAF permission revocation or an iOS Files provider revoking access can still require the user to reselect the storage folder and relink inaccessible individual PDFs. A full guided provider-permission repair screen is not yet complete.
-- iOS Files providers (including cloud providers) may need to download a file before it can be read; this behaviour requires real-device/provider testing.
-- App-private fallback files remain inside the app's container and may be removed on uninstall. Only files stored in a verified external Files location are independent of the app container.
-- PDF import now uses streamed SHA-256 and native streamed copy when the picker supplies a local file path. Migration uses streamed hashing/copy verification, and app-private-to-selected-storage moves use native streamed copying. Relinking uses streamed hashing and native streamed copy when the picker exposes a local file path. Moves from provider-backed storage into the app-private library now use native 64 KiB streaming copies on Android and iOS, followed by streamed SHA-256 verification. Large-file and low-memory-device testing remains outstanding.
+- Android uses the Storage Access Framework and retains the user's selected folder permission; broad storage permission is not requested.
+- iOS uses Files and security-scoped bookmarks. Previous selected roots are retained so the user can migrate from an earlier root while access remains valid.
+- Settings exposes storage access health. If access is revoked, the repair entry point reopens folder selection; selecting a replacement root does not delete existing PDF records.
+- Migration mirrors the folder hierarchy. For each PDF it copies and verifies SHA-256, commits the new database location, and only then removes the old copy. It can be retried after interruption.
+- PDF moves use copy-and-verify, then commit metadata, then clean up the old copy. If metadata commit fails, the original remains. If source cleanup fails after commit, the app reports that both copies may remain.
+- Folder rename refreshes descendant folder and PDF storage references. Empty-folder deletion restores the visible database record if physical deletion fails.
+- Relinking accepts a user-selected PDF and checks its header and saved SHA-256 before changing the record. Current implementation requires FilePicker to expose a readable local path; provider selections without a local path are rejected with an actionable error instead of being treated as valid.
+- Import can read provider selections into memory when FilePicker does not expose a local path. This is a large-file memory risk and requires cloud-provider/device testing; do not treat provider support as fully validated.
+- iOS Files providers (including cloud providers) may need to download a file before it can be read. This requires real-device/provider testing.
+- App-private fallback files remain inside the app container and may be removed on uninstall. Files in a verified external location are independent of the app container.
+- Streamed SHA-256 and native streamed copy are used where the picker exposes a local path and for provider URI copy operations. Large-file and low-memory-device testing remains outstanding.
 
 ## Verification status
 
-- GitHub Actions runs Flutter analyze, widget/unit tests, Android debug APK build, and an unsigned iOS build.
-- The Android SAF and iOS Files integrations are now included in CI. The latest commit must pass both jobs before this work is considered build-verified. The 2026-11-07 run 42362803385 passed Android analyze/tests/debug APK build+artifact upload and iOS analyze/tests/unsigned build for commit f4a1acda; later commits require a fresh CI run.
-- CI is not a substitute for testing on a real Android phone and iPhone. Folder picker grants, bookmark persistence after app restart, cloud-provider files, rename/move/delete, interrupted migration, and recovery must be exercised on physical devices.
-- Android release signing, iOS signing/TestFlight, large-PDF testing, and data-recovery tests remain outstanding.
+- Latest verified CI commit: `bf9574b45dfc667046c7a680db3bec739fe6385d`.
+- GitHub Actions run [42364129247](https://github.com/Arunsonly/Docs-Grid/actions/runs/42364129247) completed successfully: Android analyze, widget/unit tests, debug APK build and artifact upload; iOS analyze, widget/unit tests and unsigned build.
+- CI does not verify OS permission prompts, real provider behaviour, cloud downloads, app restart persistence or real-device file operations.
+- Physical Android and iPhone checks have not yet been performed. They require actual devices with the app installed and cannot be certified by a hosted CI runner.
+- Android release signing, iOS signing/TestFlight, large-PDF stress tests and data-recovery drills remain outstanding.
 
 ## Release gate
 
-Do not label DocsGrid final or distribute it as a finished app until the storage limitation is resolved, the remaining required modules are implemented, CI passes on the latest commit, and real-device checks are completed.
+Do not label Core Storage and PDF Management physically verified or release-ready until the device/provider checks above are completed and all failures are fixed. No later product modules should be started before this milestone is closed.
