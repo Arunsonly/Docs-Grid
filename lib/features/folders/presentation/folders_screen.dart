@@ -168,11 +168,12 @@ class _FoldersScreenState extends State<FoldersScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return WillPopScope(
-      onWillPop: () async {
-        if (_ancestors.isEmpty) return true;
-        _goToAncestor(_ancestors.length - 2);
-        return false;
+    return PopScope(
+      canPop: _ancestors.isEmpty,
+      onPopInvokedWithResult: (didPop, result) {
+        if (!didPop && _ancestors.isNotEmpty) {
+          _goToAncestor(_ancestors.length - 2);
+        }
       },
       child: Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -347,6 +348,6 @@ class _FoldersScreenState extends State<FoldersScreen> {
           ),
         )
       ],
-    ));
+    );
   }
 }
