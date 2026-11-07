@@ -5,7 +5,6 @@ import 'package:crypto/crypto.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
-import 'package:sqflite/sqflite.dart';
 import 'package:uuid/uuid.dart';
 
 import '../../../core/database/app_database.dart';
@@ -59,7 +58,7 @@ class DocumentRepository {
     final db = await _database.database;
     final rows = await db.query(
       'documents',
-      where: 'deleted_at IS NULL AND (? = 0 OR COALESCE(json_extract(metadata_json, r\'$.favorite\'), 0) = 1) AND name LIKE ?',
+      where: "deleted_at IS NULL AND (? = 0 OR COALESCE(json_extract(metadata_json, '$.favorite'), 0) = 1) AND name LIKE ?",
       whereArgs: [favoritesOnly ? 1 : 0, '%${query.trim()}%'],
       orderBy: 'last_opened_at DESC, name COLLATE NOCASE ASC',
     );
