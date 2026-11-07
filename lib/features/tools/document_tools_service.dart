@@ -106,7 +106,7 @@ class DocumentToolsService {
 
 
   Future<int> indexPdfTextFromUri(String documentId, String storageUri) async {
-    if (storageUri.startsWith('content://')) {
+    if (storageUri.startsWith('content://') || storageUri.startsWith('file://')) {
       final temp = await getTemporaryDirectory();
       final file = File(p.join(temp.path, 'ocr_source_${_uuid.v4()}.pdf'));
       try {
