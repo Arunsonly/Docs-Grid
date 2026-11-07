@@ -10,8 +10,9 @@ import 'document_tools_service.dart';
 import '../../core/storage/storage_location_service.dart';
 
 class DocumentToolsScreen extends StatefulWidget {
-  const DocumentToolsScreen({super.key, this.quickAction});
+  const DocumentToolsScreen({super.key, this.quickAction, this.section = 'tools'});
   final String? quickAction;
+  final String section;
 
   @override
   State<DocumentToolsScreen> createState() => _DocumentToolsScreenState();
@@ -262,63 +263,44 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
         padding: const EdgeInsets.only(bottom: 12),
         child: Text(_message!, style: Theme.of(context).textTheme.bodyMedium),
       ),
-      Card(child: Column(children: [
-        ListTile(leading: const Icon(Icons.document_scanner_outlined),
-          title: const Text('Scan using camera'),
-          subtitle: const Text('Capture, crop the page, name it (or skip), then choose where to save.'),
-          onTap: _busy ? null : () => _scan(camera: true)),
-        const Divider(height: 1),
-        ListTile(leading: const Icon(Icons.photo_library_outlined),
-          title: const Text('Create PDF from gallery images'),
-          subtitle: const Text('Select images, crop each page, combine them and choose a name and save location.'),
-          onTap: _busy ? null : _scan),
-        const Divider(height: 1),
-        ListTile(leading: const Icon(Icons.share_outlined),
-          title: const Text('Quick share'),
-          subtitle: const Text('Share a PDF from the Files list using its document menu.')),
-      ])),
-      Card(child: Column(children: [
-        ListTile(leading: const Icon(Icons.text_snippet_outlined),
-          title: const Text('On-device OCR indexing'),
-          subtitle: const Text('Recognise text from PDF page images on this device. No cloud OCR.'),
-          trailing: IconButton(tooltip: 'Start indexing', onPressed: _busy ? null : _indexDocuments,
-            icon: const Icon(Icons.play_arrow))),
-        Padding(padding: const EdgeInsets.fromLTRB(16, 0, 16, 16), child: Column(children: [
-          TextField(controller: _search, decoration: InputDecoration(
-            labelText: 'Search text inside indexed PDFs',
-            suffixIcon: IconButton(onPressed: _searchText, icon: const Icon(Icons.search))),
-            onSubmitted: (_) => _searchText()),
-          if (_results.isNotEmpty) ...[
-            const SizedBox(height: 8),
-            ..._results.map((r) => ListTile(
-              dense: true, title: Text((r['name'] ?? '').toString()),
-              subtitle: Text('Text match at character ${r['match_position']}'),
-            )),
-          ],
+      if (widget.section == 'tools') ...[
+        Card(child: Column(children: [
+          ListTile(leading: const Icon(Icons.text_snippet_outlined),
+            title: const Text('On-device OCR indexing'),
+            trailing: IconButton(tooltip: 'Start indexing', onPressed: _busy ? null : _indexDocuments,
+              icon: const Icon(Icons.play_arrow))),
+          Padding(padding: const EdgeInsets.fromLTRB(16, 0, 16, 16), child: Column(children: [
+            TextField(controller: _search, decoration: InputDecoration(
+              labelText: 'Search text inside indexed PDFs',
+              suffixIcon: IconButton(onPressed: _searchText, icon: const Icon(Icons.search))),
+              onSubmitted: (_) => _searchText()),
+            if (_results.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              ..._results.map((r) => ListTile(dense: true,
+                title: Text((r['name'] ?? '').toString()),
+                subtitle: Text('Text match at character ${r['match_position']}'))),
+            ],
+          ])),
+          const Divider(height: 1),
+          ListTile(leading: const Icon(Icons.copy_all_outlined),
+            title: const Text('Duplicate review'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: _busy ? null : _showDuplicates),
         ])),
-      ])),
-      Card(child: Column(children: [
-        ListTile(leading: const Icon(Icons.copy_all_outlined),
-          title: const Text('Duplicate review'),
-          subtitle: const Text('Find exact matches by SHA-256. Nothing is deleted automatically.'),
-          trailing: const Icon(Icons.chevron_right),
-          onTap: _busy ? null : _showDuplicates),
-        const Divider(height: 1),
+      ],
+      if (widget.section == 'backup') Card(child: Column(children: [
         ListTile(leading: const Icon(Icons.backup_outlined),
           title: const Text('Create offline backup'),
-          subtitle: const Text('Create a ZIP, then choose Internal storage or another folder to save it.'),
           trailing: const Icon(Icons.chevron_right),
           onTap: _busy ? null : _backup),
         const Divider(height: 1),
         ListTile(leading: const Icon(Icons.settings_backup_restore_outlined),
           title: const Text('Restore backup'),
-          subtitle: const Text('Verify and add PDFs and document metadata from a DocsGrid ZIP backup.'),
           trailing: const Icon(Icons.chevron_right),
           onTap: _busy ? null : _restoreBackup),
         const Divider(height: 1),
         ListTile(leading: const Icon(Icons.verified_outlined),
           title: const Text('Verify backup ZIP'),
-          subtitle: const Text('Check manifest, PDF entries and SHA-256 integrity before restore.'),
           trailing: const Icon(Icons.chevron_right),
           onTap: _busy ? null : _verifyBackup),
       ])),
