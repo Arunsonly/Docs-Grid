@@ -137,7 +137,7 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
                 TextField(controller: nameController, decoration: const InputDecoration(labelText: 'File name', suffixText: '.pdf')),
                 const SizedBox(height: 12),
                 DropdownButtonFormField<String?>(
-                  value: selectedFolderId,
+                  initialValue: selectedFolderId,
                   isExpanded: true,
                   decoration: const InputDecoration(labelText: 'Choose folder'),
                   items: [
