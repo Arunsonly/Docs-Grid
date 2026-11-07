@@ -178,7 +178,7 @@ class DocumentRepository {
           await target.writeAsBytes(bytes, flush: true);
           storageUri = target.path;
           storedName = p.basenameWithoutExtension(target.path);
-          relativePath = p.relative(target.path, from: library!.path);
+          relativePath = p.relative(target.path, from: library.path);
         }
         final now = DateTime.now().toUtc().toIso8601String();
         final documentId = _uuid.v4();
