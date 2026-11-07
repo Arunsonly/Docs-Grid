@@ -51,7 +51,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
 
   Future<void> _scan({bool camera = false}) => _run(() async {
     final file = await _tools.scanToPdf(useCamera: camera);
-    if (file == null) return;
+    if (!mounted || file == null) return;
 
     final nameController = TextEditingController();
     final chosenName = await showDialog<String?>(
