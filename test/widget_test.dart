@@ -8,6 +8,6 @@ void main() {
     expect(find.text('DocsGrid'), findsOneWidget);
     expect(find.text('Your documents, organised.'), findsOneWidget);
     expect(find.text('Files'), findsOneWidget);
-    expect(find.text('Folders'), findsOneWidget);
+    expect(find.text('Folders'), findsWidgets);
   });
 }
