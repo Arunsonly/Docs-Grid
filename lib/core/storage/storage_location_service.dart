@@ -15,8 +15,8 @@ class StorageLocationService {
   }
 
   Future<Map<String, String>?> chooseFolder() async {
-    if (!Platform.isAndroid) {
-      throw UnsupportedError('Choosing a storage folder is currently available on Android only.');
+    if (!Platform.isAndroid && !Platform.isIOS) {
+      throw UnsupportedError('Choosing a storage folder is not supported on this device.');
     }
     final value = await _channel.invokeMapMethod<String, dynamic>('chooseFolder');
     if (value == null || value['uri'] == null) return null;
