@@ -84,6 +84,36 @@ class DocumentRepository {
     return rows.map(DocumentRecord.fromMap).toList();
   }
 
+  Future<List<DocumentRecord>> listInFolder(String? folderId) async {
+    final db = await _database.database;
+    final rows = await db.rawQuery(
+      '''
+      SELECT d.*, c.name AS category_name,
+        (SELECT GROUP_CONCAT(t.name, ', ') FROM document_tags dt
+          INNER JOIN tags t ON t.id = dt.tag_id WHERE dt.document_id = d.id) AS tag_names
+      FROM documents d
+      LEFT JOIN categories c ON c.id = d.category_id
+      WHERE d.deleted_at IS NULL AND ${folderId == null ? 'd.folder_id IS NULL' : 'd.folder_id = ?'}
+      ORDER BY d.name COLLATE NOCASE ASC
+      ''',
+      folderId == null ? [] : [folderId],
+    );
+    return rows.map(DocumentRecord.fromMap).toList();
+  }
+
+  Future<void> moveToFolder(DocumentRecord document, String? folderId) async {
+    final db = await _database.database;
+    await db.update(
+      'documents',
+      {
+        'folder_id': folderId,
+        'updated_at': DateTime.now().toUtc().toIso8601String(),
+      },
+      where: 'id = ? AND deleted_at IS NULL',
+      whereArgs: [document.id],
+    );
+  }
+
   Future<ImportSummary> importPdfs() async {
     final pickedFiles = await FilePicker.pickFiles(
       type: FileType.custom,
