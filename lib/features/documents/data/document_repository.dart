@@ -17,6 +17,8 @@ class DocumentRecord {
     required this.sizeBytes,
     required this.createdAt,
     required this.isFavorite,
+    this.categoryId,
+    this.categoryName,
   });
 
   final String id;
@@ -25,6 +27,8 @@ class DocumentRecord {
   final int sizeBytes;
   final DateTime createdAt;
   final bool isFavorite;
+  final String? categoryId;
+  final String? categoryName;
 
   factory DocumentRecord.fromMap(Map<String, Object?> row) {
     final metadata = jsonDecode((row['metadata_json'] as String?) ?? '{}')
@@ -36,6 +40,8 @@ class DocumentRecord {
       sizeBytes: (row['size_bytes'] as int?) ?? 0,
       createdAt: DateTime.parse(row['created_at'] as String),
       isFavorite: metadata['favorite'] == true,
+      categoryId: row['category_id'] as String?,
+      categoryName: row['category_name'] as String?,
     );
   }
 }
@@ -56,11 +62,17 @@ class DocumentRepository {
 
   Future<List<DocumentRecord>> list({String query = '', bool favoritesOnly = false}) async {
     final db = await _database.database;
-    final rows = await db.query(
-      'documents',
-      where: "deleted_at IS NULL AND (? = 0 OR COALESCE(json_extract(metadata_json, '\$.favorite'), 0) = 1) AND name LIKE ?",
-      whereArgs: [favoritesOnly ? 1 : 0, '%${query.trim()}%'],
-      orderBy: 'last_opened_at DESC, name COLLATE NOCASE ASC',
+    final rows = await db.rawQuery(
+      '''
+      SELECT d.*, c.name AS category_name
+      FROM documents d
+      LEFT JOIN categories c ON c.id = d.category_id
+      WHERE d.deleted_at IS NULL
+        AND (? = 0 OR COALESCE(json_extract(d.metadata_json, '\$.favorite'), 0) = 1)
+        AND d.name LIKE ?
+      ORDER BY d.last_opened_at DESC, d.name COLLATE NOCASE ASC
+      ''',
+      [favoritesOnly ? 1 : 0, '%${query.trim()}%'],
     );
     return rows.map(DocumentRecord.fromMap).toList();
   }
@@ -165,11 +177,15 @@ class DocumentRepository {
 
   Future<List<DocumentRecord>> listTrash({String query = ''}) async {
     final db = await _database.database;
-    final rows = await db.query(
-      'documents',
-      where: 'deleted_at IS NOT NULL AND name LIKE ?',
-      whereArgs: ['%${query.trim()}%'],
-      orderBy: 'deleted_at DESC',
+    final rows = await db.rawQuery(
+      '''
+      SELECT d.*, c.name AS category_name
+      FROM documents d
+      LEFT JOIN categories c ON c.id = d.category_id
+      WHERE d.deleted_at IS NOT NULL AND d.name LIKE ?
+      ORDER BY d.deleted_at DESC
+      ''',
+      ['%${query.trim()}%'],
     );
     return rows.map(DocumentRecord.fromMap).toList();
   }
