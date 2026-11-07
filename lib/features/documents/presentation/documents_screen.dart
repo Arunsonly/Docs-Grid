@@ -119,6 +119,24 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     await _load();
   }
 
+  Future<void> _relink(DocumentRecord document) async {
+    try {
+      await _repository.relinkDocument(document);
+      await _load();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('PDF relinked and verified successfully.')),
+        );
+      }
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('PDF recovery failed: $error')),
+        );
+      }
+    }
+  }
+
   Future<void> _rename(DocumentRecord document) async {
     final controller = TextEditingController(text: document.name);
     final value = await showDialog<String>(
@@ -498,6 +516,8 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
               await _chooseCategory(document);
             } else if (value == 'rename') {
               await _rename(document);
+            } else if (value == 'relink') {
+              await _relink(document);
             } else if (value == 'trash') {
               await _trash(document);
             }
@@ -509,6 +529,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
             const PopupMenuItem(value: 'move', child: Text('Move to folder')),
             const PopupMenuItem(value: 'tags', child: Text('Edit tags')),
             const PopupMenuItem(value: 'rename', child: Text('Rename')),
+            const PopupMenuItem(value: 'relink', child: Text('Relink / Replace PDF')),
             const PopupMenuItem(value: 'trash', child: Text('Move to Recycle Bin')),
           ],
         ),
