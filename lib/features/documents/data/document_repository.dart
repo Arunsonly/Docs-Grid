@@ -88,6 +88,7 @@ class DocumentRepository {
     final pickedFiles = await FilePicker.pickFiles(
       type: FileType.custom,
       allowedExtensions: ['pdf'],
+      allowMultiple: true,
     );
     if (pickedFiles.isEmpty) {
       return const ImportSummary(added: 0, duplicates: 0, failed: 0);
@@ -104,7 +105,7 @@ class DocumentRepository {
     for (final picked in pickedFiles) {
       try {
         final bytes = await picked.readAsBytes();
-        if (bytes.isEmpty) {
+        if (bytes.length < 5 || String.fromCharCodes(bytes.take(5)) != '%PDF-') {
           failed++;
           continue;
         }
