@@ -21,7 +21,7 @@ Offline-first personal document organiser for Android and iPhone.
 See [docs/PRODUCT_ARCHITECTURE.md](docs/PRODUCT_ARCHITECTURE.md) for the approved modules, database model, interaction standards, platform storage rules, and delivery plan.
 
 ## Project status
-The repository currently contains an initial Flutter UI shell and the approved product architecture. The ten feature modules are not yet fully implemented. Each module will be built and tested incrementally on Android and iOS.
+The repository contains a working Flutter document-library foundation. Android SAF and iOS Files storage adapters are implemented in code, including real folder trees, verified PDF moves, existing-library migration, relinking, and recovery safeguards. These integrations still require successful CI and physical-device validation; the remaining feature modules are being completed incrementally. See [docs/IMPLEMENTATION_STATUS.md](docs/IMPLEMENTATION_STATUS.md) for exact status and limitations.
 
 ## Run
 1. Install the current stable Flutter SDK.
