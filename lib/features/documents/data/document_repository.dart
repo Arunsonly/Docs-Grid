@@ -398,10 +398,14 @@ class DocumentRepository {
 
       if (destinationUri != sourceUri) {
         try {
-          if (sourceIsShared) {
+          if (sourceUri.startsWith('content://') ||
+              (Platform.isIOS && sourceUri.startsWith('file://'))) {
             await storage.deletePdf(sourceUri);
           } else {
-            final oldFile = File(sourceUri);
+            final oldPath = sourceUri.startsWith('file://')
+                ? Uri.parse(sourceUri).toFilePath()
+                : sourceUri;
+            final oldFile = File(oldPath);
             if (await oldFile.exists()) await oldFile.delete();
           }
         } catch (_) {
