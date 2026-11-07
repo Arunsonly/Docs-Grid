@@ -50,7 +50,7 @@ The following changes are on `feature/complete-ten-features` and remain subject 
 
 | # | Feature | Current code status | Known limitation / test gate |
 |---|---|---|---|
-| 1 | Smart Import & Auto Rename | Multi-PDF import, PDF signature validation, SHA-256 duplicate check, safe names/collision suffixes; provider stream is staged to a temporary file when available | A provider that exposes neither a local path nor a read stream still falls back to in-memory bytes; large-file tests required |
+| 1 | Smart Import & Auto Rename | Multi-PDF import, PDF signature validation, SHA-256 duplicate check, safe names/collision suffixes; if the picker has no local path, current fallback reads the selected file into memory | A provider that exposes neither a local path nor a read stream still falls back to in-memory bytes; large-file tests required |
 | 2 | Smart Folder & Subfolder Management | Existing nested folder CRUD and physical storage mapping retained | Verify deep folder rename/move on Android and iOS providers |
 | 3 | Smart Category & Tags | Existing built-in/custom categories and reusable tags retained | Add migration and multi-document assignment regression tests |
 | 4 | Advanced PDF Search (OCR) | On-device PDF page rendering + ML Kit OCR; extracted text persisted in SQLite; text query searches indexed PDFs; provider URI is copied to temporary storage for OCR | Latin script recognizer only in current implementation; OCR is user-triggered and can be CPU/memory intensive |
