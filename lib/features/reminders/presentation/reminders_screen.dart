@@ -14,13 +14,13 @@ class _RemindersScreenState extends State<RemindersScreen> {
   void initState() { super.initState(); _future = _repository.list(); }
   Future<void> _refresh() async { final next = _repository.list(); setState(() => _future = next); await next; }
 
-  Future<void> _add() async {
-    final title = TextEditingController();
-    final note = TextEditingController();
-    DateTime selected = DateTime.now().add(const Duration(hours: 1));
+  Future<void> _add({ReminderRecord? existing}) async {
+    final title = TextEditingController(text: existing?.title ?? '');
+    final note = TextEditingController(text: existing?.note ?? '');
+    DateTime selected = existing?.remindAt ?? DateTime.now().add(const Duration(hours: 1));
     final result = await showDialog<bool>(context: context, builder: (dialogContext) => StatefulBuilder(
       builder: (context, setDialogState) => AlertDialog(
-        title: const Text('New reminder'),
+        title: Text(existing == null ? 'New reminder' : 'Edit reminder'),
         content: Column(mainAxisSize: MainAxisSize.min, children: [
           TextField(controller: title, autofocus: true, decoration: const InputDecoration(labelText: 'Reminder title')),
           TextField(controller: note, maxLines: 2, decoration: const InputDecoration(labelText: 'Note (optional)')),
@@ -35,10 +35,17 @@ class _RemindersScreenState extends State<RemindersScreen> {
             }),
         ]),
         actions: [TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')),
-          FilledButton(onPressed: () { if (title.text.trim().isNotEmpty && selected.isAfter(DateTime.now())) Navigator.pop(dialogContext, true); }, child: const Text('Save'))],
+          FilledButton(onPressed: () { if (title.text.trim().isNotEmpty && selected.isAfter(DateTime.now())) Navigator.pop(dialogContext, true); }, child: Text(existing == null ? 'Save' : 'Update'))],
       ),
     ));
-    if (result == true) { await _repository.create(title: title.text, note: note.text, remindAt: selected); await _refresh(); }
+    if (result == true) {
+      if (existing == null) {
+        await _repository.create(title: title.text, note: note.text, remindAt: selected);
+      } else {
+        await _repository.update(id: existing.id, title: title.text, note: note.text, remindAt: selected);
+      }
+      await _refresh();
+    }
     title.dispose(); note.dispose();
   }
 
@@ -69,10 +76,17 @@ class _RemindersScreenState extends State<RemindersScreen> {
             trailing: PopupMenuButton<String>(onSelected: (value) async {
               if (value == 'toggle') await _repository.setEnabled(item, !item.enabled);
               if (value == 'complete') await _repository.complete(item.id);
+              if (value == 'snooze') await _repository.snooze(item);
+              if (value == 'duplicate') await _repository.duplicate(item);
+              if (value == 'edit') { await _add(existing: item); return; }
               if (value == 'delete') await _delete(item);
               await _refresh();
-            }, itemBuilder: (_) => [PopupMenuItem(value: 'toggle', child: Text(item.enabled ? 'Disable' : 'Enable')),
+            }, itemBuilder: (_) => [
+              const PopupMenuItem(value: 'edit', child: Text('Edit')),
+              PopupMenuItem(value: 'toggle', child: Text(item.enabled ? 'Disable' : 'Enable')),
               if (item.status != 'completed') const PopupMenuItem(value: 'complete', child: Text('Mark completed')),
+              if (item.status != 'completed') const PopupMenuItem(value: 'snooze', child: Text('Snooze 1 day')),
+              const PopupMenuItem(value: 'duplicate', child: Text('Duplicate')),
               const PopupMenuItem(value: 'delete', child: Text('Delete'))]),
           ));
         }));
