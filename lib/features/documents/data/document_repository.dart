@@ -126,7 +126,7 @@ class DocumentRepository {
       destinationUri = rows.first['storage_uri_or_relative_path'] as String?;
     }
 
-    final sourceIsShared = document.storagePath.startsWith('content://');
+    final sourceIsShared = document.storagePath.startsWith('content://') || document.storagePath.startsWith('file://');
     String newStorageUri = document.storagePath;
     var copiedToNewLocation = false;
 
@@ -191,7 +191,7 @@ class DocumentRepository {
     } catch (_) {
       if (copiedToNewLocation && newStorageUri != document.storagePath) {
         try {
-          if (newStorageUri.startsWith('content://')) {
+          if (newStorageUri.startsWith('content://') || newStorageUri.startsWith('file://')) {
             await storage.deletePdf(newStorageUri);
           } else {
             final target = File(newStorageUri);
@@ -397,7 +397,7 @@ class DocumentRepository {
     final safeBase = p.basenameWithoutExtension(cleaned).replaceAll(RegExp(r'[<>:"/\\|?*]'), '_');
     final safeName = '$safeBase.pdf';
     late final String newStorageUri;
-    if (document.storagePath.startsWith('content://')) {
+    if (document.storagePath.startsWith('content://') || document.storagePath.startsWith('file://')) {
       newStorageUri = await StorageLocationService.instance.renamePdf(
         uri: document.storagePath,
         name: safeName,
