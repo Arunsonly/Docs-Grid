@@ -81,14 +81,18 @@ class DocumentRepository {
       FROM documents d
       LEFT JOIN categories c ON c.id = d.category_id
       WHERE d.deleted_at IS NULL
-        AND (? = 0 OR COALESCE(json_extract(d.metadata_json, '\$.favorite'), 0) = 1)
         AND (? = 0 OR d.last_opened_at IS NOT NULL)
         AND d.name LIKE ?
       ORDER BY d.last_opened_at DESC, d.name COLLATE NOCASE ASC
       ''',
-      [favoritesOnly ? 1 : 0, recentOnly ? 1 : 0, '%${query.trim()}%'],
+      [recentOnly ? 1 : 0, '%${query.trim()}%'],
     );
-    return rows.map(DocumentRecord.fromMap).toList();
+    // Avoid SQLite JSON1 dependency: several Android SQLite builds do not
+    // expose json_extract(). Favorite metadata is decoded in Dart instead.
+    final documents = rows.map(DocumentRecord.fromMap).toList();
+    return favoritesOnly
+        ? documents.where((document) => document.isFavorite).toList()
+        : documents;
   }
 
   Future<List<DocumentRecord>> listInFolder(String? folderId) async {
