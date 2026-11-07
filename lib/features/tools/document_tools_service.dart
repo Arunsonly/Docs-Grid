@@ -285,6 +285,7 @@ class DocumentToolsService {
       return path;
     }
 
+    var databaseCommitted = false;
     try {
       for (final row in folderRows) {
         await Directory(folderPath(row['id'] as String)).create(recursive: true);
@@ -331,20 +332,27 @@ class DocumentToolsService {
           }
         }
       });
+      databaseCommitted = true;
       for (final row in rowsByTable['reminders']!) {
         if ((row['enabled'] as int? ?? 0) != 1 || row['status'] == 'completed') continue;
         final at = DateTime.parse(row['remind_at_utc'] as String).toLocal();
-        await ReminderNotifications.instance.schedule(
-          id: row['id'] as String,
-          title: row['title'] as String,
-          body: row['note'] as String?,
-          at: at,
-          recurrence: row['recurrence_rule'] as String?,
-        );
+        try {
+          await ReminderNotifications.instance.schedule(
+            id: row['id'] as String,
+            title: row['title'] as String,
+            body: row['note'] as String?,
+            at: at,
+            recurrence: row['recurrence_rule'] as String?,
+          );
+        } catch (_) {
+          // Imported records remain valid even if the OS declines a notification.
+        }
       }
       return restoredPaths.length;
     } catch (_) {
-      if (await restoreRoot.exists()) await restoreRoot.delete(recursive: true);
+      if (!databaseCommitted && await restoreRoot.exists()) {
+        await restoreRoot.delete(recursive: true);
+      }
       rethrow;
     }
   }
