@@ -11,4 +11,15 @@ void main() {
     expect(find.text('Saved'), findsOneWidget);
     expect(find.text('Settings'), findsOneWidget);
   });
+
+  testWidgets('Recently opened screen is reachable from Settings', (tester) async {
+    await tester.pumpWidget(const DocsGridApp());
+    await tester.tap(find.text('Settings'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Recently opened'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Recently opened'), findsOneWidget);
+    expect(find.text('Open a PDF and it will appear here.'), findsOneWidget);
+  });
 }
