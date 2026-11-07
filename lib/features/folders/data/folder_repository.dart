@@ -52,20 +52,42 @@ class FolderRepository {
     final db = await _database.database;
     final storage = StorageLocationService.instance;
     final selectedRoot = await storage.selectedFolder();
-    String? parentStorageUri;
-    if (parentId != null) {
-      final parentRows = await db.query(
+    Future<String?> ensurePhysicalFolder(String folderId) async {
+      final rows = await db.query(
         'folders',
-        columns: ['storage_uri_or_relative_path'],
+        columns: ['name', 'parent_id', 'storage_uri_or_relative_path'],
         where: 'id = ? AND deleted_at IS NULL',
-        whereArgs: [parentId],
+        whereArgs: [folderId],
         limit: 1,
       );
-      if (parentRows.isEmpty) throw StateError('Parent folder no longer exists.');
-      parentStorageUri = parentRows.first['storage_uri_or_relative_path'] as String?;
-    } else {
-      parentStorageUri = selectedRoot?['uri'];
+      if (rows.isEmpty) throw StateError('Parent folder no longer exists.');
+      final row = rows.first;
+      final existingUri = row['storage_uri_or_relative_path'] as String?;
+      if (existingUri != null) return existingUri;
+      final ancestorId = row['parent_id'] as String?;
+      final ancestorUri = ancestorId == null
+          ? selectedRoot?['uri']
+          : await ensurePhysicalFolder(ancestorId);
+      if (ancestorUri == null) return null;
+      final createdUri = await storage.createDirectory(
+        parentUri: ancestorUri,
+        name: row['name'] as String,
+      );
+      await db.update(
+        'folders',
+        {
+          'storage_uri_or_relative_path': createdUri,
+          'updated_at': DateTime.now().toUtc().toIso8601String(),
+        },
+        where: 'id = ? AND deleted_at IS NULL',
+        whereArgs: [folderId],
+      );
+      return createdUri;
     }
+
+    final parentStorageUri = parentId == null
+        ? selectedRoot?['uri']
+        : await ensurePhysicalFolder(parentId);
     String? physicalUri;
     if (parentStorageUri != null) {
       physicalUri = await storage.createDirectory(parentUri: parentStorageUri, name: cleaned);
