@@ -122,6 +122,87 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     }
   }
 
+  Future<void> _showTrash() async {
+    var trashed = await _repository.listTrash();
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, refreshDialog) => AlertDialog(
+          title: const Text('Recycle Bin'),
+          content: SizedBox(
+            width: double.maxFinite,
+            child: trashed.isEmpty
+                ? const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 20),
+                    child: Text('Recycle Bin is empty.'),
+                  )
+                : SizedBox(
+                    height: 340,
+                    child: ListView.separated(
+                      shrinkWrap: true,
+                      itemCount: trashed.length,
+                      separatorBuilder: (_, _) => const Divider(height: 1),
+                      itemBuilder: (context, index) {
+                        final document = trashed[index];
+                        return ListTile(
+                          contentPadding: EdgeInsets.zero,
+                          leading: const Icon(Icons.picture_as_pdf_outlined),
+                          title: Text('${document.name}.pdf',
+                              maxLines: 1, overflow: TextOverflow.ellipsis),
+                          subtitle: const Text('PDF moved to Recycle Bin'),
+                          trailing: PopupMenuButton<String>(
+                            onSelected: (action) async {
+                              if (action == 'restore') {
+                                await _repository.restoreFromTrash(document);
+                                refreshDialog(() => trashed.removeAt(index));
+                                await _load();
+                              } else if (action == 'delete') {
+                                final confirmed = await showDialog<bool>(
+                                  context: dialogContext,
+                                  builder: (confirmContext) => AlertDialog(
+                                    title: const Text('Delete permanently?'),
+                                    content: Text('${document.name}.pdf will be erased from this device.'),
+                                    actions: [
+                                      TextButton(
+                                        onPressed: () => Navigator.pop(confirmContext, false),
+                                        child: const Text('Cancel'),
+                                      ),
+                                      FilledButton(
+                                        onPressed: () => Navigator.pop(confirmContext, true),
+                                        child: const Text('Delete'),
+                                      ),
+                                    ],
+                                  ),
+                                );
+                                if (confirmed == true) {
+                                  await _repository.permanentlyDelete(document);
+                                  refreshDialog(() => trashed.removeAt(index));
+                                  await _load();
+                                }
+                              }
+                            },
+                            itemBuilder: (_) => const [
+                              PopupMenuItem(value: 'restore', child: Text('Restore')),
+                              PopupMenuItem(value: 'delete', child: Text('Delete permanently')),
+                            ],
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Close'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Future<void> _trash(DocumentRecord document) async {
     final confirmed = await showDialog<bool>(
       context: context,
@@ -161,7 +242,13 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                     ),
                   ),
                 ),
-                const SizedBox(width: 8),
+                const SizedBox(width: 4),
+                IconButton(
+                  tooltip: 'Recycle Bin',
+                  onPressed: _showTrash,
+                  icon: const Icon(Icons.delete_outline),
+                ),
+                const SizedBox(width: 4),
                 FilledButton.tonalIcon(
                   onPressed: _importing ? null : _import,
                   icon: const Icon(Icons.add),
