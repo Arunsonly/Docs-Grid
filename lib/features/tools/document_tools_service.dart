@@ -141,7 +141,7 @@ class DocumentToolsService {
   Future<void> shareFile(String path, {String? text}) async {
     final file = File(path);
     if (!await file.exists()) throw StateError('File is no longer available.');
-    await Share.shareXFiles([XFile(path)], text: text);
+    await SharePlus.instance.share(ShareParams(files: [XFile(path)], text: text));
   }
 
   Future<File> createBackup({void Function(int, int)? onProgress}) async {
