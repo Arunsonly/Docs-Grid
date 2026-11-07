@@ -102,9 +102,11 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
       try {
         await StorageLocationService.instance.openPdf(document.storagePath);
       } catch (error) {
-        if (mounted) ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Could not open PDF: $error')),
-        );
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Could not open PDF: $error')),
+          );
+        }
       }
     } else {
       final result = await OpenFilex.open(document.storagePath);
