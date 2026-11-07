@@ -1,0 +1,63 @@
+name: Flutter CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  android:
+    name: Android analyze, test and APK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Generate native platform scaffolding
+        run: flutter create --platforms=android,ios --org com.docsgrid .
+      - name: Install packages
+        run: flutter pub get
+      - name: Analyze
+        run: flutter analyze
+      - name: Widget and unit tests
+        run: flutter test
+      - name: Build debug APK
+        run: flutter build apk --debug
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: docsgrid-android-debug-apk
+          path: build/app/outputs/flutter-apk/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
+
+  ios:
+    name: iOS analyze, test and unsigned build
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Generate native platform scaffolding
+        run: flutter create --platforms=ios --org com.docsgrid .
+      - name: Install packages
+        run: flutter pub get
+      - name: Analyze
+        run: flutter analyze
+      - name: Widget and unit tests
+        run: flutter test
+      - name: Build iOS without code signing
+        run: flutter build ios --no-codesign
