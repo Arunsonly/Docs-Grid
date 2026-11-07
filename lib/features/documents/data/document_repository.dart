@@ -346,10 +346,7 @@ class DocumentRepository {
           : Uri.file(sourceUri).toString();
       final sourceDigest = sourceUri.startsWith('content://') || sourceUri.startsWith('file://')
           ? await storage.sha256Pdf(sourceUri)
-          : sha256.convert(await File(sourceUri).openRead().fold<List<int>>(
-              <int>[],
-              (bytes, chunk) => bytes..addAll(chunk),
-            )).toString();
+          : (await sha256.bind(File(sourceUri).openRead()).first).toString();
 
       String? destinationUri;
       var createdDestination = false;
