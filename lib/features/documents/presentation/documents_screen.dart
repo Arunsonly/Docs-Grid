@@ -234,6 +234,31 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     }
   }
 
+
+  Future<void> _setExpiryReminder(DocumentRecord document) async {
+    final selected = await showDatePicker(
+      context: context,
+      initialDate: DateTime.now().add(const Duration(days: 365)),
+      firstDate: DateTime.now(),
+      lastDate: DateTime.now().add(const Duration(days: 3650)),
+      helpText: 'Select document expiry date',
+    );
+    if (selected == null) return;
+    try {
+      await _repository.setExpiryDate(document, selected);
+      await _load();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Expiry date saved. In-app reminders added for 30, 15, 7 and 1 day before, and on the date.')),
+        );
+      }
+    } catch (error) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not save expiry date: $error')),
+      );
+    }
+  }
+
   Future<void> _share(DocumentRecord document) async {
     try {
       await _repository.shareDocument(document);
@@ -615,6 +640,8 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
               await _smartCategory(document);
             } else if (value == 'share') {
               await _share(document);
+            } else if (value == 'expiry') {
+              await _setExpiryReminder(document);
             } else if (value == 'index_text') {
               await _indexText(document);
             }
@@ -630,6 +657,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
             const PopupMenuItem(value: 'smart_category', child: Text('Suggest Smart Category')),
             const PopupMenuItem(value: 'index_text', child: Text('Index PDF text for search')),
             const PopupMenuItem(value: 'share', child: Text('Share PDF')),
+            const PopupMenuItem(value: 'expiry', child: Text('Set expiry reminder')),
             const PopupMenuItem(value: 'relink', child: Text('Relink / Replace PDF')),
             const PopupMenuItem(value: 'trash', child: Text('Move to Recycle Bin')),
           ],
