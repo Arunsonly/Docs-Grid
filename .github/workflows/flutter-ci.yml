@@ -64,6 +64,8 @@ jobs:
         run: flutter create --platforms=ios --org com.docsgrid .
       - name: Install iOS Files host integration
         run: cp platform/ios/AppDelegate.swift ios/Runner/AppDelegate.swift
+      - name: Set iOS deployment target for on-device ML Kit
+        run: sed -i '' 's/IPHONEOS_DEPLOYMENT_TARGET = 13.0;/IPHONEOS_DEPLOYMENT_TARGET = 15.5;/g' ios/Runner.xcodeproj/project.pbxproj
       - name: Install packages
         run: flutter pub get
       - name: Analyze
