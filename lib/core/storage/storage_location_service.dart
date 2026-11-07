@@ -60,6 +60,12 @@ class StorageLocationService {
     return result;
   }
 
+  Future<String> sha256Pdf(String uri) async {
+    final result = await _channel.invokeMethod<String>('sha256Pdf', {'uri': uri});
+    if (result == null) throw StateError('The platform did not return a PDF checksum.');
+    return result;
+  }
+
   Future<Uint8List> readPdf(String uri) async {
     final result = await _channel.invokeMethod<Uint8List>('readPdf', {'uri': uri});
     if (result == null) throw StateError('The platform did not return PDF bytes.');
