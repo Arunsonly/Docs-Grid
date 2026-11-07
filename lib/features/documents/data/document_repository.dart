@@ -108,6 +108,7 @@ class DocumentRepository {
   }
 
   Future<void> moveToFolder(DocumentRecord document, String? folderId) async {
+    if (document.folderId == folderId) return;
     final db = await _database.database;
     final storage = StorageLocationService.instance;
 
