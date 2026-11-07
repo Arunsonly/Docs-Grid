@@ -19,12 +19,12 @@ class _DocumentCropScreenState extends State<DocumentCropScreen> {
   void _finish(CropResult result) {
     if (!mounted) return;
     switch (result) {
-      case CropResult.success(:final croppedImage):
+      case CropSuccess(:final croppedImage):
         Navigator.of(context).pop<Uint8List>(croppedImage);
-      case CropResult.error(:final error):
+      case CropFailure(:final cause):
         setState(() => _cropping = false);
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Could not crop this image: $error')),
+          SnackBar(content: Text('Could not crop this image: $cause')),
         );
     }
   }
