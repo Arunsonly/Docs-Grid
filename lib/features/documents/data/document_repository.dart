@@ -804,7 +804,8 @@ class DocumentRepository {
   }
 
   Future<void> permanentlyDelete(DocumentRecord document) async {
-    if (document.storagePath.startsWith('content://')) {
+    if (document.storagePath.startsWith('content://') ||
+        document.storagePath.startsWith('file://')) {
       await StorageLocationService.instance.deletePdf(document.storagePath);
     } else {
       final file = File(document.storagePath);
