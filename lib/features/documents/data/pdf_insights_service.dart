@@ -102,7 +102,7 @@ class PdfInsightsService {
 
     final candidate = lines.first
         .replaceAll(RegExp(r'[<>:"/\\|?*]'), '_')
-        .replaceAll(RegExp(r'\\s+'), ' ')
+        .replaceAll(RegExp(r'\s+'), ' ')
         .trim();
     if (candidate.length < 4) return null;
     final cleaned = candidate.length > 64 ? candidate.substring(0, 64).trim() : candidate;
