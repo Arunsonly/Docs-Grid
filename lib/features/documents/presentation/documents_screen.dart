@@ -5,6 +5,7 @@ import 'package:open_filex/open_filex.dart';
 
 import '../data/document_repository.dart';
 import '../../categories/data/category_repository.dart';
+import '../../folders/data/folder_repository.dart';
 
 class DocumentsScreen extends StatefulWidget {
   const DocumentsScreen({super.key, this.favoritesOnly = false});
@@ -17,6 +18,7 @@ class DocumentsScreen extends StatefulWidget {
 class _DocumentsScreenState extends State<DocumentsScreen> {
   final _repository = DocumentRepository();
   final _categoryRepository = CategoryRepository();
+  final _folderRepository = FolderRepository();
   final _search = TextEditingController();
   List<DocumentRecord> _documents = [];
   bool _loading = true;
@@ -313,6 +315,44 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     await _load();
   }
 
+  Future<void> _moveToFolder(DocumentRecord document) async {
+    final folders = await _folderRepository.allFoldersWithPaths();
+    if (!mounted) return;
+    final selected = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) => SafeArea(
+        child: ListView(
+          shrinkWrap: true,
+          children: [
+            const ListTile(
+              title: Text('Move PDF to folder'),
+              subtitle: Text('The PDF stays in the same local library.'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.home_outlined),
+              title: const Text('Root / No folder'),
+              trailing: document.folderId == null ? const Icon(Icons.check) : null,
+              onTap: () => Navigator.pop(sheetContext, ''),
+            ),
+            for (final option in folders)
+              ListTile(
+                leading: const Icon(Icons.folder_outlined),
+                title: Text(option.path),
+                trailing: document.folderId == option.folder.id
+                    ? const Icon(Icons.check, color: Colors.green)
+                    : null,
+                onTap: () => Navigator.pop(sheetContext, option.folder.id),
+              ),
+          ],
+        ),
+      ),
+    );
+    if (selected == null) return;
+    await _repository.moveToFolder(document, selected.isEmpty ? null : selected);
+    await _load();
+  }
+
   Future<void> _trash(DocumentRecord document) async {
     final confirmed = await showDialog<bool>(
       context: context,
@@ -432,6 +472,8 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
               await _load();
             } else if (value == 'tags') {
               await _editTags(document);
+            } else if (value == 'move') {
+              await _moveToFolder(document);
             } else if (value == 'category') {
               await _chooseCategory(document);
             } else if (value == 'rename') {
@@ -444,6 +486,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
             PopupMenuItem(value: 'favorite',
               child: Text(document.isFavorite ? 'Remove from Saved' : 'Add to Saved')),
             const PopupMenuItem(value: 'category', child: Text('Set category')),
+            const PopupMenuItem(value: 'move', child: Text('Move to folder')),
             const PopupMenuItem(value: 'tags', child: Text('Edit tags')),
             const PopupMenuItem(value: 'rename', child: Text('Rename')),
             const PopupMenuItem(value: 'trash', child: Text('Move to Recycle Bin')),
