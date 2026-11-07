@@ -64,6 +64,11 @@ class MainActivity : FlutterActivity() {
                                 ?: throw IllegalStateException("Could not read the selected PDF.")
                             result.success(bytes)
                         }
+                        "findChildUri" -> {
+                            val parent = Uri.parse(call.argument<String>("parentUri")!!)
+                            val name = call.argument<String>("name")!!
+                            result.success(findChildUri(parent, name).toString())
+                        }
                         "renamePdf" -> {
                             val uri = Uri.parse(call.argument<String>("uri")!!)
                             val name = call.argument<String>("name")!!
@@ -111,6 +116,26 @@ class MainActivity : FlutterActivity() {
             contentResolver, resolveParentUri(parentUri),
             DocumentsContract.Document.MIME_TYPE_DIR, name
         ) ?: throw IllegalStateException("Could not create folder in the selected storage location.")
+    }
+
+    private fun findChildUri(parentUri: Uri, name: String): Uri {
+        val parent = resolveParentUri(parentUri)
+        val parentId = DocumentsContract.getDocumentId(parent)
+        val children = DocumentsContract.buildChildDocumentsUriUsingTree(parentUri, parentId)
+        contentResolver.query(
+            children,
+            arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID, DocumentsContract.Document.COLUMN_DISPLAY_NAME),
+            null, null, null
+        )?.use { cursor ->
+            val idIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
+            val nameIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+            while (cursor.moveToNext()) {
+                if (idIndex >= 0 && nameIndex >= 0 && cursor.getString(nameIndex) == name) {
+                    return DocumentsContract.buildDocumentUriUsingTree(parentUri, cursor.getString(idIndex))
+                }
+            }
+        }
+        throw IllegalStateException("Could not find '$name' inside the selected folder.")
     }
 
     private fun digest(uri: Uri): ByteArray {
