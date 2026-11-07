@@ -1,8 +1,69 @@
+import 'package:docs_grid/core/storage/storage_location_service.dart';
 import 'package:docs_grid/features/documents/data/document_repository.dart';
 import 'package:docs_grid/features/folders/domain/folder.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  group('Storage access status', () {
+    test('recognises an available external folder', () {
+      expect(
+        StorageLocationService.normalizeAccessStatus({
+          'status': 'available',
+          'message': 'Storage folder is accessible.',
+          'name': 'Documents',
+        }),
+        {
+          'status': 'available',
+          'message': 'Storage folder is accessible.',
+          'name': 'Documents',
+        },
+      );
+    });
+
+    test('recognises a revoked permission and preserves repair guidance', () {
+      expect(
+        StorageLocationService.normalizeAccessStatus({
+          'status': 'revoked',
+          'message': 'Permission was revoked. Select the folder again.',
+        }),
+        {
+          'status': 'revoked',
+          'message': 'Permission was revoked. Select the folder again.',
+        },
+      );
+    });
+
+    test('distinguishes a not-configured folder', () {
+      expect(
+        StorageLocationService.normalizeAccessStatus({
+          'status': 'not_configured',
+          'message': 'No folder selected.',
+        })['status'],
+        'not_configured',
+      );
+    });
+
+    test('fails closed for missing or unknown native status values', () {
+      expect(
+        StorageLocationService.normalizeAccessStatus(null),
+        {
+          'status': 'unknown',
+          'message': 'Storage access could not be verified.',
+        },
+      );
+      expect(
+        StorageLocationService.normalizeAccessStatus({
+          'status': 'anything_else',
+          'message': '',
+        }),
+        {
+          'status': 'unknown',
+          'message': 'Storage access could not be verified.',
+        },
+      );
+    });
+  });
+
   test('Folder maps its persisted platform storage URI', () {
     final folder = Folder.fromMap({
       'id': 'folder-1',
