@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../data/reminder_repository.dart';
+import '../data/reminder_notifications.dart';
 
 class RemindersScreen extends StatefulWidget {
   const RemindersScreen({super.key});
@@ -13,6 +14,17 @@ class _RemindersScreenState extends State<RemindersScreen> {
   @override
   void initState() { super.initState(); _future = _repository.list(); }
   Future<void> _refresh() async { final next = _repository.list(); setState(() => _future = next); await next; }
+
+  Future<void> _requestNotificationPermission() async {
+    try {
+      await ReminderNotifications.instance.requestPermission();
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Notification permission request completed. Check Android notification settings if reminders remain silent.')),
+      );
+    } catch (error) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not request notification permission: $error')));
+    }
+  }
 
   Future<void> _add({ReminderRecord? existing}) async {
     final title = TextEditingController(text: existing?.title ?? '');
@@ -74,7 +86,24 @@ class _RemindersScreenState extends State<RemindersScreen> {
   Widget build(BuildContext context) => Scaffold(
     appBar: AppBar(title: const Text('Reminders')),
     floatingActionButton: FloatingActionButton.extended(onPressed: _add, icon: const Icon(Icons.add_alarm), label: const Text('Add reminder')),
-    body: FutureBuilder<List<ReminderRecord>>(future: _future, builder: (context, snapshot) {
+    body: Column(children: [
+      Card(
+        margin: const EdgeInsets.fromLTRB(12, 8, 12, 4),
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            const Text('How to set a notification', style: TextStyle(fontWeight: FontWeight.w700)),
+            const SizedBox(height: 4),
+            const Text('1. Tap Add reminder.  2. Enter a title.  3. Choose date and time.  4. Select repeat (optional).  5. Tap Save. Keep the reminder Enabled.'),
+            Align(alignment: Alignment.centerRight, child: TextButton.icon(
+              onPressed: _requestNotificationPermission,
+              icon: const Icon(Icons.notifications_active_outlined),
+              label: const Text('Allow notifications'),
+            )),
+          ]),
+        ),
+      ),
+      Expanded(child: FutureBuilder<List<ReminderRecord>>(future: _future, builder: (context, snapshot) {
       if (snapshot.connectionState == ConnectionState.waiting) return const Center(child: CircularProgressIndicator());
       if (snapshot.hasError) return Center(child: Text('Could not load reminders: ${snapshot.error}'));
       final items = snapshot.data ?? [];
@@ -102,6 +131,7 @@ class _RemindersScreenState extends State<RemindersScreen> {
               const PopupMenuItem(value: 'delete', child: Text('Delete'))]),
           ));
         }));
-    }),
+    })),
+    ]),
   );
 }
