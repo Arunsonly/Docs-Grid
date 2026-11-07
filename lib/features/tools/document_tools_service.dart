@@ -1,11 +1,13 @@
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
+import 'package:flutter/material.dart';
 
 import 'package:archive/archive.dart';
 import 'package:crypto/crypto.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:image_cropper/image_cropper.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:pdf/pdf.dart';
@@ -141,13 +143,29 @@ class DocumentToolsService {
 
   Future<File?> scanToPdf({bool useCamera = false}) async {
     final picker = ImagePicker();
-    final images = useCamera
-        ? _singleImage(await picker.pickImage(source: ImageSource.camera, imageQuality: 92))
-        : await picker.pickMultiImage(imageQuality: 92);
-    if (images.isEmpty) return null;
+    final selected = useCamera
+        ? _singleImage(await picker.pickImage(source: ImageSource.camera, imageQuality: 95))
+        : await picker.pickMultiImage(imageQuality: 95);
+    if (selected.isEmpty) return null;
+
     final pdf = pw.Document();
-    for (final image in images) {
-      final bytes = await image.readAsBytes();
+    for (final image in selected) {
+      final cropped = await ImageCropper().cropImage(
+        sourcePath: image.path,
+        compressQuality: 92,
+        uiSettings: [
+          AndroidUiSettings(
+            toolbarTitle: 'Crop document',
+            toolbarColor: const Color(0xFF2457C5),
+            toolbarWidgetColor: const Color(0xFFFFFFFF),
+            lockAspectRatio: false,
+            hideBottomControls: false,
+          ),
+          IOSUiSettings(title: 'Crop document', aspectRatioLockEnabled: false),
+        ],
+      );
+      final sourcePath = cropped?.path ?? image.path;
+      final bytes = await File(sourcePath).readAsBytes();
       final memory = pw.MemoryImage(bytes);
       pdf.addPage(pw.Page(
         pageFormat: PdfPageFormat.a4,
@@ -155,10 +173,10 @@ class DocumentToolsService {
         build: (_) => pw.Center(child: pw.Image(memory, fit: pw.BoxFit.contain)),
       ));
     }
-    final directory = await getApplicationDocumentsDirectory();
+    final directory = await getTemporaryDirectory();
     final scans = Directory(p.join(directory.path, 'DocsGrid', 'Scans'));
     await scans.create(recursive: true);
-    final file = File(p.join(scans.path, 'Scan_${DateTime.now().toIso8601String().replaceAll(':', '-')}.pdf'));
+    final file = File(p.join(scans.path, 'Scan_${DateTime.now().microsecondsSinceEpoch}.pdf'));
     await file.writeAsBytes(await pdf.save(), flush: true);
     return file;
   }
