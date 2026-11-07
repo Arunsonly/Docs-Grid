@@ -85,6 +85,32 @@ class DocsGridHome extends StatefulWidget {
 class _DocsGridHomeState extends State<DocsGridHome> {
   int _selectedIndex = 0;
 
+  Future<void> _showQuickActions() async {
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) => SafeArea(
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          const ListTile(title: Text('Quick actions'), subtitle: Text('Scan, create PDFs, search document text and set reminders.')),
+          ListTile(leading: const Icon(Icons.document_scanner_outlined), title: const Text('Scan using camera'), onTap: () => Navigator.pop(sheetContext, 'camera')),
+          ListTile(leading: const Icon(Icons.photo_library_outlined), title: const Text('Create PDF from gallery'), onTap: () => Navigator.pop(sheetContext, 'gallery')),
+          ListTile(leading: const Icon(Icons.manage_search_outlined), title: const Text('On-device text indexing & search'), onTap: () => Navigator.pop(sheetContext, 'tools')),
+          ListTile(leading: const Icon(Icons.backup_outlined), title: const Text('Create offline backup'), onTap: () => Navigator.pop(sheetContext, 'backup')),
+          ListTile(leading: const Icon(Icons.notifications_active_outlined), title: const Text('Set a reminder'), onTap: () => Navigator.pop(sheetContext, 'reminder')),
+        ]),
+      ),
+    );
+    if (!mounted || action == null) return;
+    if (action == 'reminder') {
+      await Navigator.of(context).push(MaterialPageRoute(builder: (_) => const RemindersScreen()));
+      return;
+    }
+    await Navigator.of(context).push(MaterialPageRoute(builder: (_) => Scaffold(
+      appBar: AppBar(title: const Text('Document tools')),
+      body: DocumentToolsScreen(quickAction: action),
+    )));
+  }
+
   static const _titles = ['My Documents', 'Folders', 'Saved', 'Settings'];
 
   @override
@@ -102,6 +128,13 @@ class _DocsGridHomeState extends State<DocsGridHome> {
           _ => _SettingsScreen(darkMode: widget.darkMode, onDarkModeChanged: widget.onDarkModeChanged),
         },
       ),
+      floatingActionButton: _selectedIndex == 0
+          ? FloatingActionButton.small(
+              tooltip: 'Quick document actions',
+              onPressed: _showQuickActions,
+              child: const Icon(Icons.document_scanner_outlined),
+            )
+          : null,
       bottomNavigationBar: NavigationBar(
         selectedIndex: _selectedIndex,
         onDestinationSelected: (index) => setState(() => _selectedIndex = index),
