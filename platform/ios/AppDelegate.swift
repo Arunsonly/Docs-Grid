@@ -144,6 +144,17 @@ import CryptoKit
         guard let data = UserDefaults.standard.data(forKey: currentBookmarkKey) else { return nil }
         var stale = false
         let root = try URL(resolvingBookmarkData: data, options: [], relativeTo: nil, bookmarkDataIsStale: &stale)
+        if stale {
+            let refreshed = try root.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
+            UserDefaults.standard.set(refreshed, forKey: currentBookmarkKey)
+            var bookmarks = bookmarkDataList()
+            if let index = bookmarks.firstIndex(of: data) {
+                bookmarks[index] = refreshed
+            } else {
+                bookmarks.append(refreshed)
+            }
+            UserDefaults.standard.set(bookmarks, forKey: bookmarkListKey)
+        }
         return ["uri": root.absoluteString, "name": root.lastPathComponent]
     }
 
