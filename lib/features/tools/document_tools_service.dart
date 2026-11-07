@@ -7,7 +7,7 @@ import 'package:archive/archive.dart';
 import 'package:crypto/crypto.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:image_cropper/image_cropper.dart';
+import 'package:crop_your_image/crop_your_image.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:pdf/pdf.dart';
@@ -20,6 +20,7 @@ import 'package:uuid/uuid.dart';
 import '../../core/database/app_database.dart';
 import '../../core/storage/storage_location_service.dart';
 import '../reminders/data/reminder_notifications.dart';
+import 'document_crop_screen.dart';
 
 /// Local-only utilities for indexing, scanning, sharing and portable backups.
 /// This service never uploads document contents to a remote server.
@@ -141,7 +142,10 @@ class DocumentToolsService {
     ''', [q, '%$q%']);
   }
 
-  Future<File?> scanToPdf({bool useCamera = false}) async {
+  Future<File?> scanToPdf({
+    required BuildContext context,
+    bool useCamera = false,
+  }) async {
     final picker = ImagePicker();
     final selected = useCamera
         ? _singleImage(await picker.pickImage(source: ImageSource.camera, imageQuality: 95))
@@ -150,23 +154,16 @@ class DocumentToolsService {
 
     final pdf = pw.Document();
     for (final image in selected) {
-      final cropped = await ImageCropper().cropImage(
-        sourcePath: image.path,
-        compressQuality: 92,
-        uiSettings: [
-          AndroidUiSettings(
-            toolbarTitle: 'Crop document',
-            toolbarColor: const Color(0xFF2457C5),
-            toolbarWidgetColor: const Color(0xFFFFFFFF),
-            lockAspectRatio: false,
-            hideBottomControls: false,
-          ),
-          IOSUiSettings(title: 'Crop document', aspectRatioLockEnabled: false),
-        ],
+      final originalBytes = await image.readAsBytes();
+      if (!context.mounted) return null;
+      final croppedBytes = await Navigator.of(context).push<Uint8List>(
+        MaterialPageRoute(
+          builder: (_) => DocumentCropScreen(imageBytes: originalBytes),
+          fullscreenDialog: true,
+        ),
       );
-      final sourcePath = cropped?.path ?? image.path;
-      final bytes = await File(sourcePath).readAsBytes();
-      final memory = pw.MemoryImage(bytes);
+      if (croppedBytes == null) return null;
+      final memory = pw.MemoryImage(croppedBytes);
       pdf.addPage(pw.Page(
         pageFormat: PdfPageFormat.a4,
         margin: const pw.EdgeInsets.all(16),
