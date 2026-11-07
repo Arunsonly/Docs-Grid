@@ -26,7 +26,7 @@ class _RemindersScreenState extends State<RemindersScreen> {
           TextField(controller: title, autofocus: true, decoration: const InputDecoration(labelText: 'Reminder title')),
           TextField(controller: note, maxLines: 2, decoration: const InputDecoration(labelText: 'Note (optional)')),
           DropdownButtonFormField<String>(
-            value: recurrence,
+            initialValue: recurrence,
             decoration: const InputDecoration(labelText: 'Repeat'),
             items: const [
               DropdownMenuItem(value: 'none', child: Text('Does not repeat')),
