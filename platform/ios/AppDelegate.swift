@@ -58,6 +58,9 @@ import CryptoKit
                 let parent = try urlArg(args, "parentUri")
                 let name = try stringArg(args, "name")
                 result(try copyPdf(source: source, parent: parent, name: name).absoluteString)
+            case "sha256Pdf":
+                let url = try urlArg(args, "uri")
+                result(try sha256Pdf(url: url))
             case "readPdf":
                 let url = try urlArg(args, "uri")
                 result(try readPdf(url: url))
@@ -210,6 +213,20 @@ import CryptoKit
                 throw storageError("PDF verification failed; original file was kept.")
             }
             return target
+        }
+    }
+
+    private func sha256Pdf(url: URL) throws -> String {
+        try withAllBookmarkAccess {
+            let handle = try FileHandle(forReadingFrom: url)
+            defer { try? handle.close() }
+            var hasher = SHA256()
+            while true {
+                let chunk = try handle.read(upToCount: 64 * 1024) ?? Data()
+                if chunk.isEmpty { break }
+                hasher.update(data: chunk)
+            }
+            return hasher.finalize().map { String(format: "%02x", $0) }.joined()
         }
     }
 
