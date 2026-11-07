@@ -11,6 +11,9 @@ import 'package:uuid/uuid.dart';
 import '../../../core/database/app_database.dart';
 import '../../../core/storage/storage_location_service.dart';
 import '../../folders/data/folder_repository.dart';
+import 'pdf_insights_service.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:share_plus/share_plus.dart';
 
 class DocumentRecord {
   const DocumentRecord({
@@ -83,10 +86,10 @@ class DocumentRepository {
       WHERE d.deleted_at IS NULL
         AND (? = 0 OR COALESCE(json_extract(d.metadata_json, '\$.favorite'), 0) = 1)
         AND (? = 0 OR d.last_opened_at IS NOT NULL)
-        AND d.name LIKE ?
+        AND (d.name LIKE ? OR COALESCE(d.extracted_text, '') LIKE ?)
       ORDER BY d.last_opened_at DESC, d.name COLLATE NOCASE ASC
       ''',
-      [favoritesOnly ? 1 : 0, recentOnly ? 1 : 0, '%${query.trim()}%'],
+      [favoritesOnly ? 1 : 0, recentOnly ? 1 : 0, '%${query.trim()}%', '%${query.trim()}%'],
     );
     return rows.map(DocumentRecord.fromMap).toList();
   }
@@ -657,6 +660,8 @@ class DocumentRepository {
           await _recordHistory(txn, documentId, 'imported', {'name': storedName});
         });
         added++;
+        // Indexing is local and best-effort: an indexing error must not undo a valid import.
+        await PdfInsightsService(database: _database).indexDocument(documentId, createdUri!);
       } catch (_) {
         if (createdUri != null) {
           try {
@@ -690,6 +695,124 @@ class DocumentRepository {
       counter++;
     }
     return candidate;
+  }
+
+
+  Future<void> indexDocument(DocumentRecord document) async {
+    await PdfInsightsService(database: _database)
+        .indexDocument(document.id, document.storagePath);
+  }
+
+  Future<String?> suggestAutoName(DocumentRecord document) async {
+    final db = await _database.database;
+    final rows = await db.query(
+      'documents',
+      columns: ['extracted_text'],
+      where: 'id = ? AND deleted_at IS NULL',
+      whereArgs: [document.id],
+      limit: 1,
+    );
+    var text = rows.isEmpty ? '' : (rows.first['extracted_text'] as String? ?? '');
+    if (text.isEmpty) {
+      await indexDocument(document);
+      final refreshed = await db.query(
+        'documents',
+        columns: ['extracted_text'],
+        where: 'id = ?',
+        whereArgs: [document.id],
+        limit: 1,
+      );
+      text = refreshed.isEmpty ? '' : (refreshed.first['extracted_text'] as String? ?? '');
+    }
+    return PdfInsightsService(database: _database)
+        .suggestName(currentName: document.name, text: text);
+  }
+
+  Future<String?> suggestSmartCategory(DocumentRecord document) async {
+    final db = await _database.database;
+    final rows = await db.query(
+      'documents',
+      columns: ['extracted_text', 'category_id'],
+      where: 'id = ? AND deleted_at IS NULL',
+      whereArgs: [document.id],
+      limit: 1,
+    );
+    if (rows.isEmpty) return null;
+    if (rows.first['category_id'] != null) {
+      throw StateError('This PDF already has a category. Remove it before applying a suggestion.');
+    }
+    var text = rows.first['extracted_text'] as String? ?? '';
+    if (text.isEmpty) {
+      await indexDocument(document);
+      final refreshed = await db.query(
+        'documents',
+        columns: ['extracted_text'],
+        where: 'id = ?',
+        whereArgs: [document.id],
+        limit: 1,
+      );
+      text = refreshed.isEmpty ? '' : (refreshed.first['extracted_text'] as String? ?? '');
+    }
+    return PdfInsightsService(database: _database)
+        .suggestCategory(fileName: document.name, text: text);
+  }
+
+  Future<void> applySuggestedCategory(DocumentRecord document, String categoryName) async {
+    final db = await _database.database;
+    final categories = await db.query(
+      'categories',
+      columns: ['id'],
+      where: 'name = ? COLLATE NOCASE',
+      whereArgs: [categoryName],
+      limit: 1,
+    );
+    if (categories.isEmpty) throw StateError('Suggested category is not available.');
+    await db.transaction((txn) async {
+      await txn.update('documents', {
+        'category_id': categories.first['id'],
+        'updated_at': DateTime.now().toUtc().toIso8601String(),
+      }, where: 'id = ? AND deleted_at IS NULL', whereArgs: [document.id]);
+      await _recordHistory(txn, document.id, 'smart_category_applied', {
+        'category': categoryName,
+      });
+    });
+  }
+
+  Future<void> shareDocument(DocumentRecord document) async {
+    final storage = StorageLocationService.instance;
+    var temporaryPath = '';
+    String path = document.storagePath;
+    if (path.startsWith('content://') || path.startsWith('file://')) {
+      final temp = await getTemporaryDirectory();
+      final file = File(p.join(
+        temp.path,
+        'docsgrid-share-${DateTime.now().microsecondsSinceEpoch}.pdf',
+      ));
+      temporaryPath = file.path;
+      await storage.copyPdfToPath(
+        sourceUri: document.storagePath,
+        destinationPath: temporaryPath,
+      );
+      path = temporaryPath;
+    }
+    try {
+      final file = File(path);
+      if (!await file.exists()) throw StateError('PDF file is missing and cannot be shared.');
+      await SharePlus.instance.share(ShareParams(
+        files: [XFile(path, mimeType: 'application/pdf')],
+        title: '${document.name}.pdf',
+        subject: '${document.name}.pdf',
+      ));
+      final db = await _database.database;
+      await _recordHistory(db, document.id, 'shared', {'name': document.name});
+    } finally {
+      if (temporaryPath.isNotEmpty) {
+        try {
+          final temp = File(temporaryPath);
+          if (await temp.exists()) await temp.delete();
+        } catch (_) {}
+      }
+    }
   }
 
   Future<void> setFavorite(DocumentRecord document, bool favorite) async {
