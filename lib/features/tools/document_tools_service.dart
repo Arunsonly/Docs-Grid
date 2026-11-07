@@ -16,6 +16,7 @@ import 'package:sqflite/sqflite.dart';
 import 'package:uuid/uuid.dart';
 
 import '../../core/database/app_database.dart';
+import '../../core/storage/storage_location_service.dart';
 import '../reminders/data/reminder_notifications.dart';
 
 /// Local-only utilities for indexing, scanning, sharing and portable backups.
@@ -141,6 +142,26 @@ class DocumentToolsService {
   }
 
   List<XFile> _singleImage(XFile? image) => image == null ? <XFile>[] : <XFile>[image];
+
+
+  Future<void> shareStoredPdf(String storageUri, String displayName) async {
+    String path;
+    if (storageUri.startsWith('content://')) {
+      final temp = await getTemporaryDirectory();
+      final safeName = p.basename(displayName).replaceAll(RegExp(r'[^A-Za-z0-9._ -]'), '_');
+      final target = File(p.join(temp.path, 'share_${DateTime.now().microsecondsSinceEpoch}_$safeName'));
+      await StorageLocationService.instance.copyPdfToPath(
+        sourceUri: storageUri,
+        destinationPath: target.path,
+      );
+      path = target.path;
+    } else {
+      path = storageUri.startsWith('file://') ? Uri.parse(storageUri).toFilePath() : storageUri;
+    }
+    final file = File(path);
+    if (!await file.exists()) throw StateError('PDF is no longer available to share.');
+    await SharePlus.instance.share(ShareParams(files: [XFile(path)], text: displayName));
+  }
 
   Future<void> shareFile(String path, {String? text}) async {
     final file = File(path);
