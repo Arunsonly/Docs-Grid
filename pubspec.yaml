@@ -17,8 +17,6 @@ dependencies:
   uuid: ^4.6.0
   intl: ^0.20.3
   open_filex: ^4.7.0
-  flutter_local_notifications: ^19.5.0
-  timezone: ^0.10.1
 
 dev_dependencies:
   flutter_test:
