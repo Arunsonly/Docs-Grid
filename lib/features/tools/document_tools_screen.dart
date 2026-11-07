@@ -52,6 +52,26 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
     if (mounted) setState(() => _message = 'Backup integrity verified. $count PDF file(s) found. Restore is not enabled yet.');
   });
 
+
+  Future<void> _restoreBackup() => _run(() async {
+    final picked = await FilePicker.pickFiles(type: FileType.custom, allowedExtensions: ['zip']);
+    if (picked.isEmpty || picked.single.path == null) return;
+    final file = File(picked.single.path!);
+    final count = await _tools.validateBackup(file);
+    if (!mounted) return;
+    final confirmed = await showDialog<bool>(context: context, builder: (context) => AlertDialog(
+      title: const Text('Restore backup?'),
+      content: Text('The archive contains $count PDF file(s). DocsGrid will add the restored folders and documents without overwriting existing records. ID conflicts stop the restore.'),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+        FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Restore')),
+      ],
+    ));
+    if (confirmed != true) return;
+    final restored = await _tools.restoreBackup(file);
+    if (mounted) setState(() => _message = 'Restore completed: $restored PDF file(s) restored and verified.');
+  });
+
   Future<void> _searchText() async {
     final rows = await _tools.searchText(_search.text);
     if (mounted) setState(() => _results = rows);
@@ -153,6 +173,12 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
           subtitle: const Text('Build a ZIP archive with database metadata and locally accessible PDFs.'),
           trailing: const Icon(Icons.chevron_right),
           onTap: _busy ? null : _backup),
+        const Divider(height: 1),
+        ListTile(leading: const Icon(Icons.settings_backup_restore_outlined),
+          title: const Text('Restore backup'),
+          subtitle: const Text('Verify and add PDFs and document metadata from a DocsGrid ZIP backup.'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: _busy ? null : _restoreBackup),
         const Divider(height: 1),
         ListTile(leading: const Icon(Icons.verified_outlined),
           title: const Text('Verify backup ZIP'),
