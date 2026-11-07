@@ -9,6 +9,7 @@ import 'package:sqflite/sqflite.dart';
 import 'package:uuid/uuid.dart';
 
 import '../../../core/database/app_database.dart';
+import '../../../core/storage/storage_location_service.dart';
 
 class DocumentRecord {
   const DocumentRecord({
@@ -128,9 +129,14 @@ class DocumentRepository {
       return const ImportSummary(added: 0, duplicates: 0, failed: 0);
     }
 
-    final base = await getApplicationDocumentsDirectory();
-    final library = Directory(p.join(base.path, 'DocsGrid', 'PDFs'));
-    await library.create(recursive: true);
+    final storage = StorageLocationService.instance;
+    final selectedFolder = await storage.selectedFolder();
+    Directory? library;
+    if (selectedFolder == null) {
+      final base = await getApplicationDocumentsDirectory();
+      library = Directory(p.join(base.path, 'DocsGrid', 'PDFs'));
+      await library.create(recursive: true);
+    }
     final db = await _database.database;
     var added = 0;
     var duplicates = 0;
@@ -156,16 +162,32 @@ class DocumentRepository {
           continue;
         }
         final safeName = _safePdfName(picked.name);
-        final target = await _uniqueFile(library, safeName);
-        await target.writeAsBytes(bytes, flush: true);
+        late final String storageUri;
+        late final String storedName;
+        late final String? relativePath;
+        if (selectedFolder != null) {
+          storageUri = await storage.savePdf(
+            treeUri: selectedFolder['uri']!,
+            name: safeName,
+            bytes: bytes,
+          );
+          storedName = p.basenameWithoutExtension(safeName);
+          relativePath = null;
+        } else {
+          final target = await _uniqueFile(library!, safeName);
+          await target.writeAsBytes(bytes, flush: true);
+          storageUri = target.path;
+          storedName = p.basenameWithoutExtension(target.path);
+          relativePath = p.relative(target.path, from: library!.path);
+        }
         final now = DateTime.now().toUtc().toIso8601String();
         final documentId = _uuid.v4();
         await db.insert('documents', {
           'id': documentId,
-          'name': p.basenameWithoutExtension(target.path),
+          'name': storedName,
           'original_name': picked.name,
-          'storage_uri': target.path,
-          'relative_path': p.relative(target.path, from: library.path),
+          'storage_uri': storageUri,
+          'relative_path': relativePath,
           'mime_type': 'application/pdf',
           'size_bytes': bytes.length,
           'sha256': digest,
@@ -175,7 +197,7 @@ class DocumentRepository {
           'metadata_json': '{}',
           'source': 'file_picker',
         });
-        await _recordHistory(db, documentId, 'imported', {'name': p.basenameWithoutExtension(target.path)});
+        await _recordHistory(db, documentId, 'imported', {'name': storedName});
         added++;
       } catch (_) {
         failed++;
@@ -271,26 +293,39 @@ class DocumentRepository {
   Future<void> rename(DocumentRecord document, String newName) async {
     final cleaned = newName.trim();
     if (cleaned.isEmpty) throw ArgumentError('Name cannot be empty.');
-    final oldFile = File(document.storagePath);
-    final extension = p.extension(oldFile.path).isEmpty ? '.pdf' : p.extension(oldFile.path);
     final safeBase = p.basenameWithoutExtension(cleaned).replaceAll(RegExp(r'[<>:"/\\|?*]'), '_');
-    final newFile = File(p.join(oldFile.parent.path, '$safeBase$extension'));
-    if (await newFile.exists() && newFile.path != oldFile.path) {
-      throw StateError('A file with this name already exists.');
+    final safeName = '$safeBase.pdf';
+    late final String newStorageUri;
+    if (document.storagePath.startsWith('content://')) {
+      newStorageUri = await StorageLocationService.instance.renamePdf(
+        uri: document.storagePath,
+        name: safeName,
+      );
+    } else {
+      final oldFile = File(document.storagePath);
+      final newFile = File(p.join(oldFile.parent.path, safeName));
+      if (await newFile.exists() && newFile.path != oldFile.path) {
+        throw StateError('A file with this name already exists.');
+      }
+      if (await oldFile.exists()) await oldFile.rename(newFile.path);
+      newStorageUri = newFile.path;
     }
-    if (await oldFile.exists()) await oldFile.rename(newFile.path);
     final db = await _database.database;
     await db.update('documents', {
-      'name': p.basenameWithoutExtension(newFile.path),
-      'storage_uri': newFile.path,
+      'name': safeBase,
+      'storage_uri': newStorageUri,
       'updated_at': DateTime.now().toUtc().toIso8601String(),
     }, where: 'id = ?', whereArgs: [document.id]);
     await _recordHistory(db, document.id, 'renamed', {'from': document.name, 'to': p.basenameWithoutExtension(newFile.path)});
   }
 
   Future<void> permanentlyDelete(DocumentRecord document) async {
-    final file = File(document.storagePath);
-    if (await file.exists()) await file.delete();
+    if (document.storagePath.startsWith('content://')) {
+      await StorageLocationService.instance.deletePdf(document.storagePath);
+    } else {
+      final file = File(document.storagePath);
+      if (await file.exists()) await file.delete();
+    }
     final db = await _database.database;
     await _recordHistory(db, null, 'permanently_deleted', {'document_id': document.id, 'name': document.name});
     await db.delete('documents', where: 'id = ?', whereArgs: [document.id]);
