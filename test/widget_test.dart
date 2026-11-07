@@ -18,7 +18,7 @@ void main() {
     await tester.pump(const Duration(milliseconds: 400));
     await tester.ensureVisible(find.text('Activity'));
     await tester.tap(find.text('Activity'));
-    await tester.pumpAndSettle();
+    await tester.pump(const Duration(milliseconds: 400));
 
     expect(find.text('Activity history'), findsOneWidget);
   });
