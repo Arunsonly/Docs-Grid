@@ -66,6 +66,15 @@ class StorageLocationService {
     return result;
   }
 
+  Future<String> findChildUri({required String parentUri, required String name}) async {
+    final result = await _channel.invokeMethod<String>('findChildUri', {
+      'parentUri': parentUri,
+      'name': name,
+    });
+    if (result == null) throw StateError('Android could not resolve a child storage location.');
+    return result;
+  }
+
   Future<String> renamePdf({required String uri, required String name}) async {
     final result = await _channel.invokeMethod<String>('renamePdf', {'uri': uri, 'name': name});
     if (result == null) throw StateError('Android did not return the renamed PDF location.');
