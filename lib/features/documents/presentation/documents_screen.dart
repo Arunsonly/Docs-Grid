@@ -2,7 +2,6 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:open_filex/open_filex.dart';
-import 'package:path/path.dart' as p;
 
 import '../data/document_repository.dart';
 
@@ -87,7 +86,12 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
       return;
     }
     await _repository.markOpened(document);
-    await OpenFilex.open(document.storagePath);
+    final result = await OpenFilex.open(document.storagePath);
+    if (mounted && result.type != ResultType.done) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(result.message.isEmpty ? 'No PDF viewer is available.' : result.message)),
+      );
+    }
     await _load();
   }
 
@@ -123,7 +127,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Move to Recycle Bin?'),
-        content: Text('${document.name}.pdf will be hidden from the library.'),
+        content: Text('${document.name}.pdf will be hidden from the library. The file is not erased.'),
         actions: [
           TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
           FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Move')),
@@ -142,16 +146,28 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
         if (!widget.favoritesOnly)
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
-            child: TextField(
-              controller: _search,
-              decoration: InputDecoration(
-                hintText: 'Search PDF names',
-                prefixIcon: const Icon(Icons.search),
-                suffixIcon: _search.text.isEmpty
-                    ? null
-                    : IconButton(onPressed: _search.clear, icon: const Icon(Icons.close)),
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(16)),
-              ),
+            child: Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _search,
+                    decoration: InputDecoration(
+                      hintText: 'Search PDF names',
+                      prefixIcon: const Icon(Icons.search),
+                      suffixIcon: _search.text.isEmpty
+                          ? null
+                          : IconButton(onPressed: _search.clear, icon: const Icon(Icons.close)),
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(16)),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                FilledButton.tonalIcon(
+                  onPressed: _importing ? null : _import,
+                  icon: const Icon(Icons.add),
+                  label: const Text('Import'),
+                ),
+              ],
             ),
           ),
         if (_importing) const LinearProgressIndicator(),
