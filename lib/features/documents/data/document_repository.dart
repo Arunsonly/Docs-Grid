@@ -168,9 +168,23 @@ class DocumentRepository {
 
   Future<void> setFavorite(DocumentRecord document, bool favorite) async {
     final db = await _database.database;
+    final rows = await db.query(
+      'documents',
+      columns: ['metadata_json'],
+      where: 'id = ? AND deleted_at IS NULL',
+      whereArgs: [document.id],
+      limit: 1,
+    );
+    if (rows.isEmpty) return;
+    final metadata = jsonDecode((rows.first['metadata_json'] as String?) ?? '{}')
+        as Map<String, dynamic>;
+    metadata['favorite'] = favorite;
     await db.update(
       'documents',
-      {'metadata_json': jsonEncode({'favorite': favorite}), 'updated_at': DateTime.now().toUtc().toIso8601String()},
+      {
+        'metadata_json': jsonEncode(metadata),
+        'updated_at': DateTime.now().toUtc().toIso8601String(),
+      },
       where: 'id = ? AND deleted_at IS NULL',
       whereArgs: [document.id],
     );
