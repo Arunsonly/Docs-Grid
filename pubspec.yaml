@@ -9,17 +9,14 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-
-  # Local database and filesystem utilities
   sqflite: ^2.4.5
   path_provider: ^2.1.6
   path: ^1.9.1
-
-  # Native file selection and local document processing
   file_picker: ^13.3.2
   crypto: ^3.0.7
   uuid: ^4.6.0
   intl: ^0.20.3
+  open_filex: ^4.7.0
 
 dev_dependencies:
   flutter_test:
