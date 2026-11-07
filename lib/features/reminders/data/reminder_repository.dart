@@ -1,6 +1,7 @@
 import 'package:uuid/uuid.dart';
 
 import '../../../core/database/app_database.dart';
+import 'reminder_notifications.dart';
 
 class ReminderRecord {
   const ReminderRecord({
@@ -12,6 +13,7 @@ class ReminderRecord {
     required this.status,
     required this.documentId,
     required this.documentName,
+    required this.recurrenceRule,
   });
 
   final String id;
@@ -22,6 +24,7 @@ class ReminderRecord {
   final String status;
   final String? documentId;
   final String? documentName;
+  final String? recurrenceRule;
 
   factory ReminderRecord.fromMap(Map<String, Object?> row) => ReminderRecord(
         id: row['id'] as String,
@@ -32,6 +35,7 @@ class ReminderRecord {
         status: row['status'] as String,
         documentId: row['document_id'] as String?,
         documentName: row['document_name'] as String?,
+        recurrenceRule: row['recurrence_rule'] as String?,
       );
 }
 
@@ -70,6 +74,8 @@ class ReminderRepository {
       'enabled': 1,
       'status': 'scheduled',
       'next_fire_at_utc': when,
+      'recurrence_rule': recurrenceRule,
+      'recurrence_rule': recurrenceRule,
       'created_at': now,
       'updated_at': now,
     });
@@ -128,6 +134,7 @@ class ReminderRepository {
   Future<void> delete(String id) async {
     final db = await _database.database;
     await db.delete('reminders', where: 'id = ?', whereArgs: [id]);
+    await ReminderNotifications.instance.cancel(id);
   }
 
   Future<void> complete(String id) async {
