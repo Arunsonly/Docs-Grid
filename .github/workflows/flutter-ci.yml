@@ -41,9 +41,9 @@ jobs:
               raise SystemExit('Flutter did not generate android/app/build.gradle(.kts)')
           s = gradle.read_text()
           if gradle.suffix == '.kts':
-              s, count = re.subn(r'compileSdk\\s*=\\s*(?:flutter\\.compileSdkVersion|[0-9]+)', 'compileSdk = 35', s, count=1)
+              s, count = re.subn(r'compileSdk\s*=\s*(?:flutter\.compileSdkVersion|[0-9]+)', 'compileSdk = 35', s, count=1)
           else:
-              s, count = re.subn(r'compileSdkVersion\\s+(?:flutter\\.compileSdkVersion|[0-9]+)', 'compileSdkVersion 35', s, count=1)
+              s, count = re.subn(r'compileSdkVersion\s+(?:flutter\.compileSdkVersion|[0-9]+)', 'compileSdkVersion 35', s, count=1)
           if count != 1:
               raise SystemExit(f'Could not locate compileSdk declaration in {gradle}')
           gradle.write_text(s)
