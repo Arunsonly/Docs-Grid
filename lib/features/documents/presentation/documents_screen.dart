@@ -433,6 +433,31 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   Widget build(BuildContext context) {
     return Column(
       children: [
+        if (!widget.favoritesOnly && !widget.recentOnly)
+          Container(
+            margin: const EdgeInsets.fromLTRB(16, 10, 16, 8),
+            padding: const EdgeInsets.all(18),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(22),
+              gradient: const LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [Color(0xFF123B91), Color(0xFF087FC7), Color(0xFF08AFC0)],
+              ),
+              boxShadow: const [BoxShadow(color: Color(0x220B4B91), blurRadius: 18, offset: Offset(0, 8))],
+            ),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              const Text('YOUR OFFLINE DRIVE', style: TextStyle(color: Colors.white70, fontSize: 11, letterSpacing: 1.4, fontWeight: FontWeight.w700)),
+              const SizedBox(height: 6),
+              const Text('All your documents,\none place.', style: TextStyle(color: Colors.white, fontSize: 23, height: 1.15, fontWeight: FontWeight.w800)),
+              const SizedBox(height: 14),
+              Row(children: [
+                Expanded(child: _dashboardMetric(Icons.picture_as_pdf_outlined, '${_documents.length}', 'Documents')),
+                Expanded(child: _dashboardMetric(Icons.folder_outlined, 'Folders', 'Organised')),
+                Expanded(child: _dashboardMetric(Icons.offline_pin_outlined, 'Offline', 'On device')),
+              ]),
+            ]),
+          ),
         if (!widget.favoritesOnly)
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
@@ -498,6 +523,19 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
       ],
     );
   }
+
+  Widget _dashboardMetric(IconData icon, String value, String label) => Row(
+    children: [
+      Icon(icon, color: Colors.white, size: 20),
+      const SizedBox(width: 6),
+      Flexible(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text(value, maxLines: 1, overflow: TextOverflow.ellipsis,
+          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800, fontSize: 15)),
+        Text(label, maxLines: 1, overflow: TextOverflow.ellipsis,
+          style: const TextStyle(color: Colors.white70, fontSize: 10)),
+      ])),
+    ],
+  );
 
   Widget _emptyState() => Center(
     child: Padding(
