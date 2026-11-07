@@ -2,6 +2,7 @@ package com.docsgrid.docs_grid
 
 import android.app.Activity
 import android.content.Intent
+import android.provider.OpenableColumns
 import android.database.Cursor
 import android.net.Uri
 import android.os.Bundle
@@ -41,6 +42,7 @@ class MainActivity : FlutterActivity() {
                                 .getString("tree_uri", null)
                             result.success(uri?.let { mapOf("uri" to it, "name" to "Selected folder") })
                         }
+                        "consumeSharedPdfs" -> result.success(consumeSharedPdfs())
                         "checkStorageAccess" -> result.success(checkStorageAccess())
                         "savePdf" -> {
                             val tree = Uri.parse(call.argument<String>("treeUri")!!)
@@ -113,6 +115,61 @@ class MainActivity : FlutterActivity() {
                     result.error("STORAGE_ERROR", error.message ?: "Storage operation failed.", null)
                 }
             }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+    }
+
+    private fun consumeSharedPdfs(): List<Map<String, String>> {
+        val incoming = intent ?: return emptyList()
+        val uris = linkedSetOf<Uri>()
+        if (incoming.action == Intent.ACTION_SEND) {
+            val single = if (android.os.Build.VERSION.SDK_INT >= 33) {
+                incoming.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
+            } else {
+                @Suppress("DEPRECATION")
+                incoming.getParcelableExtra(Intent.EXTRA_STREAM) as? Uri
+            }
+            if (single != null) uris.add(single)
+        } else if (incoming.action == Intent.ACTION_SEND_MULTIPLE) {
+            @Suppress("DEPRECATION")
+            val many = incoming.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM)
+            many?.let { uris.addAll(it) }
+        }
+        incoming.clipData?.let { clip ->
+            for (index in 0 until clip.itemCount) clip.getItemAt(index).uri?.let { uris.add(it) }
+        }
+        val output = mutableListOf<Map<String, String>>()
+        val shareDir = java.io.File(cacheDir, "incoming_docs").apply { mkdirs() }
+        uris.forEachIndexed { index, uri ->
+            try {
+                val mime = contentResolver.getType(uri)
+                var displayName: String? = null
+                contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+                    if (cursor.moveToFirst()) {
+                        val column = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                        if (column >= 0) displayName = cursor.getString(column)
+                    }
+                }
+                val name = displayName ?: "Shared_Document_\${index + 1}.pdf"
+                if (mime != "application/pdf" && !name.lowercase().endsWith(".pdf")) return@forEachIndexed
+                val safe = name.replace(Regex("[^A-Za-z0-9._ -]"), "_")
+                val target = java.io.File(shareDir, "\${System.currentTimeMillis()}_\$safe")
+                contentResolver.openInputStream(uri)?.use { input ->
+                    target.outputStream().buffered().use { outputStream -> input.copyTo(outputStream, 64 * 1024) }
+                } ?: return@forEachIndexed
+                val validPdf = target.inputStream().use { input ->
+                    val header = ByteArray(5)
+                    input.read(header) == 5 && String(header) == "%PDF-"
+                }
+                if (validPdf) output.add(mapOf("path" to target.absolutePath, "name" to name))
+                else target.delete()
+            } catch (_: Exception) { }
+        }
+        setIntent(Intent())
+        return output
     }
 
     private fun checkStorageAccess(): Map<String, String> {
