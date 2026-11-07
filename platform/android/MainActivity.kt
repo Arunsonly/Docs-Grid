@@ -88,10 +88,15 @@ class MainActivity : FlutterActivity() {
 
     private fun resolveParentUri(uri: Uri): Uri {
         return try {
-            val treeId = DocumentsContract.getTreeDocumentId(uri)
-            DocumentsContract.buildDocumentUriUsingTree(uri, treeId)
+            val documentId = DocumentsContract.getDocumentId(uri)
+            DocumentsContract.buildDocumentUriUsingTree(uri, documentId)
         } catch (_: IllegalArgumentException) {
-            uri
+            try {
+                val treeId = DocumentsContract.getTreeDocumentId(uri)
+                DocumentsContract.buildDocumentUriUsingTree(uri, treeId)
+            } catch (_: IllegalArgumentException) {
+                uri
+            }
         }
     }
 
