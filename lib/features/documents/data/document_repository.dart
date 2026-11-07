@@ -175,10 +175,10 @@ class DocumentRepository {
       } else {
         final source = File(sourceUri);
         if (!await source.exists()) throw StateError('Original PDF is missing; it was not moved.');
-        newStorageUri = await storage.savePdf(
-          treeUri: destinationUri,
+        newStorageUri = await storage.copyPdf(
+          sourceUri: Uri.file(source.path).toString(),
+          parentUri: destinationUri,
           name: '${document.name}.pdf',
-          bytes: await source.readAsBytes(),
         );
       }
       copiedToNewLocation = newStorageUri != sourceUri;
