@@ -75,6 +75,48 @@ class ReminderRepository {
     });
   }
 
+  Future<void> update({
+    required String id,
+    required String title,
+    String? note,
+    required DateTime remindAt,
+  }) async {
+    final db = await _database.database;
+    final when = remindAt.toUtc().toIso8601String();
+    await db.update('reminders', {
+      'title': title.trim(),
+      'note': note?.trim().isEmpty == true ? null : note?.trim(),
+      'remind_at_utc': when,
+      'next_fire_at_utc': when,
+      'status': 'scheduled',
+      'completed_at': null,
+      'updated_at': DateTime.now().toUtc().toIso8601String(),
+    }, where: 'id = ?', whereArgs: [id]);
+  }
+
+  Future<void> snooze(ReminderRecord reminder, {Duration duration = const Duration(days: 1)}) async {
+    final when = DateTime.now().add(duration).toUtc().toIso8601String();
+    final db = await _database.database;
+    await db.update('reminders', {
+      'remind_at_utc': when,
+      'next_fire_at_utc': when,
+      'status': 'scheduled',
+      'enabled': 1,
+      'snoozed_until': when,
+      'updated_at': DateTime.now().toUtc().toIso8601String(),
+    }, where: 'id = ?', whereArgs: [reminder.id]);
+  }
+
+  Future<void> duplicate(ReminderRecord reminder) async {
+    await create(
+      title: '${reminder.title} (copy)',
+      note: reminder.note,
+      remindAt: reminder.remindAt.isAfter(DateTime.now())
+          ? reminder.remindAt
+          : DateTime.now().add(const Duration(days: 1)),
+    );
+  }
+
   Future<void> setEnabled(ReminderRecord reminder, bool enabled) async {
     final db = await _database.database;
     await db.update('reminders', {
