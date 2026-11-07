@@ -58,7 +58,7 @@ class DocumentRepository {
     final db = await _database.database;
     final rows = await db.query(
       'documents',
-      where: "deleted_at IS NULL AND (? = 0 OR COALESCE(json_extract(metadata_json, '$.favorite'), 0) = 1) AND name LIKE ?",
+      where: "deleted_at IS NULL AND (? = 0 OR COALESCE(json_extract(metadata_json, '\$.favorite'), 0) = 1) AND name LIKE ?",
       whereArgs: [favoritesOnly ? 1 : 0, '%${query.trim()}%'],
       orderBy: 'last_opened_at DESC, name COLLATE NOCASE ASC',
     );
@@ -66,13 +66,13 @@ class DocumentRepository {
   }
 
   Future<ImportSummary> importPdfs() async {
-    final result = await FilePicker.platform.pickFiles(
+    final pickedFiles = await FilePicker.pickFiles(
       type: FileType.custom,
       allowedExtensions: ['pdf'],
-      allowMultiple: true,
-      withData: true,
     );
-    if (result == null) return const ImportSummary(added: 0, duplicates: 0, failed: 0);
+    if (pickedFiles.isEmpty) {
+      return const ImportSummary(added: 0, duplicates: 0, failed: 0);
+    }
 
     final base = await getApplicationDocumentsDirectory();
     final library = Directory(p.join(base.path, 'DocsGrid', 'PDFs'));
@@ -82,10 +82,10 @@ class DocumentRepository {
     var duplicates = 0;
     var failed = 0;
 
-    for (final picked in result.files) {
+    for (final picked in pickedFiles) {
       try {
-        final bytes = picked.bytes;
-        if (bytes == null || bytes.isEmpty) {
+        final bytes = await picked.readAsBytes();
+        if (bytes.isEmpty) {
           failed++;
           continue;
         }
