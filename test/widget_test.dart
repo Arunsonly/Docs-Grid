@@ -16,9 +16,13 @@ void main() {
     await tester.pumpWidget(const DocsGridApp());
     await tester.tap(find.text('Settings'));
     await tester.pump(const Duration(milliseconds: 400));
-    await tester.ensureVisible(find.text('Activity'));
-    await tester.tap(find.text('Activity'));
-    await tester.pump(const Duration(milliseconds: 400));
+    final activityTile = find.ancestor(
+      of: find.text('Activity'),
+      matching: find.byType(ListTile),
+    );
+    await tester.ensureVisible(activityTile);
+    await tester.tap(activityTile);
+    await tester.pump(const Duration(milliseconds: 500));
 
     expect(find.text('Activity history'), findsOneWidget);
   });
