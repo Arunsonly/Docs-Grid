@@ -180,6 +180,7 @@ class DocumentRepository {
           {
             'folder_id': folderId,
             'storage_uri': newStorageUri,
+            'relative_path': null,
             'updated_at': DateTime.now().toUtc().toIso8601String(),
           },
           where: 'id = ? AND deleted_at IS NULL',
@@ -677,6 +678,7 @@ class DocumentRepository {
           {
             'name': safeBase,
             'storage_uri': newStorageUri,
+            'relative_path': null,
             'updated_at': now,
           },
           where: 'id = ? AND deleted_at IS NULL',
