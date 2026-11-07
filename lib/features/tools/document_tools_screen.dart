@@ -1,13 +1,13 @@
 import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter/material.dart';
 import 'package:path/path.dart' as p;
 
 import '../../core/database/app_database.dart';
 import '../documents/data/document_repository.dart';
 import 'document_tools_service.dart';
+import '../../core/storage/storage_location_service.dart';
 
 class DocumentToolsScreen extends StatefulWidget {
   const DocumentToolsScreen({super.key});
@@ -37,12 +37,68 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
   Future<void> _scan({bool camera = false}) => _run(() async {
     final file = await _tools.scanToPdf(useCamera: camera);
     if (file == null) return;
-    final imported = await DocumentRepository().importScannedPdf(file);
-    await _tools.shareFile(file.path, text: 'Scanned with DocsGrid');
+
+    final nameController = TextEditingController();
+    final chosenName = await showDialog<String?>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Name your PDF'),
+        content: TextField(
+          controller: nameController,
+          autofocus: true,
+          decoration: const InputDecoration(
+            labelText: 'File name (optional)',
+            hintText: 'Leave blank to use automatic name',
+            suffixText: '.pdf',
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dialogContext, null), child: const Text('Skip')),
+          FilledButton(onPressed: () => Navigator.pop(dialogContext, nameController.text.trim()), child: const Text('Continue')),
+        ],
+      ),
+    );
+    nameController.dispose();
+    if (!mounted) return;
+
+    final destination = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) => SafeArea(
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          const ListTile(title: Text('Where should this PDF be saved?')),
+          ListTile(
+            leading: const Icon(Icons.folder_special_outlined),
+            title: const Text('DocsGrid library'),
+            subtitle: const Text('Save in My Documents using the current library location.'),
+            onTap: () => Navigator.pop(sheetContext, 'library'),
+          ),
+          ListTile(
+            leading: const Icon(Icons.folder_open_outlined),
+            title: const Text('Choose a storage folder'),
+            subtitle: const Text('Select a folder in Internal storage or another available location.'),
+            onTap: () => Navigator.pop(sheetContext, 'choose'),
+          ),
+        ]),
+      ),
+    );
+    if (!mounted || destination == null) return;
+    String? targetUri;
+    if (destination == 'choose') {
+      final folder = await StorageLocationService.instance.chooseFolder();
+      if (folder == null) return;
+      targetUri = folder['uri'];
+    }
+
+    final imported = await DocumentRepository().importScannedPdf(
+      file,
+      displayName: chosenName == null || chosenName.isEmpty ? null : chosenName,
+      targetFolderUri: targetUri,
+    );
     if (mounted) {
       setState(() => _message = imported.added == 1
-        ? 'Scan saved in My Documents and shared: ${p.basename(file.path)}'
-        : 'This scan already exists in My Documents. A copy was shared.');
+        ? 'PDF saved in DocsGrid: ${chosenName == null || chosenName.isEmpty ? p.basename(file.path) : chosenName}.pdf'
+        : 'This PDF already exists. Duplicate was not added.');
     }
   });
 
@@ -193,12 +249,12 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
       Card(child: Column(children: [
         ListTile(leading: const Icon(Icons.document_scanner_outlined),
           title: const Text('Scan using camera'),
-          subtitle: const Text('Capture a page and create a PDF.'),
+          subtitle: const Text('Capture, crop the page, name it (or skip), then choose where to save.'),
           onTap: _busy ? null : () => _scan(camera: true)),
         const Divider(height: 1),
         ListTile(leading: const Icon(Icons.photo_library_outlined),
           title: const Text('Create PDF from gallery images'),
-          subtitle: const Text('Select multiple images and combine them into one PDF.'),
+          subtitle: const Text('Select images, crop each page, combine them and choose a name and save location.'),
           onTap: _busy ? null : _scan),
         const Divider(height: 1),
         ListTile(leading: const Icon(Icons.share_outlined),
