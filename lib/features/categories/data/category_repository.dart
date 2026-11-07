@@ -101,6 +101,17 @@ class CategoryRepository {
     return tag;
   }
 
+  Future<void> renameTag(TagRecord tag, String name) async {
+    final db = await _database.database;
+    final count = await db.update(
+      'tags',
+      {'name': _validate(name)},
+      where: 'id = ?',
+      whereArgs: [tag.id],
+    );
+    if (count == 0) throw StateError('Tag no longer exists.');
+  }
+
   Future<void> deleteTag(TagRecord tag) async {
     final db = await _database.database;
     await db.delete('tags', where: 'id = ?', whereArgs: [tag.id]);
