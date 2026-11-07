@@ -117,6 +117,13 @@ jobs:
           cp platform/android/MainActivity.kt android/app/src/main/kotlin/com/docsgrid/docs_grid/MainActivity.kt
       - name: Install packages
         run: flutter pub get
+      - name: Generate DocsGrid launcher icons
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y librsvg2-bin
+          mkdir -p assets
+          rsvg-convert -w 1024 -h 1024 assets/docsgrid_icon.svg -o assets/docsgrid_icon.png
+          dart run flutter_launcher_icons
       - name: Raise image_cropper Android library compile SDK
         run: |
           python3 - <<'PY'
@@ -180,6 +187,12 @@ jobs:
           sed -i '' -E "s/platform :ios, '[0-9.]+'/platform :ios, '15.5'/" ios/Podfile
       - name: Install packages
         run: flutter pub get
+      - name: Generate DocsGrid launcher icons
+        run: |
+          brew install librsvg
+          mkdir -p assets
+          rsvg-convert -w 1024 -h 1024 assets/docsgrid_icon.svg -o assets/docsgrid_icon.png
+          dart run flutter_launcher_icons
       - name: Analyze
         run: flutter analyze
       - name: Widget and unit tests
