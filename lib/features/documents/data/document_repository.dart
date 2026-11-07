@@ -339,11 +339,17 @@ class DocumentRepository {
         throw StateError('Destination folder for "$name" could not be prepared. Migration can be retried safely.');
       }
 
-      final sourceIsShared = sourceUri.startsWith('content://') || sourceUri.startsWith('file://');
-      final sourceBytes = sourceIsShared
-          ? await storage.readPdf(sourceUri)
-          : await File(sourceUri).readAsBytes();
-      final sourceDigest = sha256.convert(sourceBytes).toString();
+      // Hash and copy through native file streams. This avoids loading large PDFs
+      // into the Dart heap during migration on either platform.
+      final sourceLocation = sourceUri.startsWith('content://') || sourceUri.startsWith('file://')
+          ? sourceUri
+          : Uri.file(sourceUri).toString();
+      final sourceDigest = sourceUri.startsWith('content://') || sourceUri.startsWith('file://')
+          ? await storage.sha256Pdf(sourceUri)
+          : sha256.convert(await File(sourceUri).openRead().fold<List<int>>(
+              <int>[],
+              (bytes, chunk) => bytes..addAll(chunk),
+            )).toString();
 
       String? destinationUri;
       var createdDestination = false;
@@ -352,8 +358,7 @@ class DocumentRepository {
           parentUri: parentUri,
           name: '$name.pdf',
         );
-        final existingBytes = await storage.readPdf(existingUri);
-        if (sha256.convert(existingBytes).toString() == sourceDigest) {
+        if (await storage.sha256Pdf(existingUri) == sourceDigest) {
           destinationUri = existingUri;
         }
       } catch (_) {
@@ -361,17 +366,11 @@ class DocumentRepository {
       }
 
       if (destinationUri == null) {
-        destinationUri = sourceIsShared
-            ? await storage.copyPdf(
-                sourceUri: sourceUri,
-                parentUri: parentUri,
-                name: '$name.pdf',
-              )
-            : await storage.savePdf(
-                treeUri: parentUri,
-                name: '$name.pdf',
-                bytes: sourceBytes,
-              );
+        destinationUri = await storage.copyPdf(
+          sourceUri: sourceLocation,
+          parentUri: parentUri,
+          name: '$name.pdf',
+        );
         createdDestination = true;
       }
 
