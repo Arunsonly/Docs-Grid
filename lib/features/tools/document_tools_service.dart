@@ -67,8 +67,8 @@ class DocumentToolsService {
         final page = await document.getPage(pageNumber);
         try {
           final rendered = await page.render(
-            width: (page.width * 1.5).clamp(900, 1800),
-            height: (page.height * 1.5).clamp(900, 2400),
+            width: (page.width * 1.5).clamp(900, 1800).toDouble(),
+            height: (page.height * 1.5).clamp(900, 2400).toDouble(),
             format: pdfx.PdfPageImageFormat.png,
           );
           if (rendered == null) continue;
