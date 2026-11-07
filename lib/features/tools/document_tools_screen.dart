@@ -89,18 +89,18 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
     var skipped = 0;
     for (final row in rows) {
       final uri = row['storage_uri'] as String?;
-      if (uri == null || uri.isEmpty || uri.startsWith('content://') || uri.startsWith('file://')) {
+      if (uri == null || uri.isEmpty) {
         skipped++;
         continue;
       }
       try {
-        await _tools.indexPdfText(row['id'] as String, uri);
+        await _tools.indexPdfTextFromUri(row['id'] as String, uri);
         done++;
       } catch (_) {
         skipped++;
       }
     }
-    if (mounted) setState(() => _message = 'OCR indexing finished: $done indexed, $skipped skipped or failed. Cloud/provider PDFs need local device access.');
+    if (mounted) setState(() => _message = 'OCR indexing finished: $done indexed, $skipped skipped or failed. Provider PDFs are copied to temporary local storage for OCR.');
   });
 
 
