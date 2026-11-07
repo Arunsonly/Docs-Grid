@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter/services.dart';
@@ -8,12 +9,16 @@ class StorageLocationService {
   static const MethodChannel _channel = MethodChannel('docsgrid/storage');
 
   Future<Map<String, String>?> selectedFolder() async {
+    if (!Platform.isAndroid) return null;
     final value = await _channel.invokeMapMethod<String, dynamic>('getSelectedFolder');
     if (value == null || value['uri'] == null) return null;
     return {'uri': value['uri'] as String, 'name': (value['name'] as String?) ?? 'Selected folder'};
   }
 
   Future<Map<String, String>?> chooseFolder() async {
+    if (!Platform.isAndroid) {
+      throw UnsupportedError('Choosing a storage folder is currently available on Android only.');
+    }
     final value = await _channel.invokeMapMethod<String, dynamic>('chooseFolder');
     if (value == null || value['uri'] == null) return null;
     return {'uri': value['uri'] as String, 'name': (value['name'] as String?) ?? 'Selected folder'};
