@@ -502,4 +502,5 @@ class _SettingsScreenState extends State<_SettingsScreen> {
         ),
       ],
     );
-  }}
+  }
+}
