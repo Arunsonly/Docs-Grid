@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:open_filex/open_filex.dart';
 
 import '../data/document_repository.dart';
+import '../../categories/data/category_repository.dart';
 
 class DocumentsScreen extends StatefulWidget {
   const DocumentsScreen({super.key, this.favoritesOnly = false});
@@ -15,6 +16,7 @@ class DocumentsScreen extends StatefulWidget {
 
 class _DocumentsScreenState extends State<DocumentsScreen> {
   final _repository = DocumentRepository();
+  final _categoryRepository = CategoryRepository();
   final _search = TextEditingController();
   List<DocumentRecord> _documents = [];
   bool _loading = true;
@@ -203,6 +205,46 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     );
   }
 
+  Future<void> _chooseCategory(DocumentRecord document) async {
+    final categories = await _categoryRepository.listCategories();
+    if (!mounted) return;
+    final selected = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) => SafeArea(
+        child: ListView(
+          shrinkWrap: true,
+          children: [
+            const ListTile(
+              title: Text('Choose category'),
+              subtitle: Text('This changes only the document label.'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.remove_circle_outline),
+              title: const Text('No category'),
+              onTap: () => Navigator.pop(sheetContext, ''),
+            ),
+            for (final category in categories)
+              ListTile(
+                leading: const Icon(Icons.folder_outlined),
+                title: Text(category.name),
+                trailing: document.categoryId == category.id
+                    ? const Icon(Icons.check, color: Colors.green)
+                    : null,
+                onTap: () => Navigator.pop(sheetContext, category.id),
+              ),
+          ],
+        ),
+      ),
+    );
+    if (selected == null) return;
+    await _categoryRepository.setDocumentCategory(
+      document.id,
+      selected.isEmpty ? null : selected,
+    );
+    await _load();
+  }
+
   Future<void> _trash(DocumentRecord document) async {
     final confirmed = await showDialog<bool>(
       context: context,
@@ -309,12 +351,18 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
         onTap: () => _open(document),
         leading: const CircleAvatar(child: Icon(Icons.picture_as_pdf_outlined)),
         title: Text('${document.name}.pdf', maxLines: 1, overflow: TextOverflow.ellipsis),
-        subtitle: Text('${_size(document.sizeBytes)} · ${file.existsSync() ? 'On this device' : 'File missing'}'),
+        subtitle: Text([
+          _size(document.sizeBytes),
+          document.categoryName ?? 'Uncategorised',
+          file.existsSync() ? 'On this device' : 'File missing',
+        ].join(' · ')),
         trailing: PopupMenuButton<String>(
           onSelected: (value) async {
             if (value == 'favorite') {
               await _repository.setFavorite(document, !document.isFavorite);
               await _load();
+            } else if (value == 'category') {
+              await _chooseCategory(document);
             } else if (value == 'rename') {
               await _rename(document);
             } else if (value == 'trash') {
@@ -324,6 +372,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
           itemBuilder: (_) => [
             PopupMenuItem(value: 'favorite',
               child: Text(document.isFavorite ? 'Remove from Saved' : 'Add to Saved')),
+            const PopupMenuItem(value: 'category', child: Text('Set category')),
             const PopupMenuItem(value: 'rename', child: Text('Rename')),
             const PopupMenuItem(value: 'trash', child: Text('Move to Recycle Bin')),
           ],
