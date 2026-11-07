@@ -9,7 +9,7 @@ void main() {
       expect(
         service.suggestName(
           currentName: 'scan_001',
-          text: '  Insurance Policy  \\nPolicy Number: 12345',
+          text: '  Insurance Policy  \nPolicy Number: 12345',
         ),
         'Insurance Policy',
       );
@@ -17,7 +17,7 @@ void main() {
 
     test('does not suggest the current name again', () {
       expect(
-        service.suggestName(currentName: 'Insurance Policy', text: 'Insurance Policy\\nMore text'),
+        service.suggestName(currentName: 'Insurance Policy', text: 'Insurance Policy\nMore text'),
         isNull,
       );
     });
