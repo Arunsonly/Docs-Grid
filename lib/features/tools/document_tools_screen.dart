@@ -119,7 +119,8 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
 
   Future<void> _backup() => _run(() async {
     final archive = await _tools.createBackup();
-    final directory = await FilePicker.platform.getDirectoryPath(
+    if (!mounted) return;
+    final directory = await FilePicker.getDirectoryPath(
       dialogTitle: 'Choose where to save DocsGrid backup',
     );
     if (directory == null || directory.isEmpty) {
