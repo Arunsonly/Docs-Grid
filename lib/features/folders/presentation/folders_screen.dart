@@ -168,7 +168,13 @@ class _FoldersScreenState extends State<FoldersScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Column(
+    return WillPopScope(
+      onWillPop: () async {
+        if (_ancestors.isEmpty) return true;
+        _goToAncestor(_ancestors.length - 2);
+        return false;
+      },
+      child: Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Padding(
@@ -341,6 +347,6 @@ class _FoldersScreenState extends State<FoldersScreen> {
           ),
         )
       ],
-    );
+    ));
   }
 }
