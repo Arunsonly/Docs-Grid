@@ -140,9 +140,9 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun createPdf(treeUri: Uri, requestedName: String, bytes: ByteArray): Uri {
-        val treeId = DocumentsContract.getTreeDocumentId(treeUri)
-        val parent = DocumentsContract.buildDocumentUriUsingTree(treeUri, treeId)
-        val children = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, treeId)
+        val parent = resolveParentUri(treeUri)
+        val parentId = DocumentsContract.getDocumentId(parent)
+        val children = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, parentId)
         val existing = mutableSetOf<String>()
         contentResolver.query(children, arrayOf(DocumentsContract.Document.COLUMN_DISPLAY_NAME), null, null, null)
             ?.use { cursor ->
@@ -160,6 +160,10 @@ class MainActivity : FlutterActivity() {
             ?: throw IllegalStateException("Could not create the PDF in the selected folder.")
         try {
             contentResolver.openOutputStream(created, "w")!!.use { it.write(bytes) }
+            val expected = MessageDigest.getInstance("SHA-256").digest(bytes)
+            if (!expected.contentEquals(digest(created))) {
+                throw IllegalStateException("Saved PDF verification failed.")
+            }
         } catch (error: Exception) {
             DocumentsContract.deleteDocument(contentResolver, created)
             throw error
