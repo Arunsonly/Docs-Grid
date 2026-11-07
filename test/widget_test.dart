@@ -16,8 +16,9 @@ void main() {
     await tester.pumpWidget(const DocsGridApp());
     await tester.tap(find.text('Settings'));
     await tester.pump(const Duration(milliseconds: 400));
+    await tester.ensureVisible(find.text('Activity'));
     await tester.tap(find.text('Activity'));
-    await tester.pump(const Duration(milliseconds: 400));
+    await tester.pumpAndSettle();
 
     expect(find.text('Activity history'), findsOneWidget);
   });
