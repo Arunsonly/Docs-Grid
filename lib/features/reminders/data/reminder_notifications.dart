@@ -15,7 +15,22 @@ class ReminderNotifications {
     if (_ready) return;
     tzdata.initializeTimeZones();
     final deviceTimeZone = await FlutterTimezone.getLocalTimezone();
-    tz.setLocalLocation(tz.getLocation(deviceTimeZone.identifier));
+    // Some Android builds report the legacy IANA alias Asia/Calcutta.
+    // The bundled timezone database exposes Asia/Kolkata as the canonical ID.
+    final reportedId = deviceTimeZone.identifier;
+    final canonicalId = switch (reportedId) {
+      'Asia/Calcutta' => 'Asia/Kolkata',
+      'Asia/Katmandu' => 'Asia/Kathmandu',
+      'Asia/Rangoon' => 'Asia/Yangon',
+      _ => reportedId,
+    };
+    try {
+      tz.setLocalLocation(tz.getLocation(canonicalId));
+    } on Exception {
+      // Scheduling should remain available even if a vendor returns an
+      // unknown timezone alias; UTC is safer than crashing the reminder UI.
+      tz.setLocalLocation(tz.UTC);
+    }
     const settings = InitializationSettings(
       android: AndroidInitializationSettings('@mipmap/ic_launcher'),
       iOS: DarwinInitializationSettings(
