@@ -610,13 +610,14 @@ class DocumentRepository {
           'mime_type': 'application/pdf',
           'size_bytes': await source.length(),
           'sha256': digest,
+          'folder_id': targetFolderId,
           'extracted_text_status': 'pending',
           'created_at': now,
           'updated_at': now,
           'metadata_json': '{}',
           'source': sourceType,
         });
-        await _recordHistory(txn, id, 'scanned', {'name': safeName});
+        await _recordHistory(txn, id, sourceType == 'share' ? 'imported_from_share' : 'scanned', {'name': safeName, 'folder_id': targetFolderId});
       });
     } catch (_) {
       try {
