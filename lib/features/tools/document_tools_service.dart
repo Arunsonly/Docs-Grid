@@ -115,9 +115,11 @@ class DocumentToolsService {
     ''', [q, '%$q%']);
   }
 
-  Future<File?> scanToPdf() async {
+  Future<File?> scanToPdf({bool useCamera = false}) async {
     final picker = ImagePicker();
-    final images = await picker.pickMultiImage(imageQuality: 92);
+    final images = useCamera
+        ? _singleImage(await picker.pickImage(source: ImageSource.camera, imageQuality: 92))
+        : await picker.pickMultiImage(imageQuality: 92);
     if (images.isEmpty) return null;
     final pdf = pw.Document();
     for (final image in images) {
@@ -136,6 +138,8 @@ class DocumentToolsService {
     await file.writeAsBytes(await pdf.save(), flush: true);
     return file;
   }
+
+  List<XFile> _singleImage(XFile? image) => image == null ? <XFile>[] : <XFile>[image];
 
   Future<void> shareFile(String path, {String? text}) async {
     final file = File(path);
@@ -166,13 +170,14 @@ class DocumentToolsService {
     var completed = 0;
     for (final row in docs) {
       final uri = row['storage_uri'] as String?;
-      if (uri == null || uri.isEmpty || uri.startsWith('content://') || uri.startsWith('file://')) {
-        completed++;
-        onProgress?.call(completed, docs.length);
-        continue;
+      if (uri == null || uri.isEmpty || uri.startsWith('content://')) {
+        throw StateError('Backup cannot be complete: "${row['name']}" is stored in a provider location that cannot currently be streamed into the archive. Copy it to app-accessible storage first.');
       }
-      final file = File(uri);
-      if (await file.exists()) {
+      final file = File(uri.startsWith('file://') ? Uri.parse(uri).toFilePath() : uri);
+      if (!await file.exists()) {
+        throw StateError('Backup cannot be complete: "${row['name']}" is unavailable. Repair storage access and retry.');
+      }
+      {
         final bytes = await file.readAsBytes();
         final digest = sha256.convert(bytes).toString();
         final expected = row['sha256'] as String?;
