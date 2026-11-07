@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'features/documents/presentation/documents_screen.dart';
+import 'features/documents/data/document_repository.dart';
 import 'features/categories/presentation/categories_screen.dart';
 import 'features/history/presentation/history_screen.dart';
 import 'features/reminders/presentation/reminders_screen.dart';
@@ -88,16 +89,46 @@ class _SettingsScreen extends StatelessWidget {
           onTap: () async {
             try {
               final folder = await StorageLocationService.instance.chooseFolder();
-              if (folder == null) return;
-              if (context.mounted) {
+              if (folder == null || !context.mounted) return;
+              final migrate = await showDialog<bool>(
+                context: context,
+                builder: (dialogContext) => AlertDialog(
+                  title: const Text('Move existing PDF library?'),
+                  content: Text(
+                    'Use “${folder['name']}” for new imports and move your existing PDFs and folder structure there? '
+                    'Files are verified before the old copies are removed.',
+                  ),
+                  actions: [
+                    TextButton(
+                      onPressed: () => Navigator.pop(dialogContext, false),
+                      child: const Text('New imports only'),
+                    ),
+                    FilledButton(
+                      onPressed: () => Navigator.pop(dialogContext, true),
+                      child: const Text('Move existing library'),
+                    ),
+                  ],
+                ),
+              );
+              if (migrate == true && context.mounted) {
                 ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text('Storage folder selected: ${folder['name']}')),
+                  const SnackBar(content: Text('Moving PDFs safely. Keep the app open until this finishes.')),
+                );
+                final count = await DocumentRepository().migrateExistingLibraryToSelectedStorage();
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('Storage migration completed: $count PDFs moved and verified.')),
+                  );
+                }
+              } else if (context.mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text('Storage folder selected: ${folder['name']}. Existing PDFs were not moved.')),
                 );
               }
             } catch (error) {
               if (context.mounted) {
                 ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text('Folder selection failed: $error')),
+                  SnackBar(content: Text('Storage operation stopped safely: $error')),
                 );
               }
             }
