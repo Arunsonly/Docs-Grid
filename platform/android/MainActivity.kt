@@ -41,6 +41,7 @@ class MainActivity : FlutterActivity() {
                                 .getString("tree_uri", null)
                             result.success(uri?.let { mapOf("uri" to it, "name" to "Selected folder") })
                         }
+                        "checkStorageAccess" -> result.success(checkStorageAccess())
                         "savePdf" -> {
                             val tree = Uri.parse(call.argument<String>("treeUri")!!)
                             val name = call.argument<String>("name")!!
@@ -112,6 +113,34 @@ class MainActivity : FlutterActivity() {
                     result.error("STORAGE_ERROR", error.message ?: "Storage operation failed.", null)
                 }
             }
+    }
+
+    private fun checkStorageAccess(): Map<String, String> {
+        val saved = getSharedPreferences("docsgrid_storage", MODE_PRIVATE)
+            .getString("tree_uri", null)
+            ?: return mapOf("status" to "not_configured", "message" to "No external folder has been selected. App-private storage is available.")
+        val uri = Uri.parse(saved)
+        val grant = contentResolver.persistedUriPermissions.firstOrNull {
+            it.uri == uri && it.isReadPermission && it.isWritePermission
+        }
+        if (grant == null) {
+            return mapOf("status" to "revoked", "message" to "Android no longer has the saved folder permission. Select the folder again to restore access.")
+        }
+        return try {
+            contentResolver.query(
+                DocumentsContract.buildDocumentUriUsingTree(uri, DocumentsContract.getTreeDocumentId(uri)),
+                arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID),
+                null, null, null
+            )?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    mapOf("status" to "available", "message" to "Saved folder permission is active.")
+                } else {
+                    mapOf("status" to "revoked", "message" to "The selected folder is no longer available. Select it again.")
+                }
+            } ?: mapOf("status" to "revoked", "message" to "The selected storage provider did not respond. Re-select the folder.")
+        } catch (_: Exception) {
+            mapOf("status" to "revoked", "message" to "Folder access failed. Select the folder again; existing PDF records will be preserved.")
+        }
     }
 
     private fun resolveParentUri(uri: Uri): Uri {
