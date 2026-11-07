@@ -14,7 +14,7 @@ class AppDatabase {
     final dbPath = p.join(directory.path, 'docs_grid.db');
     _database = await openDatabase(
       dbPath,
-      version: 2,
+      version: 3,
       onConfigure: (db) async => db.execute('PRAGMA foreign_keys = ON'),
       onCreate: (db, version) async {
         await db.execute('''
@@ -43,6 +43,8 @@ class AppDatabase {
             folder_id TEXT,
             category_id TEXT,
             extracted_text_status TEXT NOT NULL DEFAULT 'pending',
+            extracted_text TEXT,
+            text_indexed_at TEXT,
             expiry_date TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
@@ -54,6 +56,7 @@ class AppDatabase {
           )
         ''');
         await db.execute('CREATE INDEX idx_documents_folder ON documents(folder_id, deleted_at)');
+        await db.execute('CREATE INDEX idx_documents_text_status ON documents(extracted_text_status)');
         await db.execute('''
           CREATE TABLE reminders (
             id TEXT PRIMARY KEY,
@@ -93,12 +96,25 @@ class AppDatabase {
           'version': 2,
           'applied_at': DateTime.now().toUtc().toIso8601String(),
         });
+        await db.insert('schema_migrations', {
+          'version': 3,
+          'applied_at': DateTime.now().toUtc().toIso8601String(),
+        });
       },
       onUpgrade: (db, oldVersion, newVersion) async {
         if (oldVersion < 2) {
           await _createV2Tables(db);
           await db.insert('schema_migrations', {
             'version': 2,
+            'applied_at': DateTime.now().toUtc().toIso8601String(),
+          });
+        }
+        if (oldVersion < 3) {
+          await db.execute('ALTER TABLE documents ADD COLUMN extracted_text TEXT');
+          await db.execute('ALTER TABLE documents ADD COLUMN text_indexed_at TEXT');
+          await db.execute('CREATE INDEX IF NOT EXISTS idx_documents_text_status ON documents(extracted_text_status)');
+          await db.insert('schema_migrations', {
+            'version': 3,
             'applied_at': DateTime.now().toUtc().toIso8601String(),
           });
         }
