@@ -206,9 +206,9 @@ import CryptoKit
         try withAllBookmarkAccess {
             let target = uniqueURL(parent: parent, requestedName: name)
             try FileManager.default.copyItem(at: source, to: target)
-            let originalHash = SHA256.hash(data: try Data(contentsOf: source))
-            let copiedHash = SHA256.hash(data: try Data(contentsOf: target))
-            guard originalHash.elementsEqual(copiedHash) else {
+            let originalHash = try sha256Pdf(url: source)
+            let copiedHash = try sha256Pdf(url: target)
+            guard originalHash == copiedHash else {
                 try? FileManager.default.removeItem(at: target)
                 throw storageError("PDF verification failed; original file was kept.")
             }
