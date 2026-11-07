@@ -168,7 +168,7 @@ jobs:
           channel: stable
           cache: true
       - name: Generate native platform scaffolding
-        run: flutter create --platforms=ios --org com.docsgrid .
+        run: flutter create --platforms=android,ios --org com.docsgrid .
       - name: Configure iOS camera and photo usage descriptions
         run: |
           python3 - <<'PY'
