@@ -135,7 +135,7 @@ class FolderRepository {
     }
 
     final parentStorageUri = parentId == null
-        ? selectedRoot?['uri']
+        ? (selectedRoot == null ? null : selectedRoot['uri'])
         : await ensurePhysicalFolder(parentId);
     String? physicalUri;
     if (parentStorageUri != null) {
