@@ -153,10 +153,10 @@ class MainActivity : FlutterActivity() {
                         if (column >= 0) displayName = cursor.getString(column)
                     }
                 }
-                val name = displayName ?: "Shared_Document_\${index + 1}.pdf"
+                val name = displayName ?: "Shared_Document_${index + 1}.pdf"
                 if (mime != "application/pdf" && !name.lowercase().endsWith(".pdf")) return@forEachIndexed
                 val safe = name.replace(Regex("[^A-Za-z0-9._ -]"), "_")
-                val target = java.io.File(shareDir, "\${System.currentTimeMillis()}_\$safe")
+                val target = java.io.File(shareDir, "${System.currentTimeMillis()}_$safe")
                 contentResolver.openInputStream(uri)?.use { input ->
                     target.outputStream().buffered().use { outputStream -> input.copyTo(outputStream, 64 * 1024) }
                 } ?: return@forEachIndexed
