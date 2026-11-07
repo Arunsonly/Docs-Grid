@@ -61,6 +61,7 @@ class DocumentToolsService {
       throw StateError('The selected file is not a valid PDF.');
     }
     final document = await pdfx.PdfDocument.openFile(path);
+    final pageCount = document.pagesCount;
     final recognizer = TextRecognizer(script: TextRecognitionScript.latin);
     final pages = <String>[];
     try {
@@ -96,7 +97,7 @@ class DocumentToolsService {
       'document_id': documentId,
       'extracted_text': text,
       'indexed_at': DateTime.now().toUtc().toIso8601String(),
-      'page_count': document.pagesCount,
+      'page_count': pageCount,
     }, conflictAlgorithm: ConflictAlgorithm.replace);
     await db.update('documents', {'extracted_text_status': text.isEmpty ? 'empty' : 'indexed'},
       where: 'id = ?', whereArgs: [documentId]);
