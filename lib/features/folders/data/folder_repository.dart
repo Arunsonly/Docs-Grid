@@ -49,6 +49,10 @@ class FolderRepository {
     if (cleaned.contains('/') || cleaned.contains('\\')) {
       throw ArgumentError('Folder name cannot contain / or \\.');
     }
+    if (cleaned.length > 255 ||
+        cleaned.codeUnits.any((unit) => unit < 32 || unit == 127)) {
+      throw ArgumentError('Folder name is too long or contains control characters.');
+    }
     return cleaned;
   }
 
