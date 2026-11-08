@@ -710,7 +710,7 @@ class DocumentToolsService {
         final parentId = row['parent_id'] as String?;
         final rawName = row['name'] as String;
         if (rawName.trim().isEmpty || rawName.contains('/') ||
-            rawName.contains('\\\\') || rawName.contains('\\u0000')) {
+            rawName.contains('\\') || rawName.contains('\u0000')) {
           throw StateError('Snapshot contains an invalid folder name.');
         }
         final siblings = await storage.listDirectory(parentUri);
