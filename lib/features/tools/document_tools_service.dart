@@ -740,7 +740,6 @@ class DocumentToolsService {
   /// SHA-256 from the currently selected library and are never overwritten.
   Future<Map<String, int>> restoreLatestPortableMetadataSnapshot() async {
     final storage = StorageLocationService.instance;
-    final locations = await storage.portableDataLocations();
     final snapshot = await _findLatestVerifiedPortableSnapshot();
     if (snapshot == null) {
       throw StateError('No complete, verified portable recovery snapshot was found.');
