@@ -49,6 +49,35 @@ jobs:
           wrapper.write_text(text)
           print('Pinned Gradle 9.3.1 binary distribution')
           PY
+      - name: Add checksum-pinned JetBrains Maven fallback
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          settings = Path('android/settings.gradle.kts')
+          if not settings.exists():
+              raise SystemExit('Android settings.gradle.kts was not generated')
+          source = settings.read_text()
+          mirror = 'maven { url = uri("https://cache-redirector.jetbrains.com/maven-central") }'
+          if mirror not in source:
+              source = source.replace('mavenCentral()', mirror + '\n        mavenCentral()')
+          settings.write_text(source)
+          verification = Path('android/gradle/verification-metadata.xml')
+          verification.write_text('''<verification-metadata>
+            <configuration>
+              <verify-metadata>false</verify-metadata>
+              <verify-signatures>false</verify-signatures>
+            </configuration>
+            <components>
+              <component group="org.jetbrains.kotlin" name="kotlin-compiler-embeddable" version="2.2.21">
+                <artifact name="kotlin-compiler-embeddable-2.2.21.jar">
+                  <sha256 value="9588fa696ac5507af764fd5660df6894185e12704ec1bc3f5cb772af4987f295"/>
+                </artifact>
+              </component>
+            </components>
+          </verification-metadata>
+          ''')
+          print('Added JetBrains Maven fallback with SHA-256 verification for Kotlin compiler')
+          PY
       - name: Use non-conflicting DocsGrid Android package ID
         run: |
           python3 - <<'PY'
