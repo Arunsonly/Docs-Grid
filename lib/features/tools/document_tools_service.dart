@@ -200,6 +200,29 @@ class DocumentToolsService {
     await SharePlus.instance.share(ShareParams(files: [XFile(path)], text: displayName));
   }
 
+  /// Shares several stored PDFs in one native share sheet.
+  Future<void> shareManyStoredPdfs(List<String> storageUris, List<String> displayNames) async {
+    if (storageUris.isEmpty || storageUris.length != displayNames.length) {
+      throw ArgumentError('PDF locations and names must be non-empty and have matching lengths.');
+    }
+    final temp = await getTemporaryDirectory();
+    final files = <XFile>[];
+    for (var i = 0; i < storageUris.length; i++) {
+      final uri = storageUris[i];
+      final safeName = p.basename(displayNames[i]).replaceAll(RegExp(r'[^A-Za-z0-9._ -]'), '_');
+      String path;
+      if (uri.startsWith('content://')) {
+        final target = File(p.join(temp.path, 'share_${DateTime.now().microsecondsSinceEpoch}_$i_$safeName'));
+        await StorageLocationService.instance.copyPdfToPath(sourceUri: uri, destinationPath: target.path);
+        path = target.path;
+      } else {
+        path = uri.startsWith('file://') ? Uri.parse(uri).toFilePath() : uri;
+      }
+      if (!await File(path).exists()) throw StateError('PDF is unavailable: ${displayNames[i]}');
+      files.add(XFile(path, name: safeName));
+    }
+    await SharePlus.instance.share(ShareParams(files: files, text: 'DocsGrid documents'));
+  }
   Future<void> shareFile(String path, {String? text}) async {
     final file = File(path);
     if (!await file.exists()) throw StateError('File is no longer available.');
