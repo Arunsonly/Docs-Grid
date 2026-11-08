@@ -98,7 +98,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                 ),
                 const SizedBox(height: 12),
                 DropdownButtonFormField<String?>(
-                  value: selectedCategoryId,
+                  initialValue: selectedCategoryId,
                   isExpanded: true,
                   decoration: const InputDecoration(labelText: 'Suggested category'),
                   items: [
@@ -214,9 +214,11 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     if (!mounted) return;
     setState(_selectedIds.clear);
     await _load();
+    if (!mounted) return;
     final failures = result['failures'] as List<String>;
+    final failureSummary = failures.isEmpty ? '' : ' · ${failures.length} failed';
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text('Moved ${result['moved']} of ${selected.length} PDFs' + (failures.isEmpty ? '' : ' · ${failures.length} failed')),
+      content: Text('Moved ${result['moved']} of ${selected.length} PDFs$failureSummary'),
     ));
   }
 
