@@ -23,6 +23,7 @@ class _FoldersScreenState extends State<FoldersScreen> {
   final List<Folder> _ancestors = [];
   String? _currentFolderId;
   String _currentTitle = 'Folders';
+  final Set<String> _selectedDocumentIds = <String>{};
   late Future<List<Folder>> _foldersFuture;
   late Future<List<DocumentRecord>> _documentsFuture;
 
@@ -183,6 +184,34 @@ class _FoldersScreenState extends State<FoldersScreen> {
       child: Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        if (_selectedDocumentIds.isNotEmpty)
+          FutureBuilder<List<DocumentRecord>>(
+            future: _documentsFuture,
+            builder: (context, snapshot) {
+              final all = snapshot.data ?? const <DocumentRecord>[];
+              return Material(
+                color: Theme.of(context).colorScheme.secondaryContainer,
+                child: Row(children: [
+                  IconButton(tooltip: 'Clear selection', onPressed: () => setState(_selectedDocumentIds.clear), icon: const Icon(Icons.close)),
+                  Expanded(child: Text(_selectedDocumentIds.length.toString() + ' selected')),
+                  IconButton(tooltip: 'Select all', onPressed: () => setState(() => _selectedDocumentIds.addAll(all.map((d) => d.id))), icon: const Icon(Icons.select_all)),
+                  IconButton(tooltip: 'Share selected', onPressed: () async {
+                    final selected = all.where((d) => _selectedDocumentIds.contains(d.id)).toList();
+                    if (selected.isEmpty) return;
+                    await DocumentToolsService().shareManyStoredPdfs(selected.map((d) => d.storagePath).toList(), selected.map((d) => d.name + '.pdf').toList());
+                  }, icon: const Icon(Icons.share_outlined)),
+                  IconButton(tooltip: 'Move selected to Recycle Bin', onPressed: () async {
+                    final selected = all.where((d) => _selectedDocumentIds.contains(d.id)).toList();
+                    if (selected.isEmpty) return;
+                    await _documents.moveManyToTrash(selected);
+                    if (!mounted) return;
+                    setState(_selectedDocumentIds.clear);
+                    await _refresh();
+                  }, icon: const Icon(Icons.delete_outline)),
+                ]),
+              );
+            },
+          ),
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
           child: Row(
@@ -190,6 +219,15 @@ class _FoldersScreenState extends State<FoldersScreen> {
               Expanded(
                 child: Text(_currentTitle,
                     style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700)),
+              ),
+              IconButton(
+                tooltip: 'Add PDF to this folder',
+                onPressed: () async {
+                  final result = await _documents.importPdfs();
+                  await _refresh();
+                  if (mounted) _message('Added ' + result.added.toString() + ' · Duplicates ' + result.duplicates.toString());
+                },
+                icon: const Icon(Icons.picture_as_pdf_outlined),
               ),
               IconButton(
                 tooltip: 'Create folder',
@@ -311,10 +349,17 @@ class _FoldersScreenState extends State<FoldersScreen> {
                             Card(
                               elevation: 0,
                               child: ListTile(
-                                leading: const Icon(Icons.picture_as_pdf_outlined),
+                                leading: _selectedDocumentIds.isNotEmpty
+                                    ? Checkbox(value: _selectedDocumentIds.contains(document.id), onChanged: (_) => setState(() { if (!_selectedDocumentIds.add(document.id)) _selectedDocumentIds.remove(document.id); }))
+                                    : const Icon(Icons.picture_as_pdf_outlined),
                                 title: Text('${document.name}.pdf', maxLines: 1, overflow: TextOverflow.ellipsis),
                                 subtitle: Text(_size(document.sizeBytes)),
+                                onLongPress: () => setState(() { if (!_selectedDocumentIds.add(document.id)) _selectedDocumentIds.remove(document.id); }),
                                 onTap: () async {
+                                  if (_selectedDocumentIds.isNotEmpty) {
+                                    setState(() { if (!_selectedDocumentIds.add(document.id)) _selectedDocumentIds.remove(document.id); });
+                                    return;
+                                  }
                                   final shared = document.storagePath.startsWith('content://') ||
                                       document.storagePath.startsWith('file://');
                                   if (!shared && !await File(document.storagePath).exists()) {
