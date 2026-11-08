@@ -619,6 +619,7 @@ class DocumentToolsService {
       final matchingFolder = existingFolders.where((candidate) =>
           candidate['name'] == rawName &&
           candidate['parent_id'] == mappedParentId &&
+          candidate['deleted_at'] == null &&
           !matchedFolderIds.contains(candidate['id']));
       if (matchingFolder.isNotEmpty) {
         final existing = matchingFolder.first;
@@ -661,7 +662,7 @@ class DocumentToolsService {
       final oldId = row['id'] as String;
       final digest = row['sha256'] as String?;
       final sameFile = digest == null ? const <Map<String, Object?>>[] :
-          existingDocuments.where((v) => v['sha256'] == digest).toList();
+          existingDocuments.where((v) => v['sha256'] == digest && v['deleted_at'] == null).toList();
       final idCollision = existingDocuments.any((v) => v['id'] == oldId);
       documentIdMap[oldId] = sameFile.isNotEmpty
           ? sameFile.first['id'] as String
@@ -674,7 +675,8 @@ class DocumentToolsService {
       final duplicate = existingReminders.where((v) =>
           v['document_id'] == mappedDocumentId &&
           v['title'] == row['title'] &&
-          v['remind_at_utc'] == row['remind_at_utc']);
+          v['remind_at_utc'] == row['remind_at_utc'] &&
+          v['enabled'] == row['enabled'] && v['status'] == row['status']);
       reminderIdMap[oldId] = duplicate.isNotEmpty
           ? duplicate.first['id'] as String
           : (existingReminders.any((v) => v['id'] == oldId) ? _uuid.v4() : oldId);
