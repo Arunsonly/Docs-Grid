@@ -223,7 +223,7 @@ class _FoldersScreenState extends State<FoldersScreen> {
               IconButton(
                 tooltip: 'Add PDF to this folder',
                 onPressed: () async {
-                  final result = await _documents.importPdfs();
+                  final result = await _documents.importPdfs(targetFolderId: _currentFolderId);
                   await _refresh();
                   if (mounted) _message('Added ' + result.added.toString() + ' · Duplicates ' + result.duplicates.toString());
                 },
