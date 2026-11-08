@@ -344,11 +344,38 @@ class MainActivity : FlutterActivity() {
             val check = contentResolver.openInputStream(temp)?.use { it.readBytes() }
                 ?: throw IllegalStateException("Could not verify metadata file.")
             if (!bytes.contentEquals(check)) throw IllegalStateException("Metadata verification failed.")
-            if (existing != null && !DocumentsContract.deleteDocument(contentResolver, existing)) {
-                throw IllegalStateException("Could not replace the previous metadata snapshot.")
+            var previousBackup: Uri? = null
+            var published = false
+            try {
+                if (existing != null) {
+                    previousBackup = DocumentsContract.renameDocument(
+                        contentResolver, existing,
+                        ".$name.previous-${java.util.UUID.randomUUID()}"
+                    ) ?: throw IllegalStateException("Could not safely stage the previous metadata snapshot.")
+                }
+                val result = DocumentsContract.renameDocument(contentResolver, temp, name)
+                    ?: throw IllegalStateException("Could not publish metadata file.")
+                published = true
+                if (previousBackup != null) {
+                    // The new snapshot is already published and verified. A
+                    // cleanup failure must not roll it back or risk old data.
+                    try { DocumentsContract.deleteDocument(contentResolver, previousBackup) }
+                    catch (_: Exception) {}
+                }
+                return result
+            } catch (error: Exception) {
+                if (!published && previousBackup != null) {
+                    try {
+                        DocumentsContract.renameDocument(contentResolver, previousBackup, name)
+                    } catch (_: Exception) {
+                        throw IllegalStateException(
+                            "Snapshot publication failed and the previous snapshot remains under its recovery filename.",
+                            error
+                        )
+                    }
+                }
+                throw error
             }
-            return DocumentsContract.renameDocument(contentResolver, temp, name)
-                ?: throw IllegalStateException("Could not publish metadata file.")
         } catch (error: Exception) {
             try { DocumentsContract.deleteDocument(contentResolver, temp) } catch (_: Exception) {}
             throw error
