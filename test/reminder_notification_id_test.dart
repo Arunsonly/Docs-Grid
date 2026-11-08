@@ -21,6 +21,33 @@ void main() {
       expect(next, DateTime(2026, 11, 8, 11));
     });
 
+    test('schedules monthly reminders on the original day when possible', () {
+      final next = ReminderNotifications.nextScheduledOccurrence(
+        at: DateTime(2026, 1, 15, 9),
+        now: DateTime(2026, 2, 1, 10),
+        recurrence: 'monthly',
+      );
+      expect(next, DateTime(2026, 2, 15, 9));
+    });
+
+    test('clamps a 31st monthly reminder to the last day of shorter months', () {
+      final next = ReminderNotifications.nextScheduledOccurrence(
+        at: DateTime(2026, 1, 31, 9),
+        now: DateTime(2026, 2, 1, 10),
+        recurrence: 'monthly',
+      );
+      expect(next, DateTime(2026, 2, 28, 9));
+    });
+
+    test('moves an elapsed monthly occurrence to the next month', () {
+      final next = ReminderNotifications.nextScheduledOccurrence(
+        at: DateTime(2026, 1, 31, 9),
+        now: DateTime(2026, 2, 28, 10),
+        recurrence: 'monthly',
+      );
+      expect(next, DateTime(2026, 3, 31, 9));
+    });
+
     test('does not revive an overdue one-time reminder', () {
       expect(
         ReminderNotifications.nextScheduledOccurrence(
