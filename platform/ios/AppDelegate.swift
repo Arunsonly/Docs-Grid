@@ -44,13 +44,17 @@ import CryptoKit
                 guard let selected = try selectedFolder(), let root = URL(string: selected["uri"] ?? "") else {
                     throw storageError("Choose a DocsGrid storage folder first.")
                 }
-                let system = try ensureDirectory(parent: root, name: "System")
-                let database = try ensureDirectory(parent: system, name: "Database")
-                let recovery = try ensureDirectory(parent: system, name: "Recovery")
+                // Canonical layout: only four top-level folders. Existing legacy
+                // My Files/System folders are deliberately left untouched.
+                let documents = try ensureDirectory(parent: root, name: "Documents")
+                let folders = try ensureDirectory(parent: root, name: "Folders")
+                let database = try ensureDirectory(parent: root, name: "Database")
+                let recovery = try ensureDirectory(parent: root, name: "Recovery")
                 result([
                     "databaseUri": database.absoluteString,
                     "recoveryUri": recovery.absoluteString,
-                    "libraryUri": root.absoluteString
+                    "libraryUri": folders.absoluteString,
+                    "documentsUri": documents.absoluteString
                 ])
             case "getSelectedFolder":
                 result(try selectedFolder())
@@ -238,7 +242,8 @@ import CryptoKit
             }
             UserDefaults.standard.set(bookmarks, forKey: bookmarkListKey)
         }
-        return ["uri": root.absoluteString, "name": root.lastPathComponent]
+        let folders = try ensureDirectory(parent: root, name: "Folders")
+        return ["uri": folders.absoluteString, "name": "DocsGrid/Folders"]
     }
 
     private func uniqueURL(parent: URL, requestedName: String) -> URL {
