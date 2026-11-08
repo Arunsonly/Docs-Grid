@@ -33,6 +33,21 @@ void main() {
       );
     });
 
+    test('handles deep folder trees without recursive stack growth', () {
+      final folders = List<Map<String, Object?>>.generate(
+        10000,
+        (index) => {
+          'id': 'folder_$index',
+          'parent_id': index == 0 ? null : 'folder_${index - 1}',
+        },
+      );
+
+      expect(
+        () => BackupFolderGraphValidator.validate(folders),
+        returnsNormally,
+      );
+    });
+
     test('rejects duplicate and empty IDs', () {
       expect(
         () => BackupFolderGraphValidator.validate([
