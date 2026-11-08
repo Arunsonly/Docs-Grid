@@ -997,12 +997,18 @@ class DocumentToolsService {
       if (digest != expectedDigest) throw StateError('Backup integrity check failed.');
       documentIds.add(id);
     }
+    final metadataDocumentIds = <String>{};
     for (final row in rowsByTable['documents']!) {
-      if (row is! Map || row['id'] is! String || !documentIds.contains(row['id'])) {
+      if (row is! Map || row['id'] is! String ||
+          !metadataDocumentIds.add(row['id'] as String)) {
+        throw StateError('Backup contains an invalid or duplicate document metadata record.');
+      }
+      if (!documentIds.contains(row['id'])) {
         throw StateError('Backup metadata references a document with no PDF.');
       }
     }
-    if (rowsByTable['documents']!.length != documentIds.length) {
+    if (metadataDocumentIds.length != documentIds.length ||
+        !metadataDocumentIds.containsAll(documentIds)) {
       throw StateError('Backup contains orphaned PDF entries or missing document records.');
     }
     return rawFiles.length;
