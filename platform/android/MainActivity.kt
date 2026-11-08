@@ -30,11 +30,11 @@ class MainActivity : FlutterActivity() {
                     result
                 } else {
                     object : MethodChannel.Result {
-                        override fun success(value: Any?) { mainHandler.post { response.success(value) } }
+                        override fun success(value: Any?) { mainHandler.post { result.success(value) } }
                         override fun error(code: String, message: String?, details: Any?) {
-                            mainHandler.post { response.error(code, message, details) }
+                            mainHandler.post { result.error(code, message, details) }
                         }
-                        override fun notImplemented() { mainHandler.post { response.notImplemented() } }
+                        override fun notImplemented() { mainHandler.post { result.notImplemented() } }
                     }
                 }
                 val operation = Runnable {
