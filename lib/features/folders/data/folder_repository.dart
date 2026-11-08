@@ -102,7 +102,7 @@ class FolderRepository {
       current = row['parent_id'] as String?;
     }
 
-    parentUri ??= selectedRoot['uri'] as String?;
+    parentUri ??= selectedRoot['uri'];
     for (final row in unresolved.reversed) {
       if (parentUri == null) return null;
       final name = row['name'] as String;
@@ -145,7 +145,7 @@ class FolderRepository {
     final storage = StorageLocationService.instance;
     final selectedRoot = await storage.selectedFolder();
     final parentStorageUri = parentId == null
-        ? (selectedRoot == null ? null : selectedRoot['uri'] as String?)
+        ? (selectedRoot == null ? null : selectedRoot['uri'])
         : await ensurePhysicalStorageUri(parentId);
     String? physicalUri;
     if (parentStorageUri != null) {
