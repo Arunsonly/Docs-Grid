@@ -266,9 +266,11 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
         skipped++;
       }
     }
-    if (mounted) setState(() => _message =
-      'OCR indexing finished: $done searchable, $noText had no readable text, $skipped failed. '
-      'Scanned/image-only PDFs may need clearer pages or a supported OCR language.');
+    if (mounted) {
+      setState(() => _message =
+        'OCR indexing finished: $done searchable, $noText had no readable text, $skipped failed. '
+        'Scanned/image-only PDFs may need clearer pages or a supported OCR language.');
+    }
   });
 
 
