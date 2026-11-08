@@ -21,6 +21,12 @@ void main() {
         isNot(ReminderNotifications.notificationIdFor('reminder-124')),
       );
     });
+
+    test('snooze IDs are stable and separate from the recurring reminder ID', () {
+      final snoozeId = ReminderNotifications.snoozeNotificationIdFor('reminder-123');
+      expect(snoozeId, ReminderNotifications.snoozeNotificationIdFor('reminder-123'));
+      expect(snoozeId, isNot(ReminderNotifications.notificationIdFor('reminder-123')));
+    });
   });
 
   group('ReminderNotifications.nextScheduledOccurrence', () {
