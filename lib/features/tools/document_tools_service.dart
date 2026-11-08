@@ -1150,13 +1150,21 @@ class DocumentToolsService {
           throw StateError('Backup contains an unsafe or duplicate PDF entry.');
         }
         final entry = decoded.findFile(entryName);
-        if (entry == null) throw StateError('Backup is incomplete: missing PDF entry.');
+        if (entry == null || !entry.isFile || entry.isSymbolicLink) {
+          throw StateError('Backup is incomplete or contains a non-file PDF entry.');
+        }
         final stagedFile = File(p.join(staging.path, '${_uuid.v4()}.pdf'));
         final output = OutputFileStream(stagedFile.path);
         try {
           entry.writeContent(output);
         } finally {
           output.closeSync();
+        }
+        final header = await stagedFile.openRead(0, 5).fold<List<int>>(
+          <int>[], (bytes, chunk) => bytes..addAll(chunk),
+        );
+        if (header.length < 5 || String.fromCharCodes(header) != '%PDF-') {
+          throw StateError('Backup contains a file that is not a PDF.');
         }
         final digest = (await sha256.bind(stagedFile.openRead()).first).toString();
         if (digest != (raw['sha256'] as String).toLowerCase()) {
