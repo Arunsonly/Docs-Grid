@@ -64,6 +64,8 @@ class DocumentRecord {
   }
 }
 
+class _DuplicatePdfImport implements Exception {}
+
 class ImportSummary {
   const ImportSummary({required this.added, required this.duplicates, required this.failed, this.skipped = 0});
   final int added;
@@ -638,6 +640,14 @@ class DocumentRepository {
     final now = DateTime.now().toUtc().toIso8601String();
     try {
       await db.transaction((txn) async {
+        final duplicate = await txn.query(
+          'documents',
+          columns: ['id'],
+          where: 'sha256 = ? AND deleted_at IS NULL',
+          whereArgs: [digest],
+          limit: 1,
+        );
+        if (duplicate.isNotEmpty) throw _DuplicatePdfImport();
         if (targetFolderId != null) {
           final activeFolder = await txn.query(
             'folders',
@@ -668,7 +678,7 @@ class DocumentRepository {
         });
         await _recordHistory(txn, id, sourceType == 'share' ? 'imported_from_share' : 'scanned', {'name': safeName, 'folder_id': targetFolderId});
       });
-    } catch (_) {
+    } catch (error) {
       try {
         if (uri.startsWith('content://') || uri.startsWith('file://')) {
           await storage.deletePdf(uri);
@@ -677,6 +687,9 @@ class DocumentRepository {
           if (await file.exists()) await file.delete();
         }
       } catch (_) {}
+      if (error is _DuplicatePdfImport) {
+        return const ImportSummary(added: 0, duplicates: 1, failed: 0);
+      }
       rethrow;
     }
     return const ImportSummary(added: 1, duplicates: 0, failed: 0);
@@ -800,6 +813,14 @@ class DocumentRepository {
         final now = DateTime.now().toUtc().toIso8601String();
         final documentId = _uuid.v4();
         await db.transaction((txn) async {
+          final duplicate = await txn.query(
+            'documents',
+            columns: ['id'],
+            where: 'sha256 = ? AND deleted_at IS NULL',
+            whereArgs: [digest],
+            limit: 1,
+          );
+          if (duplicate.isNotEmpty) throw _DuplicatePdfImport();
           if (targetFolderId != null) {
             final activeFolder = await txn.query(
               'folders',
@@ -844,7 +865,7 @@ class DocumentRepository {
           await _recordHistory(txn, documentId, 'imported', {'name': storedName});
         });
         added++;
-      } catch (_) {
+      } catch (error) {
         if (createdUri != null) {
           try {
             if (createdUri.startsWith('content://') || createdUri.startsWith('file://')) {
@@ -855,7 +876,11 @@ class DocumentRepository {
             }
           } catch (_) {}
         }
-        failed++;
+        if (error is _DuplicatePdfImport) {
+          duplicates++;
+        } else {
+          failed++;
+        }
       }
     }
     return ImportSummary(added: added, duplicates: duplicates, failed: failed, skipped: skipped);
