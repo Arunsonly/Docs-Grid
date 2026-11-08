@@ -20,6 +20,7 @@ import '../../core/database/app_database.dart';
 import '../../core/storage/storage_location_service.dart';
 import '../reminders/data/reminder_notifications.dart';
 import 'document_crop_screen.dart';
+import 'backup_folder_graph_validator.dart';
 import 'portable_snapshot_manifest.dart';
 
 /// Local-only utilities for indexing, scanning, sharing and portable backups.
@@ -373,22 +374,36 @@ class DocumentToolsService {
       rowsByTable[table] = rows.map((e) => Map<String, Object?>.from(e as Map)).toList();
     }
 
+    final folderRows = rowsByTable['folders']!;
+    // A ZIP is untrusted input. Validate parent links before creating any
+    // directories, and never use imported IDs as filesystem path segments.
+    BackupFolderGraphValidator.validate(folderRows);
     final root = Directory(p.join((await getApplicationDocumentsDirectory()).path, 'DocsGrid', 'Restored'));
     final restoreRoot = Directory(p.join(root.path, DateTime.now().microsecondsSinceEpoch.toString()));
     await restoreRoot.create(recursive: true);
     final fileRows = (manifest['files'] as List<dynamic>).cast<Map<String, dynamic>>();
     final restoredPaths = <String, String>{};
-    final folderRows = rowsByTable['folders']!;
     final folderPaths = <String, String>{};
+    final folderDirectoryNames = <String, String>{
+      for (final row in folderRows) row['id'] as String: 'folder_${_uuid.v4()}',
+    };
+    final resolvingFolderIds = <String>{};
     String folderPath(String id) {
       final known = folderPaths[id];
       if (known != null) return known;
-      final row = folderRows.firstWhere((r) => r['id'] == id);
-      final parent = row['parent_id'] as String?;
-      final base = parent == null ? restoreRoot.path : folderPath(parent);
-      final path = p.join(base, 'folder_$id');
-      folderPaths[id] = path;
-      return path;
+      if (!resolvingFolderIds.add(id)) {
+        throw StateError('Backup folder hierarchy contains a cycle.');
+      }
+      try {
+        final row = folderRows.firstWhere((r) => r['id'] == id);
+        final parent = row['parent_id'] as String?;
+        final base = parent == null ? restoreRoot.path : folderPath(parent);
+        final path = p.join(base, folderDirectoryNames[id]!);
+        folderPaths[id] = path;
+        return path;
+      } finally {
+        resolvingFolderIds.remove(id);
+      }
     }
 
     var databaseCommitted = false;
@@ -402,8 +417,17 @@ class DocumentToolsService {
         final folderId = document['folder_id'] as String?;
         final destinationDir = folderId == null ? restoreRoot : Directory(folderPath(folderId));
         await destinationDir.create(recursive: true);
-        final safeName = p.basename((item['originalName'] as String?) ?? 'document.pdf');
-        final destination = File(p.join(destinationDir.path, '${id}_$safeName'));
+        final requestedName = p.basename((item['originalName'] as String?) ?? 'document.pdf')
+            .replaceAll(RegExp(r'[<>:"/\\\\|?*\\x00-\\x1F]'), '_')
+            .trim();
+        final safeName = requestedName.isEmpty
+            ? 'document.pdf'
+            : requestedName.length > 120
+                ? requestedName.substring(0, 120)
+                : requestedName;
+        // Use a fresh local filename; imported document IDs are database keys,
+        // not trusted path components.
+        final destination = File(p.join(destinationDir.path, '${_uuid.v4()}_$safeName'));
         final entry = decoded.findFile(item['entry'] as String)!;
         final bytes = entry.content as List<int>;
         final digest = sha256.convert(bytes).toString();
