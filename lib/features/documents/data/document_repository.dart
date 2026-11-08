@@ -58,10 +58,23 @@ class DocumentRecord {
 }
 
 class ImportSummary {
-  const ImportSummary({required this.added, required this.duplicates, required this.failed});
+  const ImportSummary({required this.added, required this.duplicates, required this.failed, this.skipped = 0});
   final int added;
   final int duplicates;
   final int failed;
+  final int skipped;
+}
+
+class ImportDecision {
+  const ImportDecision({required this.name, this.categoryId});
+  final String name;
+  final String? categoryId;
+}
+
+class ImportCategoryOption {
+  const ImportCategoryOption({required this.id, required this.name});
+  final String id;
+  final String name;
 }
 
 class DocumentRepository {
