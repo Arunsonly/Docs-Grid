@@ -21,7 +21,10 @@ void main() {
     }
   });
 
-  Future<File> makeBackup({required List<Map<String, Object?>> documents}) async {
+  Future<File> makeBackup({
+    required List<Map<String, Object?>> documents,
+    List<Map<String, Object?>> folders = const [],
+  }) async {
     final archive = Archive();
     final tableNames = [
       'folders', 'documents', 'categories', 'tags', 'document_tags',
@@ -29,7 +32,11 @@ void main() {
     ];
     final tableCounts = <String, int>{};
     for (final table in tableNames) {
-      final rows = table == 'documents' ? documents : <Map<String, Object?>>[];
+      final rows = table == 'documents'
+          ? documents
+          : table == 'folders'
+              ? folders
+              : <Map<String, Object?>>[];
       final bytes = utf8.encode(jsonEncode(rows));
       tableCounts[table] = rows.length;
       archive.addFile(ArchiveFile('$table.json', bytes.length, bytes));
@@ -84,6 +91,52 @@ void main() {
         contains('duplicate document metadata'),
       )),
     );
+  });
+
+  test('rejects duplicate folder IDs during backup preflight', () async {
+    final file = await makeBackup(
+      documents: [
+        {'id': 'doc-a', 'name': 'A'},
+        {'id': 'doc-b', 'name': 'B'},
+      ],
+      folders: [
+        {'id': 'folder-a', 'name': 'A', 'parent_id': null},
+        {'id': 'folder-a', 'name': 'Duplicate', 'parent_id': null},
+      ],
+    );
+
+    await expectLater(
+      service.validateBackup(file),
+      throwsA(isA<StateError>().having(
+        (error) => error.message,
+        'message',
+        contains('duplicate folder ID'),
+      )),
+    );
+  });
+
+  test('rejects missing parents and cyclic folder graphs before restore', () async {
+    for (final folders in [
+      [
+        {'id': 'child', 'name': 'Child', 'parent_id': 'missing'},
+      ],
+      [
+        {'id': 'a', 'name': 'A', 'parent_id': 'b'},
+        {'id': 'b', 'name': 'B', 'parent_id': 'a'},
+      ],
+    ]) {
+      final file = await makeBackup(
+        documents: [
+          {'id': 'doc-a', 'name': 'A'},
+          {'id': 'doc-b', 'name': 'B'},
+        ],
+        folders: folders,
+      );
+      await expectLater(
+        service.validateBackup(file),
+        throwsA(isA<StateError>()),
+      );
+    }
   });
 
   test('rejects a PDF whose document metadata row is missing', () async {
