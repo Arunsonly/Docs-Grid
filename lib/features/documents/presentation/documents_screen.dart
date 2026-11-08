@@ -814,7 +814,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                       child: ListTile(
                         contentPadding: EdgeInsets.zero,
                         leading: Icon(Icons.copy_all_outlined),
-                        title: Text('Check duplicates'),
+                        title: Text('Check Duplicate File'),
                       ),
                     ),
                   ],
