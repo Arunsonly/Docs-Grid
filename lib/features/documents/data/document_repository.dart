@@ -935,7 +935,7 @@ class DocumentRepository {
       WHERE d.deleted_at IS NOT NULL AND d.name LIKE ? ESCAPE '\\'
       ORDER BY d.deleted_at DESC
       ''',
-      ['%${_escapeLikeWildcards(query.trim())}%'],
+      ['%${escapeLikeWildcards(query.trim())}%'],
     );
     return rows.map(DocumentRecord.fromMap).toList();
   }
