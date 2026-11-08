@@ -36,9 +36,10 @@ class _RemindersScreenState extends State<RemindersScreen> {
     final result = await showDialog<bool>(context: context, builder: (dialogContext) => StatefulBuilder(
       builder: (context, setDialogState) => AlertDialog(
         scrollable: true,
+        insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 20),
         title: Text(existing == null ? 'New reminder' : 'Edit reminder'),
-        content: SizedBox(
-          width: 440,
+        content: ConstrainedBox(
+          constraints: BoxConstraints(maxHeight: MediaQuery.sizeOf(context).height * 0.52, maxWidth: 440),
           child: SingleChildScrollView(
             child: Column(mainAxisSize: MainAxisSize.min, children: [
               TextField(controller: title, autofocus: true, decoration: const InputDecoration(labelText: 'Reminder title')),
@@ -54,7 +55,7 @@ class _RemindersScreenState extends State<RemindersScreen> {
                 onChanged: (value) => setDialogState(() => recurrence = value ?? 'none'),
               ),
               const SizedBox(height: 8),
-              ListTile(contentPadding: EdgeInsets.zero, leading: const Icon(Icons.calendar_month_outlined),
+              ListTile(dense: true, contentPadding: EdgeInsets.zero, leading: const Icon(Icons.calendar_month_outlined),
                 title: const Text('Date & time'),
                 subtitle: Text('${selected.day.toString().padLeft(2, '0')}/${selected.month.toString().padLeft(2, '0')}/${selected.year} · ${selected.hour.toString().padLeft(2, '0')}:${selected.minute.toString().padLeft(2, '0')}'),
                 onTap: () async {
