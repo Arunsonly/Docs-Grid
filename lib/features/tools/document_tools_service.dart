@@ -119,11 +119,12 @@ class DocumentToolsService {
     final document = await pdfx.PdfDocument.openFile(path);
     final pageCount = document.pagesCount;
     final recognizer = TextRecognizer(script: TextRecognitionScript.latin);
-    final devanagariRecognizer = Platform.isAndroid
-        ? TextRecognizer(script: TextRecognitionScript.devanagiri)
-        : null;
+    TextRecognizer? devanagariRecognizer;
     final pages = StringBuffer();
     try {
+      if (Platform.isAndroid) {
+        devanagariRecognizer = TextRecognizer(script: TextRecognitionScript.devanagiri);
+      }
       for (var pageNumber = 1; pageNumber <= document.pagesCount; pageNumber++) {
         final page = await document.getPage(pageNumber);
         try {
