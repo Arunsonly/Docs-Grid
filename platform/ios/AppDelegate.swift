@@ -227,8 +227,8 @@ import CryptoKit
             let root = try URL(resolvingBookmarkData: data, options: [], relativeTo: nil, bookmarkDataIsStale: &stale)
             let accessed = root.startAccessingSecurityScopedResource()
             defer { if accessed { root.stopAccessingSecurityScopedResource() } }
-            guard accessed || FileManager.default.fileExists(atPath: root.path) else {
-                return ["status": "revoked", "message": "iOS could not reopen the saved Files folder. Select it again; existing PDF records will be preserved."]
+            guard accessed || isInsideAppContainer(root) else {
+                return ["status": "revoked", "message": "iOS could not reopen the saved Files permission. Select the folder again; existing PDF records will be preserved."]
             }
             var isDirectory: ObjCBool = false
             guard FileManager.default.fileExists(atPath: root.path, isDirectory: &isDirectory), isDirectory.boolValue else {
@@ -240,10 +240,24 @@ import CryptoKit
         }
     }
 
+    private func isInsideAppContainer(_ url: URL) -> Bool {
+        let home = URL(fileURLWithPath: NSHomeDirectory()).standardizedFileURL.path
+        let path = url.standardizedFileURL.path
+        return path == home || path.hasPrefix(home + "/")
+    }
+
     private func selectedFolder() throws -> [String: String]? {
         guard let data = UserDefaults.standard.data(forKey: currentBookmarkKey) else { return nil }
         var stale = false
         let root = try URL(resolvingBookmarkData: data, options: [], relativeTo: nil, bookmarkDataIsStale: &stale)
+        let accessed = root.startAccessingSecurityScopedResource()
+        defer { if accessed { root.stopAccessingSecurityScopedResource() } }
+        guard accessed || isInsideAppContainer(root) else {
+            throw storageError("The saved Files permission is unavailable. Select the storage folder again.")
+        }
+        guard FileManager.default.fileExists(atPath: root.path) else {
+            throw storageError("The saved Files folder no longer exists. Select the folder again.")
+        }
         if stale {
             let refreshed = try root.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
             UserDefaults.standard.set(refreshed, forKey: currentBookmarkKey)
