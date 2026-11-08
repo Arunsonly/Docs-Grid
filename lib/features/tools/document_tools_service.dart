@@ -22,6 +22,7 @@ import '../reminders/data/reminder_notifications.dart';
 import 'backup_folder_graph_validator.dart';
 import 'document_crop_screen.dart';
 import 'portable_snapshot_manifest.dart';
+import 'portable_snapshot_rows_validator.dart';
 
 /// Local-only utilities for indexing, scanning, sharing and portable backups.
 /// This service never uploads document contents to a remote server.
@@ -378,6 +379,7 @@ class DocumentToolsService {
     // A ZIP is untrusted input. Validate parent links before creating any
     // directories, and never use imported IDs as filesystem path segments.
     BackupFolderGraphValidator.validate(folderRows);
+    PortableSnapshotRowsValidator.validate(rowsByTable);
     final root = Directory(p.join((await getApplicationDocumentsDirectory()).path, 'DocsGrid', 'Restored'));
     final restoreRoot = Directory(p.join(root.path, DateTime.now().microsecondsSinceEpoch.toString()));
     await restoreRoot.create(recursive: true);
