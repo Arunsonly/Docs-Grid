@@ -198,13 +198,13 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
       throw StateError('No verified DocsGrid snapshot was found in the selected folder.');
     }
     if (!mounted) return;
-    const androidNote = 'Choose the parent folder that contains the DocsGrid folder.';
+    const folderSelectionNote = 'Choose the parent folder that contains the DocsGrid folder.';
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
         title: const Text('Restore DocsGrid folder data?'),
         content: Text(
-          'Verified snapshot: $snapshot\n\n$androidNote\n'
+          'Verified snapshot: $snapshot\n\n$folderSelectionNote\n'
           'Existing records will be retained. Imported IDs will be remapped if needed. '
           'PDFs will be matched by SHA-256; files not found will keep their metadata '
           'and be marked for relinking. No PDF file will be overwritten or deleted.',
