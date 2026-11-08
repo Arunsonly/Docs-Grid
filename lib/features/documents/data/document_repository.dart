@@ -79,7 +79,7 @@ class ImportCategoryOption {
 
 String escapeLikeWildcards(String value) {
   return value
-      .replaceAll('\\\\', '\\\\\\\\')
+      .replaceAll('\\', '\\\\')
       .replaceAll('%', r'\%')
       .replaceAll('_', r'\_');
 }
