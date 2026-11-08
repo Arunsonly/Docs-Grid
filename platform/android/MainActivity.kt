@@ -19,6 +19,29 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "docsgrid/notifications")
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "openSettings" -> {
+                        try {
+                            val settingsIntent = if (android.os.Build.VERSION.SDK_INT >= 26) {
+                                Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                                    putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, packageName)
+                                }
+                            } else {
+                                Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                                    data = Uri.parse("package:$packageName")
+                                }
+                            }
+                            startActivity(settingsIntent)
+                            result.success(true)
+                        } catch (error: Exception) {
+                            result.error("SETTINGS_ERROR", error.message ?: "Could not open notification settings.", null)
+                        }
+                    }
+                    else -> result.notImplemented()
+                }
+            }
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName)
             .setMethodCallHandler { call, result ->
                 try {
