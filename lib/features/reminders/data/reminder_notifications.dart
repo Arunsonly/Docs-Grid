@@ -16,20 +16,20 @@ class ReminderNotifications {
   Future<void> initialize() async {
     if (_ready) return;
     tzdata.initializeTimeZones();
-    final deviceTimeZone = await FlutterTimezone.getLocalTimezone();
-    // Android vendors may still report legacy IANA aliases.
-    final reportedId = deviceTimeZone.identifier;
-    final canonicalId = switch (reportedId) {
-      'Asia/Calcutta' => 'Asia/Kolkata',
-      'Asia/Katmandu' => 'Asia/Kathmandu',
-      'Asia/Rangoon' => 'Asia/Yangon',
-      _ => reportedId,
-    };
     try {
+      final deviceTimeZone = await FlutterTimezone.getLocalTimezone();
+      // Android vendors may still report legacy IANA aliases.
+      final reportedId = deviceTimeZone.identifier;
+      final canonicalId = switch (reportedId) {
+        'Asia/Calcutta' => 'Asia/Kolkata',
+        'Asia/Katmandu' => 'Asia/Kathmandu',
+        'Asia/Rangoon' => 'Asia/Yangon',
+        _ => reportedId,
+      };
       tz.setLocalLocation(tz.getLocation(canonicalId));
-    } on Exception {
-      // Fall back to the device's UTC offset instead of crashing the
-      // reminder screen when a vendor returns an unknown timezone alias.
+    } catch (_) {
+      // Timezone plugins can fail on vendor ROMs. Keep reminder setup usable
+      // rather than preventing the rest of the app from opening.
       tz.setLocalLocation(tz.UTC);
     }
     const settings = InitializationSettings(
