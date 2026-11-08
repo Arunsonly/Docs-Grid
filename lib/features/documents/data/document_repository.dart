@@ -933,20 +933,27 @@ class DocumentRepository {
 
   Future<void> restoreFromTrash(DocumentRecord document) async {
     final db = await _database.database;
-    await db.update('documents', {
-      'deleted_at': null,
-      'updated_at': DateTime.now().toUtc().toIso8601String(),
-    }, where: 'id = ? AND deleted_at IS NOT NULL', whereArgs: [document.id]);
-    await _recordHistory(db, document.id, 'restored', {});
+    await db.transaction((txn) async {
+      final count = await txn.update('documents', {
+        'deleted_at': null,
+        'updated_at': DateTime.now().toUtc().toIso8601String(),
+      }, where: 'id = ? AND deleted_at IS NOT NULL', whereArgs: [document.id]);
+      if (count == 0) throw StateError('This PDF is no longer in Recycle Bin.');
+      await _recordHistory(txn, document.id, 'restored', {});
+    });
   }
 
   Future<void> moveToTrash(DocumentRecord document) async {
     final db = await _database.database;
-    await db.update('documents', {
-      'deleted_at': DateTime.now().toUtc().toIso8601String(),
-      'updated_at': DateTime.now().toUtc().toIso8601String(),
-    }, where: 'id = ?', whereArgs: [document.id]);
-    await _recordHistory(db, document.id, 'moved_to_recycle_bin', {});
+    await db.transaction((txn) async {
+      final now = DateTime.now().toUtc().toIso8601String();
+      final count = await txn.update('documents', {
+        'deleted_at': now,
+        'updated_at': now,
+      }, where: 'id = ? AND deleted_at IS NULL', whereArgs: [document.id]);
+      if (count == 0) throw StateError('This PDF is no longer in the active library.');
+      await _recordHistory(txn, document.id, 'moved_to_recycle_bin', {});
+    });
   }
 
   Future<void> rename(DocumentRecord document, String newName) async {
@@ -1028,6 +1035,20 @@ class DocumentRepository {
   }
 
   Future<void> permanentlyDelete(DocumentRecord document) async {
+    final db = await _database.database;
+    final rows = await db.query(
+      'documents',
+      columns: ['id'],
+      where: 'id = ? AND deleted_at IS NOT NULL',
+      whereArgs: [document.id],
+      limit: 1,
+    );
+    if (rows.isEmpty) {
+      throw StateError('Only PDFs already in Recycle Bin can be permanently deleted.');
+    }
+
+    // Delete bytes only after confirming this is a trashed record. If storage
+    // deletion fails, the database record remains available for retry/relink.
     if (document.storagePath.startsWith('content://') ||
         document.storagePath.startsWith('file://')) {
       await StorageLocationService.instance.deletePdf(document.storagePath);
@@ -1035,9 +1056,19 @@ class DocumentRepository {
       final file = File(document.storagePath);
       if (await file.exists()) await file.delete();
     }
-    final db = await _database.database;
-    await _recordHistory(db, null, 'permanently_deleted', {'document_id': document.id, 'name': document.name});
-    await db.delete('documents', where: 'id = ?', whereArgs: [document.id]);
+
+    await db.transaction((txn) async {
+      await _recordHistory(txn, null, 'permanently_deleted', {
+        'document_id': document.id,
+        'name': document.name,
+      });
+      final count = await txn.delete(
+        'documents',
+        where: 'id = ? AND deleted_at IS NOT NULL',
+        whereArgs: [document.id],
+      );
+      if (count == 0) throw StateError('Recycle Bin record changed during deletion.');
+    });
   }
 
   Future<void> _recordHistory(
