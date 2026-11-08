@@ -146,6 +146,62 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     return result;
   }
 
+  Future<void> _browsePhoneStorage() async {
+    try {
+      final selected = await StorageLocationService.instance.chooseFolder();
+      if (!mounted || selected == null) return;
+      await _showStorageDirectory(selected['uri']!, selected['name']!);
+    } catch (error) {
+      if (mounted) _message('Could not access phone storage: $error');
+    }
+  }
+
+  Future<void> _showStorageDirectory(String uri, String name) async {
+    List<Map<String, Object?>> entries;
+    try {
+      entries = await StorageLocationService.instance.listDirectory(uri);
+    } catch (error) {
+      if (mounted) _message('Could not read $name: $error');
+      return;
+    }
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(name, maxLines: 1, overflow: TextOverflow.ellipsis),
+        content: SizedBox(
+          width: double.maxFinite,
+          height: 420,
+          child: entries.isEmpty
+              ? const Center(child: Text('This folder is empty.'))
+              : ListView.separated(
+                  itemCount: entries.length,
+                  separatorBuilder: (_, _) => const Divider(height: 1),
+                  itemBuilder: (context, index) {
+                    final entry = entries[index];
+                    final isDirectory = entry['isDirectory'] == true;
+                    final fileName = entry['name'] as String;
+                    final isPdf = !isDirectory && fileName.toLowerCase().endsWith('.pdf');
+                    if (!isDirectory && !isPdf) return const SizedBox.shrink();
+                    return ListTile(
+                      dense: true,
+                      leading: Icon(isDirectory ? Icons.folder_outlined : Icons.picture_as_pdf_outlined),
+                      title: Text(fileName, maxLines: 1, overflow: TextOverflow.ellipsis),
+                      trailing: isDirectory ? const Icon(Icons.chevron_right) : const Icon(Icons.more_vert),
+                      onTap: isDirectory
+                          ? () => _showStorageDirectory(entry['uri'] as String, fileName)
+                          : () => _message('Selected storage PDF: $fileName. Import and duplicate review will be enabled in the next storage-browser step.'),
+                    );
+                  },
+                ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Close')),
+        ],
+      ),
+    );
+  }
+
   Future<void> _import() async {
     final folders = await _folderRepository.allFoldersWithPaths();
     if (!mounted) return;
@@ -721,16 +777,31 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                   ),
                 ),
                 const SizedBox(width: 4),
-                IconButton(
-                  tooltip: 'Recycle Bin',
-                  onPressed: _showTrash,
-                  icon: const Icon(Icons.delete_outline),
-                ),
-                const SizedBox(width: 4),
-                FilledButton.tonalIcon(
-                  onPressed: _importing ? null : _import,
-                  icon: const Icon(Icons.add),
-                  label: const Text('Import'),
+                PopupMenuButton<String>(
+                  tooltip: 'More document actions',
+                  icon: const Icon(Icons.more_vert),
+                  onSelected: (action) {
+                    if (action == 'storage') _browsePhoneStorage();
+                    if (action == 'trash') _showTrash();
+                  },
+                  itemBuilder: (_) => const [
+                    PopupMenuItem(
+                      value: 'storage',
+                      child: ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        leading: Icon(Icons.folder_open_outlined),
+                        title: Text('Browse phone storage'),
+                      ),
+                    ),
+                    PopupMenuItem(
+                      value: 'trash',
+                      child: ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        leading: Icon(Icons.delete_outline),
+                        title: Text('Recycle Bin'),
+                      ),
+                    ),
+                  ],
                 ),
               ],
             ),
@@ -812,8 +883,11 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
               Text(widget.recentOnly ? 'Open a PDF and it will appear here.' : 'Import PDF files from your phone to get started.', textAlign: TextAlign.center),
               if (!widget.favoritesOnly && !widget.recentOnly) ...[
                 const SizedBox(height: 12),
-                FilledButton.icon(onPressed: _importing ? null : _import,
-                  icon: const Icon(Icons.add), label: const Text('Import PDFs')),
+                OutlinedButton.icon(
+                  onPressed: _browsePhoneStorage,
+                  icon: const Icon(Icons.folder_open_outlined),
+                  label: const Text('Browse phone storage'),
+                ),
               ],
             ],
           ),
