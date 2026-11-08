@@ -387,7 +387,6 @@ class DocumentToolsService {
 
     final root = Directory(p.join((await getApplicationDocumentsDirectory()).path, 'DocsGrid', 'Restored'));
     final restoreRoot = Directory(p.join(root.path, DateTime.now().microsecondsSinceEpoch.toString()));
-    await restoreRoot.create(recursive: true);
     final fileRows = (manifest['files'] as List<dynamic>).cast<Map<String, dynamic>>();
     final restoredPaths = <String, String>{};
     final folderRows = rowsByTable['folders']!;
@@ -426,6 +425,9 @@ class DocumentToolsService {
 
     var databaseCommitted = false;
     try {
+      // Create staging storage only after all folder IDs have been checked.
+      // Invalid archives must fail before leaving any filesystem side effects.
+      await restoreRoot.create(recursive: true);
       for (final row in folderRows) {
         await Directory(folderPath(row['id'] as String)).create(recursive: true);
       }
