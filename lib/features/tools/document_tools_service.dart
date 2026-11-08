@@ -424,9 +424,7 @@ class DocumentToolsService {
             .trim();
         final safeName = requestedName.isEmpty
             ? 'document.pdf'
-            : requestedName.length > 120
-                ? requestedName.substring(0, 120)
-                : requestedName;
+            : String.fromCharCodes(requestedName.runes.take(120));
         // Use a fresh local filename; imported document IDs are database keys,
         // not trusted path components.
         final destination = File(p.join(destinationDir.path, '${_uuid.v4()}_$safeName'));
