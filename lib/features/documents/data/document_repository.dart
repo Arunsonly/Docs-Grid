@@ -77,6 +77,13 @@ class ImportCategoryOption {
   final String name;
 }
 
+String _escapeLikeWildcards(String value) {
+  return value
+      .replaceAll(r'\\', r'\\\\')
+      .replaceAll('%', r'\\%')
+      .replaceAll('_', r'\\_');
+}
+
 class DocumentRepository {
   DocumentRepository({AppDatabase? database})
       : _database = database ?? AppDatabase.instance;
@@ -95,10 +102,10 @@ class DocumentRepository {
       LEFT JOIN categories c ON c.id = d.category_id
       WHERE d.deleted_at IS NULL
         AND (? = 0 OR d.last_opened_at IS NOT NULL)
-        AND d.name LIKE ?
+        AND d.name LIKE ? ESCAPE '\\'
       ORDER BY d.last_opened_at DESC, d.name COLLATE NOCASE ASC
       ''',
-      [recentOnly ? 1 : 0, '%${query.trim()}%'],
+      [recentOnly ? 1 : 0, '%${_escapeLikeWildcards(query.trim())}%'],
     );
     // Avoid SQLite JSON1 dependency: several Android SQLite builds do not
     // expose json_extract(). Favorite metadata is decoded in Dart instead.
@@ -911,10 +918,10 @@ class DocumentRepository {
       SELECT d.*, c.name AS category_name
       FROM documents d
       LEFT JOIN categories c ON c.id = d.category_id
-      WHERE d.deleted_at IS NOT NULL AND d.name LIKE ?
+      WHERE d.deleted_at IS NOT NULL AND d.name LIKE ? ESCAPE '\\'
       ORDER BY d.deleted_at DESC
       ''',
-      ['%${query.trim()}%'],
+      ['%${_escapeLikeWildcards(query.trim())}%'],
     );
     return rows.map(DocumentRecord.fromMap).toList();
   }
