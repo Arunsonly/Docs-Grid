@@ -89,6 +89,17 @@ import CryptoKit
             case "sha256Pdf":
                 let url = try urlArg(args, "uri")
                 result(try sha256Pdf(url: url))
+            case "writeTextFile":
+                let parent = try urlArg(args, "parentUri")
+                let name = try stringArg(args, "name")
+                let contents = try stringArgAllowEmpty(args, "contents")
+                result(try writeTextFile(parent: parent, name: name, contents: contents).absoluteString)
+            case "readTextFile":
+                let url = try urlArg(args, "uri")
+                result(try readTextFile(url: url))
+            case "listDirectory":
+                let url = try urlArg(args, "uri")
+                result(try listDirectory(url: url))
             case "readPdf":
                 let url = try urlArg(args, "uri")
                 result(try readPdf(url: url))
@@ -128,6 +139,13 @@ import CryptoKit
     private func stringArg(_ args: [String: Any], _ key: String) throws -> String {
         guard let value = args[key] as? String, !value.isEmpty else {
             throw storageError("Missing required value: \(key)")
+        }
+        return value
+    }
+
+    private func stringArgAllowEmpty(_ args: [String: Any], _ key: String) throws -> String {
+        guard let value = args[key] as? String else {
+            throw storageError("Missing required value: \\(key)")
         }
         return value
     }
@@ -263,6 +281,64 @@ import CryptoKit
                 throw storageError("PDF verification failed; original file was kept.")
             }
             return target
+        }
+    }
+
+    private func listDirectory(url: URL) throws -> [[String: Any]] {
+        try withAllBookmarkAccess {
+            let values = try FileManager.default.contentsOfDirectory(
+                at: url,
+                includingPropertiesForKeys: [.isDirectoryKey, .fileSizeKey],
+                options: [.skipsHiddenFiles]
+            )
+            return try values.map { child in
+                let resource = try child.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey])
+                return [
+                    "name": child.lastPathComponent,
+                    "uri": child.absoluteString,
+                    "isDirectory": resource.isDirectory ?? false,
+                    "size": resource.fileSize ?? 0
+                ]
+            }
+        }
+    }
+
+    private func readTextFile(url: URL) throws -> String {
+        try withAllBookmarkAccess {
+            return try String(contentsOf: url, encoding: .utf8)
+        }
+    }
+
+    private func writeTextFile(parent: URL, name: String, contents: String) throws -> URL {
+        guard !name.isEmpty, !name.contains("/"), !name.contains("\\\\") else {
+            throw storageError("Invalid metadata filename.")
+        }
+        return try withAllBookmarkAccess {
+            let target = parent.appendingPathComponent(name)
+            let temporary = parent.appendingPathComponent(".\\(name).tmp-\\(UUID().uuidString)")
+            let backup = parent.appendingPathComponent(".\\(name).previous-\\(UUID().uuidString)")
+            let data = Data(contents.utf8)
+            try data.write(to: temporary, options: .atomic)
+            guard try Data(contentsOf: temporary) == data else {
+                try? FileManager.default.removeItem(at: temporary)
+                throw storageError("Metadata verification failed.")
+            }
+            var movedOld = false
+            do {
+                if FileManager.default.fileExists(atPath: target.path) {
+                    try FileManager.default.moveItem(at: target, to: backup)
+                    movedOld = true
+                }
+                try FileManager.default.moveItem(at: temporary, to: target)
+                if movedOld { try? FileManager.default.removeItem(at: backup) }
+                return target
+            } catch {
+                try? FileManager.default.removeItem(at: temporary)
+                if movedOld && !FileManager.default.fileExists(atPath: target.path) {
+                    try? FileManager.default.moveItem(at: backup, to: target)
+                }
+                throw error
+            }
         }
     }
 
