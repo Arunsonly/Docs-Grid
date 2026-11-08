@@ -12,11 +12,11 @@ void main() {
     });
 
     test('rejects names longer than forty characters', () {
-      expect(() => CategoryRepository.validateName('x' * 41), throwsArgumentError);
+      expect(() => CategoryRepository.validateName(List.filled(41, 'x').join()), throwsArgumentError);
     });
 
     test('accepts the forty character boundary', () {
-      expect(CategoryRepository.validateName('x' * 40), 'x' * 40);
+      expect(CategoryRepository.validateName(List.filled(40, 'x').join()), List.filled(40, 'x').join());
     });
   });
 }
