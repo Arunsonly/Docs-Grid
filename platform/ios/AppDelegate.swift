@@ -414,9 +414,21 @@ import CryptoKit
 
     private func deleteItem(url: URL) throws {
         try withAllBookmarkAccess {
-            if FileManager.default.fileExists(atPath: url.path) {
-                try FileManager.default.removeItem(at: url)
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
+                return
             }
+            if isDirectory.boolValue {
+                // Files may contain items added outside DocsGrid. Check the
+                // actual provider directory, not just the app's SQLite rows.
+                let children = try FileManager.default.contentsOfDirectory(
+                    at: url, includingPropertiesForKeys: nil, options: []
+                )
+                guard children.isEmpty else {
+                    throw storageError("This folder contains files not managed by DocsGrid and cannot be deleted.")
+                }
+            }
+            try FileManager.default.removeItem(at: url)
         }
     }
 
