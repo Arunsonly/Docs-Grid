@@ -160,6 +160,13 @@ jobs:
           cp platform/android/MainActivity.kt android/app/src/main/kotlin/com/docsgrid/docs_grid/MainActivity.kt
       - name: Install packages
         run: flutter pub get
+      - name: Upload resolved dependency lockfile
+        uses: actions/upload-artifact@v4
+        with:
+          name: docsgrid-pubspec-lock
+          path: pubspec.lock
+          if-no-files-found: error
+          retention-days: 1
       - name: Generate DocsGrid launcher icons
         run: |
           sudo apt-get update
