@@ -40,6 +40,18 @@ import CryptoKit
                 picker.allowsMultipleSelection = false
                 picker.modalPresentationStyle = .formSheet
                 window?.rootViewController?.present(picker, animated: true)
+            case "getPortableDataLocations":
+                guard let selected = try selectedFolder(), let root = URL(string: selected["uri"] ?? "") else {
+                    throw storageError("Choose a DocsGrid storage folder first.")
+                }
+                let system = try ensureDirectory(parent: root, name: "System")
+                let database = try ensureDirectory(parent: system, name: "Database")
+                let recovery = try ensureDirectory(parent: system, name: "Recovery")
+                result([
+                    "databaseUri": database.absoluteString,
+                    "recoveryUri": recovery.absoluteString,
+                    "libraryUri": root.absoluteString
+                ])
             case "getSelectedFolder":
                 result(try selectedFolder())
             case "checkStorageAccess":
@@ -251,6 +263,21 @@ import CryptoKit
                 try? FileManager.default.removeItem(at: target)
                 throw storageError("Saved PDF verification failed.")
             }
+            return target
+        }
+    }
+
+    private func ensureDirectory(parent: URL, name: String) throws -> URL {
+        try withAllBookmarkAccess {
+            let target = parent.appendingPathComponent(name, isDirectory: true)
+            var isDirectory: ObjCBool = false
+            if FileManager.default.fileExists(atPath: target.path, isDirectory: &isDirectory) {
+                guard isDirectory.boolValue else {
+                    throw storageError("A file blocks the required DocsGrid folder: \\(name)")
+                }
+                return target
+            }
+            try FileManager.default.createDirectory(at: target, withIntermediateDirectories: false)
             return target
         }
     }
