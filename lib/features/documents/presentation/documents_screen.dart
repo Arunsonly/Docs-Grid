@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -34,18 +35,27 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   int _starredCount = 0;
   final Set<String> _selectedIds = <String>{};
   int _loadGeneration = 0;
+  Timer? _searchDebounce;
   String? _error;
 
   @override
   void initState() {
     super.initState();
     _load();
-    _search.addListener(_load);
+    _search.addListener(_onSearchChanged);
+  }
+
+  void _onSearchChanged() {
+    _searchDebounce?.cancel();
+    _searchDebounce = Timer(const Duration(milliseconds: 280), () {
+      if (mounted) _load();
+    });
   }
 
   @override
   void dispose() {
-    _search.removeListener(_load);
+    _searchDebounce?.cancel();
+    _search.removeListener(_onSearchChanged);
     _search.dispose();
     super.dispose();
   }
