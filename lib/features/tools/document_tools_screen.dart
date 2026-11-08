@@ -297,11 +297,13 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
       ),
     ));
     if (remove != true) return;
-    for (final doc in docs) {
-      if (doc.id != keepId) await DocumentRepository().moveToTrash(doc);
-    }
-    if (mounted) {
-      setState(() => _message = 'Duplicate review complete. Kept 1 copy and moved ${docs.length - 1} copy/copies to Recycle Bin.');
+    try {
+      final moved = await _tools.keepOneDuplicate(sha, keepId);
+      if (mounted) {
+        setState(() => _message = 'Duplicate review complete. Kept 1 copy and moved $moved copy/copies to Recycle Bin.');
+      }
+    } catch (error) {
+      if (mounted) setState(() => _message = 'Duplicate review could not be completed: $error');
     }
   }
 
