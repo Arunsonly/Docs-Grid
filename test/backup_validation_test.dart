@@ -24,6 +24,9 @@ void main() {
   Future<File> makeBackup({
     required List<Map<String, Object?>> documents,
     List<Map<String, Object?>> folders = const [],
+    List<Map<String, Object?>> categories = const [],
+    List<Map<String, Object?>> tags = const [],
+    List<Map<String, Object?>> documentTags = const [],
     bool extraUnreferencedEntry = false,
     bool invalidPdfHeader = false,
   }) async {
@@ -34,11 +37,14 @@ void main() {
     ];
     final tableCounts = <String, int>{};
     for (final table in tableNames) {
-      final rows = table == 'documents'
-          ? documents
-          : table == 'folders'
-              ? folders
-              : <Map<String, Object?>>[];
+      final rows = switch (table) {
+        'documents' => documents,
+        'folders' => folders,
+        'categories' => categories,
+        'tags' => tags,
+        'document_tags' => documentTags,
+        _ => <Map<String, Object?>>[],
+      };
       final bytes = utf8.encode(jsonEncode(rows));
       tableCounts[table] = rows.length;
       archive.addFile(ArchiveFile('$table.json', bytes.length, bytes));
@@ -233,6 +239,41 @@ void main() {
         (error) => error.message,
         'message',
         contains('missing folder'),
+      )),
+    );
+  });
+
+  test('rejects documents that reference missing categories', () async {
+    final file = await makeBackup(documents: [
+      {'id': 'doc-a', 'name': 'A', 'category_id': 'missing-category'},
+      {'id': 'doc-b', 'name': 'B'},
+    ]);
+    await expectLater(
+      service.validateBackup(file),
+      throwsA(isA<StateError>().having(
+        (error) => error.message,
+        'message',
+        contains('missing category'),
+      )),
+    );
+  });
+
+  test('rejects document-tag links with missing references', () async {
+    final file = await makeBackup(
+      documents: [
+        {'id': 'doc-a', 'name': 'A'},
+        {'id': 'doc-b', 'name': 'B'},
+      ],
+      documentTags: [
+        {'document_id': 'doc-a', 'tag_id': 'missing-tag'},
+      ],
+    );
+    await expectLater(
+      service.validateBackup(file),
+      throwsA(isA<StateError>().having(
+        (error) => error.message,
+        'message',
+        contains('document-tag reference'),
       )),
     );
   });
