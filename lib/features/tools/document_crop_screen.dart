@@ -1,8 +1,8 @@
 import 'dart:typed_data';
 
 import 'package:crop_your_image/crop_your_image.dart';
-import 'package:image/image.dart' as img;
 import 'package:flutter/material.dart';
+import 'package:image/image.dart' as img;
 
 class DocumentCropScreen extends StatefulWidget {
   const DocumentCropScreen({super.key, required this.imageBytes});
