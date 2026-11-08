@@ -29,6 +29,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
   List<Map<String, Object?>> _results = [];
   bool _busy = false;
   String? _message;
+  bool _hasSearched = false;
 
   @override
   void initState() {
@@ -238,7 +239,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
 
   Future<void> _searchText() async {
     final rows = await _tools.searchText(_search.text);
-    if (mounted) setState(() => _results = rows);
+    if (mounted) setState(() { _results = rows; _hasSearched = true; });
   }
 
   Future<void> _indexDocuments() => _run(() async {
@@ -515,9 +516,13 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
               ..._results.map((r) => ListTile(dense: true,
                 leading: const Icon(Icons.picture_as_pdf_outlined),
                 title: Text((r['name'] ?? '').toString()),
-                subtitle: Text('Open matching PDF · Text match at character ${r['match_position']}'),
+                subtitle: Text('Found on page ${r['match_page'] ?? 1} · Tap to open PDF'),
                 trailing: IconButton(tooltip: 'Open PDF', icon: const Icon(Icons.open_in_new), onPressed: () => _openSearchResult(r)),
                 onTap: () => _openSearchResult(r))),
+            ] else if (_hasSearched && _search.text.trim().isNotEmpty) ...[
+              const SizedBox(height: 8),
+              const Align(alignment: Alignment.centerLeft,
+                child: Text('No match found in indexed PDFs.')),
             ],
           ])),
           const Divider(height: 1),
