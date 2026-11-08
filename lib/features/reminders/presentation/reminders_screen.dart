@@ -170,7 +170,8 @@ class _RemindersScreenState extends State<RemindersScreen> with WidgetsBindingOb
                     try {
                       await ReminderNotifications.instance.openNotificationSettings();
                     } catch (error) {
-                      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+                      if (!context.mounted) return;
+                      ScaffoldMessenger.of(context).showSnackBar(
                         SnackBar(content: Text('Could not open notification settings: $error')),
                       );
                     }
