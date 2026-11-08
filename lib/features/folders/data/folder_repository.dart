@@ -24,6 +24,22 @@ class FolderRepository {
 
   /// Validates a folder name before it is used as a path segment.
   /// Dot segments are rejected to prevent escaping the private library root.
+  /// Maps a private-library document path after an ancestor folder is renamed.
+  /// Provider URIs and paths outside the renamed subtree are left untouched.
+  static String? remapPrivateDocumentPath({
+    required String oldFolderPath,
+    required String newFolderPath,
+    required String documentUri,
+  }) {
+    if (documentUri.startsWith('content://') ||
+        documentUri.startsWith('file://') ||
+        !p.isWithin(oldFolderPath, documentUri)) {
+      return null;
+    }
+    final relative = p.relative(documentUri, from: oldFolderPath);
+    return p.join(newFolderPath, relative);
+  }
+
   static String validateFolderName(String name) {
     final cleaned = name.trim();
     if (cleaned.isEmpty) throw ArgumentError('Folder name cannot be empty.');
@@ -325,14 +341,13 @@ class FolderRepository {
             );
             for (final document in documents) {
               final uri = document['storage_uri'] as String?;
-              if (uri == null ||
-                  uri.startsWith('content://') ||
-                  uri.startsWith('file://') ||
-                  !p.isWithin(oldPath, uri)) {
-                continue;
-              }
-              final relative = p.relative(uri, from: oldPath);
-              final updatedUri = p.join(newPath, relative);
+              if (uri == null) continue;
+              final updatedUri = remapPrivateDocumentPath(
+                oldFolderPath: oldPath,
+                newFolderPath: newPath,
+                documentUri: uri,
+              );
+              if (updatedUri == null) continue;
               privateDocumentUpdates[document['id'] as String] = {
                 'storage_uri': updatedUri,
                 'relative_path': p.relative(updatedUri, from: privateRoot),
