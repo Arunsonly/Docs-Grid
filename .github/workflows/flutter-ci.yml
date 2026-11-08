@@ -41,9 +41,9 @@ jobs:
               raise SystemExit('Android app Gradle file was not generated')
           source = gradle.read_text()
           if gradle.suffix == '.kts':
-              source, count = re.subn(r'applicationId\\s*=\\s*"[^"]+"', 'applicationId = "com.docsgrid.mobile"', source, count=1)
+              source, count = re.subn(r'applicationId\s*=\s*"[^"]+"', 'applicationId = "com.docsgrid.mobile"', source, count=1)
           else:
-              source, count = re.subn(r'applicationId\\s+"[^"]+"', 'applicationId "com.docsgrid.mobile"', source, count=1)
+              source, count = re.subn(r'applicationId\s+"[^"]+"', 'applicationId "com.docsgrid.mobile"', source, count=1)
           if count != 1:
               raise SystemExit('Could not set stable DocsGrid applicationId')
           gradle.write_text(source)
