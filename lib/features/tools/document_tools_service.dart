@@ -19,6 +19,7 @@ import 'package:uuid/uuid.dart';
 import '../../core/database/app_database.dart';
 import '../../core/storage/storage_location_service.dart';
 import '../reminders/data/reminder_notifications.dart';
+import 'backup_archive_limits.dart';
 import 'document_crop_screen.dart';
 import 'portable_snapshot_manifest.dart';
 
@@ -350,6 +351,7 @@ class DocumentToolsService {
   Future<File> createBackup({void Function(int, int)? onProgress}) async {
     final db = await _database.database;
     final archive = Archive();
+    var expandedBytes = 0;
     final tables = ['folders', 'documents', 'categories', 'tags',
       'document_tags', 'reminders', 'history', 'settings', 'document_text_index'];
     final manifest = <String, Object?>{
@@ -363,6 +365,10 @@ class DocumentToolsService {
     for (final table in tables) {
       final rows = await db.query(table);
       final metadataBytes = Uint8List.fromList(utf8.encode(jsonEncode(rows)));
+      expandedBytes += metadataBytes.length;
+      if (expandedBytes > BackupArchiveLimits.maxExpandedBytes) {
+        throw StateError('Backup exceeds the supported uncompressed size limit.');
+      }
       (manifest['tables'] as Map<String, int>)[table] = rows.length;
       archive.addFile(ArchiveFile('$table.json', metadataBytes.length, metadataBytes));
       (manifest['metadataFiles'] as List<Map<String, Object?>>).add({
@@ -397,7 +403,13 @@ class DocumentToolsService {
         if (!await file.exists()) {
           throw StateError('Backup cannot be complete: "${row['name']}" is unavailable. Repair storage access and retry.');
         }
+        final sourceLength = await file.length();
+        if (sourceLength > BackupArchiveLimits.maxEntryBytes ||
+            expandedBytes + sourceLength > BackupArchiveLimits.maxExpandedBytes) {
+          throw StateError('Backup exceeds the supported PDF or total size limit.');
+        }
         final bytes = await file.readAsBytes();
+        expandedBytes += bytes.length;
         if (bytes.length < 5 || String.fromCharCodes(bytes.take(5)) != '%PDF-') {
           throw StateError('Backup stopped: "${row['name']}" is not a valid PDF.');
         }
@@ -423,6 +435,9 @@ class DocumentToolsService {
     final manifestBytes = utf8.encode(jsonEncode(manifest));
     archive.addFile(ArchiveFile('manifest.json', manifestBytes.length, manifestBytes));
     final zipped = ZipEncoder().encode(archive);
+    if (zipped.length > BackupArchiveLimits.maxArchiveBytes) {
+      throw StateError('Backup exceeds the supported compressed size limit.');
+    }
     final directory = await getApplicationDocumentsDirectory();
     final backups = Directory(p.join(directory.path, 'DocsGrid', 'Backups'));
     await backups.create(recursive: true);
@@ -1014,6 +1029,7 @@ class DocumentToolsService {
 
   Future<int> validateBackup(File zipFile) async {
     if (!await zipFile.exists()) throw StateError('Backup file not found.');
+    await BackupArchiveLimits.validate(zipFile);
     final decoded = ZipDecoder().decodeBytes(await zipFile.readAsBytes());
     final manifestFile = decoded.findFile('manifest.json');
     if (manifestFile == null) throw StateError('This is not a DocsGrid backup.');
