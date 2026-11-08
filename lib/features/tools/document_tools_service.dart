@@ -147,7 +147,7 @@ class DocumentToolsService {
       final text = row['extracted_text']?.toString() ?? '';
       final position = (row['match_position'] as int? ?? 1) - 1;
       final prefix = text.substring(0, position.clamp(0, text.length));
-      final markers = RegExp(r'--- Page (\\d+) ---').allMatches(prefix).toList();
+      final markers = RegExp(r'--- Page (\d+) ---').allMatches(prefix).toList();
       row['match_page'] = markers.isEmpty ? 1 : int.parse(markers.last.group(1)!);
     }
     return rows;
