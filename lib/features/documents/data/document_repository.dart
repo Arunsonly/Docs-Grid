@@ -11,6 +11,7 @@ import 'package:uuid/uuid.dart';
 import '../../../core/database/app_database.dart';
 import '../../../core/storage/storage_location_service.dart';
 import '../../folders/data/folder_repository.dart';
+import '../../reminders/data/reminder_notifications.dart';
 
 class DocumentRecord {
   const DocumentRecord({
@@ -1052,6 +1053,16 @@ class DocumentRepository {
   }
 
   Future<void> permanentlyDelete(DocumentRecord document) async {
+    final db = await _database.database;
+    final reminderRows = await db.query(
+      'reminders',
+      columns: ['id'],
+      where: 'document_id = ?',
+      whereArgs: [document.id],
+    );
+
+    // Keep the database record until the physical delete succeeds. The
+    // Recycle Bin remains the recovery point if storage access is unavailable.
     if (document.storagePath.startsWith('content://') ||
         document.storagePath.startsWith('file://')) {
       await StorageLocationService.instance.deletePdf(document.storagePath);
@@ -1059,9 +1070,36 @@ class DocumentRepository {
       final file = File(document.storagePath);
       if (await file.exists()) await file.delete();
     }
-    final db = await _database.database;
-    await _recordHistory(db, null, 'permanently_deleted', {'document_id': document.id, 'name': document.name});
-    await db.delete('documents', where: 'id = ?', whereArgs: [document.id]);
+
+    await db.transaction((txn) async {
+      await _recordHistory(
+        txn,
+        null,
+        'permanently_deleted',
+        {'document_id': document.id, 'name': document.name},
+      );
+      await txn.delete(
+        'reminders',
+        where: 'document_id = ?',
+        whereArgs: [document.id],
+      );
+      final deleted = await txn.delete(
+        'documents',
+        where: 'id = ? AND deleted_at IS NOT NULL',
+        whereArgs: [document.id],
+      );
+      if (deleted == 0) {
+        throw StateError('The document is no longer in the Recycle Bin.');
+      }
+    });
+
+    // If OS cancellation fails, startup/resume reconciliation removes the
+    // orphaned pending notification because its reminder row no longer exists.
+    for (final row in reminderRows) {
+      try {
+        await ReminderNotifications.instance.cancel(row['id'] as String);
+      } catch (_) {}
+    }
   }
 
   Future<void> _recordHistory(
