@@ -79,13 +79,31 @@ class MainActivity : FlutterActivity() {
                             val destinationPath = call.argument<String>("destinationPath")!!
                             val destination = java.io.File(destinationPath)
                             destination.parentFile?.mkdirs()
-                            contentResolver.openInputStream(source)?.use { input ->
-                                destination.outputStream().buffered().use { output ->
-                                    input.copyTo(output, 64 * 1024)
-                                    output.flush()
+                            try {
+                                val expectedDigest = digest(source)
+                                contentResolver.openInputStream(source)?.use { input ->
+                                    destination.outputStream().buffered().use { output ->
+                                        input.copyTo(output, 64 * 1024)
+                                        output.flush()
+                                    }
+                                } ?: throw IllegalStateException("Could not read the source PDF.")
+                                val copiedDigest = MessageDigest.getInstance("SHA-256")
+                                destination.inputStream().buffered().use { input ->
+                                    val buffer = ByteArray(64 * 1024)
+                                    while (true) {
+                                        val count = input.read(buffer)
+                                        if (count < 0) break
+                                        copiedDigest.update(buffer, 0, count)
+                                    }
                                 }
-                            } ?: throw IllegalStateException("Could not read the source PDF.")
-                            result.success(true)
+                                if (!expectedDigest.contentEquals(copiedDigest.digest())) {
+                                    throw IllegalStateException("PDF copy verification failed.")
+                                }
+                                result.success(true)
+                            } catch (error: Exception) {
+                                destination.delete()
+                                throw error
+                            }
                         }
                         "sha256Pdf" -> {
                             val uri = Uri.parse(call.argument<String>("uri")!!)
