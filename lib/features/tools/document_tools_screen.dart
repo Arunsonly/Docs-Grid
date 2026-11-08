@@ -524,6 +524,14 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
               labelText: 'Search text inside indexed PDFs',
               suffixIcon: IconButton(onPressed: _searchText, icon: const Icon(Icons.search))),
               onSubmitted: (_) => _searchText()),
+            const SizedBox(height: 6),
+            const Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                'OCR languages: Android supports English and Hindi. iPhone currently supports Latin-script text only.',
+                style: TextStyle(fontSize: 12),
+              ),
+            ),
             if (_results.isNotEmpty) ...[
               const SizedBox(height: 8),
               ..._results.map((r) => ListTile(dense: true,
