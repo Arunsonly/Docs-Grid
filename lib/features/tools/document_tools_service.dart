@@ -543,7 +543,7 @@ class DocumentToolsService {
     }
   }
 
-  Future<String?> verifyLatestPortableMetadataSnapshot() async {
+  Future<Map<String, Object?>?> _findLatestVerifiedPortableSnapshot() async {
     final locations = await StorageLocationService.instance.portableDataLocations();
     final children = await StorageLocationService.instance.listDirectory(locations['databaseUri']!);
     final snapshots = children
@@ -551,49 +551,59 @@ class DocumentToolsService {
             (entry['name'] as String).startsWith('snapshot_'))
         .toList()
       ..sort((a, b) => (b['name'] as String).compareTo(a['name'] as String));
-    if (snapshots.isEmpty) return null;
 
-    final snapshot = snapshots.first;
-    final snapshotUri = snapshot['uri'] as String;
-    final manifestText = await StorageLocationService.instance.readTextFile(
-      await _findChildUri(snapshotUri, 'manifest.json'),
-    );
-    final manifest = PortableSnapshotManifest.parse(manifestText);
-    for (final record in manifest.files) {
-      final uri = await _findChildUri(snapshotUri, record.path);
-      final contents = await StorageLocationService.instance.readTextFile(uri);
-      final bytes = utf8.encode(contents);
-      if (bytes.length != record.sizeBytes ||
-          sha256.convert(bytes).toString() != record.sha256) {
-        throw StateError('Recovery snapshot verification failed for ${record.path}.');
-      }
-      final rows = jsonDecode(contents);
-      if (rows is! List || rows.length != record.recordCount) {
-        throw StateError('Recovery snapshot record count mismatch for ${record.path}.');
+    // An interrupted snapshot has no manifest because it is published last.
+    // Skip incomplete/corrupt candidates and fall back to the newest verified
+    // snapshot rather than allowing one partial directory to block recovery.
+    for (final snapshot in snapshots) {
+      try {
+        final snapshotUri = snapshot['uri'] as String;
+        final manifestText = await StorageLocationService.instance.readTextFile(
+          await _findChildUri(snapshotUri, 'manifest.json'),
+        );
+        final manifest = PortableSnapshotManifest.parse(manifestText);
+        for (final record in manifest.files) {
+          final uri = await _findChildUri(snapshotUri, record.path);
+          final contents = await StorageLocationService.instance.readTextFile(uri);
+          final bytes = utf8.encode(contents);
+          if (bytes.length != record.sizeBytes ||
+              sha256.convert(bytes).toString() != record.sha256) {
+            throw StateError('Recovery snapshot verification failed for ${record.path}.');
+          }
+          final rows = jsonDecode(contents);
+          if (rows is! List || rows.length != record.recordCount) {
+            throw StateError('Recovery snapshot record count mismatch for ${record.path}.');
+          }
+        }
+        return {
+          'name': snapshot['name'] as String,
+          'uri': snapshotUri,
+          'manifest': manifest,
+          'locations': locations,
+        };
+      } catch (_) {
+        // Try the next older snapshot; never overwrite or delete any candidate.
       }
     }
-    return snapshot['name'] as String;
+    return null;
   }
 
-  /// Restores the newest portable snapshot additively. Existing records are
-  /// retained; imported IDs are remapped where needed. PDFs are relinked by
-  /// SHA-256 from the currently selected library and are never overwritten.
-  Future<Map<String, int>> restoreLatestPortableMetadataSnapshot() async {
-    final storage = StorageLocationService.instance;
-    final locations = await storage.portableDataLocations();
-    final children = await storage.listDirectory(locations['databaseUri']!);
-    final snapshots = children
-        .where((entry) => entry['isDirectory'] == true &&
-            (entry['name'] as String).startsWith('snapshot_'))
-        .toList()
-      ..sort((a, b) => (b['name'] as String).compareTo(a['name'] as String));
-    if (snapshots.isEmpty) throw StateError('No portable recovery snapshot was found.');
+  Future<String?> verifyLatestPortableMetadataSnapshot() async {
+    final verified = await _findLatestVerifiedPortableSnapshot();
+    return verified?['name'] as String?;
+  }
 
-    final snapshotUri = snapshots.first['uri'] as String;
-    final manifestText = await storage.readTextFile(
-      await _findChildUri(snapshotUri, 'manifest.json'),
-    );
-    final manifest = PortableSnapshotManifest.parse(manifestText);
+  /// Restores the newest verified portable snapshot additively. Existing
+  /// records are retained; imported IDs are remapped where needed. PDFs are
+  /// relinked by SHA-256 from the currently selected library and never overwritten.
+  Future<Map<String, int>> restoreLatestPortableMetadataSnapshot() async {
+    final verified = await _findLatestVerifiedPortableSnapshot();
+    if (verified == null) {
+      throw StateError('No complete, verified DocsGrid recovery snapshot was found.');
+    }
+    final locations = Map<String, String>.from(verified['locations'] as Map);
+    final snapshotUri = verified['uri'] as String;
+    final manifest = verified['manifest'] as PortableSnapshotManifest;
     if (manifest.databaseSchemaVersion > 3) {
       throw StateError('This recovery snapshot was created by a newer DocsGrid database version. Update the app before restoring it.');
     }
