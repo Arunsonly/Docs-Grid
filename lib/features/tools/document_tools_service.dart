@@ -1082,6 +1082,7 @@ class DocumentToolsService {
     if (rawDocuments is! List) throw StateError('Backup document metadata is invalid.');
     final documentIds = <String>{};
     final documentsById = <String, Map>{};
+    final backslash = String.fromCharCode(92);
     for (final raw in rawDocuments) {
       if (raw is! Map || raw['id'] is! String || (raw['id'] as String).trim().isEmpty ||
           !documentIds.add(raw['id'] as String)) {
@@ -1090,7 +1091,7 @@ class DocumentToolsService {
       final documentName = raw['name'];
       if (documentName is! String || documentName.trim().isEmpty ||
           documentName == '.' || documentName == '..' ||
-          documentName.contains('/') || documentName.contains('\\\\') ||
+          documentName.contains('/') || documentName.contains(backslash) ||
           documentName.contains(String.fromCharCode(0)) ||
           documentName.runes.any((rune) => rune < 32 || rune == 127)) {
         throw StateError('Backup contains an unsafe document name.');
@@ -1115,7 +1116,7 @@ class DocumentToolsService {
       }
       final name = raw['name'] as String;
       if (name.trim().isEmpty || name == '.' || name == '..' ||
-          name.contains('/') || name.contains('\\\\') ||
+          name.contains('/') || name.contains(backslash) ||
           name.contains(String.fromCharCode(0)) ||
           name.runes.any((rune) => rune < 32 || rune == 127)) {
         throw StateError('Backup contains an unsafe folder name.');
