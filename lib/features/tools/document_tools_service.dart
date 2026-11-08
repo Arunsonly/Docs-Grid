@@ -403,7 +403,7 @@ class DocumentToolsService {
         final destinationDir = folderId == null ? restoreRoot : Directory(folderPath(folderId));
         await destinationDir.create(recursive: true);
         final safeDocumentToken = safeRestorePathToken(id);
-        final destination = File(p.join(destinationDir.path, 'document_${safeDocumentToken}.pdf'));
+        final destination = File(p.join(destinationDir.path, 'document_$safeDocumentToken.pdf'));
         final entry = decoded.findFile(item['entry'] as String)!;
         final bytes = entry.content as List<int>;
         final digest = sha256.convert(bytes).toString();
