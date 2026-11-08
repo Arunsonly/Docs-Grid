@@ -148,6 +148,18 @@ class ReminderNotifications {
       }
       return next;
     }
+    if (recurrence == 'monthly') {
+      DateTime occurrenceInMonth(int year, int month) {
+        final lastDay = DateTime(year, month + 1, 0).day;
+        final day = at.day > lastDay ? lastDay : at.day;
+        return DateTime(year, month, day, at.hour, at.minute, at.second);
+      }
+      var next = occurrenceInMonth(now.year, now.month);
+      if (!next.isAfter(now)) {
+        next = occurrenceInMonth(now.year, now.month + 1);
+      }
+      return next;
+    }
     return null;
   }
 
@@ -217,7 +229,9 @@ class ReminderNotifications {
         ? DateTimeComponents.time
         : recurrence == 'weekly'
             ? DateTimeComponents.dayOfWeekAndTime
-            : null;
+            : recurrence == 'monthly'
+                ? DateTimeComponents.dayOfMonthAndTime
+                : null;
     await _plugin.zonedSchedule(
       _id(id),
       title,
