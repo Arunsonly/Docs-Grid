@@ -33,7 +33,7 @@ class DocumentToolsService {
 
   final AppDatabase _database;
   static const _uuid = Uuid();
-  final Set<String> _indexingDocumentIds = <String>{};
+  static final Set<String> _indexingDocumentIds = <String>{};
 
   Future<List<Map<String, Object?>>> findExactDuplicates() async {
     final db = await _database.database;
