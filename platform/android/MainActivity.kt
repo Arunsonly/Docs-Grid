@@ -88,12 +88,16 @@ class MainActivity : FlutterActivity() {
                             }
                             val temporary = java.io.File(parent, ".docsgrid-copy-${java.util.UUID.randomUUID()}.tmp")
                             try {
+                                val sourceDigest = digest(source)
                                 contentResolver.openInputStream(source)?.use { input ->
                                     temporary.outputStream().buffered().use { output ->
                                         input.copyTo(output, 64 * 1024)
                                         output.flush()
                                     }
                                 } ?: throw IllegalStateException("Could not read the source PDF.")
+                                if (!sourceDigest.contentEquals(digest(Uri.fromFile(temporary)))) {
+                                    throw IllegalStateException("The temporary PDF copy failed SHA-256 verification.")
+                                }
                                 if (destination.exists() || !temporary.renameTo(destination)) {
                                     throw IllegalStateException("Could not safely publish the copied PDF.")
                                 }
