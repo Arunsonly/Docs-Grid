@@ -101,7 +101,7 @@ class ReminderRepository {
     final db = await _database.database;
     final when = remindAt.toUtc().toIso8601String();
     final cleanNote = note?.trim();
-    await db.update('reminders', {
+    final changed = await db.update('reminders', {
       'title': title.trim(),
       'note': cleanNote == null || cleanNote.isEmpty ? null : cleanNote,
       'remind_at_utc': when,
@@ -112,6 +112,7 @@ class ReminderRepository {
       'completed_at': null,
       'updated_at': DateTime.now().toUtc().toIso8601String(),
     }, where: 'id = ?', whereArgs: [id]);
+    if (changed == 0) throw StateError('Reminder no longer exists.');
     await ReminderNotifications.instance.cancel(id);
     await ReminderNotifications.instance.schedule(
       id: id, title: title.trim(), body: cleanNote, at: remindAt, recurrence: recurrenceRule,
@@ -121,7 +122,7 @@ class ReminderRepository {
   Future<void> snooze(ReminderRecord reminder, {Duration duration = const Duration(days: 1)}) async {
     final when = DateTime.now().add(duration);
     final db = await _database.database;
-    await db.update('reminders', {
+    final changed = await db.update('reminders', {
       // Keep the original recurrence anchor; snooze is a separate one-off.
       'next_fire_at_utc': when.toUtc().toIso8601String(),
       'status': 'scheduled',
@@ -129,6 +130,7 @@ class ReminderRepository {
       'snoozed_until': when.toUtc().toIso8601String(),
       'updated_at': DateTime.now().toUtc().toIso8601String(),
     }, where: 'id = ?', whereArgs: [reminder.id]);
+    if (changed == 0) throw StateError('Reminder no longer exists.');
     await ReminderNotifications.instance.scheduleSnooze(
       id: reminder.id, title: reminder.title, body: reminder.note, at: when,
     );
@@ -144,16 +146,26 @@ class ReminderRepository {
 
   Future<void> setEnabled(ReminderRecord reminder, bool enabled) async {
     final db = await _database.database;
-    await db.update('reminders', {
+    final rows = await db.query(
+      'reminders',
+      columns: ['snoozed_until'],
+      where: 'id = ?',
+      whereArgs: [reminder.id],
+      limit: 1,
+    );
+    if (rows.isEmpty) throw StateError('Reminder no longer exists.');
+    final changed = await db.update('reminders', {
       'enabled': enabled ? 1 : 0,
       'updated_at': DateTime.now().toUtc().toIso8601String(),
     }, where: 'id = ?', whereArgs: [reminder.id]);
+    if (changed == 0) throw StateError('Reminder no longer exists.');
     if (enabled) {
       await ReminderNotifications.instance.schedule(
         id: reminder.id, title: reminder.title, body: reminder.note,
         at: reminder.remindAt, recurrence: reminder.recurrenceRule,
       );
-      final snoozedUntil = reminder.snoozedUntil;
+      final rawSnoozedUntil = rows.first['snoozed_until'] as String?;
+      final snoozedUntil = rawSnoozedUntil == null ? null : DateTime.parse(rawSnoozedUntil).toLocal();
       if (snoozedUntil != null && snoozedUntil.isAfter(DateTime.now())) {
         await ReminderNotifications.instance.scheduleSnooze(
           id: reminder.id, title: reminder.title, body: reminder.note, at: snoozedUntil,
