@@ -91,7 +91,7 @@ class CategoryRepository {
   }
 
   Future<TagRecord> createTag(String name) async {
-    final cleaned = _validate(name);
+    final cleaned = validateName(name);
     final db = await _database.database;
     final tag = TagRecord(id: _uuid.v4(), name: cleaned);
     await db.insert('tags', {
@@ -106,7 +106,7 @@ class CategoryRepository {
     final db = await _database.database;
     final count = await db.update(
       'tags',
-      {'name': _validate(name)},
+      {'name': validateName(name)},
       where: 'id = ?',
       whereArgs: [tag.id],
     );
