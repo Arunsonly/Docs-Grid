@@ -41,14 +41,31 @@ jobs:
           text = wrapper.read_text()
           text, count = re.subn(
               r'^distributionUrl=.*$',
-              r'distributionUrl=https\://services.gradle.org/distributions/gradle-9.3.1-bin.zip',
+              r'distributionUrl=https\://downloads.gradle.org/distributions/gradle-9.3.1-bin.zip',
               text, count=1, flags=re.M
           )
           if count != 1:
               raise SystemExit('Could not pin official Gradle distribution URL')
+          if 'distributionSha256Sum=' in text:
+              text = re.sub(
+                  r'^distributionSha256Sum=.*$',
+                  'distributionSha256Sum=b266d5ff6b90eada6dc3b20cb090e3731302e553a27c5d3e4df1f0d76beaff06',
+                  text, count=1, flags=re.M
+              )
+          else:
+              text = text.rstrip() + '\ndistributionSha256Sum=b266d5ff6b90eada6dc3b20cb090e3731302e553a27c5d3e4df1f0d76beaff06\n'
           wrapper.write_text(text)
-          print('Pinned Gradle 9.3.1 binary distribution')
+          print('Pinned Gradle 9.3.1 binary distribution with official SHA-256')
           PY
+      - name: Cache Gradle distributions and dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-\${{ runner.os }}-\${{ hashFiles('pubspec.lock') }}-9.3.1
+          restore-keys: |
+            gradle-\${{ runner.os }}-
       - name: Add checksum-pinned JetBrains Maven fallback
         run: |
           python3 - <<'PY'
