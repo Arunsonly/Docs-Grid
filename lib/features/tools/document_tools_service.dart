@@ -82,8 +82,7 @@ class DocumentToolsService {
           await image.writeAsBytes(rendered.bytes, flush: true);
           try {
             final result = await recognizer.processImage(InputImage.fromFilePath(image.path));
-            pages.add('--- Page $pageNumber ---
-${result.text}');
+            pages.add('--- Page $pageNumber ---\n${result.text}');
           } finally {
             if (await image.exists()) await image.delete();
           }
@@ -95,9 +94,7 @@ ${result.text}');
       await recognizer.close();
       await document.close();
     }
-    final text = pages.join('
-
-').trim();
+    final text = pages.join('\n\n').trim();
     final db = await _database.database;
     await db.insert('document_text_index', {
       'document_id': documentId,
@@ -418,8 +415,7 @@ ${result.text}');
           throw StateError('Backup references a missing parent folder.');
         }
         final base = parent == null ? restoreRoot.path : folderPath(parent);
-        // Never use untrusted archive IDs as filesystem path components.
-        final path = p.join(base, 'folder_${_uuid.v4()}');
+        // Never use untrusted archive IDs as filesystem path components.\n        final path = p.join(base, 'folder_${_uuid.v4()}');
         folderPaths[id] = path;
         return path;
       } finally {
@@ -439,8 +435,7 @@ ${result.text}');
         final destinationDir = folderId == null ? restoreRoot : Directory(folderPath(folderId));
         await destinationDir.create(recursive: true);
         final safeName = p.basename((item['originalName'] as String?) ?? 'document.pdf');
-        // IDs come from the archive; use a generated filename to prevent path traversal.
-        final destination = File(p.join(destinationDir.path, '${_uuid.v4()}_$safeName'));
+        // IDs come from the archive; use a generated filename to prevent path traversal.\n        final destination = File(p.join(destinationDir.path, '${_uuid.v4()}_$safeName'));
         final entry = decoded.findFile(item['entry'] as String)!;
         final bytes = entry.content as List<int>;
         final digest = sha256.convert(bytes).toString();
