@@ -968,6 +968,7 @@ class DocumentRepository {
         .replaceAll(RegExp(r'[<>:"/\\|?*]'), '_')
         .trim();
     if (safeBase.isEmpty) throw ArgumentError('Name is not valid.');
+    if (safeBase == p.basenameWithoutExtension(document.name)) return;
     final safeName = '$safeBase.pdf';
     final isShared = document.storagePath.startsWith('content://') ||
         document.storagePath.startsWith('file://');
