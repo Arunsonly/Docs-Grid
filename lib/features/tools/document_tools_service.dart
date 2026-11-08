@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 
 import 'package:archive/archive.dart';
+import 'package:archive/archive_io.dart';
 import 'package:crypto/crypto.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import 'package:image_picker/image_picker.dart';
@@ -340,7 +341,6 @@ class DocumentToolsService {
 
   Future<File> createBackup({void Function(int, int)? onProgress}) async {
     final db = await _database.database;
-    final archive = Archive();
     final tables = ['folders', 'documents', 'categories', 'tags',
       'document_tags', 'reminders', 'history', 'settings', 'document_text_index'];
     final manifest = <String, Object?>{
@@ -350,73 +350,93 @@ class DocumentToolsService {
       'tables': <String, int>{},
       'files': <Map<String, Object?>>[],
     };
-    for (final table in tables) {
-      final rows = await db.query(table);
-      (manifest['tables'] as Map<String, int>)[table] = rows.length;
-      final metadataBytes = Uint8List.fromList(utf8.encode(jsonEncode(rows)));
-      archive.addFile(ArchiveFile('$table.json', metadataBytes.length, metadataBytes));
-    }
-    final docs = await db.query('documents',
-      columns: ['id', 'name', 'storage_uri', 'sha256']);
-    var completed = 0;
-    for (final row in docs) {
-      final uri = row['storage_uri'] as String?;
-      if (uri == null || uri.isEmpty) {
-        throw StateError('Backup cannot be complete: "${row['name']}" has no storage reference.');
-      }
-      File? stagedProviderFile;
-      final File file;
-      if (uri.startsWith('content://')) {
-        final temp = await getTemporaryDirectory();
-        stagedProviderFile = File(p.join(temp.path, 'backup_${_uuid.v4()}.pdf'));
-        await StorageLocationService.instance.copyPdfToPath(
-          sourceUri: uri,
-          destinationPath: stagedProviderFile.path,
-        );
-        file = stagedProviderFile;
-      } else {
-        file = File(uri.startsWith('file://') ? Uri.parse(uri).toFilePath() : uri);
-      }
-      try {
-        if (!await file.exists()) {
-          throw StateError('Backup cannot be complete: "${row['name']}" is unavailable. Repair storage access and retry.');
-        }
-        final bytes = await file.readAsBytes();
-        final digest = sha256.convert(bytes).toString();
-        final expected = row['sha256'] as String?;
-        if (expected != null && expected.isNotEmpty && digest != expected) {
-          throw StateError('Backup stopped: "${row['name']}" failed SHA-256 verification.');
-        }
-        final entry = 'pdfs/${row['id']}.pdf';
-        archive.addFile(ArchiveFile(entry, bytes.length, bytes));
-        (manifest['files'] as List).add({
-          'documentId': row['id'], 'entry': entry, 'sha256': digest,
-          'originalName': row['name'],
-        });
-      } finally {
-        if (stagedProviderFile != null && await stagedProviderFile.exists()) {
-          await stagedProviderFile.delete();
-        }
-      }
-      completed++;
-      onProgress?.call(completed, docs.length);
-    }
-    final manifestBytes = utf8.encode(jsonEncode(manifest));
-    archive.addFile(ArchiveFile('manifest.json', manifestBytes.length, manifestBytes));
-    final zipped = ZipEncoder().encode(archive);
+
+    final temp = await getTemporaryDirectory();
+    final staging = await temp.createTemp('docsgrid_backup_');
     final directory = await getApplicationDocumentsDirectory();
     final backups = Directory(p.join(directory.path, 'DocsGrid', 'Backups'));
     await backups.create(recursive: true);
-    final output = File(p.join(backups.path, 'DocsGrid_${DateTime.now().toUtc().millisecondsSinceEpoch}.zip'));
+    final output = File(p.join(
+      backups.path,
+      'DocsGrid_${DateTime.now().toUtc().millisecondsSinceEpoch}_${_uuid.v4()}.zip',
+    ));
+    final encoder = ZipFileEncoder();
+    var encoderOpened = false;
     try {
-      await output.writeAsBytes(zipped, flush: true);
+      encoder.create(output.path);
+      encoderOpened = true;
+
+      // Encode one table at a time and stream the temporary file into the ZIP.
+      // Avoid keeping duplicate JSON strings and byte arrays for every table.
+      for (final table in tables) {
+        final rows = await db.query(table);
+        (manifest['tables'] as Map<String, int>)[table] = rows.length;
+        final metadataFile = File(p.join(staging.path, '$table.json'));
+        await metadataFile.writeAsString(jsonEncode(rows), encoding: utf8, flush: true);
+        await encoder.addFile(metadataFile, '$table.json');
+      }
+
+      final docs = await db.query('documents',
+        columns: ['id', 'name', 'storage_uri', 'sha256']);
+      var completed = 0;
+      for (final row in docs) {
+        final uri = row['storage_uri'] as String?;
+        if (uri == null || uri.isEmpty) {
+          throw StateError('Backup cannot be complete: "${row['name']}" has no storage reference.');
+        }
+        File? stagedProviderFile;
+        final File file;
+        if (uri.startsWith('content://')) {
+          stagedProviderFile = File(p.join(staging.path, 'source_${_uuid.v4()}.pdf'));
+          await StorageLocationService.instance.copyPdfToPath(
+            sourceUri: uri,
+            destinationPath: stagedProviderFile.path,
+          );
+          file = stagedProviderFile;
+        } else {
+          file = File(uri.startsWith('file://') ? Uri.parse(uri).toFilePath() : uri);
+        }
+        try {
+          if (!await file.exists()) {
+            throw StateError('Backup cannot be complete: "${row['name']}" is unavailable. Repair storage access and retry.');
+          }
+          final digest = (await sha256.bind(file.openRead()).first).toString();
+          final expected = row['sha256'] as String?;
+          if (expected != null && expected.isNotEmpty && digest != expected) {
+            throw StateError('Backup stopped: "${row['name']}" failed SHA-256 verification.');
+          }
+          // Never place imported database IDs in archive paths.
+          final entry = 'pdfs/${_uuid.v4()}.pdf';
+          await encoder.addFile(file, entry);
+          (manifest['files'] as List).add({
+            'documentId': row['id'], 'entry': entry, 'sha256': digest,
+            'originalName': row['name'],
+          });
+        } finally {
+          if (stagedProviderFile != null && await stagedProviderFile.exists()) {
+            await stagedProviderFile.delete();
+          }
+        }
+        completed++;
+        onProgress?.call(completed, docs.length);
+      }
+
+      final manifestFile = File(p.join(staging.path, 'manifest.json'));
+      await manifestFile.writeAsString(jsonEncode(manifest), encoding: utf8, flush: true);
+      await encoder.addFile(manifestFile, 'manifest.json');
+      await encoder.close();
+      encoderOpened = false;
       return output;
     } catch (_) {
+      if (encoderOpened) {
+        try { await encoder.close(); } catch (_) {}
+      }
       try { if (await output.exists()) await output.delete(); } catch (_) {}
       rethrow;
+    } finally {
+      try { if (await staging.exists()) await staging.delete(recursive: true); } catch (_) {}
     }
   }
-
 
   /// Additively restores a verified archive. Existing document/folder IDs are
   /// never overwritten; any collision aborts the database transaction.
