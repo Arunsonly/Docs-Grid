@@ -159,7 +159,10 @@ import CryptoKit
                 result(FlutterMethodNotImplemented)
             }
         } catch {
-            result(FlutterError(code: "STORAGE_ERROR", message: error.localizedDescription, details: nil))
+            let storageFailure = error as NSError
+            let code = storageFailure.domain == "DocsGridStorage" && storageFailure.code == 404
+                ? "NOT_FOUND" : "STORAGE_ERROR"
+            result(FlutterError(code: code, message: error.localizedDescription, details: nil))
         }
     }
 
@@ -410,7 +413,11 @@ import CryptoKit
                 at: parent, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]
             )
             guard let match = children.first(where: { $0.lastPathComponent == name }) else {
-                throw storageError("Could not find '\(name)' inside the selected folder.")
+                throw NSError(
+                    domain: "DocsGridStorage",
+                    code: 404,
+                    userInfo: [NSLocalizedDescriptionKey: "Could not find '\(name)' inside the selected folder."]
+                )
             }
             return match
         }
