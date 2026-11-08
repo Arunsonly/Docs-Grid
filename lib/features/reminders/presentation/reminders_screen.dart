@@ -91,7 +91,7 @@ class _RemindersScreenState extends State<RemindersScreen> with WidgetsBindingOb
                   DropdownMenuItem(value: 'none', child: Text('Does not repeat')),
                   DropdownMenuItem(value: 'daily', child: Text('Daily')),
                   DropdownMenuItem(value: 'weekly', child: Text('Weekly')),
-                  DropdownMenuItem(value: 'monthly', child: Text('Monthly')),
+                  DropdownMenuItem(value: 'monthly', child: Text('Monthly (same date)')),
                 ],
                 onChanged: (value) => setDialogState(() => recurrence = value ?? 'none'),
               ),
