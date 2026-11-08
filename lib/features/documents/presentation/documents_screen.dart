@@ -10,7 +10,6 @@ import '../../categories/data/category_repository.dart';
 import '../../folders/data/folder_repository.dart';
 import '../../tools/document_tools_service.dart';
 import '../../tools/document_tools_screen.dart';
-import '../../reminders/data/reminder_repository.dart';
 
 class DocumentsScreen extends StatefulWidget {
   const DocumentsScreen({super.key, this.favoritesOnly = false, this.recentOnly = false});
@@ -29,7 +28,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   final _search = TextEditingController();
   List<DocumentRecord> _documents = [];
   bool _loading = true;
-  bool _importing = false;
+  final bool _importing = false;
   bool _searchInsideText = false;
   int _totalStorageBytes = 0;
   int _totalDocumentCount = 0;
@@ -91,60 +90,6 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
         _error = error.toString();
       });
     }
-  }
-
-  Future<ImportDecision?> _reviewImport(
-    String suggestedName,
-    String? suggestedCategoryId,
-    List<ImportCategoryOption> categories,
-  ) async {
-    final nameController = TextEditingController(text: suggestedName);
-    String? selectedCategoryId = suggestedCategoryId;
-    final result = await showDialog<ImportDecision>(
-      context: context,
-      builder: (dialogContext) => StatefulBuilder(
-        builder: (context, refreshDialog) => AlertDialog(
-          title: const Text('Confirm document details'),
-          content: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                TextField(
-                  controller: nameController,
-                  autofocus: true,
-                  decoration: const InputDecoration(labelText: 'Document name', suffixText: '.pdf'),
-                ),
-                const SizedBox(height: 12),
-                DropdownButtonFormField<String?>(
-                  initialValue: selectedCategoryId,
-                  isExpanded: true,
-                  decoration: const InputDecoration(labelText: 'Suggested category'),
-                  items: [
-                    const DropdownMenuItem<String?>(value: null, child: Text('No category')),
-                    for (final category in categories)
-                      DropdownMenuItem<String?>(value: category.id, child: Text(category.name)),
-                  ],
-                  onChanged: (value) => refreshDialog(() => selectedCategoryId = value),
-                ),
-              ],
-            ),
-          ),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Skip')),
-            FilledButton(
-              onPressed: () => Navigator.pop(dialogContext, ImportDecision(
-                name: nameController.text,
-                categoryId: selectedCategoryId,
-              )),
-              child: const Text('Import PDF'),
-            ),
-          ],
-        ),
-      ),
-    );
-    nameController.dispose();
-    return result;
   }
 
   void _message(String message) {
