@@ -119,14 +119,13 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
     final archive = await _tools.createBackup();
     final stamp = DateTime.now().toIso8601String().replaceAll(':', '-').split('.').first;
     final bytes = await archive.readAsBytes();
-    final saved = await FilePicker.platform.saveFile(
+    final saved = await FilePicker.saveFile(
       dialogTitle: 'Save DocsGrid backup',
       fileName: 'DocsGrid_Backup_$stamp.zip',
-      type: FileType.custom,
-      allowedExtensions: ['zip'],
+      mimeType: 'application/zip',
       bytes: bytes,
     );
-    if (saved == null || saved.isEmpty) {
+    if (saved == null) {
       if (mounted) setState(() => _message = 'Backup export cancelled. Your documents were not changed.');
       return;
     }
