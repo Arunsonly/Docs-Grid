@@ -176,6 +176,46 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
     if (mounted) setState(() => _message = 'Restore completed: $restored PDF file(s) restored and verified.');
   });
 
+  Future<void> _restorePortableSnapshot() => _run(() async {
+    final selected = await StorageLocationService.instance.chooseFolder();
+    if (selected == null) return;
+    final snapshot = await _tools.verifyLatestPortableMetadataSnapshot();
+    if (snapshot == null) {
+      throw StateError('No verified DocsGrid snapshot was found in the selected folder.');
+    }
+    if (!mounted) return;
+    final androidNote = Platform.isAndroid
+        ? 'Choose the parent folder that contains the existing DocsGrid folder.'
+        : 'Choose the existing DocsGrid data folder that contains System/Database.';
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Restore DocsGrid folder data?'),
+        content: Text(
+          'Verified snapshot: $snapshot\\n\\n$androidNote\\n'
+          'Existing records will be retained. Imported IDs will be remapped if needed. '
+          'PDFs will be matched by SHA-256; files not found will keep their metadata '
+          'and be marked for relinking. No PDF file will be overwritten or deleted.',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Restore')),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    final result = await _tools.restoreLatestPortableMetadataSnapshot();
+    if (mounted) {
+      setState(() => _message =
+        'Folder recovery complete. Added ${result['documentsAdded']} document records; '
+        '${result['documentsLinked']} PDFs linked; '
+        '${result['pdfsMissing']} PDF(s) need relinking. '
+        'Existing data was retained.');
+    }
+  });
+
   Future<void> _searchText() async {
     final rows = await _tools.searchText(_search.text);
     if (mounted) setState(() => _results = rows);
@@ -337,6 +377,12 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
           subtitle: const Text('Checks the latest portable metadata snapshot before recovery work.'),
           trailing: const Icon(Icons.chevron_right),
           onTap: _busy ? null : _verifyRecoverySnapshot),
+        const Divider(height: 1),
+        ListTile(leading: const Icon(Icons.restore_page_outlined),
+          title: const Text('Restore from existing DocsGrid folder'),
+          subtitle: const Text('Select the old storage location to recover tags, reminders, folders, history and PDFs.'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: _busy ? null : _restorePortableSnapshot),
       ])),
     ],
   );
