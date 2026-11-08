@@ -91,6 +91,60 @@ class PortableSnapshotManifest {
       tables: Map.unmodifiable(tables),
     );
   }
+
+  /// Validates the complete folder graph before restore touches external storage.
+  /// Folder names are path components on iOS and Android providers, so dot
+  /// segments, separators and control characters must fail closed.
+  static Map<String, Map<String, Object?>> validateFolderRows(
+    List<Map<String, Object?>> rows,
+  ) {
+    final byId = <String, Map<String, Object?>>{};
+    for (final row in rows) {
+      final id = row['id'];
+      final name = row['name'];
+      final parentId = row['parent_id'];
+      if (id is! String || id.trim().isEmpty || id != id.trim() ||
+          byId.containsKey(id)) {
+        throw const FormatException('Snapshot contains an invalid or duplicate folder ID.');
+      }
+      if (name is! String || name.trim().isEmpty ||
+          name.trim() == '.' || name.trim() == '..' ||
+          name.contains('/') || name.contains(r'\') ||
+          name.contains('\u0000') || name.length > 255 ||
+          name.codeUnits.any((unit) => unit < 32 || unit == 127)) {
+        throw const FormatException('Snapshot contains an unsafe folder name.');
+      }
+      if (parentId != null && (parentId is! String || parentId.isEmpty)) {
+        throw const FormatException('Snapshot contains an invalid folder parent reference.');
+      }
+      byId[id] = row;
+    }
+
+    for (final row in byId.values) {
+      final parentId = row['parent_id'] as String?;
+      if (parentId != null && !byId.containsKey(parentId)) {
+        throw const FormatException('Snapshot references a missing parent folder.');
+      }
+    }
+
+    final visiting = <String>{};
+    final visited = <String>{};
+    void visit(String id) {
+      if (visiting.contains(id)) {
+        throw const FormatException('Snapshot folder hierarchy contains a cycle.');
+      }
+      if (!visited.add(id)) return;
+      visiting.add(id);
+      final parentId = byId[id]!['parent_id'] as String?;
+      if (parentId != null) visit(parentId);
+      visiting.remove(id);
+    }
+
+    for (final id in byId.keys) {
+      visit(id);
+    }
+    return Map.unmodifiable(byId);
+  }
 }
 
 class PortableSnapshotFile {
