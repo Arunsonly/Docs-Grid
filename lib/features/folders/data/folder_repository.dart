@@ -177,9 +177,6 @@ class FolderRepository {
         ? (selectedRoot == null ? null : selectedRoot['uri'])
         : await ensurePhysicalFolder(parentId);
     String? physicalUri;
-    if (parentStorageUri != null) {
-      physicalUri = await storage.createDirectory(parentUri: parentStorageUri, name: cleaned);
-    }
     final now = DateTime.now().toUtc().toIso8601String();
     final folder = Folder(
       id: _uuid.v4(),
@@ -210,6 +207,16 @@ class FolderRepository {
         );
         if (duplicates.isNotEmpty) {
           throw StateError('A folder with this name already exists here.');
+        }
+        // Create the provider directory only after the DB transaction has
+        // reserved this active sibling name. This prevents concurrent creates
+        // from receiving the same provider directory and deleting each other's
+        // newly-created folder during rollback.
+        if (parentStorageUri != null) {
+          physicalUri = await storage.createDirectory(
+            parentUri: parentStorageUri,
+            name: cleaned,
+          );
         }
         await txn.insert('folders', {
           'id': folder.id,
