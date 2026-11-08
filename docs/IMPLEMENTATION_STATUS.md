@@ -33,8 +33,8 @@ This is an implementation tracker, not a release claim. A green CI build does no
 
 ## Verification status
 
-- Latest verified CI commit: `bf9574b45dfc667046c7a680db3bec739fe6385d`.
-- GitHub Actions run [42364129247](https://github.com/Arunsonly/Docs-Grid/actions/runs/42364129247) completed successfully: Android analyze, widget/unit tests, debug APK build and artifact upload; iOS analyze, widget/unit tests and unsigned build.
+- Latest fully successful CI run before the current review fixes: [42369846464](https://github.com/Arunsonly/Docs-Grid/actions/runs/42369846464), commit `b7c199f320c337db9b30050e0da74aa82e28e02b`. Android analyze, tests, debug APK build and artifact upload succeeded; iOS analyze, tests and unsigned build succeeded.
+- A subsequent five-pass source review identified and fixed the legacy v1 database-upgrade tracking-table failure, iOS Files `file://` URI handling for OCR/sharing, and stale Settings feature-status copy. These newer commits require a fresh CI run before their APK is considered verified.
 - CI does not verify OS permission prompts, real provider behaviour, cloud downloads, app restart persistence or real-device file operations.
 - Physical Android and iPhone checks have not yet been performed. They require actual devices with the app installed and cannot be certified by a hosted CI runner.
 - Android release signing, iOS signing/TestFlight, large-PDF stress tests and data-recovery drills remain outstanding.
@@ -42,3 +42,27 @@ This is an implementation tracker, not a release claim. A green CI build does no
 ## Release gate
 
 Do not label Core Storage and PDF Management physically verified or release-ready until the device/provider checks above are completed and all failures are fixed. No later product modules should be started before this milestone is closed.
+
+
+## Ten requested product features — implementation branch update
+
+The following changes are on `feature/complete-ten-features` and remain subject to CI and device verification.
+
+| # | Feature | Current code status | Known limitation / test gate |
+|---|---|---|---|
+| 1 | Smart Import & Auto Rename | Multi-PDF import, PDF signature validation, SHA-256 duplicate check, safe names/collision suffixes; if the picker has no local path, current fallback reads the selected file into memory | A provider that exposes neither a local path nor a read stream still falls back to in-memory bytes; large-file tests required |
+| 2 | Smart Folder & Subfolder Management | Existing nested folder CRUD and physical storage mapping retained | Verify deep folder rename/move on Android and iOS providers |
+| 3 | Smart Category & Tags | Existing built-in/custom categories and reusable tags retained | Add migration and multi-document assignment regression tests |
+| 4 | Advanced PDF Search (OCR) | On-device PDF page rendering + ML Kit OCR; extracted text persisted in SQLite; text query searches indexed PDFs; provider URI is copied to temporary storage for OCR | Latin script recognizer only in current implementation; OCR is user-triggered and can be CPU/memory intensive |
+| 5 | Duplicate Detection | Exact SHA-256 duplicate groups with a review choice; non-kept copies move to Recycle Bin, not permanent deletion | Needs UX/device regression tests and duplicate groups with 3+ copies |
+| 6 | Favorites & Recent Documents | Existing Saved and Recently opened screens/actions retained | Verify sort and history after app restart |
+| 7 | Expiry Reminder System | Device-local scheduled notifications; Android notification permission and reboot receivers; daily and weekly repeating reminders; disable, snooze, complete and delete cancel/reschedule notifications | Monthly recurrence not yet available; iOS/Android notification delivery and reboot must be tested on physical devices; Android uses inexact scheduling |
+| 8 | Document Scanner & Quick Share | Camera single-page scan and multi-image gallery-to-PDF; scanner output imported into the library; document menu shares local and provider-backed PDFs | No perspective crop/edge detection or multi-page camera capture workflow yet |
+| 9 | Document History & Recycle Bin | Existing action history, soft delete, restore and confirmed permanent delete retained; duplicate cleanup uses Recycle Bin | Verify rollback and history consistency after app restart |
+| 10 | Backup & Restore | ZIP backup includes DB tables and local PDFs; manifest and SHA-256 verification; additive restore stages files, inserts metadata transactionally and aborts on ID conflicts | Provider-backed content URIs are copied to temporary local files for inclusion; unavailable providers stop the backup rather than creating a partial archive. Test large archives, rollback, and restore across fresh installs |
+
+### Current branch verification
+
+- The latest pre-review CI run passed Android analyze, tests and debug APK build/upload, and iOS analyze, tests and unsigned build.
+- The current source-review fixes have been committed after that run and must pass a fresh Android/iOS CI run.
+- No hosted CI run can certify Android SAF permissions, iOS security-scoped bookmark persistence, physical notification delivery, cloud-provider access or real-device recovery. These remain manual device test gates.

@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:open_filex/open_filex.dart';
 
 import '../../documents/data/document_repository.dart';
+import '../../tools/document_tools_service.dart';
 import '../../../core/storage/storage_location_service.dart';
 
 import '../data/folder_repository.dart';
@@ -22,7 +23,9 @@ class _FoldersScreenState extends State<FoldersScreen> {
   final List<Folder> _ancestors = [];
   String? _currentFolderId;
   String _currentTitle = 'Folders';
+  final Set<String> _selectedDocumentIds = <String>{};
   late Future<List<Folder>> _foldersFuture;
+  late Future<List<DocumentRecord>> _documentsFuture;
 
   @override
   void initState() {
@@ -32,6 +35,7 @@ class _FoldersScreenState extends State<FoldersScreen> {
 
   void _load() {
     _foldersFuture = _repository.childrenOf(_currentFolderId);
+    _documentsFuture = _documents.listInFolder(_currentFolderId);
   }
 
   Future<void> _refresh() async {
@@ -74,61 +78,6 @@ class _FoldersScreenState extends State<FoldersScreen> {
     });
   }
 
-  Future<void> _showFolderDocuments() async {
-    final documents = await _documents.listInFolder(_currentFolderId);
-    if (!mounted) return;
-    await showDialog<void>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: Text(_currentFolderId == null ? 'PDFs in root' : 'PDFs in $_currentTitle'),
-        content: SizedBox(
-          width: double.maxFinite,
-          child: documents.isEmpty
-              ? const Padding(
-                  padding: EdgeInsets.symmetric(vertical: 18),
-                  child: Text('No PDFs in this folder yet.'),
-                )
-              : SizedBox(
-                  height: 360,
-                  child: ListView.separated(
-                    shrinkWrap: true,
-                    itemCount: documents.length,
-                    separatorBuilder: (_, _) => const Divider(height: 1),
-                    itemBuilder: (context, index) {
-                      final document = documents[index];
-                      return ListTile(
-                        contentPadding: EdgeInsets.zero,
-                        leading: const Icon(Icons.picture_as_pdf_outlined),
-                        title: Text('${document.name}.pdf', maxLines: 1, overflow: TextOverflow.ellipsis),
-                        subtitle: Text(_size(document.sizeBytes)),
-                        onTap: () async {
-                          final isSafUri = document.storagePath.startsWith('content://') || document.storagePath.startsWith('file://');
-                          if (!isSafUri) {
-                            final file = File(document.storagePath);
-                            if (!await file.exists()) {
-                              if (mounted) _message('PDF file is missing from local storage.');
-                              return;
-                            }
-                          }
-                          await _documents.markOpened(document);
-                          if (isSafUri) {
-                            await StorageLocationService.instance.openPdf(document.storagePath);
-                          } else {
-                            await OpenFilex.open(document.storagePath);
-                          }
-                          if (dialogContext.mounted) Navigator.pop(dialogContext);
-                        },
-                      );
-                    },
-                  ),
-                ),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Close')),
-        ],
-      ),
-    );
-  }
 
   String _size(int bytes) {
     if (bytes < 1024) return '$bytes B';
@@ -159,19 +108,24 @@ class _FoldersScreenState extends State<FoldersScreen> {
         ],
       ),
     );
+    // showDialog completes as soon as the route is popped; wait for the
+    // reverse transition's frame before disposing the TextField controller.
+    await WidgetsBinding.instance.endOfFrame;
     controller.dispose();
-    return result;
+    return result?.trim();
   }
 
   Future<void> _createFolder() async {
     final name = await _askName();
-    if (name == null) return;
+    if (!mounted || name == null || name.isEmpty) return;
+    final parentId = _currentFolderId;
     try {
-      await _repository.create(name: name, parentId: _currentFolderId);
+      await _repository.create(name: name, parentId: parentId);
       if (!mounted) return;
       setState(_load);
       _message('Folder created.');
     } catch (error) {
+      if (!mounted) return;
       _message(error.toString().replaceFirst('Invalid argument(s): ', ''));
     }
   }
@@ -220,9 +174,44 @@ class _FoldersScreenState extends State<FoldersScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Column(
+    return PopScope(
+      canPop: _ancestors.isEmpty,
+      onPopInvokedWithResult: (didPop, result) {
+        if (!didPop && _ancestors.isNotEmpty) {
+          _goToAncestor(_ancestors.length - 2);
+        }
+      },
+      child: Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        if (_selectedDocumentIds.isNotEmpty)
+          FutureBuilder<List<DocumentRecord>>(
+            future: _documentsFuture,
+            builder: (context, snapshot) {
+              final all = snapshot.data ?? const <DocumentRecord>[];
+              return Material(
+                color: Theme.of(context).colorScheme.secondaryContainer,
+                child: Row(children: [
+                  IconButton(tooltip: 'Clear selection', onPressed: () => setState(_selectedDocumentIds.clear), icon: const Icon(Icons.close)),
+                  Expanded(child: Text('${_selectedDocumentIds.length} selected')),
+                  IconButton(tooltip: 'Select all', onPressed: () => setState(() => _selectedDocumentIds.addAll(all.map((d) => d.id))), icon: const Icon(Icons.select_all)),
+                  IconButton(tooltip: 'Share selected', onPressed: () async {
+                    final selected = all.where((d) => _selectedDocumentIds.contains(d.id)).toList();
+                    if (selected.isEmpty) return;
+                    await DocumentToolsService().shareManyStoredPdfs(selected.map((d) => d.storagePath).toList(), selected.map((d) => '${d.name}.pdf').toList());
+                  }, icon: const Icon(Icons.share_outlined)),
+                  IconButton(tooltip: 'Move selected to Recycle Bin', onPressed: () async {
+                    final selected = all.where((d) => _selectedDocumentIds.contains(d.id)).toList();
+                    if (selected.isEmpty) return;
+                    await _documents.moveManyToTrash(selected);
+                    if (!mounted) return;
+                    setState(_selectedDocumentIds.clear);
+                    await _refresh();
+                  }, icon: const Icon(Icons.delete_outline)),
+                ]),
+              );
+            },
+          ),
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
           child: Row(
@@ -232,8 +221,12 @@ class _FoldersScreenState extends State<FoldersScreen> {
                     style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700)),
               ),
               IconButton(
-                tooltip: 'PDFs in this folder',
-                onPressed: _showFolderDocuments,
+                tooltip: 'Add PDF to this folder',
+                onPressed: () async {
+                  final result = await _documents.importPdfs(targetFolderId: _currentFolderId);
+                  await _refresh();
+                  if (mounted) _message('Added ${result.added} · Duplicates ${result.duplicates}');
+                },
                 icon: const Icon(Icons.picture_as_pdf_outlined),
               ),
               IconButton(
@@ -269,11 +262,11 @@ class _FoldersScreenState extends State<FoldersScreen> {
         Expanded(
           child: FutureBuilder<List<Folder>>(
             future: _foldersFuture,
-            builder: (context, snapshot) {
-              if (snapshot.connectionState == ConnectionState.waiting) {
+            builder: (context, folderSnapshot) {
+              if (folderSnapshot.connectionState == ConnectionState.waiting) {
                 return const Center(child: CircularProgressIndicator());
               }
-              if (snapshot.hasError) {
+              if (folderSnapshot.hasError) {
                 return Center(
                   child: Column(mainAxisSize: MainAxisSize.min, children: [
                     const Icon(Icons.error_outline, size: 40),
@@ -283,63 +276,129 @@ class _FoldersScreenState extends State<FoldersScreen> {
                   ]),
                 );
               }
-              final folders = snapshot.data ?? [];
-              if (folders.isEmpty) {
-                return Center(
-                  child: Padding(
-                    padding: const EdgeInsets.all(28),
-                    child: Column(mainAxisSize: MainAxisSize.min, children: [
-                      const Icon(Icons.folder_open_outlined, size: 52),
-                      const SizedBox(height: 12),
-                      Text(_currentFolderId == null ? 'No folders yet' : 'This folder is empty',
-                          style: Theme.of(context).textTheme.titleMedium),
-                      const SizedBox(height: 6),
-                      const Text('Create a folder to organise your PDFs.', textAlign: TextAlign.center),
-                      const SizedBox(height: 12),
-                      FilledButton.icon(
-                        onPressed: _createFolder,
-                        icon: const Icon(Icons.create_new_folder_outlined),
-                        label: const Text('Create folder'),
-                      ),
-                    ]),
-                  ),
-                );
-              }
-              return RefreshIndicator(
-                onRefresh: _refresh,
-                child: ListView.separated(
-                  padding: const EdgeInsets.fromLTRB(12, 8, 12, 24),
-                  itemCount: folders.length,
-                  separatorBuilder: (_, _) => const SizedBox(height: 4),
-                  itemBuilder: (context, index) {
-                    final folder = folders[index];
-                    return Card(
-                      elevation: 0,
-                      child: ListTile(
-                        leading: const CircleAvatar(child: Icon(Icons.folder_outlined)),
-                        title: Text(folder.name, maxLines: 1, overflow: TextOverflow.ellipsis),
-                        subtitle: const Text('Folder'),
-                        onTap: () => _openFolder(folder),
-                        trailing: PopupMenuButton<String>(
-                          tooltip: 'Folder actions',
-                          onSelected: (value) {
-                            if (value == 'rename') _renameFolder(folder);
-                            if (value == 'delete') _deleteFolder(folder);
-                          },
-                          itemBuilder: (_) => const [
-                            PopupMenuItem(value: 'rename', child: Text('Rename')),
-                            PopupMenuItem(value: 'delete', child: Text('Delete')),
-                          ],
-                        ),
+              final folders = folderSnapshot.data ?? const <Folder>[];
+              return FutureBuilder<List<DocumentRecord>>(
+                future: _documentsFuture,
+                builder: (context, documentSnapshot) {
+                  if (documentSnapshot.connectionState == ConnectionState.waiting) {
+                    return const Center(child: CircularProgressIndicator());
+                  }
+                  if (documentSnapshot.hasError) {
+                    return Center(child: Text('Could not load PDFs: ${documentSnapshot.error}'));
+                  }
+                  final documents = documentSnapshot.data ?? const <DocumentRecord>[];
+                  if (folders.isEmpty && documents.isEmpty) {
+                    return Center(
+                      child: Padding(
+                        padding: const EdgeInsets.all(28),
+                        child: Column(mainAxisSize: MainAxisSize.min, children: [
+                          const Icon(Icons.folder_open_outlined, size: 52),
+                          const SizedBox(height: 12),
+                          Text(_currentFolderId == null ? 'No folders or PDFs yet' : 'This folder is empty',
+                              style: Theme.of(context).textTheme.titleMedium),
+                          const SizedBox(height: 6),
+                          const Text('Create a folder or import a PDF to get started.', textAlign: TextAlign.center),
+                          const SizedBox(height: 12),
+                          FilledButton.icon(
+                            onPressed: _createFolder,
+                            icon: const Icon(Icons.create_new_folder_outlined),
+                            label: const Text('Create folder'),
+                          ),
+                        ]),
                       ),
                     );
-                  },
-                ),
+                  }
+                  return RefreshIndicator(
+                    onRefresh: _refresh,
+                    child: ListView(
+                      padding: const EdgeInsets.fromLTRB(12, 8, 12, 24),
+                      children: [
+                        if (folders.isNotEmpty) ...[
+                          Padding(
+                            padding: const EdgeInsets.fromLTRB(4, 8, 4, 4),
+                            child: Text('FOLDERS', style: Theme.of(context).textTheme.labelLarge),
+                          ),
+                          for (final folder in folders)
+                            Card(
+                              elevation: 0,
+                              child: ListTile(
+                                leading: const CircleAvatar(child: Icon(Icons.folder_outlined)),
+                                title: Text(folder.name, maxLines: 1, overflow: TextOverflow.ellipsis),
+                                subtitle: const Text('Folder'),
+                                onTap: () => _openFolder(folder),
+                                trailing: PopupMenuButton<String>(
+                                  tooltip: 'Folder actions',
+                                  onSelected: (value) {
+                                    if (value == 'rename') _renameFolder(folder);
+                                    if (value == 'delete') _deleteFolder(folder);
+                                  },
+                                  itemBuilder: (_) => const [
+                                    PopupMenuItem(value: 'rename', child: Text('Rename')),
+                                    PopupMenuItem(value: 'delete', child: Text('Delete')),
+                                  ],
+                                ),
+                              ),
+                            ),
+                        ],
+                        if (documents.isNotEmpty) ...[
+                          Padding(
+                            padding: const EdgeInsets.fromLTRB(4, 18, 4, 4),
+                            child: Text('PDF DOCUMENTS', style: Theme.of(context).textTheme.labelLarge),
+                          ),
+                          for (final document in documents)
+                            Card(
+                              elevation: 0,
+                              child: ListTile(
+                                leading: _selectedDocumentIds.isNotEmpty
+                                    ? Checkbox(value: _selectedDocumentIds.contains(document.id), onChanged: (_) => setState(() { if (!_selectedDocumentIds.add(document.id)) _selectedDocumentIds.remove(document.id); }))
+                                    : const Icon(Icons.picture_as_pdf_outlined),
+                                title: Text('${document.name}.pdf', maxLines: 1, overflow: TextOverflow.ellipsis),
+                                subtitle: Text(_size(document.sizeBytes)),
+                                onLongPress: () => setState(() { if (!_selectedDocumentIds.add(document.id)) _selectedDocumentIds.remove(document.id); }),
+                                onTap: () async {
+                                  if (_selectedDocumentIds.isNotEmpty) {
+                                    setState(() { if (!_selectedDocumentIds.add(document.id)) _selectedDocumentIds.remove(document.id); });
+                                    return;
+                                  }
+                                  final shared = document.storagePath.startsWith('content://') ||
+                                      document.storagePath.startsWith('file://');
+                                  if (!shared && !await File(document.storagePath).exists()) {
+                                    if (mounted) _message('PDF file is missing from local storage.');
+                                    return;
+                                  }
+                                  await _documents.markOpened(document);
+                                  if (shared) {
+                                    await StorageLocationService.instance.openPdf(document.storagePath);
+                                  } else {
+                                    await OpenFilex.open(document.storagePath);
+                                  }
+                                },
+                                trailing: IconButton(
+                                  tooltip: 'Share PDF',
+                                  icon: const Icon(Icons.share_outlined),
+                                  onPressed: () async {
+                                    try {
+                                      await DocumentToolsService().shareStoredPdf(
+                                        document.storagePath, '${document.name}.pdf',
+                                      );
+                                    } catch (error) {
+                                      if (mounted) _message('Could not share PDF: $error');
+                                    }
+                                  },
+                                ),
+                              ),
+                            ),
+                        ],
+                      ],
+                    ),
+                  );
+                },
               );
             },
           ),
-        ),
+        )
       ],
+      ),
     );
   }
 }

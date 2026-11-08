@@ -2,6 +2,7 @@ package com.docsgrid.docs_grid
 
 import android.app.Activity
 import android.content.Intent
+import android.provider.OpenableColumns
 import android.database.Cursor
 import android.net.Uri
 import android.os.Bundle
@@ -36,11 +37,22 @@ class MainActivity : FlutterActivity() {
                                 startActivityForResult(intent, requestChooseFolder)
                             }
                         }
-                        "getSelectedFolder" -> {
-                            val uri = getSharedPreferences("docsgrid_storage", MODE_PRIVATE)
-                                .getString("tree_uri", null)
-                            result.success(uri?.let { mapOf("uri" to it, "name" to "Selected folder") })
+                        "getPortableDataLocations" -> {
+                            val prefs = getSharedPreferences("docsgrid_storage", MODE_PRIVATE)
+                            val database = prefs.getString("database_uri", null)
+                                ?: throw IllegalStateException("DocsGrid Database folder is not configured. Re-select the library folder.")
+                            val recovery = prefs.getString("recovery_uri", null)
+                                ?: throw IllegalStateException("DocsGrid Recovery folder is not configured. Re-select the library folder.")
+                            val library = prefs.getString("my_files_uri", null)
+                                ?: throw IllegalStateException("DocsGrid library folder is not configured. Re-select the library folder.")
+                            result.success(mapOf("databaseUri" to database, "recoveryUri" to recovery, "libraryUri" to library))
                         }
+                        "getSelectedFolder" -> {
+                            val prefs = getSharedPreferences("docsgrid_storage", MODE_PRIVATE)
+                            val uri = prefs.getString("my_files_uri", null)
+                            result.success(uri?.let { mapOf("uri" to it, "name" to "DocsGrid/My Files") })
+                        }
+                        "consumeSharedPdfs" -> result.success(consumeSharedPdfs())
                         "checkStorageAccess" -> result.success(checkStorageAccess())
                         "savePdf" -> {
                             val tree = Uri.parse(call.argument<String>("treeUri")!!)
@@ -75,6 +87,22 @@ class MainActivity : FlutterActivity() {
                         "sha256Pdf" -> {
                             val uri = Uri.parse(call.argument<String>("uri")!!)
                             result.success(digest(uri).joinToString("") { "%02x".format(it) })
+                        }
+                        "writeTextFile" -> {
+                            val parent = Uri.parse(call.argument<String>("parentUri")!!)
+                            val name = call.argument<String>("name")!!
+                            val contents = call.argument<String>("contents")!!
+                            result.success(writeTextFile(parent, name, contents).toString())
+                        }
+                        "readTextFile" -> {
+                            val uri = Uri.parse(call.argument<String>("uri")!!)
+                            val bytes = contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                                ?: throw IllegalStateException("Could not read metadata file.")
+                            result.success(String(bytes, Charsets.UTF_8))
+                        }
+                        "listDirectory" -> {
+                            val uri = Uri.parse(call.argument<String>("uri")!!)
+                            result.success(listDirectory(uri))
                         }
                         "readPdf" -> {
                             val uri = Uri.parse(call.argument<String>("uri")!!)
@@ -113,6 +141,61 @@ class MainActivity : FlutterActivity() {
                     result.error("STORAGE_ERROR", error.message ?: "Storage operation failed.", null)
                 }
             }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+    }
+
+    private fun consumeSharedPdfs(): List<Map<String, String>> {
+        val incoming = intent ?: return emptyList()
+        val uris = linkedSetOf<Uri>()
+        if (incoming.action == Intent.ACTION_SEND) {
+            val single = if (android.os.Build.VERSION.SDK_INT >= 33) {
+                incoming.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
+            } else {
+                @Suppress("DEPRECATION")
+                incoming.getParcelableExtra(Intent.EXTRA_STREAM) as? Uri
+            }
+            if (single != null) uris.add(single)
+        } else if (incoming.action == Intent.ACTION_SEND_MULTIPLE) {
+            @Suppress("DEPRECATION")
+            val many = incoming.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM)
+            many?.let { uris.addAll(it) }
+        }
+        incoming.clipData?.let { clip ->
+            for (index in 0 until clip.itemCount) clip.getItemAt(index).uri?.let { uris.add(it) }
+        }
+        val output = mutableListOf<Map<String, String>>()
+        val shareDir = java.io.File(cacheDir, "incoming_docs").apply { mkdirs() }
+        uris.forEachIndexed { index, uri ->
+            try {
+                val mime = contentResolver.getType(uri)
+                var displayName: String? = null
+                contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+                    if (cursor.moveToFirst()) {
+                        val column = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                        if (column >= 0) displayName = cursor.getString(column)
+                    }
+                }
+                val name = displayName ?: "Shared_Document_${index + 1}.pdf"
+                if (mime != "application/pdf" && !name.lowercase().endsWith(".pdf")) return@forEachIndexed
+                val safe = name.replace(Regex("[^A-Za-z0-9._ -]"), "_")
+                val target = java.io.File(shareDir, "${System.currentTimeMillis()}_$safe")
+                contentResolver.openInputStream(uri)?.use { input ->
+                    target.outputStream().buffered().use { outputStream -> input.copyTo(outputStream, 64 * 1024) }
+                } ?: return@forEachIndexed
+                val validPdf = target.inputStream().use { input ->
+                    val header = ByteArray(5)
+                    input.read(header) == 5 && String(header) == "%PDF-"
+                }
+                if (validPdf) output.add(mapOf("path" to target.absolutePath, "name" to name))
+                else target.delete()
+            } catch (_: Exception) { }
+        }
+        setIntent(Intent())
+        return output
     }
 
     private fun checkStorageAccess(): Map<String, String> {
@@ -157,6 +240,14 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    private fun ensureDirectory(parentUri: Uri, name: String): Uri {
+        return try {
+            findChildUri(parentUri, name)
+        } catch (_: Exception) {
+            createDirectory(parentUri, name)
+        }
+    }
+
     private fun createDirectory(parentUri: Uri, name: String): Uri {
         return DocumentsContract.createDocument(
             contentResolver, resolveParentUri(parentUri),
@@ -182,6 +273,68 @@ class MainActivity : FlutterActivity() {
             }
         }
         throw IllegalStateException("Could not find '$name' inside the selected folder.")
+    }
+
+    private fun listDirectory(directoryUri: Uri): List<Map<String, Any>> {
+        val parent = resolveParentUri(directoryUri)
+        val parentId = DocumentsContract.getDocumentId(parent)
+        val children = DocumentsContract.buildChildDocumentsUriUsingTree(directoryUri, parentId)
+        val output = mutableListOf<Map<String, Any>>()
+        contentResolver.query(
+            children,
+            arrayOf(
+                DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                DocumentsContract.Document.COLUMN_MIME_TYPE,
+                DocumentsContract.Document.COLUMN_SIZE
+            ),
+            null, null, null
+        )?.use { cursor ->
+            val idIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
+            val nameIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+            val mimeIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_MIME_TYPE)
+            val sizeIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_SIZE)
+            while (cursor.moveToNext()) {
+                if (idIndex < 0 || nameIndex < 0 || mimeIndex < 0) continue
+                val id = cursor.getString(idIndex)
+                val mime = cursor.getString(mimeIndex)
+                output.add(mapOf(
+                    "name" to cursor.getString(nameIndex),
+                    "uri" to DocumentsContract.buildDocumentUriUsingTree(directoryUri, id).toString(),
+                    "isDirectory" to (mime == DocumentsContract.Document.MIME_TYPE_DIR),
+                    "size" to if (sizeIndex >= 0 && !cursor.isNull(sizeIndex)) cursor.getLong(sizeIndex) else 0L
+                ))
+            }
+        } ?: throw IllegalStateException("The storage provider could not list this folder.")
+        return output
+    }
+
+    private fun writeTextFile(parentUri: Uri, name: String, contents: String): Uri {
+        require(!name.contains("/") && !name.contains("\\") && name.isNotBlank()) {
+            "Invalid metadata filename."
+        }
+        val parent = resolveParentUri(parentUri)
+        val existing = try { findChildUri(parentUri, name) } catch (_: Exception) { null }
+        val tempName = ".$name.tmp-${java.util.UUID.randomUUID()}"
+        val temp = DocumentsContract.createDocument(
+            contentResolver, parent, "application/json", tempName
+        ) ?: throw IllegalStateException("Could not create temporary metadata file.")
+        try {
+            val bytes = contents.toByteArray(Charsets.UTF_8)
+            contentResolver.openOutputStream(temp, "w")?.use { it.write(bytes); it.flush() }
+                ?: throw IllegalStateException("Could not write metadata file.")
+            val check = contentResolver.openInputStream(temp)?.use { it.readBytes() }
+                ?: throw IllegalStateException("Could not verify metadata file.")
+            if (!bytes.contentEquals(check)) throw IllegalStateException("Metadata verification failed.")
+            if (existing != null && !DocumentsContract.deleteDocument(contentResolver, existing)) {
+                throw IllegalStateException("Could not replace the previous metadata snapshot.")
+            }
+            return DocumentsContract.renameDocument(contentResolver, temp, name)
+                ?: throw IllegalStateException("Could not publish metadata file.")
+        } catch (error: Exception) {
+            try { DocumentsContract.deleteDocument(contentResolver, temp) } catch (_: Exception) {}
+            throw error
+        }
     }
 
     private fun digest(uri: Uri): ByteArray {
@@ -290,8 +443,23 @@ class MainActivity : FlutterActivity() {
             callback?.error("PERMISSION", "Could not retain folder access.", null)
             return
         }
-        getSharedPreferences("docsgrid_storage", MODE_PRIVATE).edit()
-            .putString("tree_uri", uri.toString()).apply()
-        callback?.success(mapOf("uri" to uri.toString(), "name" to "Selected folder"))
+        try {
+            // Create or reconnect the app's shared folder layout using SAF.
+            val docsGrid = ensureDirectory(uri, "DocsGrid")
+            val myFiles = ensureDirectory(docsGrid, "My Files")
+            val system = ensureDirectory(docsGrid, "System")
+            val database = ensureDirectory(system, "Database")
+            val recovery = ensureDirectory(system, "Recovery")
+            getSharedPreferences("docsgrid_storage", MODE_PRIVATE).edit()
+                .putString("tree_uri", uri.toString())
+                .putString("docsgrid_uri", docsGrid.toString())
+                .putString("my_files_uri", myFiles.toString())
+                .putString("database_uri", database.toString())
+                .putString("recovery_uri", recovery.toString())
+                .apply()
+            callback?.success(mapOf("uri" to myFiles.toString(), "name" to "DocsGrid/My Files", "rootUri" to docsGrid.toString()))
+        } catch (error: Exception) {
+            callback?.error("LAYOUT_ERROR", "Could not prepare DocsGrid folders. Existing data was not changed: " + error.message, null)
+        }
     }
 }

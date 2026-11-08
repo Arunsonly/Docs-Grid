@@ -7,18 +7,9 @@ void main() {
 
     expect(find.text('DocsGrid · My Documents'), findsOneWidget);
     expect(find.text('Files'), findsOneWidget);
-    expect(find.text('Folders'), findsOneWidget);
-    expect(find.text('Saved'), findsOneWidget);
+    expect(find.text('Folders'), findsWidgets);
+    expect(find.text('Star'), findsOneWidget);
     expect(find.text('Settings'), findsOneWidget);
   });
 
-  testWidgets('Recently opened screen is reachable from Settings', (tester) async {
-    await tester.pumpWidget(const DocsGridApp());
-    await tester.tap(find.text('Settings'));
-    await tester.pump(const Duration(milliseconds: 400));
-    await tester.tap(find.text('Recently opened'));
-    await tester.pump(const Duration(milliseconds: 400));
-
-    expect(find.text('Recently opened'), findsOneWidget);
-  });
 }

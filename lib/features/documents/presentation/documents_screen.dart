@@ -7,6 +7,8 @@ import '../data/document_repository.dart';
 import '../../../core/storage/storage_location_service.dart';
 import '../../categories/data/category_repository.dart';
 import '../../folders/data/folder_repository.dart';
+import '../../tools/document_tools_service.dart';
+import '../../reminders/data/reminder_repository.dart';
 
 class DocumentsScreen extends StatefulWidget {
   const DocumentsScreen({super.key, this.favoritesOnly = false, this.recentOnly = false});
@@ -21,10 +23,16 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   final _repository = DocumentRepository();
   final _categoryRepository = CategoryRepository();
   final _folderRepository = FolderRepository();
+  final _tools = DocumentToolsService();
   final _search = TextEditingController();
   List<DocumentRecord> _documents = [];
   bool _loading = true;
   bool _importing = false;
+  bool _searchInsideText = false;
+  int _totalStorageBytes = 0;
+  int _totalDocumentCount = 0;
+  int _starredCount = 0;
+  final Set<String> _selectedIds = <String>{};
   int _loadGeneration = 0;
   String? _error;
 
@@ -45,14 +53,23 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   Future<void> _load() async {
     final generation = ++_loadGeneration;
     try {
-      final docs = await _repository.list(
-        query: _search.text,
+      final allDocs = await _repository.list();
+      var docs = await _repository.list(
+        query: _searchInsideText ? '' : _search.text,
         favoritesOnly: widget.favoritesOnly,
         recentOnly: widget.recentOnly,
       );
+      if (_searchInsideText && _search.text.trim().isNotEmpty) {
+        final matches = await _tools.searchText(_search.text);
+        final matchedIds = matches.map((row) => row['id'] as String).toSet();
+        docs = docs.where((document) => matchedIds.contains(document.id)).toList();
+      }
       if (!mounted || generation != _loadGeneration) return;
       setState(() {
         _documents = docs;
+        _totalStorageBytes = allDocs.fold<int>(0, (total, document) => total + document.sizeBytes);
+        _totalDocumentCount = allDocs.length;
+        _starredCount = allDocs.where((document) => document.isFavorite).length;
         _loading = false;
         _error = null;
       });
@@ -65,15 +82,87 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     }
   }
 
+  Future<ImportDecision?> _reviewImport(
+    String suggestedName,
+    String? suggestedCategoryId,
+    List<ImportCategoryOption> categories,
+  ) async {
+    final nameController = TextEditingController(text: suggestedName);
+    String? selectedCategoryId = suggestedCategoryId;
+    final result = await showDialog<ImportDecision>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, refreshDialog) => AlertDialog(
+          title: const Text('Confirm document details'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                TextField(
+                  controller: nameController,
+                  autofocus: true,
+                  decoration: const InputDecoration(labelText: 'Document name', suffixText: '.pdf'),
+                ),
+                const SizedBox(height: 12),
+                DropdownButtonFormField<String?>(
+                  initialValue: selectedCategoryId,
+                  isExpanded: true,
+                  decoration: const InputDecoration(labelText: 'Suggested category'),
+                  items: [
+                    const DropdownMenuItem<String?>(value: null, child: Text('No category')),
+                    for (final category in categories)
+                      DropdownMenuItem<String?>(value: category.id, child: Text(category.name)),
+                  ],
+                  onChanged: (value) => refreshDialog(() => selectedCategoryId = value),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Skip')),
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, ImportDecision(
+                name: nameController.text,
+                categoryId: selectedCategoryId,
+              )),
+              child: const Text('Import PDF'),
+            ),
+          ],
+        ),
+      ),
+    );
+    nameController.dispose();
+    return result;
+  }
+
   Future<void> _import() async {
+    final folders = await _folderRepository.allFoldersWithPaths();
+    if (!mounted) return;
+    final destination = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) => SafeArea(
+        child: ListView(shrinkWrap: true, children: [
+          const ListTile(title: Text('Choose destination folder')),
+          ListTile(leading: const Icon(Icons.home_outlined), title: const Text('My Documents (root)'), onTap: () => Navigator.pop(sheetContext, '')),
+          for (final option in folders)
+            ListTile(leading: const Icon(Icons.folder_outlined), title: Text(option.path), onTap: () => Navigator.pop(sheetContext, option.folder.id)),
+        ]),
+      ),
+    );
+    if (destination == null || !mounted) return;
     setState(() => _importing = true);
     try {
-      final result = await _repository.importPdfs();
+      final result = await _repository.importPdfs(
+        review: _reviewImport,
+        targetFolderId: destination.isEmpty ? null : destination,
+      );
       await _load();
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(
-          'Added ${result.added} · Duplicates ${result.duplicates} · Failed ${result.failed}',
+          'Added ${result.added} · Duplicates ${result.duplicates} · Skipped ${result.skipped} · Failed ${result.failed}',
         )),
       );
     } catch (error) {
@@ -83,6 +172,80 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     } finally {
       if (mounted) setState(() => _importing = false);
     }
+  }
+
+  void _toggleSelected(DocumentRecord document) {
+    setState(() {
+      if (!_selectedIds.add(document.id)) _selectedIds.remove(document.id);
+    });
+  }
+
+  Future<void> _bulkTrash() async {
+    final selected = _documents.where((d) => _selectedIds.contains(d.id)).toList();
+    if (selected.isEmpty) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Move selected PDFs to Recycle Bin?'),
+        content: Text('${selected.length} PDFs will be hidden. Files will not be erased.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Move')),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    await _repository.moveManyToTrash(selected);
+    if (!mounted) return;
+    setState(_selectedIds.clear);
+    await _load();
+  }
+
+  Future<void> _bulkShare() async {
+    final selected = _documents.where((d) => _selectedIds.contains(d.id)).toList();
+    if (selected.isEmpty) return;
+    try {
+      await _tools.shareManyStoredPdfs(
+        selected.map((d) => d.storagePath).toList(),
+        selected.map((d) => '${d.name}.pdf').toList(),
+      );
+    } catch (error) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not share selected PDFs: $error')));
+    } finally {
+      if (mounted) setState(_selectedIds.clear);
+    }
+  }
+  Future<void> _bulkMove() async {
+    final selected = _documents.where((d) => _selectedIds.contains(d.id)).toList();
+    if (selected.isEmpty) return;
+    final folders = await _folderRepository.allFoldersWithPaths();
+    if (!mounted) return;
+    final destination = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) => SafeArea(
+        child: ListView(
+          shrinkWrap: true,
+          children: [
+            const ListTile(title: Text('Move selected PDFs to')),
+            ListTile(leading: const Icon(Icons.home_outlined), title: const Text('Root / No folder'), onTap: () => Navigator.pop(sheetContext, '')),
+            for (final option in folders)
+              ListTile(leading: const Icon(Icons.folder_outlined), title: Text(option.path), onTap: () => Navigator.pop(sheetContext, option.folder.id)),
+          ],
+        ),
+      ),
+    );
+    if (destination == null) return;
+    final result = await _repository.moveManyToFolder(selected, destination.isEmpty ? null : destination);
+    if (!mounted) return;
+    setState(_selectedIds.clear);
+    await _load();
+    if (!mounted) return;
+    final failures = result['failures'] as List<String>;
+    final failureSummary = failures.isEmpty ? '' : ' · ${failures.length} failed';
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text('Moved ${result['moved']} of ${selected.length} PDFs$failureSummary'),
+    ));
   }
 
   Future<void> _open(DocumentRecord document) async {
@@ -117,6 +280,19 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
       }
     }
     await _load();
+  }
+
+
+  Future<void> _share(DocumentRecord document) async {
+    try {
+      await _tools.shareStoredPdf(document.storagePath, '${document.name}.pdf');
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not share PDF: $error')),
+        );
+      }
+    }
   }
 
   Future<void> _relink(DocumentRecord document) async {
@@ -161,6 +337,59 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
       await _load();
     } catch (error) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$error')));
+    }
+  }
+
+  Future<void> _addReminder(DocumentRecord document) async {
+    final title = TextEditingController(text: 'Renewal - ${document.name}');
+    final note = TextEditingController();
+    var selected = DateTime.now().add(const Duration(days: 1));
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, refresh) => AlertDialog(
+          scrollable: true,
+          title: const Text('Add to reminder'),
+          content: Column(mainAxisSize: MainAxisSize.min, children: [
+            TextField(controller: title, decoration: const InputDecoration(labelText: 'Reminder title')),
+            TextField(controller: note, maxLines: 2, decoration: const InputDecoration(labelText: 'Note (optional)')),
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Date & time'),
+              subtitle: Text('${selected.day.toString().padLeft(2, '0')}/${selected.month.toString().padLeft(2, '0')}/${selected.year} · ${selected.hour.toString().padLeft(2, '0')}:${selected.minute.toString().padLeft(2, '0')}'),
+              onTap: () async {
+                final date = await showDatePicker(context: context, initialDate: selected, firstDate: DateTime.now(), lastDate: DateTime.now().add(const Duration(days: 3650)));
+                if (date == null || !context.mounted) return;
+                final time = await showTimePicker(context: context, initialTime: TimeOfDay.fromDateTime(selected));
+                if (time != null) refresh(() => selected = DateTime(date.year, date.month, date.day, time.hour, time.minute));
+              },
+            ),
+          ]),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')),
+            FilledButton(onPressed: () {
+              if (title.text.trim().isNotEmpty && selected.isAfter(DateTime.now())) Navigator.pop(dialogContext, true);
+            }, child: const Text('Save')),
+          ],
+        ),
+      ),
+    );
+    await WidgetsBinding.instance.endOfFrame;
+    final reminderTitle = title.text.trim();
+    final reminderNote = note.text.trim();
+    title.dispose();
+    note.dispose();
+    if (saved != true) return;
+    try {
+      await ReminderRepository().create(
+        title: reminderTitle,
+        note: reminderNote,
+        remindAt: selected,
+        documentId: document.id,
+      );
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Reminder saved for this PDF.')));
+    } catch (error) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not save reminder: $error')));
     }
   }
 
@@ -412,6 +641,46 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   Widget build(BuildContext context) {
     return Column(
       children: [
+        if (_selectedIds.isNotEmpty)
+          Material(
+            color: Theme.of(context).colorScheme.secondaryContainer,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+              child: Row(children: [
+                IconButton(tooltip: 'Clear selection', onPressed: () => setState(_selectedIds.clear), icon: const Icon(Icons.close)),
+                Expanded(child: Text('${_selectedIds.length} selected', style: const TextStyle(fontWeight: FontWeight.w700))),
+                IconButton(tooltip: 'Share selected', onPressed: _bulkShare, icon: const Icon(Icons.share_outlined)),
+                IconButton(tooltip: _selectedIds.length == _documents.length ? 'Clear all selection' : 'Select all', onPressed: () => setState(() { if (_selectedIds.length == _documents.length) { _selectedIds.clear(); } else { _selectedIds.addAll(_documents.map((d) => d.id)); } }), icon: const Icon(Icons.select_all)),
+                IconButton(tooltip: 'Move selected', onPressed: _bulkMove, icon: const Icon(Icons.drive_file_move_outline)),
+                IconButton(tooltip: 'Move selected to Recycle Bin', onPressed: _bulkTrash, icon: const Icon(Icons.delete_outline)),
+              ]),
+            ),
+          ),
+        if (!widget.favoritesOnly && !widget.recentOnly)
+          Container(
+            margin: const EdgeInsets.fromLTRB(16, 10, 16, 8),
+            padding: const EdgeInsets.all(18),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(22),
+              gradient: const LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [Color(0xFF123B91), Color(0xFF087FC7), Color(0xFF08AFC0)],
+              ),
+              boxShadow: const [BoxShadow(color: Color(0x220B4B91), blurRadius: 18, offset: Offset(0, 8))],
+            ),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              const Text('YOUR OFFLINE DRIVE', style: TextStyle(color: Colors.white70, fontSize: 11, letterSpacing: 1.4, fontWeight: FontWeight.w700)),
+              const SizedBox(height: 6),
+              Text('${_size(_totalStorageBytes)} occupied', style: const TextStyle(color: Colors.white70, fontSize: 12, fontWeight: FontWeight.w600)),
+              const SizedBox(height: 14),
+              Row(children: [
+                Expanded(child: _dashboardMetric(Icons.picture_as_pdf_outlined, '$_totalDocumentCount', 'Documents')),
+                Expanded(child: _dashboardMetric(Icons.star_border, '$_starredCount', 'Starred')),
+                Expanded(child: _dashboardMetric(Icons.offline_pin_outlined, 'Offline', 'On device')),
+              ]),
+            ]),
+          ),
         if (!widget.favoritesOnly)
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
@@ -421,8 +690,19 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                   child: TextField(
                     controller: _search,
                     decoration: InputDecoration(
-                      hintText: 'Search PDF names',
-                      prefixIcon: const Icon(Icons.search),
+                      hintText: _searchInsideText ? 'Search text inside PDFs' : 'Search PDF names',
+                      prefixIcon: PopupMenuButton<String>(
+                        tooltip: 'Choose search type',
+                        icon: const Icon(Icons.search),
+                        onSelected: (value) {
+                          setState(() => _searchInsideText = value == 'text');
+                          _load();
+                        },
+                        itemBuilder: (_) => [
+                          PopupMenuItem(value: 'name', child: Row(children: [Icon(_searchInsideText ? Icons.circle_outlined : Icons.check_circle, size: 18), const SizedBox(width: 8), const Text('File name') ])),
+                          PopupMenuItem(value: 'text', child: Row(children: [Icon(_searchInsideText ? Icons.check_circle : Icons.circle_outlined, size: 18), const SizedBox(width: 8), const Text('Text inside PDF') ])),
+                        ],
+                      ),
                       suffixIcon: _search.text.isEmpty
                           ? null
                           : IconButton(onPressed: _search.clear, icon: const Icon(Icons.close)),
@@ -467,35 +747,58 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     );
   }
 
-  Widget _emptyState() => Center(
-    child: Padding(
-      padding: const EdgeInsets.all(28),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          const Icon(Icons.picture_as_pdf_outlined, size: 58),
-          const SizedBox(height: 12),
-          Text(widget.favoritesOnly ? 'No saved PDFs yet' : widget.recentOnly ? 'No recently opened PDFs' : 'Your library is empty',
-              style: Theme.of(context).textTheme.titleLarge),
-          const SizedBox(height: 6),
-          Text(widget.recentOnly ? 'Open a PDF and it will appear here.' : 'Import PDF files from your phone to get started.', textAlign: TextAlign.center),
-          if (!widget.favoritesOnly && !widget.recentOnly) ...[
-            const SizedBox(height: 16),
-            FilledButton.icon(onPressed: _importing ? null : _import,
-              icon: const Icon(Icons.add), label: const Text('Import PDFs')),
-          ],
-        ],
+  Widget _dashboardMetric(IconData icon, String value, String label) => Row(
+    children: [
+      Icon(icon, color: Colors.white, size: 20),
+      const SizedBox(width: 6),
+      Flexible(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text(value, maxLines: 1, overflow: TextOverflow.ellipsis,
+          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800, fontSize: 15)),
+        Text(label, maxLines: 1, overflow: TextOverflow.ellipsis,
+          style: const TextStyle(color: Colors.white70, fontSize: 10)),
+      ])),
+    ],
+  );
+
+  Widget _emptyState() => SingleChildScrollView(
+    physics: const AlwaysScrollableScrollPhysics(),
+    child: ConstrainedBox(
+      constraints: BoxConstraints(minHeight: MediaQuery.sizeOf(context).height * 0.22),
+      child: Center(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.picture_as_pdf_outlined, size: 48),
+              const SizedBox(height: 8),
+              Text(widget.favoritesOnly ? 'No starred PDFs yet' : widget.recentOnly ? 'No recently opened PDFs' : 'Your library is empty',
+                  style: Theme.of(context).textTheme.titleLarge, textAlign: TextAlign.center),
+              const SizedBox(height: 6),
+              Text(widget.recentOnly ? 'Open a PDF and it will appear here.' : 'Import PDF files from your phone to get started.', textAlign: TextAlign.center),
+              if (!widget.favoritesOnly && !widget.recentOnly) ...[
+                const SizedBox(height: 12),
+                FilledButton.icon(onPressed: _importing ? null : _import,
+                  icon: const Icon(Icons.add), label: const Text('Import PDFs')),
+              ],
+            ],
+          ),
+        ),
       ),
     ),
   );
 
   Widget _documentTile(DocumentRecord document) {
     final file = File(document.storagePath);
+    final selected = _selectedIds.contains(document.id);
     return Card(
       elevation: 0,
       child: ListTile(
-        onTap: () => _open(document),
-        leading: const CircleAvatar(child: Icon(Icons.picture_as_pdf_outlined)),
+        onLongPress: () => _toggleSelected(document),
+        onTap: () => _selectedIds.isNotEmpty ? _toggleSelected(document) : _open(document),
+        leading: _selectedIds.isNotEmpty
+            ? Checkbox(value: selected, onChanged: (_) => _toggleSelected(document))
+            : const CircleAvatar(child: Icon(Icons.picture_as_pdf_outlined)),
         title: Text('${document.name}.pdf', maxLines: 1, overflow: TextOverflow.ellipsis),
         subtitle: Text([
           _size(document.sizeBytes),
@@ -516,6 +819,10 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
               await _chooseCategory(document);
             } else if (value == 'rename') {
               await _rename(document);
+            } else if (value == 'share') {
+              await _share(document);
+            } else if (value == 'reminder') {
+              await _addReminder(document);
             } else if (value == 'relink') {
               await _relink(document);
             } else if (value == 'trash') {
@@ -524,11 +831,13 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
           },
           itemBuilder: (_) => [
             PopupMenuItem(value: 'favorite',
-              child: Text(document.isFavorite ? 'Remove from Saved' : 'Add to Saved')),
+              child: Text(document.isFavorite ? 'Remove from Star' : 'Add to Star')),
             const PopupMenuItem(value: 'category', child: Text('Set category')),
             const PopupMenuItem(value: 'move', child: Text('Move to folder')),
             const PopupMenuItem(value: 'tags', child: Text('Edit tags')),
             const PopupMenuItem(value: 'rename', child: Text('Rename')),
+            const PopupMenuItem(value: 'share', child: Text('Share PDF')),
+            const PopupMenuItem(value: 'reminder', child: Text('Add to reminder')), 
             const PopupMenuItem(value: 'relink', child: Text('Relink / Replace PDF')),
             const PopupMenuItem(value: 'trash', child: Text('Move to Recycle Bin')),
           ],

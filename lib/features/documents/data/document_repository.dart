@@ -58,10 +58,23 @@ class DocumentRecord {
 }
 
 class ImportSummary {
-  const ImportSummary({required this.added, required this.duplicates, required this.failed});
+  const ImportSummary({required this.added, required this.duplicates, required this.failed, this.skipped = 0});
   final int added;
   final int duplicates;
   final int failed;
+  final int skipped;
+}
+
+class ImportDecision {
+  const ImportDecision({required this.name, this.categoryId});
+  final String name;
+  final String? categoryId;
+}
+
+class ImportCategoryOption {
+  const ImportCategoryOption({required this.id, required this.name});
+  final String id;
+  final String name;
 }
 
 class DocumentRepository {
@@ -81,14 +94,18 @@ class DocumentRepository {
       FROM documents d
       LEFT JOIN categories c ON c.id = d.category_id
       WHERE d.deleted_at IS NULL
-        AND (? = 0 OR COALESCE(json_extract(d.metadata_json, '\$.favorite'), 0) = 1)
         AND (? = 0 OR d.last_opened_at IS NOT NULL)
         AND d.name LIKE ?
       ORDER BY d.last_opened_at DESC, d.name COLLATE NOCASE ASC
       ''',
-      [favoritesOnly ? 1 : 0, recentOnly ? 1 : 0, '%${query.trim()}%'],
+      [recentOnly ? 1 : 0, '%${query.trim()}%'],
     );
-    return rows.map(DocumentRecord.fromMap).toList();
+    // Avoid SQLite JSON1 dependency: several Android SQLite builds do not
+    // expose json_extract(). Favorite metadata is decoded in Dart instead.
+    final documents = rows.map(DocumentRecord.fromMap).toList();
+    return favoritesOnly
+        ? documents.where((document) => document.isFavorite).toList()
+        : documents;
   }
 
   Future<List<DocumentRecord>> listInFolder(String? folderId) async {
@@ -546,7 +563,93 @@ class DocumentRepository {
     }
   }
 
-  Future<ImportSummary> importPdfs() async {
+
+  Future<ImportSummary> importScannedPdf(File source, {String? displayName, String? targetFolderUri, String? targetFolderId, String sourceType = 'scanner'}) async {
+    if (!await source.exists()) throw StateError('Scanned PDF is not available.');
+    final header = await source.openRead(0, 5).fold<List<int>>(<int>[], (a, b) => a..addAll(b));
+    if (header.length < 5 || String.fromCharCodes(header) != '%PDF-') {
+      throw StateError('Scanner output is not a valid PDF.');
+    }
+    final digest = (await sha256.bind(source.openRead()).first).toString();
+    final db = await _database.database;
+    final duplicate = await db.query('documents',
+      columns: ['id'], where: 'sha256 = ? AND deleted_at IS NULL',
+      whereArgs: [digest], limit: 1);
+    if (duplicate.isNotEmpty) return const ImportSummary(added: 0, duplicates: 1, failed: 0);
+
+    final storage = StorageLocationService.instance;
+    final selected = await storage.selectedFolder();
+    final requestedName = displayName?.trim();
+    final safeName = _safePdfName(requestedName == null || requestedName.isEmpty
+        ? p.basename(source.path)
+        : (requestedName.toLowerCase().endsWith('.pdf') ? requestedName : '$requestedName.pdf'));
+    final id = _uuid.v4();
+    late final String uri;
+    String? relativePath;
+    final folderUri = targetFolderId == null
+        ? null
+        : await FolderRepository().ensurePhysicalStorageUri(targetFolderId);
+    final destinationUri = targetFolderUri ?? folderUri ?? selected?['uri'];
+    if (destinationUri != null) {
+      uri = await storage.copyPdf(
+        sourceUri: Uri.file(source.path).toString(),
+        parentUri: destinationUri,
+        name: safeName,
+      );
+    } else {
+      final base = await getApplicationDocumentsDirectory();
+      final library = Directory(p.join(base.path, 'DocsGrid', 'PDFs'));
+      await library.create(recursive: true);
+      final target = await _uniqueFile(library, safeName);
+      await source.copy(target.path);
+      final copiedDigest = (await sha256.bind(target.openRead()).first).toString();
+      if (copiedDigest != digest) {
+        await target.delete();
+        throw StateError('Scanned PDF verification failed.');
+      }
+      uri = target.path;
+      relativePath = p.relative(target.path, from: library.path);
+    }
+
+    final now = DateTime.now().toUtc().toIso8601String();
+    try {
+      await db.transaction((txn) async {
+        await txn.insert('documents', {
+          'id': id,
+          'name': p.basenameWithoutExtension(safeName),
+          'original_name': safeName,
+          'storage_uri': uri,
+          'relative_path': relativePath,
+          'mime_type': 'application/pdf',
+          'size_bytes': await source.length(),
+          'sha256': digest,
+          'folder_id': targetFolderId,
+          'extracted_text_status': 'pending',
+          'created_at': now,
+          'updated_at': now,
+          'metadata_json': '{}',
+          'source': sourceType,
+        });
+        await _recordHistory(txn, id, sourceType == 'share' ? 'imported_from_share' : 'scanned', {'name': safeName, 'folder_id': targetFolderId});
+      });
+    } catch (_) {
+      try {
+        if (uri.startsWith('content://') || uri.startsWith('file://')) {
+          await storage.deletePdf(uri);
+        } else {
+          final file = File(uri);
+          if (await file.exists()) await file.delete();
+        }
+      } catch (_) {}
+      rethrow;
+    }
+    return const ImportSummary(added: 1, duplicates: 0, failed: 0);
+  }
+
+  Future<ImportSummary> importPdfs({
+    Future<ImportDecision?> Function(String suggestedName, String? suggestedCategoryId, List<ImportCategoryOption> categories)? review,
+    String? targetFolderId,
+  }) async {
     final pickedFiles = await FilePicker.pickFiles(
       type: FileType.custom,
       allowedExtensions: ['pdf'],
@@ -557,16 +660,22 @@ class DocumentRepository {
 
     final storage = StorageLocationService.instance;
     final selectedFolder = await storage.selectedFolder();
-    Directory? library;
-    if (selectedFolder == null) {
-      final base = await getApplicationDocumentsDirectory();
-      library = Directory(p.join(base.path, 'DocsGrid', 'PDFs'));
-      await library.create(recursive: true);
-    }
+    final destinationFolderUri = selectedFolder == null
+        ? null
+        : targetFolderId == null
+            ? selectedFolder['uri']
+            : await FolderRepository().ensurePhysicalStorageUri(targetFolderId);
+    final library = selectedFolder == null ? await _privateFolderFor(targetFolderId) : null;
     final db = await _database.database;
     var added = 0;
     var duplicates = 0;
     var failed = 0;
+    var skipped = 0;
+    final categoryRows = await db.query('categories', columns: ['id', 'name'], orderBy: 'name COLLATE NOCASE');
+    final categoryOptions = categoryRows.map((row) => ImportCategoryOption(
+      id: row['id'] as String,
+      name: row['name'] as String,
+    )).toList(growable: false);
 
     for (final picked in pickedFiles) {
       String? createdUri;
@@ -602,21 +711,37 @@ class DocumentRepository {
           continue;
         }
 
-        final safeName = _safePdfName(picked.name);
+        final suggestedName = p.basenameWithoutExtension(picked.name);
+        final suggestedCategoryId = _suggestCategoryId(picked.name, categoryOptions);
+        final decision = review == null
+            ? ImportDecision(name: suggestedName, categoryId: suggestedCategoryId)
+            : await review(suggestedName, suggestedCategoryId, categoryOptions);
+        if (decision == null) {
+          skipped++;
+          continue;
+        }
+        final safeName = _safePdfName(decision.name);
+        final selectedCategoryId = categoryOptions.any((item) => item.id == decision.categoryId)
+            ? decision.categoryId
+            : null;
         late final String storedName;
         late final String? relativePath;
-        if (selectedFolder != null) {
+        if (destinationFolderUri != null) {
           createdUri = sourceFile != null
               ? await storage.copyPdf(
                   sourceUri: Uri.file(sourceFile.path).toString(),
-                  parentUri: selectedFolder['uri']!,
+                  parentUri: destinationFolderUri,
                   name: safeName,
                 )
               : await storage.savePdf(
-                  treeUri: selectedFolder['uri']!,
+                  treeUri: destinationFolderUri,
                   name: safeName,
                   bytes: fallbackBytes!,
                 );
+          final copiedDigest = await storage.sha256Pdf(createdUri);
+          if (copiedDigest != digest) {
+            throw StateError('Imported PDF failed SHA-256 verification in selected storage.');
+          }
           storedName = p.basenameWithoutExtension(safeName);
           relativePath = null;
         } else {
@@ -648,6 +773,8 @@ class DocumentRepository {
             'mime_type': 'application/pdf',
             'size_bytes': sizeBytes,
             'sha256': digest,
+            'category_id': selectedCategoryId,
+            'folder_id': targetFolderId,
             'extracted_text_status': 'pending',
             'created_at': now,
             'updated_at': now,
@@ -671,7 +798,25 @@ class DocumentRepository {
         failed++;
       }
     }
-    return ImportSummary(added: added, duplicates: duplicates, failed: failed);
+    return ImportSummary(added: added, duplicates: duplicates, failed: failed, skipped: skipped);
+  }
+
+  String? _suggestCategoryId(String fileName, List<ImportCategoryOption> categories) {
+    final value = fileName.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), ' ');
+    const rules = <String, List<String>>{
+      'identity': ['aadhaar', 'aadhar', 'pan card', 'passport', 'voter', 'driving licence', 'driving license'],
+      'insurance': ['policy', 'insurance', 'claim', 'premium', 'renewal'],
+      'finance': ['bank', 'statement', 'invoice', 'receipt', 'upi', 'loan', 'tax', 'itr'],
+      'medical': ['medical', 'health', 'prescription', 'doctor', 'lab report', 'blood test'],
+      'property': ['property', 'house', 'land', 'rent', 'registry', 'sale deed'],
+      'vehicle': ['vehicle', 'car', 'bike', 'motor', 'registration', 'rc book', 'chassis'],
+      'education': ['education', 'school', 'college', 'marksheet', 'degree', 'certificate'],
+    };
+    for (final category in categories) {
+      final keywords = rules[category.name.toLowerCase()];
+      if (keywords != null && keywords.any((word) => value.contains(word))) return category.id;
+    }
+    return null;
   }
 
   String _safePdfName(String name) {
@@ -692,6 +837,40 @@ class DocumentRepository {
     return candidate;
   }
 
+  /// Soft-delete a group of PDFs atomically; the physical files remain recoverable.
+  Future<void> moveManyToTrash(List<DocumentRecord> documents) async {
+    if (documents.isEmpty) return;
+    final db = await _database.database;
+    final now = DateTime.now().toUtc().toIso8601String();
+    await db.transaction((txn) async {
+      for (final document in documents) {
+        final changed = await txn.update(
+          'documents',
+          {'deleted_at': now, 'updated_at': now},
+          where: 'id = ? AND deleted_at IS NULL',
+          whereArgs: [document.id],
+        );
+        if (changed > 0) {
+          await _recordHistory(txn, document.id, 'moved_to_recycle_bin', {'bulk': true});
+        }
+      }
+    });
+  }
+
+  /// Move several PDFs using the same verified copy/commit/cleanup path as a single move.
+  Future<Map<String, Object>> moveManyToFolder(List<DocumentRecord> documents, String? folderId) async {
+    var moved = 0;
+    final failures = <String>[];
+    for (final document in documents) {
+      try {
+        await moveToFolder(document, folderId);
+        moved++;
+      } catch (error) {
+        failures.add('${document.name}: $error');
+      }
+    }
+    return {'moved': moved, 'failures': failures};
+  }
   Future<void> setFavorite(DocumentRecord document, bool favorite) async {
     final db = await _database.database;
     final rows = await db.query(
