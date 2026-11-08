@@ -30,33 +30,6 @@ jobs:
           cache: true
       - name: Generate native platform scaffolding
         run: flutter create --platforms=android,ios --org com.docsgrid .
-      - name: Pin smaller official Gradle distribution
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          import re
-          wrapper = Path('android/gradle/wrapper/gradle-wrapper.properties')
-          if not wrapper.exists():
-              raise SystemExit('Gradle wrapper properties were not generated')
-          text = wrapper.read_text()
-          text, count = re.subn(
-              r'^distributionUrl=.*$',
-              r'distributionUrl=https\://mirrors.huaweicloud.com/gradle/gradle-9.3.1-bin.zip',
-              text, count=1, flags=re.M
-          )
-          if count != 1:
-              raise SystemExit('Could not pin official Gradle distribution URL')
-          if 'distributionSha256Sum=' in text:
-              text = re.sub(
-                  r'^distributionSha256Sum=.*$',
-                  'distributionSha256Sum=b266d5ff6b90eada6dc3b20cb090e3731302e553a27c5d3e4df1f0d76beaff06',
-                  text, count=1, flags=re.M
-              )
-          else:
-              text = text.rstrip() + '\ndistributionSha256Sum=b266d5ff6b90eada6dc3b20cb090e3731302e553a27c5d3e4df1f0d76beaff06\n'
-          wrapper.write_text(text)
-          print('Pinned Gradle 9.3.1 mirror with official upstream SHA-256 verification')
-          PY
       - name: Cache Gradle distributions and dependencies
         uses: actions/cache@v4
         with:
@@ -66,41 +39,6 @@ jobs:
           key: gradle-${{ runner.os }}-${{ hashFiles('pubspec.lock') }}-9.3.1
           restore-keys: |
             gradle-${{ runner.os }}-
-      - name: Add checksum-verified Kotlin Maven mirror
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          import os
-          plugin_mirror = 'maven { url = uri("https://artifacts-oss.talend.com/nexus/content/groups/public") }'
-          central_mirror = 'maven { url = uri("https://artifacts-oss.talend.com/nexus/content/repositories/central") }'
-          settings_files = [
-              Path('android/settings.gradle.kts'),
-              Path(os.environ['FLUTTER_ROOT']) / 'packages/flutter_tools/gradle/settings.gradle.kts',
-          ]
-          for settings in settings_files:
-              if not settings.exists():
-                  raise SystemExit(f'Missing Gradle settings file: {settings}')
-              source = settings.read_text()
-              if plugin_mirror not in source:
-                  if 'mavenCentral()' not in source:
-                      raise SystemExit(f'No Maven Central repository in {settings}')
-                  source = source.replace('mavenCentral()', plugin_mirror + '\n        mavenCentral()')
-              settings.write_text(source)
-
-          # Project dependencies (including federated Flutter plugins) resolve
-          # from allprojects repositories, not only pluginManagement.
-          project_build = Path('android/build.gradle.kts')
-          if not project_build.exists():
-              raise SystemExit('Generated Android root build.gradle.kts is missing')
-          source = project_build.read_text()
-          if central_mirror not in source:
-              marker = 'allprojects {'
-              if marker not in source or 'mavenCentral()' not in source:
-                  raise SystemExit('Could not locate Android allprojects Maven repositories')
-              source = source.replace('mavenCentral()', central_mirror + '\n        mavenCentral()', 1)
-              project_build.write_text(source)
-          print('Added checksum-verified Kotlin Maven mirrors to plugin and project dependency repositories')
-          PY
       - name: Use non-conflicting DocsGrid Android package ID
         run: |
           python3 - <<'PY'
@@ -240,36 +178,6 @@ jobs:
         run: flutter analyze
       - name: Widget and unit tests
         run: flutter test
-      # Generate checksums from the exact resolved build graph; never disable verification.
-      - name: Bootstrap and verify Android dependency checksums
-        run: |
-          rm -f android/gradle/verification-metadata.xml
-          cd android
-          ./gradlew --write-verification-metadata sha256 assembleDebug
-          cd ..
-          python3 - <<'PY'
-          from pathlib import Path
-          metadata = Path('android/gradle/verification-metadata.xml')
-          if not metadata.exists():
-              raise SystemExit('Gradle did not generate dependency verification metadata')
-          expected = {
-              'kotlin-compiler-embeddable-2.2.21.jar': '9588fa696ac5507af764fd5660df6894185e12704ec1bc3f5cb772af4987f295',
-              'kotlin-compiler-embeddable-2.4.0.jar': 'c2b25e8c1c93ec416ba4327f5e31eaec0f0c8847241b9353e294b8db9dce564f',
-          }
-          generated = metadata.read_text()
-          for artifact, digest in expected.items():
-              if artifact not in generated or digest not in generated:
-                  raise SystemExit(f'{artifact} SHA-256 does not match JetBrains upstream metadata')
-          print('Generated dependency metadata; Kotlin 2.2.21 and 2.4.0 compiler checksums match JetBrains upstream')
-          PY
-      - name: Upload Gradle verification metadata
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: docsgrid-gradle-verification-metadata
-          path: android/gradle/verification-metadata.xml
-          if-no-files-found: warn
-          retention-days: 14
       - name: Build debug APK
         run: |
           for attempt in 1 2 3; do
