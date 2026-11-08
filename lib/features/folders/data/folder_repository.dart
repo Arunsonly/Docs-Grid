@@ -45,9 +45,13 @@ class FolderRepository {
 
   Future<List<FolderOption>> allFoldersWithPaths() async {
     final result = <FolderOption>[];
+    final visited = <String>{};
     Future<void> visit(String? parentId, String prefix) async {
       final children = await childrenOf(parentId);
       for (final folder in children) {
+        if (!visited.add(folder.id)) {
+          throw StateError('Folder hierarchy contains a cycle or duplicate reference.');
+        }
         final path = prefix.isEmpty ? folder.name : '$prefix / ${folder.name}';
         result.add(FolderOption(folder: folder, path: path));
         await visit(folder.id, path);
@@ -63,8 +67,12 @@ class FolderRepository {
     final db = await _database.database;
     final selectedRoot = await StorageLocationService.instance.selectedFolder();
     if (selectedRoot == null) return null;
+    final resolving = <String>{};
 
     Future<String?> ensure(String id) async {
+      if (!resolving.add(id)) {
+        throw StateError('Folder hierarchy contains a cycle.');
+      }
       final rows = await db.query(
         'folders',
         columns: ['name', 'parent_id', 'storage_uri_or_relative_path'],
@@ -89,7 +97,7 @@ class FolderRepository {
       } catch (_) {
         childUri = await StorageLocationService.instance.createDirectory(
           parentUri: parentUri,
-          name: row['name'] as String,
+          name: folderName,
         );
       }
       await db.update(
@@ -112,7 +120,11 @@ class FolderRepository {
     final db = await _database.database;
     final storage = StorageLocationService.instance;
     final selectedRoot = await storage.selectedFolder();
+    final resolvingParents = <String>{};
     Future<String?> ensurePhysicalFolder(String folderId) async {
+      if (!resolvingParents.add(folderId)) {
+        throw StateError('Parent folder hierarchy contains a cycle.');
+      }
       final rows = await db.query(
         'folders',
         columns: ['name', 'parent_id', 'storage_uri_or_relative_path'],
@@ -200,9 +212,13 @@ class FolderRepository {
 
     final folderUriUpdates = <String, String>{};
     final documentUriUpdates = <String, String>{};
+    final traversedFolders = <String>{id};
     try {
       if (renamedUri != null) {
       Future<void> collectDescendants(String parentId, String parentUri) async {
+        if (!traversedFolders.add(parentId)) {
+          throw StateError('Folder hierarchy contains a cycle.');
+        }
         final childFolders = await db.query(
           'folders',
           columns: ['id', 'name'],
