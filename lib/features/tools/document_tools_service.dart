@@ -232,7 +232,7 @@ class DocumentToolsService {
     File? stagedProviderFile;
     try {
       String path;
-      if (storageUri.startsWith('content://')) {
+      if (storageUri.startsWith('content://') || storageUri.startsWith('file://')) {
         final temp = await getTemporaryDirectory();
         final safeName = p.basename(displayName).replaceAll(RegExp(r'[^A-Za-z0-9._ -]'), '_');
         stagedProviderFile = File(p.join(temp.path, 'share_${_uuid.v4()}_$safeName'));
@@ -273,7 +273,7 @@ class DocumentToolsService {
         final uri = storageUris[i];
         final safeName = p.basename(displayNames[i]).replaceAll(RegExp(r'[^A-Za-z0-9._ -]'), '_');
         String path;
-        if (uri.startsWith('content://')) {
+        if (uri.startsWith('content://') || uri.startsWith('file://')) {
           final target = File(p.join(temp.path, 'share_${_uuid.v4()}_$safeName'));
           stagedFiles.add(target);
           await StorageLocationService.instance.copyPdfToPath(sourceUri: uri, destinationPath: target.path);
@@ -329,7 +329,7 @@ class DocumentToolsService {
       }
       File? stagedProviderFile;
       final File file;
-      if (uri.startsWith('content://')) {
+      if (uri.startsWith('content://') || uri.startsWith('file://')) {
         final temp = await getTemporaryDirectory();
         stagedProviderFile = File(p.join(temp.path, 'backup_${_uuid.v4()}.pdf'));
         await StorageLocationService.instance.copyPdfToPath(
