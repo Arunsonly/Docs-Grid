@@ -34,6 +34,24 @@ class StorageLocationService {
     };
   }
 
+  Future<Map<String, String>> portableDataLocations() async {
+    if (!Platform.isAndroid && !Platform.isIOS) {
+      throw UnsupportedError('Portable folder storage is not supported on this platform.');
+    }
+    final value = await _channel.invokeMapMethod<String, dynamic>('getPortableDataLocations');
+    if (value == null ||
+        value['databaseUri'] is! String ||
+        value['recoveryUri'] is! String ||
+        value['libraryUri'] is! String) {
+      throw StateError('DocsGrid portable data folders are not configured.');
+    }
+    return {
+      'databaseUri': value['databaseUri'] as String,
+      'recoveryUri': value['recoveryUri'] as String,
+      'libraryUri': value['libraryUri'] as String,
+    };
+  }
+
   Future<Map<String, String>?> selectedFolder() async {
     if (!Platform.isAndroid && !Platform.isIOS) return null;
     final value = await _channel.invokeMapMethod<String, dynamic>('getSelectedFolder');
