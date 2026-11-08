@@ -68,7 +68,37 @@ class ReminderRepository {
         AND (r.document_id IS NULL OR d.deleted_at IS NULL)
       ORDER BY r.remind_at_utc ASC
     ''', ['completed', 'cancelled']);
-    await ReminderNotifications.instance.reconcile(rows);
+    final now = DateTime.now();
+    final scheduleRows = <Map<String, Object?>>[];
+    for (final row in rows) {
+      final copy = Map<String, Object?>.from(row);
+      final recurrence = row['recurrence_rule'] as String?;
+      if (recurrence != null) {
+        final storedAt = DateTime.parse(row['remind_at_utc'] as String).toLocal();
+        final next = ReminderNotifications.nextScheduledOccurrence(
+          at: storedAt,
+          now: now,
+          recurrence: recurrence,
+        );
+        if (next != null && !next.isAtSameMomentAs(storedAt)) {
+          final nextUtc = next.toUtc().toIso8601String();
+          await db.update(
+            'reminders',
+            {
+              'remind_at_utc': nextUtc,
+              'next_fire_at_utc': nextUtc,
+              'updated_at': DateTime.now().toUtc().toIso8601String(),
+            },
+            where: 'id = ?',
+            whereArgs: [row['id']],
+          );
+          copy['remind_at_utc'] = nextUtc;
+          copy['next_fire_at_utc'] = nextUtc;
+        }
+      }
+      scheduleRows.add(copy);
+    }
+    await ReminderNotifications.instance.reconcile(scheduleRows);
   }
 
   Future<void> _ensureDocumentIsActive(String? documentId) async {
