@@ -49,6 +49,7 @@ class ReminderRepository {
     final rows = await db.rawQuery('''
       SELECT r.*, d.name AS document_name
       FROM reminders r LEFT JOIN documents d ON d.id = r.document_id
+      WHERE r.document_id IS NULL OR d.deleted_at IS NULL
       ORDER BY r.remind_at_utc ASC
     ''');
     return rows.map(ReminderRecord.fromMap).toList();
