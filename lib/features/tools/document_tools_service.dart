@@ -31,6 +31,12 @@ class DocumentToolsService {
   final AppDatabase _database;
   static const _uuid = Uuid();
 
+  /// Converts untrusted backup IDs into safe, deterministic path segments.
+  /// Raw database IDs must never be interpolated into filesystem paths.
+  @visibleForTesting
+  static String safeRestorePathToken(String value) =>
+      sha256.convert(utf8.encode(value)).toString();
+
   Future<List<Map<String, Object?>>> findExactDuplicates() async {
     final db = await _database.database;
     return db.rawQuery('''
@@ -339,7 +345,7 @@ class DocumentToolsService {
       final row = folderRows.firstWhere((r) => r['id'] == id);
       final parent = row['parent_id'] as String?;
       final base = parent == null ? restoreRoot.path : folderPath(parent);
-      final path = p.join(base, 'folder_$id');
+      final path = p.join(base, 'folder_${safeRestorePathToken(id)}');
       folderPaths[id] = path;
       return path;
     }
@@ -356,7 +362,8 @@ class DocumentToolsService {
         final destinationDir = folderId == null ? restoreRoot : Directory(folderPath(folderId));
         await destinationDir.create(recursive: true);
         final safeName = p.basename((item['originalName'] as String?) ?? 'document.pdf');
-        final destination = File(p.join(destinationDir.path, '${id}_$safeName'));
+        final safeDocumentToken = safeRestorePathToken(id);
+        final destination = File(p.join(destinationDir.path, 'document_${safeDocumentToken}.pdf'));
         final entry = decoded.findFile(item['entry'] as String)!;
         final bytes = entry.content as List<int>;
         final digest = sha256.convert(bytes).toString();
