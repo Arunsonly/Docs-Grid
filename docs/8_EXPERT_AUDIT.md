@@ -3,7 +3,7 @@
 Repository: `Arunsonly/Docs-Grid`  
 Review branch: `audit/10-core-functions`  
 Baseline: completed 10 Core Functions Audit  
-Status: **Eight engineering review lenses inspected; remediation committed for the high-risk source findings. Final sign-off is pending the latest Android/iOS CI run and the explicitly listed residual checks.**
+Status: **Eight engineering review lenses inspected; remediation committed for the high-risk source findings. Final source-audit sign-off is pending one last Android/iOS CI run with the committed dependency lockfile enforced; real-device/provider and measured-performance checks remain explicitly deferred to their later platform/performance tasks.**
 
 ## Review lenses
 
@@ -88,7 +88,7 @@ Status: **Eight engineering review lenses inspected; remediation committed for t
 ### EXP-08 — Critical integration boundaries have limited automated regression coverage
 **Severity: Medium — QA**
 
-- Evidence: the suite now contains 11 Dart test files and 51 expected tests, including concurrent database-open/retry tests, reminder reconciliation-state tests, and ZIP expansion-limit tests. Platform storage bridge operations, real v1/v2 database migration fixtures, scheduler failure injection, and full import/move/restore provider flows still lack dedicated integration suites.
+- Evidence: the suite now contains 11 Dart test files and 56 tests, including concurrent database-open/retry tests, reminder reconciliation-state tests, and ZIP expansion-limit tests. Platform storage bridge operations, real v1/v2 database migration fixtures, scheduler failure injection, and full import/move/restore provider flows still lack dedicated integration suites.
 - Risk: hosted analyze/unit CI can pass while platform-channel, migration, provider, and cross-layer regressions remain undetected.
 - Required action: add migration fixtures, fake MethodChannel/provider contract tests, notification failure injection, and end-to-end import/move/restore flows.
 - Status: unit regression coverage expanded; cross-platform integration coverage remains open.
@@ -103,10 +103,9 @@ Status: **Eight engineering review lenses inspected; remediation committed for t
 
 ## Remaining verification before sign-off
 
-1. Complete the latest Android Analyze, tests, Debug APK build and artifact upload.
-2. Complete the latest iOS Analyze, tests and unsigned build.
-3. Fix any compiler, analyzer or test regressions from this audit and rerun CI on the final branch head.
-4. Keep the remaining reproducibility, real-provider, migration-fixture and measured-performance limitations explicit; do not mark them as passed by hosted CI.
+1. Complete the latest Android Analyze, 56-test suite, Debug APK build and artifact upload with `--enforce-lockfile`.
+2. Complete the latest iOS Analyze, 56-test suite and unsigned build with `--enforce-lockfile`.
+3. Keep real-provider, migration-fixture and measured-performance limitations explicit; do not mark them as passed by hosted CI.
 
 ## Sign-off rule
 
