@@ -193,12 +193,12 @@ class _FoldersScreenState extends State<FoldersScreen> {
                 color: Theme.of(context).colorScheme.secondaryContainer,
                 child: Row(children: [
                   IconButton(tooltip: 'Clear selection', onPressed: () => setState(_selectedDocumentIds.clear), icon: const Icon(Icons.close)),
-                  Expanded(child: Text(_selectedDocumentIds.length.toString() + ' selected')),
+                  Expanded(child: Text('${_selectedDocumentIds.length} selected')),
                   IconButton(tooltip: 'Select all', onPressed: () => setState(() => _selectedDocumentIds.addAll(all.map((d) => d.id))), icon: const Icon(Icons.select_all)),
                   IconButton(tooltip: 'Share selected', onPressed: () async {
                     final selected = all.where((d) => _selectedDocumentIds.contains(d.id)).toList();
                     if (selected.isEmpty) return;
-                    await DocumentToolsService().shareManyStoredPdfs(selected.map((d) => d.storagePath).toList(), selected.map((d) => d.name + '.pdf').toList());
+                    await DocumentToolsService().shareManyStoredPdfs(selected.map((d) => d.storagePath).toList(), selected.map((d) => '${d.name}.pdf').toList());
                   }, icon: const Icon(Icons.share_outlined)),
                   IconButton(tooltip: 'Move selected to Recycle Bin', onPressed: () async {
                     final selected = all.where((d) => _selectedDocumentIds.contains(d.id)).toList();
@@ -225,7 +225,7 @@ class _FoldersScreenState extends State<FoldersScreen> {
                 onPressed: () async {
                   final result = await _documents.importPdfs(targetFolderId: _currentFolderId);
                   await _refresh();
-                  if (mounted) _message('Added ' + result.added.toString() + ' · Duplicates ' + result.duplicates.toString());
+                  if (mounted) _message('Added ${result.added} · Duplicates ${result.duplicates}');
                 },
                 icon: const Icon(Icons.picture_as_pdf_outlined),
               ),
