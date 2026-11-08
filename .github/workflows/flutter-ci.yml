@@ -12,7 +12,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   android:
@@ -159,7 +159,7 @@ jobs:
           mkdir -p android/app/src/main/kotlin/com/docsgrid/docs_grid
           cp platform/android/MainActivity.kt android/app/src/main/kotlin/com/docsgrid/docs_grid/MainActivity.kt
       - name: Install packages
-        run: flutter pub get
+        run: flutter pub get --enforce-lockfile
       - name: Generate DocsGrid launcher icons
         run: |
           sudo apt-get update
@@ -180,18 +180,6 @@ jobs:
           path: build/app/outputs/flutter-apk/app-debug.apk
           if-no-files-found: error
           retention-days: 14
-      - name: Commit resolved dependency lockfile
-        if: github.event_name == 'push' && github.ref == 'refs/heads/audit/10-core-functions'
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add pubspec.lock
-          if git diff --cached --quiet; then
-            echo "pubspec.lock is already up to date"
-          else
-            git commit -m "chore: lock Flutter dependencies"
-            git push origin HEAD:refs/heads/audit/10-core-functions
-          fi
 
   ios:
     name: iOS analyze, test and unsigned build
@@ -221,7 +209,7 @@ jobs:
           sed -i '' -E 's/IPHONEOS_DEPLOYMENT_TARGET = [0-9.]+;/IPHONEOS_DEPLOYMENT_TARGET = 15.5;/g' ios/Runner.xcodeproj/project.pbxproj
           sed -i '' -E "s/platform :ios, '[0-9.]+'/platform :ios, '15.5'/" ios/Podfile
       - name: Install packages
-        run: flutter pub get
+        run: flutter pub get --enforce-lockfile
       - name: Generate DocsGrid launcher icons
         run: |
           brew install librsvg
