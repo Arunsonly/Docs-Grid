@@ -315,8 +315,13 @@ class DocumentRepository {
     final rootUri = selected['uri']!;
     final db = await _database.database;
     final folderUris = <String, String>{};
+    final pendingFolders = <(String?, String)>[(null, rootUri)];
+    final visitedFolderIds = <String>{};
 
-    Future<void> mirrorFolders(String? parentId, String parentUri) async {
+    // Walk the hierarchy iteratively so deeply nested user folders cannot
+    // overflow the Dart call stack during a storage migration.
+    while (pendingFolders.isNotEmpty) {
+      final (parentId, parentUri) = pendingFolders.removeLast();
       final rows = await db.query(
         'folders',
         columns: ['id', 'name'],
@@ -328,6 +333,9 @@ class DocumentRepository {
       );
       for (final row in rows) {
         final id = row['id'] as String;
+        if (!visitedFolderIds.add(id)) {
+          throw StateError('Folder hierarchy contains a cycle or duplicate parent path.');
+        }
         final name = row['name'] as String;
         String childUri;
         try {
@@ -345,11 +353,9 @@ class DocumentRepository {
           where: 'id = ? AND deleted_at IS NULL',
           whereArgs: [id],
         );
-        await mirrorFolders(id, childUri);
+        pendingFolders.add((id, childUri));
       }
     }
-
-    await mirrorFolders(null, rootUri);
 
     final rows = await db.query(
       'documents',
