@@ -35,6 +35,7 @@ class _RemindersScreenState extends State<RemindersScreen> {
     String recurrence = existing?.recurrenceRule ?? 'none';
     final result = await showDialog<bool>(context: context, builder: (dialogContext) => StatefulBuilder(
       builder: (context, setDialogState) => AlertDialog(
+        scrollable: true,
         title: Text(existing == null ? 'New reminder' : 'Edit reminder'),
         content: SizedBox(
           width: 440,
