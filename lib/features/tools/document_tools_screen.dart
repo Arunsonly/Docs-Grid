@@ -174,21 +174,32 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
     }
     if (source != 'zip') return;
     final picked = await FilePicker.pickFiles(type: FileType.custom, allowedExtensions: ['zip']);
-    if (picked.isEmpty || picked.single.path == null) return;
-    final file = File(picked.single.path!);
-    final count = await _tools.validateBackup(file);
-    if (!mounted) return;
-    final confirmed = await showDialog<bool>(context: context, builder: (context) => AlertDialog(
-      title: const Text('Restore backup?'),
-      content: Text('The archive contains $count PDF file(s). Existing records will be kept; the backup will be added without overwriting your current files.'),
-      actions: [
-        TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
-        FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Restore')),
-      ],
-    ));
-    if (confirmed != true) return;
-    final restored = await _tools.restoreBackup(file);
-    if (mounted) setState(() => _message = 'Restore completed: $restored PDF file(s) restored and verified.');
+    if (picked.isEmpty) return;
+    final platformFile = picked.single;
+    final temporaryCopy = platformFile.path == null;
+    final file = temporaryCopy
+        ? File(p.join(Directory.systemTemp.path, 'DocsGrid_restore_${DateTime.now().microsecondsSinceEpoch}.zip'))
+        : File(platformFile.path!);
+    try {
+      if (temporaryCopy) {
+        await file.writeAsBytes(await platformFile.readAsBytes(), flush: true);
+      }
+      final count = await _tools.validateBackup(file);
+      if (!mounted) return;
+      final confirmed = await showDialog<bool>(context: context, builder: (context) => AlertDialog(
+        title: const Text('Restore backup?'),
+        content: Text('The archive contains $count PDF file(s). Existing records will be kept; the backup will be added without overwriting your current files.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Restore')),
+        ],
+      ));
+      if (confirmed != true) return;
+      final restored = await _tools.restoreBackup(file);
+      if (mounted) setState(() => _message = 'Restore completed: $restored PDF file(s) restored and verified.');
+    } finally {
+      if (temporaryCopy && await file.exists()) await file.delete();
+    }
   });
 
   Future<void> _restorePortableSnapshot() => _run(() async {
