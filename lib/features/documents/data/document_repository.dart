@@ -1060,6 +1060,7 @@ class DocumentRepository {
         .trim();
     if (safeBase.isEmpty) throw ArgumentError('Name is not valid.');
     final safeName = '$safeBase.pdf';
+    if (safeBase == document.name) return;
     final isShared = document.storagePath.startsWith('content://') ||
         document.storagePath.startsWith('file://');
     late final String newStorageUri;
