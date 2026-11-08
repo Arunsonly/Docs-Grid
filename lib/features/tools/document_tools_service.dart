@@ -649,6 +649,18 @@ class DocumentToolsService {
       rowsByTable.putIfAbsent(required, () => <Map<String, Object?>>[]);
     }
 
+    final folderRows = rowsByTable['folders']!;
+    // Portable snapshots are untrusted too: reject malformed folder graphs
+    // before scanning or creating anything in the user's selected library.
+    BackupFolderGraphValidator.validate(folderRows);
+    for (final row in folderRows) {
+      final name = row['name'];
+      if (name is! String || name.trim().isEmpty ||
+          name.contains('/') || name.contains('\\') ||
+          name.contains('\u0000')) {
+        throw StateError('Snapshot contains an invalid folder name.');
+      }
+    }
     final pdfUris = <String, String>{};
     final pending = <String>[locations['libraryUri']!];
     final visited = <String>{};
@@ -679,18 +691,6 @@ class DocumentToolsService {
     final existingDocuments = await db.query('documents');
     final existingReminders = await db.query('reminders');
     final existingHistory = await db.query('history');
-    final folderRows = rowsByTable['folders']!;
-    // Portable snapshots are untrusted too: reject malformed folder graphs
-    // before scanning or creating anything in the user's selected library.
-    BackupFolderGraphValidator.validate(folderRows);
-    for (final row in folderRows) {
-      final name = row['name'];
-      if (name is! String || name.trim().isEmpty ||
-          name.contains('/') || name.contains('\\') ||
-          name.contains('\u0000')) {
-        throw StateError('Snapshot contains an invalid folder name.');
-      }
-    }
     final folderIdMap = <String, String>{};
     final folderUriMap = <String, String>{};
     final matchedFolderIds = <String>{};
