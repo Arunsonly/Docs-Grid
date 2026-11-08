@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:uuid/uuid.dart';
 
@@ -45,7 +46,7 @@ class CategoryRepository {
   }
 
   Future<CategoryRecord> createCategory(String name) async {
-    final cleaned = _validate(name);
+    final cleaned = validateName(name);
     final db = await _database.database;
     final category = CategoryRecord(id: _uuid.v4(), name: cleaned, isBuiltIn: false);
     await db.insert('categories', {
@@ -64,7 +65,7 @@ class CategoryRepository {
     final db = await _database.database;
     final count = await db.update(
       'categories',
-      {'name': _validate(name)},
+      {'name': validateName(name)},
       where: 'id = ? AND is_builtin = 0',
       whereArgs: [category.id],
     );
@@ -145,7 +146,8 @@ class CategoryRepository {
       where: 'id = ? AND deleted_at IS NULL', whereArgs: [documentId]);
   }
 
-  String _validate(String name) {
+  @visibleForTesting
+  static String validateName(String name) {
     final cleaned = name.trim();
     if (cleaned.isEmpty) throw ArgumentError('Name cannot be empty.');
     if (cleaned.length > 40) throw ArgumentError('Name must be 40 characters or fewer.');
