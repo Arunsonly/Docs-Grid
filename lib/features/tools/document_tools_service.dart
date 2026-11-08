@@ -320,7 +320,7 @@ class DocumentToolsService {
         if (expected != null && expected.isNotEmpty && digest != expected) {
           throw StateError('Backup stopped: "${row['name']}" failed SHA-256 verification.');
         }
-        final entry = 'pdfs/${row['id']}.pdf';
+        final entry = 'pdfs/${safeRestorePathToken(row['id'] as String)}.pdf';
         archive.addFile(ArchiveFile(entry, bytes.length, bytes));
         (manifest['files'] as List).add({
           'documentId': row['id'], 'entry': entry, 'sha256': digest,
@@ -997,8 +997,10 @@ class DocumentToolsService {
       }
       final documentId = raw['documentId'] as String;
       final entryName = raw['entry'] as String;
+      final safeEntryName = 'pdfs/${safeRestorePathToken(documentId)}.pdf';
+      final legacyEntryName = 'pdfs/$documentId.pdf';
       if (!documentIds.contains(documentId) ||
-          entryName != 'pdfs/$documentId.pdf' ||
+          (entryName != safeEntryName && entryName != legacyEntryName) ||
           !seenDocumentIds.add(documentId) ||
           !seenEntries.add(entryName) ||
           !RegExp(r'^[a-fA-F0-9]{64}$').hasMatch(raw['sha256'] as String)) {
