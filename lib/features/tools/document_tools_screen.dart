@@ -131,7 +131,12 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
       if (mounted) setState(() => _message = 'Backup export cancelled. Your documents were not changed.');
       return;
     }
-    await archive.copy(saved);
+    try {
+      await archive.copy(saved);
+    } catch (_) {
+      try { await File(saved).delete(); } catch (_) {}
+      rethrow;
+    }
     if (mounted) setState(() => _message = 'Backup created successfully. Keep the ZIP file somewhere safe; choose it under Restore backup on a new installation.');
   });
 
