@@ -264,8 +264,7 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text('DocsGrid · ${_titles[_selectedIndex]}',
-            style: const TextStyle(fontWeight: FontWeight.w700)),
+        title: const Text('DocsGrid', style: TextStyle(fontWeight: FontWeight.w700)),
       ),
       body: SafeArea(
         child: switch (_selectedIndex) {
