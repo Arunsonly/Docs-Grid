@@ -659,6 +659,10 @@ class DocumentToolsService {
       'document_tags', 'reminders', 'history', 'settings', 'document_text_index']) {
       rowsByTable.putIfAbsent(required, () => <Map<String, Object?>>[]);
     }
+    // Validate every ID, parent reference, path component and cycle before
+    // creating any directory in the user's selected storage provider.
+    final folderRows = rowsByTable['folders']!;
+    final folderRowsById = PortableSnapshotManifest.validateFolderRows(folderRows);
 
     final pdfUris = <String, String>{};
     final pending = <String>[locations['libraryUri']!];
@@ -690,13 +694,9 @@ class DocumentToolsService {
     final existingDocuments = await db.query('documents');
     final existingReminders = await db.query('reminders');
     final existingHistory = await db.query('history');
-    final folderRows = rowsByTable['folders']!;
     final folderIdMap = <String, String>{};
     final folderUriMap = <String, String>{};
     final matchedFolderIds = <String>{};
-    final folderRowsById = {
-      for (final row in folderRows) row['id'] as String: row,
-    };
     Future<String> ensureFolder(String oldId, Set<String> visiting) async {
       final known = folderUriMap[oldId];
       if (known != null) return known;
@@ -707,10 +707,8 @@ class DocumentToolsService {
       final parentUri = parentId == null
           ? locations['libraryUri']!
           : await ensureFolder(parentId, visiting);
+      // Folder names were validated as safe path components before storage access.
       final rawName = row['name'] as String;
-      if (rawName.trim().isEmpty || rawName.contains('/') || rawName.contains('\\')) {
-        throw StateError('Snapshot contains an invalid folder name.');
-      }
       final siblings = await storage.listDirectory(parentUri);
       final existing = siblings.where((entry) =>
           entry['isDirectory'] == true && entry['name'] == rawName);
