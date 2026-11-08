@@ -29,6 +29,9 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   bool _loading = true;
   bool _importing = false;
   bool _searchInsideText = false;
+  int _totalStorageBytes = 0;
+  int _totalDocumentCount = 0;
+  int _starredCount = 0;
   final Set<String> _selectedIds = <String>{};
   int _loadGeneration = 0;
   String? _error;
@@ -50,6 +53,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   Future<void> _load() async {
     final generation = ++_loadGeneration;
     try {
+      final allDocs = await _repository.list();
       var docs = await _repository.list(
         query: _searchInsideText ? '' : _search.text,
         favoritesOnly: widget.favoritesOnly,
@@ -63,6 +67,9 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
       if (!mounted || generation != _loadGeneration) return;
       setState(() {
         _documents = docs;
+        _totalStorageBytes = allDocs.fold<int>(0, (total, document) => total + document.sizeBytes);
+        _totalDocumentCount = allDocs.length;
+        _starredCount = allDocs.where((document) => document.isFavorite).length;
         _loading = false;
         _error = null;
       });
@@ -665,11 +672,11 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               const Text('YOUR OFFLINE DRIVE', style: TextStyle(color: Colors.white70, fontSize: 11, letterSpacing: 1.4, fontWeight: FontWeight.w700)),
               const SizedBox(height: 6),
-              Text('${_size(_documents.fold<int>(0, (total, document) => total + document.sizeBytes))} occupied', style: const TextStyle(color: Colors.white70, fontSize: 12, fontWeight: FontWeight.w600)),
+              Text('${_size(_totalStorageBytes)} occupied', style: const TextStyle(color: Colors.white70, fontSize: 12, fontWeight: FontWeight.w600)),
               const SizedBox(height: 14),
               Row(children: [
-                Expanded(child: _dashboardMetric(Icons.picture_as_pdf_outlined, '${_documents.length}', 'Documents')),
-                Expanded(child: _dashboardMetric(Icons.folder_outlined, 'Folders', 'Organised')),
+                Expanded(child: _dashboardMetric(Icons.picture_as_pdf_outlined, '$_totalDocumentCount', 'Documents')),
+                Expanded(child: _dashboardMetric(Icons.star_border, '$_starredCount', 'Starred')),
                 Expanded(child: _dashboardMetric(Icons.offline_pin_outlined, 'Offline', 'On device')),
               ]),
             ]),
