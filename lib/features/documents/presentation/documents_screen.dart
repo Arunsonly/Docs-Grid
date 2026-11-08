@@ -8,6 +8,7 @@ import '../../../core/storage/storage_location_service.dart';
 import '../../categories/data/category_repository.dart';
 import '../../folders/data/folder_repository.dart';
 import '../../tools/document_tools_service.dart';
+import '../../reminders/data/reminder_repository.dart';
 
 class DocumentsScreen extends StatefulWidget {
   const DocumentsScreen({super.key, this.favoritesOnly = false, this.recentOnly = false});
@@ -329,6 +330,59 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
       await _load();
     } catch (error) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$error')));
+    }
+  }
+
+  Future<void> _addReminder(DocumentRecord document) async {
+    final title = TextEditingController(text: 'Renewal - ${document.name}');
+    final note = TextEditingController();
+    var selected = DateTime.now().add(const Duration(days: 1));
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, refresh) => AlertDialog(
+          scrollable: true,
+          title: const Text('Add to reminder'),
+          content: Column(mainAxisSize: MainAxisSize.min, children: [
+            TextField(controller: title, decoration: const InputDecoration(labelText: 'Reminder title')),
+            TextField(controller: note, maxLines: 2, decoration: const InputDecoration(labelText: 'Note (optional)')),
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Date & time'),
+              subtitle: Text('${selected.day.toString().padLeft(2, '0')}/${selected.month.toString().padLeft(2, '0')}/${selected.year} · ${selected.hour.toString().padLeft(2, '0')}:${selected.minute.toString().padLeft(2, '0')}'),
+              onTap: () async {
+                final date = await showDatePicker(context: context, initialDate: selected, firstDate: DateTime.now(), lastDate: DateTime.now().add(const Duration(days: 3650)));
+                if (date == null || !context.mounted) return;
+                final time = await showTimePicker(context: context, initialTime: TimeOfDay.fromDateTime(selected));
+                if (time != null) refresh(() => selected = DateTime(date.year, date.month, date.day, time.hour, time.minute));
+              },
+            ),
+          ]),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')),
+            FilledButton(onPressed: () {
+              if (title.text.trim().isNotEmpty && selected.isAfter(DateTime.now())) Navigator.pop(dialogContext, true);
+            }, child: const Text('Save')),
+          ],
+        ),
+      ),
+    );
+    await WidgetsBinding.instance.endOfFrame;
+    final reminderTitle = title.text.trim();
+    final reminderNote = note.text.trim();
+    title.dispose();
+    note.dispose();
+    if (saved != true) return;
+    try {
+      await ReminderRepository().create(
+        title: reminderTitle,
+        note: reminderNote,
+        remindAt: selected,
+        documentId: document.id,
+      );
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Reminder saved for this PDF.')));
+    } catch (error) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not save reminder: $error')));
     }
   }
 
@@ -760,6 +814,8 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
               await _rename(document);
             } else if (value == 'share') {
               await _share(document);
+            } else if (value == 'reminder') {
+              await _addReminder(document);
             } else if (value == 'relink') {
               await _relink(document);
             } else if (value == 'trash') {
@@ -773,7 +829,8 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
             const PopupMenuItem(value: 'move', child: Text('Move to folder')),
             const PopupMenuItem(value: 'tags', child: Text('Edit tags')),
             const PopupMenuItem(value: 'rename', child: Text('Rename')),
-            const PopupMenuItem(value: 'share', child: Text('Share PDF')), 
+            const PopupMenuItem(value: 'share', child: Text('Share PDF')),
+            const PopupMenuItem(value: 'reminder', child: Text('Add to reminder')), 
             const PopupMenuItem(value: 'relink', child: Text('Relink / Replace PDF')),
             const PopupMenuItem(value: 'trash', child: Text('Move to Recycle Bin')),
           ],
