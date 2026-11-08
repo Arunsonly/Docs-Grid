@@ -575,6 +575,18 @@ class DocumentRepository {
         } catch (_) {}
         rethrow;
       }
+    } catch (_) {
+      if (createdUri != null) {
+        try {
+          if (createdUri.startsWith('content://') || createdUri.startsWith('file://')) {
+            await StorageLocationService.instance.deletePdf(createdUri);
+          } else {
+            final file = File(createdUri);
+            if (await file.exists()) await file.delete();
+          }
+        } catch (_) {}
+      }
+      rethrow;
     } finally {
       if (stagedSource != null) {
         try {
