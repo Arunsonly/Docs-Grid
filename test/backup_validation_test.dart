@@ -160,6 +160,22 @@ void main() {
     );
   });
 
+  test('rejects folder names with leading or trailing whitespace', () async {
+    final file = await makeBackup(
+      documents: [
+        {'id': 'doc-a', 'name': 'A'},
+        {'id': 'doc-b', 'name': 'B'},
+      ],
+      folders: [
+        {'id': 'folder-a', 'name': ' Insurance ', 'parent_id': null},
+      ],
+    );
+    await expectLater(
+      service.validateBackup(file),
+      throwsA(isA<StateError>()),
+    );
+  });
+
   test('rejects missing parents and cyclic folder graphs before restore', () async {
     for (final folders in [
       [
