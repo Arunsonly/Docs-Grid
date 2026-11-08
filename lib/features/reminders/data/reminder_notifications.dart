@@ -16,6 +16,10 @@ class ReminderNotifications {
   static void Function(String documentId)? onDocumentNotificationTap;
   static String? _pendingDocumentId;
 
+  static void queueDocumentTap(String documentId) {
+    if (documentId.isNotEmpty) _pendingDocumentId = documentId;
+  }
+
   static String? takePendingDocumentId() {
     final value = _pendingDocumentId;
     _pendingDocumentId = null;
