@@ -9,7 +9,6 @@ import 'package:sqflite/sqflite.dart';
 import 'package:uuid/uuid.dart';
 
 import '../../../core/database/app_database.dart';
-import '../../../core/storage/pdf_copy_verifier.dart';
 import '../../../core/storage/storage_location_service.dart';
 import '../../folders/data/folder_repository.dart';
 
@@ -184,32 +183,21 @@ class DocumentRepository {
     var copiedToNewLocation = false;
 
     if (destinationUri != null) {
-      // Verify the source and destination bytes before changing the database
-      // reference or deleting the original. SAF/provider copies must receive
-      // the same integrity guarantee as app-private copies.
-      late final String sourceDigest;
-      String copySourceUri = sourceUri;
       if (sourceIsShared) {
-        sourceDigest = await storage.sha256Pdf(sourceUri);
+        newStorageUri = await storage.copyPdf(
+          sourceUri: sourceUri,
+          parentUri: destinationUri,
+          name: '${document.name}.pdf',
+        );
       } else {
         final source = File(sourceUri);
-        if (!await source.exists()) {
-          throw StateError('Original PDF is missing; it was not moved.');
-        }
-        sourceDigest = (await sha256.bind(source.openRead()).first).toString();
-        copySourceUri = Uri.file(source.path).toString();
+        if (!await source.exists()) throw StateError('Original PDF is missing; it was not moved.');
+        newStorageUri = await storage.copyPdf(
+          sourceUri: Uri.file(source.path).toString(),
+          parentUri: destinationUri,
+          name: '${document.name}.pdf',
+        );
       }
-
-      newStorageUri = await storage.copyPdf(
-        sourceUri: copySourceUri,
-        parentUri: destinationUri,
-        name: '${document.name}.pdf',
-      );
-      await PdfCopyVerifier.verifyOrDeleteOnFailure(
-        expectedSha256: sourceDigest,
-        readDestinationSha256: () => storage.sha256Pdf(newStorageUri),
-        deleteDestination: () => storage.deletePdf(newStorageUri),
-      );
       copiedToNewLocation = newStorageUri != sourceUri;
     } else {
       // With no external folder selected, preserve the same folder hierarchy
