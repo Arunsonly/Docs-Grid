@@ -26,12 +26,13 @@ void main() {
     List<Map<String, Object?>> documents = const [
       {'id': 'doc-1', 'name': 'Policy'},
     ],
+    List<Map<String, Object?>> folders = const [],
   }) async {
     final archive = Archive();
     final resolvedEntryName = entryName ??
         "pdfs/${DocumentToolsService.safeRestorePathToken('doc-1')}.pdf";
     final tableRows = <String, List<Map<String, Object?>>>{ 
-      'folders': [],
+      'folders': folders,
       'documents': documents,
       'categories': [],
       'tags': [],
@@ -114,5 +115,25 @@ void main() {
       {'id': 'doc-1', 'name': 'Duplicate ID'},
     ]);
     await expectLater(DocumentToolsService().validateBackup(file), throwsStateError);
+  });
+
+  test('rejects folder names that could escape the private library path', () async {
+    final file = await writeArchive(folders: const [
+      {'id': 'folder-1', 'name': '../outside', 'parent_id': null},
+    ]);
+    await expectLater(DocumentToolsService().validateBackup(file), throwsStateError);
+  });
+
+  test('rejects missing parents and cyclic folder graphs', () async {
+    final missingParent = await writeArchive(folders: const [
+      {'id': 'folder-1', 'name': 'Folder', 'parent_id': 'missing'},
+    ]);
+    await expectLater(DocumentToolsService().validateBackup(missingParent), throwsStateError);
+
+    final cycle = await writeArchive(folders: const [
+      {'id': 'folder-1', 'name': 'One', 'parent_id': 'folder-2'},
+      {'id': 'folder-2', 'name': 'Two', 'parent_id': 'folder-1'},
+    ]);
+    await expectLater(DocumentToolsService().validateBackup(cycle), throwsStateError);
   });
 }
