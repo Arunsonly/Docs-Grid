@@ -35,4 +35,4 @@ The current branch contains **10 Dart test files and 46 unit/widget test cases**
 
 ## Audit completion gate
 
-Do not mark this audit complete until the latest branch passes Flutter analyze, all unit/widget tests, Android debug APK build and iOS unsigned build. A green hosted CI run does not replace real Android SAF, iOS Files/bookmark, provider, notification or recovery device checks.
+**Current-head hosted CI passed:** Android Analyze, 46 unit/widget tests, debug APK build and artifact upload; iOS Analyze, 46 unit/widget tests and unsigned build. This closes the automated code-level verification gate for the ten feature audit. A green hosted CI run does not replace real Android SAF, iOS Files/bookmark, provider, notification or recovery device checks.
