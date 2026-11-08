@@ -73,7 +73,9 @@ class ReminderNotifications {
         ? DateTimeComponents.time
         : recurrence == 'weekly'
             ? DateTimeComponents.dayOfWeekAndTime
-            : null;
+            : recurrence == 'monthly'
+                ? DateTimeComponents.dayOfMonthAndTime
+                : null;
     final android = _plugin.resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>();
     final exactAllowed = await android?.canScheduleExactNotifications() ?? false;
     await _plugin.zonedSchedule(
