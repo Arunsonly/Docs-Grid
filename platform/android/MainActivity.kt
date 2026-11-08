@@ -124,7 +124,7 @@ class MainActivity : FlutterActivity() {
                         }
                         "deletePdf" -> {
                             val uri = Uri.parse(call.argument<String>("uri")!!)
-                            result.success(DocumentsContract.deleteDocument(contentResolver, uri))
+                            result.success(deleteDocumentSafely(uri))
                         }
                         "openPdf" -> {
                             val uri = Uri.parse(call.argument<String>("uri")!!)
@@ -351,6 +351,26 @@ class MainActivity : FlutterActivity() {
             try { DocumentsContract.deleteDocument(contentResolver, temp) } catch (_: Exception) {}
             throw error
         }
+    }
+
+    private fun deleteDocumentSafely(uri: Uri): Boolean {
+        val mimeType = contentResolver.query(
+            uri,
+            arrayOf(DocumentsContract.Document.COLUMN_MIME_TYPE),
+            null, null, null
+        )?.use { cursor ->
+            if (cursor.moveToFirst()) {
+                val index = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_MIME_TYPE)
+                if (index >= 0) cursor.getString(index) else null
+            } else null
+        } ?: throw IllegalStateException("Could not verify the selected storage item before deletion.")
+
+        // A folder can contain files added outside DocsGrid. Never rely only on
+        // the app database's notion of emptiness before deleting a SAF folder.
+        if (mimeType == DocumentsContract.Document.MIME_TYPE_DIR && listDirectory(uri).isNotEmpty()) {
+            throw IllegalStateException("This folder contains files not managed by DocsGrid and cannot be deleted.")
+        }
+        return DocumentsContract.deleteDocument(contentResolver, uri)
     }
 
     private fun digest(uri: Uri): ByteArray {
