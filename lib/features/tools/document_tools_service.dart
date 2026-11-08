@@ -19,8 +19,8 @@ import 'package:uuid/uuid.dart';
 import '../../core/database/app_database.dart';
 import '../../core/storage/storage_location_service.dart';
 import '../reminders/data/reminder_notifications.dart';
-import 'document_crop_screen.dart';
 import 'backup_folder_graph_validator.dart';
+import 'document_crop_screen.dart';
 import 'portable_snapshot_manifest.dart';
 
 /// Local-only utilities for indexing, scanning, sharing and portable backups.
@@ -385,7 +385,7 @@ class DocumentToolsService {
     final restoredPaths = <String, String>{};
     final folderPaths = <String, String>{};
     final folderDirectoryNames = <String, String>{
-      for (final row in folderRows) row['id'] as String: 'folder_${_uuid.v4()}',
+      for (final row in folderRows) (row['id'] as String): 'folder_${_uuid.v4()}',
     };
     final resolvingFolderIds = <String>{};
     String folderPath(String id) {
