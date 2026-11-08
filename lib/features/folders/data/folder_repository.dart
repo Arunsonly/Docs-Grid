@@ -18,6 +18,20 @@ class FolderRepository {
   final AppDatabase _database;
   static const _uuid = Uuid();
 
+  /// Validates a single folder-name segment before it reaches either the
+  /// database hierarchy or a platform storage provider.
+  static String validateFolderName(String name) {
+    final cleaned = name.trim();
+    if (cleaned.isEmpty) throw ArgumentError('Folder name cannot be empty.');
+    if (cleaned == '.' || cleaned == '..') {
+      throw ArgumentError('Folder name cannot be . or ..');
+    }
+    if (cleaned.contains('/') || cleaned.contains('\\\\')) {
+      throw ArgumentError('Folder name cannot contain / or \\\\.');
+    }
+    return cleaned;
+  }
+
   Future<List<Folder>> childrenOf(String? parentId) async {
     final db = await _database.database;
     final rows = await db.query(
