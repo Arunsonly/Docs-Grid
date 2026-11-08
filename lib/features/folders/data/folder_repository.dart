@@ -414,35 +414,47 @@ class FolderRepository {
 
   Future<void> deleteEmpty(String id) async {
     final db = await _database.database;
-    final folder = await db.query(
-      'folders',
-      where: 'id = ? AND deleted_at IS NULL',
-      whereArgs: [id],
-    );
-    if (folder.isEmpty) throw StateError('Folder no longer exists.');
-    final childFolders = Sqflite.firstIntValue(await db.rawQuery(
-      'SELECT COUNT(*) FROM folders WHERE parent_id = ? AND deleted_at IS NULL', [id],
-    )) ?? 0;
-    final documents = Sqflite.firstIntValue(await db.rawQuery(
-      'SELECT COUNT(*) FROM documents WHERE folder_id = ?', [id],
-    )) ?? 0;
-    if (childFolders > 0 || documents > 0) {
-      throw StateError('Folder is not empty. Move its contents before deleting it.');
-    }
-    final storageUri = folder.first['storage_uri_or_relative_path'] as String?;
+    String? storageUri;
     final now = DateTime.now().toUtc().toIso8601String();
+
+    // Re-check emptiness and soft-delete under the same SQLite transaction.
+    // A preflight count followed by a later update could otherwise delete a
+    // folder after another operation had inserted a document or subfolder.
     await db.transaction((txn) async {
-      final count = await txn.update(
+      final folders = await txn.query(
+        'folders',
+        columns: ['storage_uri_or_relative_path'],
+        where: 'id = ? AND deleted_at IS NULL',
+        whereArgs: [id],
+        limit: 1,
+      );
+      if (folders.isEmpty) throw StateError('Folder no longer exists.');
+
+      final childFolders = Sqflite.firstIntValue(await txn.rawQuery(
+        'SELECT COUNT(*) FROM folders WHERE parent_id = ? AND deleted_at IS NULL',
+        [id],
+      )) ?? 0;
+      final documents = Sqflite.firstIntValue(await txn.rawQuery(
+        'SELECT COUNT(*) FROM documents WHERE folder_id = ?',
+        [id],
+      )) ?? 0;
+      if (childFolders > 0 || documents > 0) {
+        throw StateError('Folder is not empty. Move its contents before deleting it.');
+      }
+
+      storageUri = folders.first['storage_uri_or_relative_path'] as String?;
+      final changed = await txn.update(
         'folders',
         {'deleted_at': now, 'updated_at': now},
         where: 'id = ? AND deleted_at IS NULL',
         whereArgs: [id],
       );
-      if (count == 0) throw StateError('Folder no longer exists.');
+      if (changed == 0) throw StateError('Folder no longer exists.');
     });
+
     if (storageUri != null) {
       try {
-        await StorageLocationService.instance.deletePdf(storageUri);
+        await StorageLocationService.instance.deletePdf(storageUri!);
       } catch (_) {
         // Restore the visible DB record if the physical directory could not be deleted.
         await db.update(
