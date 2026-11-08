@@ -273,7 +273,7 @@ import CryptoKit
             var isDirectory: ObjCBool = false
             if FileManager.default.fileExists(atPath: target.path, isDirectory: &isDirectory) {
                 guard isDirectory.boolValue else {
-                    throw storageError("A file blocks the required DocsGrid folder: \\(name)")
+                    throw storageError("A file blocks the required DocsGrid folder: \(name)")
                 }
                 return target
             }
@@ -342,8 +342,8 @@ import CryptoKit
         }
         return try withAllBookmarkAccess {
             let target = parent.appendingPathComponent(name)
-            let temporary = parent.appendingPathComponent(".\\(name).tmp-\\(UUID().uuidString)")
-            let backup = parent.appendingPathComponent(".\\(name).previous-\\(UUID().uuidString)")
+            let temporary = parent.appendingPathComponent(".\(name).tmp-\(UUID().uuidString)")
+            let backup = parent.appendingPathComponent(".\(name).previous-\(UUID().uuidString)")
             let data = Data(contents.utf8)
             try data.write(to: temporary, options: .atomic)
             guard try Data(contentsOf: temporary) == data else {
