@@ -30,6 +30,25 @@ jobs:
           cache: true
       - name: Generate native platform scaffolding
         run: flutter create --platforms=android,ios --org com.docsgrid .
+      - name: Use non-conflicting DocsGrid Android package ID
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          candidates = [Path('android/app/build.gradle.kts'), Path('android/app/build.gradle')]
+          gradle = next((p for p in candidates if p.exists()), None)
+          if gradle is None:
+              raise SystemExit('Android app Gradle file was not generated')
+          source = gradle.read_text()
+          if gradle.suffix == '.kts':
+              source, count = re.subn(r'applicationId\\s*=\\s*"[^"]+"', 'applicationId = "com.docsgrid.mobile"', source, count=1)
+          else:
+              source, count = re.subn(r'applicationId\\s+"[^"]+"', 'applicationId "com.docsgrid.mobile"', source, count=1)
+          if count != 1:
+              raise SystemExit('Could not set stable DocsGrid applicationId')
+          gradle.write_text(source)
+          print('Android applicationId: com.docsgrid.mobile')
+          PY
       - name: Set DocsGrid app display name on Android and iOS
         run: |
           python3 - <<'PY'
