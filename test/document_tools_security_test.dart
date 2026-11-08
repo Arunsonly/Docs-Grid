@@ -28,7 +28,7 @@ void main() {
       final slash = String.fromCharCode(92);
       expect(
         DocumentToolsService.escapeLikeQuery('a%b_c${slash}d'),
-        'a${slash}%b${slash}_c${slash}${slash}d',
+        ['a', slash, '%b', slash, '_c', slash, slash, 'd'].join(),
       );
     });
 
