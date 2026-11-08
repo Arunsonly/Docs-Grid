@@ -686,8 +686,8 @@ class DocumentToolsService {
     for (final row in folderRows) {
       final name = row['name'];
       if (name is! String || name.trim().isEmpty ||
-          name.contains('/') || name.contains('\\\\') ||
-          name.contains('\\u0000')) {
+          name.contains('/') || name.contains('\\') ||
+          name.contains('\u0000')) {
         throw StateError('Snapshot contains an invalid folder name.');
       }
     }
