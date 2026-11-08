@@ -323,7 +323,9 @@ class DocumentRepository {
       );
       for (final row in rows) {
         final id = row['id'] as String;
-        final name = row['name'] as String;
+        // Legacy folder names must pass the same path-segment validation as
+        // newly created folders before they reach an external storage provider.
+        final name = FolderRepository.validateFolderName(row['name'] as String);
         String childUri;
         try {
           childUri = await storage.findChildUri(parentUri: parentUri, name: name);
@@ -361,6 +363,7 @@ class DocumentRepository {
         throw StateError('PDF "$name" has no saved storage location. Migration stopped without deleting it.');
       }
       final folderId = row['folder_id'] as String?;
+      final safePdfName = _safePdfName(name);
       final parentUri = folderId == null ? rootUri : folderUris[folderId];
       if (parentUri == null) {
         throw StateError('Destination folder for "$name" could not be prepared. Migration can be retried safely.');
@@ -380,7 +383,7 @@ class DocumentRepository {
       try {
         final existingUri = await storage.findChildUri(
           parentUri: parentUri,
-          name: '$name.pdf',
+          name: safePdfName,
         );
         if (await storage.sha256Pdf(existingUri) == sourceDigest) {
           destinationUri = existingUri;
@@ -393,7 +396,7 @@ class DocumentRepository {
         destinationUri = await storage.copyPdf(
           sourceUri: sourceLocation,
           parentUri: parentUri,
-          name: '$name.pdf',
+          name: safePdfName,
         );
         createdDestination = true;
       }
