@@ -993,7 +993,7 @@ class DocumentToolsService {
       final id = raw['documentId'];
       final entryName = raw['entry'];
       final expectedDigest = raw['sha256'];
-      if (id is! String || !RegExp(r'^[A-Za-z0-9_-]{1,128}
+      if (id is! String || !RegExp(r'^[A-Za-z0-9_-]{1,128}$').hasMatch(id) || !fileIds.add(id)) {
         throw StateError('Backup contains a missing or duplicate document reference.');
       }
       if (entryName != 'pdfs/$id.pdf' || expectedDigest is! String ||
