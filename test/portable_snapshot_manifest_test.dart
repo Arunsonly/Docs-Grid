@@ -11,9 +11,9 @@ void main() {
     'databaseSchemaVersion': 3,
     'tables': {'documents': 1, 'folders': 0, 'tags': 2},
     'files': [
-      {'path': 'documents.json', 'sizeBytes': 2, 'sha256': 'a' * 64, 'recordCount': 1},
-      {'path': 'folders.json', 'sizeBytes': 2, 'sha256': 'b' * 64, 'recordCount': 0},
-      {'path': 'tags.json', 'sizeBytes': 2, 'sha256': 'c' * 64, 'recordCount': 2},
+      {'path': 'documents.json', 'sizeBytes': 2, 'sha256': List.filled(64, 'a').join(), 'recordCount': 1},
+      {'path': 'folders.json', 'sizeBytes': 2, 'sha256': List.filled(64, 'b').join(), 'recordCount': 0},
+      {'path': 'tags.json', 'sizeBytes': 2, 'sha256': List.filled(64, 'c').join(), 'recordCount': 2},
     ],
   };
 
