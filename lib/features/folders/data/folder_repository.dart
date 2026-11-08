@@ -221,8 +221,6 @@ class FolderRepository {
     final traversedFolders = <String>{};
     Directory? renamedPrivateDirectory;
     String? oldPrivatePath;
-    String? newPrivatePath;
-    String? privateRootPath;
 
     try {
       if (renamedUri != null) {
@@ -253,7 +251,7 @@ class FolderRepository {
             whereArgs: [parentId],
           );
           for (final doc in docs) {
-            final documentName = '\${doc['name'] as String}.pdf';
+            final documentName = '${doc['name'] as String}.pdf';
             documentUriUpdates[doc['id'] as String] = await storage.findChildUri(
               parentUri: parentUri,
               name: documentName,
@@ -267,7 +265,6 @@ class FolderRepository {
         // directory and update every descendant document reference atomically.
         final base = await getApplicationDocumentsDirectory();
         final privateRoot = p.join(base.path, 'DocsGrid', 'PDFs');
-        privateRootPath = privateRoot;
 
         Future<List<String>> pathSegments({required bool useNewName}) async {
           final segments = <String>[];
@@ -301,7 +298,6 @@ class FolderRepository {
         final oldPath = p.joinAll([privateRoot, ...oldSegments]);
         final newPath = p.joinAll([privateRoot, ...newSegments]);
         oldPrivatePath = oldPath;
-        newPrivatePath = newPath;
         final oldDirectory = Directory(oldPath);
         if (await oldDirectory.exists()) {
           final newDirectory = Directory(newPath);
