@@ -150,7 +150,7 @@ class DocumentToolsService {
     var selected = useCamera
         ? _singleImage(await picker.pickImage(source: ImageSource.camera, imageQuality: 95))
         : await picker.pickMultiImage(imageQuality: 95);
-    if (selected.isEmpty) return null;
+    if (!context.mounted || selected.isEmpty) return null;
     if (selected.length > 1) {
       final ordered = List<XFile>.from(selected);
       final confirmedOrder = await showDialog<List<XFile>>(
@@ -163,9 +163,8 @@ class DocumentToolsService {
               height: 320,
               child: ReorderableListView.builder(
                 itemCount: ordered.length,
-                onReorder: (oldIndex, newIndex) {
+                onReorderItem: (oldIndex, newIndex) {
                   refresh(() {
-                    if (newIndex > oldIndex) newIndex--;
                     final item = ordered.removeAt(oldIndex);
                     ordered.insert(newIndex, item);
                   });
@@ -185,7 +184,7 @@ class DocumentToolsService {
           ),
         ),
       );
-      if (confirmedOrder == null) return null;
+      if (!context.mounted || confirmedOrder == null) return null;
       selected = confirmedOrder;
     }
 
