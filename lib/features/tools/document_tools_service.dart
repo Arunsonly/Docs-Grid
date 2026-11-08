@@ -64,35 +64,37 @@ class DocumentToolsService {
     if (!_indexingDocumentIds.add(documentId)) {
       throw StateError('This document is already being indexed.');
     }
-    final db = await _database.database;
-    final previousIndex = await db.query(
-      'document_text_index',
-      columns: ['document_id'],
-      where: 'document_id = ?',
-      whereArgs: [documentId],
-      limit: 1,
-    );
     try {
-      await db.update(
-        'documents',
-        {'extracted_text_status': 'indexing'},
-        where: 'id = ? AND deleted_at IS NULL',
+      final db = await _database.database;
+      final previousIndex = await db.query(
+        'document_text_index',
+        columns: ['document_id'],
+        where: 'document_id = ?',
         whereArgs: [documentId],
+        limit: 1,
       );
-      return await _indexPdfTextInternal(documentId, path);
-    } catch (_) {
-      // Keep an older successful index usable if a re-index attempt fails.
       try {
         await db.update(
           'documents',
-          {'extracted_text_status': previousIndex.isEmpty ? 'failed' : 'indexed'},
+          {'extracted_text_status': 'indexing'},
           where: 'id = ? AND deleted_at IS NULL',
           whereArgs: [documentId],
         );
+        return await _indexPdfTextInternal(documentId, path);
       } catch (_) {
-        // Preserve the original OCR failure if status recovery also fails.
+        // Keep an older successful index usable if a re-index attempt fails.
+        try {
+          await db.update(
+            'documents',
+            {'extracted_text_status': previousIndex.isEmpty ? 'failed' : 'indexed'},
+            where: 'id = ? AND deleted_at IS NULL',
+            whereArgs: [documentId],
+          );
+        } catch (_) {
+          // Preserve the original OCR failure if status recovery also fails.
+        }
+        rethrow;
       }
-      rethrow;
     } finally {
       _indexingDocumentIds.remove(documentId);
     }
