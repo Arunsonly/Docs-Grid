@@ -379,16 +379,36 @@ class DocumentToolsService {
     final fileRows = (manifest['files'] as List<dynamic>).cast<Map<String, dynamic>>();
     final restoredPaths = <String, String>{};
     final folderRows = rowsByTable['folders']!;
+    final folderRowsById = <String, Map<String, Object?>>{};
+    for (final row in folderRows) {
+      final id = row['id'];
+      if (id is! String || id.isEmpty || folderRowsById.containsKey(id)) {
+        throw StateError('Backup contains an invalid or duplicate folder ID.');
+      }
+      folderRowsById[id] = row;
+    }
     final folderPaths = <String, String>{};
+    final resolvingFolders = <String>{};
     String folderPath(String id) {
       final known = folderPaths[id];
       if (known != null) return known;
-      final row = folderRows.firstWhere((r) => r['id'] == id);
-      final parent = row['parent_id'] as String?;
-      final base = parent == null ? restoreRoot.path : folderPath(parent);
-      final path = p.join(base, 'folder_$id');
-      folderPaths[id] = path;
-      return path;
+      if (!resolvingFolders.add(id)) {
+        throw StateError('Backup folder hierarchy contains a cycle.');
+      }
+      try {
+        final row = folderRowsById[id];
+        if (row == null) throw StateError('Backup references a missing folder.');
+        final parent = row['parent_id'] as String?;
+        if (parent != null && !folderRowsById.containsKey(parent)) {
+          throw StateError('Backup references a missing parent folder.');
+        }
+        final base = parent == null ? restoreRoot.path : folderPath(parent);
+        final path = p.join(base, 'folder_$id');
+        folderPaths[id] = path;
+        return path;
+      } finally {
+        resolvingFolders.remove(id);
+      }
     }
 
     var databaseCommitted = false;
