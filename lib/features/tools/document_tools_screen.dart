@@ -135,29 +135,6 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
     if (mounted) setState(() => _message = 'Backup created successfully. Keep the ZIP file somewhere safe; choose it under Restore backup on a new installation.');
   });
 
-  Future<void> _createRecoverySnapshot() => _run(() async {
-    final name = await _tools.createPortableMetadataSnapshot();
-    if (mounted) {
-      setState(() => _message = 'Recovery snapshot saved in DocsGrid/System/Database/$name. Tags, reminders, folders, settings and indexes are included.');
-    }
-  });
-
-  Future<void> _verifyRecoverySnapshot() => _run(() async {
-    final name = await _tools.verifyLatestPortableMetadataSnapshot();
-    if (!mounted) return;
-    setState(() => _message = name == null
-      ? 'No portable recovery snapshot found. Create one first.'
-      : 'Recovery snapshot verified successfully: $name');
-  });
-
-  Future<void> _verifyBackup() => _run(() async {
-    final picked = await FilePicker.pickFiles(type: FileType.custom, allowedExtensions: ['zip']);
-    if (picked.isEmpty || picked.single.path == null) return;
-    final count = await _tools.validateBackup(File(picked.single.path!));
-    if (mounted) setState(() => _message = 'Backup integrity verified. $count PDF file(s) found.');
-  });
-
-
   Future<void> _restoreBackup() => _run(() async {
     final source = await showModalBottomSheet<String>(
       context: context, showDragHandle: true,
