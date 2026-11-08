@@ -471,6 +471,59 @@ class DocumentToolsService {
     }
   }
 
+  Future<String?> verifyLatestPortableMetadataSnapshot() async {
+    final locations = await StorageLocationService.instance.portableDataLocations();
+    final children = await StorageLocationService.instance.listDirectory(locations['databaseUri']!);
+    final snapshots = children
+        .where((entry) => entry['isDirectory'] == true &&
+            (entry['name'] as String).startsWith('snapshot_'))
+        .toList()
+      ..sort((a, b) => (b['name'] as String).compareTo(a['name'] as String));
+    if (snapshots.isEmpty) return null;
+
+    final snapshot = snapshots.first;
+    final snapshotUri = snapshot['uri'] as String;
+    final manifestText = await StorageLocationService.instance.readTextFile(
+      await _findChildUri(snapshotUri, 'manifest.json'),
+    );
+    final manifest = jsonDecode(manifestText) as Map<String, dynamic>;
+    if (manifest['format'] != 'DocsGridPortableData' || manifest['formatVersion'] != 1) {
+      throw StateError('The latest recovery snapshot has an unsupported format.');
+    }
+    final files = manifest['files'];
+    if (files is! List) throw StateError('Recovery snapshot manifest is incomplete.');
+    for (final raw in files) {
+      if (raw is! Map) throw StateError('Recovery snapshot contains an invalid file record.');
+      final record = Map<String, dynamic>.from(raw);
+      final filename = record['path'];
+      if (filename is! String || filename.isEmpty ||
+          filename.contains('/') || filename.contains('\\\\')) {
+        throw StateError('Recovery snapshot contains an unsafe metadata path.');
+      }
+      final uri = await _findChildUri(snapshotUri, filename);
+      final contents = await StorageLocationService.instance.readTextFile(uri);
+      final bytes = utf8.encode(contents);
+      if (bytes.length != record['sizeBytes'] ||
+          sha256.convert(bytes).toString() != record['sha256']) {
+        throw StateError('Recovery snapshot verification failed for $filename.');
+      }
+      final rows = jsonDecode(contents);
+      if (rows is! List || rows.length != record['recordCount']) {
+        throw StateError('Recovery snapshot record count mismatch for $filename.');
+      }
+    }
+    return snapshot['name'] as String;
+  }
+
+  Future<String> _findChildUri(String parentUri, String name) async {
+    final children = await StorageLocationService.instance.listDirectory(parentUri);
+    final match = children.where((entry) => entry['name'] == name).firstOrNull;
+    if (match == null || match['isDirectory'] == true) {
+      throw StateError('Recovery snapshot is missing $name.');
+    }
+    return match['uri'] as String;
+  }
+
   Future<int> validateBackup(File zipFile) async {
     if (!await zipFile.exists()) throw StateError('Backup file not found.');
     final decoded = ZipDecoder().decodeBytes(await zipFile.readAsBytes());
