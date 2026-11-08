@@ -959,6 +959,18 @@ class DocumentRepository {
     await _recordHistory(db, document.id, favorite ? 'favorited' : 'unfavorited', {});
   }
 
+  Future<DocumentRecord?> getById(String id) async {
+    final db = await _database.database;
+    final rows = await db.query(
+      'documents',
+      where: 'id = ? AND deleted_at IS NULL',
+      whereArgs: [id],
+      limit: 1,
+    );
+    if (rows.isEmpty) return null;
+    return DocumentRecord.fromMap(rows.first);
+  }
+
   Future<void> markOpened(DocumentRecord document) async {
     final db = await _database.database;
     await db.update('documents', {
