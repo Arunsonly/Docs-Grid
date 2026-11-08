@@ -4,7 +4,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 
 import 'package:archive/archive.dart';
-import 'package:archive/archive_io.dart';
+import 'package:archive/archive_io.dart' show ZipFileEncoder;
 import 'package:crypto/crypto.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import 'package:image_picker/image_picker.dart';
