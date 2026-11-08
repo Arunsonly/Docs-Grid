@@ -42,9 +42,8 @@ void main() {
 
   test('rejects duplicate metadata filenames', () {
     final value = validManifest();
-    (value['files'] as List).add(
-      Map<String, Object?>.from((value['files'] as List).first as Map),
-    );
+    final files = value['files'] as List<dynamic>;
+    files.add(Map<String, Object>.from(files.first as Map));
     expect(() => PortableSnapshotManifest.parse(jsonEncode(value)),
       throwsFormatException);
   });
