@@ -97,4 +97,22 @@ void main() {
     expect(document.folderId, 'folder-1');
     expect(document.sizeBytes, 2048);
   });
+  test('Document record remains readable when optional metadata JSON is malformed', () {
+    final document = DocumentRecord.fromMap({
+      'id': 'document-damaged-metadata',
+      'name': 'Important Policy',
+      'storage_uri': '/private/DocsGrid/PDFs/policy.pdf',
+      'size_bytes': 4096,
+      'created_at': '2026-11-07T08:00:00.000Z',
+      'metadata_json': '{not valid json',
+      'category_id': null,
+      'category_name': null,
+      'tag_names': null,
+      'folder_id': null,
+    });
+
+    expect(document.name, 'Important Policy');
+    expect(document.isFavorite, isFalse);
+  });
+
 }
