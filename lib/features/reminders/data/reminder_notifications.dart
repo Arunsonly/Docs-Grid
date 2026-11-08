@@ -13,6 +13,25 @@ class ReminderNotifications {
   final FlutterLocalNotificationsPlugin _plugin = FlutterLocalNotificationsPlugin();
   bool _ready = false;
 
+  static void Function(String documentId)? onDocumentNotificationTap;
+  static String? _pendingDocumentId;
+
+  static String? takePendingDocumentId() {
+    final value = _pendingDocumentId;
+    _pendingDocumentId = null;
+    return value;
+  }
+
+  static void _dispatchDocumentTap(String? payload) {
+    if (payload == null || payload.isEmpty) return;
+    final handler = onDocumentNotificationTap;
+    if (handler == null) {
+      _pendingDocumentId = payload;
+    } else {
+      handler(payload);
+    }
+  }
+
   Future<void> initialize() async {
     if (_ready) return;
     tzdata.initializeTimeZones();
@@ -40,8 +59,17 @@ class ReminderNotifications {
         requestSoundPermission: false,
       ),
     );
-    await _plugin.initialize(settings);
+    await _plugin.initialize(
+      settings,
+      onDidReceiveNotificationResponse: (response) {
+        _dispatchDocumentTap(response.payload);
+      },
+    );
     _ready = true;
+    final launchDetails = await _plugin.getNotificationAppLaunchDetails();
+    if (launchDetails?.didNotificationLaunchApp == true) {
+      _dispatchDocumentTap(launchDetails?.notificationResponse?.payload);
+    }
   }
 
   Future<bool> requestPermission() async {
@@ -144,6 +172,7 @@ class ReminderNotifications {
     String? body,
     required DateTime at,
     String? recurrence,
+    String? documentId,
   }) async {
     await initialize();
     final scheduledAt = nextScheduledOccurrence(
@@ -187,6 +216,7 @@ class ReminderNotifications {
       // avoids the restricted exact-alarm special access and its settings prompt.
       androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
       matchDateTimeComponents: match,
+      payload: documentId,
     );
   }
 
