@@ -305,6 +305,9 @@ class DocumentToolsService {
           throw StateError('Backup cannot be complete: "${row['name']}" is unavailable. Repair storage access and retry.');
         }
         final bytes = await file.readAsBytes();
+        if (bytes.length < 5 || String.fromCharCodes(bytes.take(5)) != '%PDF-') {
+          throw StateError('Backup stopped: "${row['name']}" is not a valid PDF.');
+        }
         final digest = sha256.convert(bytes).toString();
         final expected = row['sha256'] as String?;
         if (expected != null && expected.isNotEmpty && digest != expected) {
