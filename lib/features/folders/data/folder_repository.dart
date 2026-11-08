@@ -212,7 +212,7 @@ class FolderRepository {
 
     final folderUriUpdates = <String, String>{};
     final documentUriUpdates = <String, String>{};
-    final traversedFolders = <String>{id};
+    final traversedFolders = <String>{};
     try {
       if (renamedUri != null) {
       Future<void> collectDescendants(String parentId, String parentUri) async {
