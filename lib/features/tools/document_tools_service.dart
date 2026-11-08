@@ -328,19 +328,19 @@ class DocumentToolsService {
         throw StateError('Backup cannot be complete: "${row['name']}" has no storage reference.');
       }
       File? stagedProviderFile;
-      final File file;
-      if (uri.startsWith('content://') || uri.startsWith('file://')) {
-        final temp = await getTemporaryDirectory();
-        stagedProviderFile = File(p.join(temp.path, 'backup_${_uuid.v4()}.pdf'));
-        await StorageLocationService.instance.copyPdfToPath(
-          sourceUri: uri,
-          destinationPath: stagedProviderFile.path,
-        );
-        file = stagedProviderFile;
-      } else {
-        file = File(uri.startsWith('file://') ? Uri.parse(uri).toFilePath() : uri);
-      }
       try {
+        late final File file;
+        if (uri.startsWith('content://') || uri.startsWith('file://')) {
+          final temp = await getTemporaryDirectory();
+          stagedProviderFile = File(p.join(temp.path, 'backup_${_uuid.v4()}.pdf'));
+          await StorageLocationService.instance.copyPdfToPath(
+            sourceUri: uri,
+            destinationPath: stagedProviderFile.path,
+          );
+          file = stagedProviderFile;
+        } else {
+          file = File(uri);
+        }
         if (!await file.exists()) {
           throw StateError('Backup cannot be complete: "${row['name']}" is unavailable. Repair storage access and retry.');
         }
@@ -357,8 +357,12 @@ class DocumentToolsService {
           'originalName': row['name'],
         });
       } finally {
-        if (stagedProviderFile != null && await stagedProviderFile.exists()) {
-          await stagedProviderFile.delete();
+        if (stagedProviderFile != null) {
+          try {
+            if (await stagedProviderFile.exists()) await stagedProviderFile.delete();
+          } catch (_) {
+            // Temporary cache cleanup must not mask a successful backup step.
+          }
         }
       }
       completed++;
