@@ -911,13 +911,51 @@ class DocumentToolsService {
     if (manifest['format'] != 'DocsGridBackup' || manifest['version'] != 1) {
       throw StateError('Unsupported backup format or version.');
     }
-    final files = (manifest['files'] as List<dynamic>? ?? []);
+
+    final documentsFile = decoded.findFile('documents.json');
+    if (documentsFile == null) throw StateError('Backup is incomplete: missing document metadata.');
+    final rawDocuments = jsonDecode(utf8.decode(documentsFile.content as List<int>));
+    if (rawDocuments is! List) throw StateError('Backup document metadata is invalid.');
+    final documentIds = <String>{};
+    for (final raw in rawDocuments) {
+      if (raw is! Map || raw['id'] is! String || (raw['id'] as String).isEmpty ||
+          !documentIds.add(raw['id'] as String)) {
+        throw StateError('Backup contains invalid or duplicate document IDs.');
+      }
+    }
+
+    final files = manifest['files'];
+    if (files is! List) throw StateError('Backup PDF manifest is invalid.');
+    final seenDocumentIds = <String>{};
+    final seenEntries = <String>{};
     for (final raw in files) {
-      final item = raw as Map<String, dynamic>;
-      final entry = decoded.findFile(item['entry'] as String);
+      if (raw is! Map || raw['documentId'] is! String ||
+          raw['entry'] is! String || raw['sha256'] is! String) {
+        throw StateError('Backup contains an invalid PDF manifest record.');
+      }
+      final documentId = raw['documentId'] as String;
+      final entryName = raw['entry'] as String;
+      final expectedEntryName = 'pdfs/$documentId.pdf';
+      if (!documentIds.contains(documentId) ||
+          entryName != expectedEntryName ||
+          !seenDocumentIds.add(documentId) ||
+          !seenEntries.add(entryName) ||
+          !RegExp(r'^[a-fA-F0-9]{64}
+}
+).hasMatch(raw['sha256'] as String)) {
+        throw StateError('Backup contains an unsafe or inconsistent PDF entry.');
+      }
+      final entry = decoded.findFile(entryName);
       if (entry == null) throw StateError('Backup is incomplete: missing PDF entry.');
-      final digest = sha256.convert(entry.content as List<int>).toString();
-      if (digest != item['sha256']) throw StateError('Backup integrity check failed.');
+      final bytes = entry.content as List<int>;
+      if (bytes.length < 5 || String.fromCharCodes(bytes.take(5)) != '%PDF-') {
+        throw StateError('Backup contains a file that is not a valid PDF.');
+      }
+      final digest = sha256.convert(bytes).toString();
+      if (digest != raw['sha256']) throw StateError('Backup integrity check failed.');
+    }
+    if (seenDocumentIds.length != documentIds.length) {
+      throw StateError('Backup is incomplete: one or more document PDFs are missing.');
     }
     return files.length;
   }
