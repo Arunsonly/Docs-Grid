@@ -139,6 +139,27 @@ void main() {
     );
   });
 
+  test('rejects unsafe folder names before ZIP restore staging', () async {
+    final file = await makeBackup(
+      documents: [
+        {'id': 'doc-a', 'name': 'A'},
+        {'id': 'doc-b', 'name': 'B'},
+      ],
+      folders: [
+        {'id': 'folder-a', 'name': '../outside', 'parent_id': null},
+      ],
+    );
+
+    await expectLater(
+      service.validateBackup(file),
+      throwsA(isA<StateError>().having(
+        (error) => error.message,
+        'message',
+        contains('folder ID, name'),
+      )),
+    );
+  });
+
   test('rejects missing parents and cyclic folder graphs before restore', () async {
     for (final folders in [
       [
