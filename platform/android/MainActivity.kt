@@ -43,14 +43,17 @@ class MainActivity : FlutterActivity() {
                                 ?: throw IllegalStateException("DocsGrid Database folder is not configured. Re-select the library folder.")
                             val recovery = prefs.getString("recovery_uri", null)
                                 ?: throw IllegalStateException("DocsGrid Recovery folder is not configured. Re-select the library folder.")
-                            val library = prefs.getString("my_files_uri", null)
-                                ?: throw IllegalStateException("DocsGrid library folder is not configured. Re-select the library folder.")
-                            result.success(mapOf("databaseUri" to database, "recoveryUri" to recovery, "libraryUri" to library))
+                            val library = prefs.getString("folders_uri", null)
+                                ?: prefs.getString("my_files_uri", null)
+                                ?: throw IllegalStateException("DocsGrid Folders location is not configured. Re-select the library folder.")
+                            val documents = prefs.getString("documents_uri", null)
+                                ?: throw IllegalStateException("DocsGrid Documents location is not configured. Re-select the library folder.")
+                            result.success(mapOf("databaseUri" to database, "recoveryUri" to recovery, "libraryUri" to library, "documentsUri" to documents))
                         }
                         "getSelectedFolder" -> {
                             val prefs = getSharedPreferences("docsgrid_storage", MODE_PRIVATE)
-                            val uri = prefs.getString("my_files_uri", null)
-                            result.success(uri?.let { mapOf("uri" to it, "name" to "DocsGrid/My Files") })
+                            val uri = prefs.getString("folders_uri", null) ?: prefs.getString("my_files_uri", null)
+                            result.success(uri?.let { mapOf("uri" to it, "name" to "DocsGrid/Folders") })
                         }
                         "consumeSharedPdfs" -> result.success(consumeSharedPdfs())
                         "checkStorageAccess" -> result.success(checkStorageAccess())
@@ -446,18 +449,21 @@ class MainActivity : FlutterActivity() {
         try {
             // Create or reconnect the app's shared folder layout using SAF.
             val docsGrid = ensureDirectory(uri, "DocsGrid")
-            val myFiles = ensureDirectory(docsGrid, "My Files")
-            val system = ensureDirectory(docsGrid, "System")
-            val database = ensureDirectory(system, "Database")
-            val recovery = ensureDirectory(system, "Recovery")
+            // Canonical portable layout; legacy folders remain untouched for migration.
+            val documents = ensureDirectory(docsGrid, "Documents")
+            val folders = ensureDirectory(docsGrid, "Folders")
+            val database = ensureDirectory(docsGrid, "Database")
+            val recovery = ensureDirectory(docsGrid, "Recovery")
             getSharedPreferences("docsgrid_storage", MODE_PRIVATE).edit()
                 .putString("tree_uri", uri.toString())
                 .putString("docsgrid_uri", docsGrid.toString())
-                .putString("my_files_uri", myFiles.toString())
+                .putString("documents_uri", documents.toString())
+                .putString("folders_uri", folders.toString())
+                .putString("my_files_uri", folders.toString())
                 .putString("database_uri", database.toString())
                 .putString("recovery_uri", recovery.toString())
                 .apply()
-            callback?.success(mapOf("uri" to myFiles.toString(), "name" to "DocsGrid/My Files", "rootUri" to docsGrid.toString()))
+            callback?.success(mapOf("uri" to folders.toString(), "name" to "DocsGrid/Folders", "rootUri" to docsGrid.toString()))
         } catch (error: Exception) {
             callback?.error("LAYOUT_ERROR", "Could not prepare DocsGrid folders. Existing data was not changed: " + error.message, null)
         }

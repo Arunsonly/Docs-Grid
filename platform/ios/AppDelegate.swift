@@ -44,16 +44,26 @@ import CryptoKit
                 guard let selected = try selectedFolder(), let root = URL(string: selected["uri"] ?? "") else {
                     throw storageError("Choose a DocsGrid storage folder first.")
                 }
-                let system = try ensureDirectory(parent: root, name: "System")
-                let database = try ensureDirectory(parent: system, name: "Database")
-                let recovery = try ensureDirectory(parent: system, name: "Recovery")
+                // Match Android's portable root and preserve any legacy folders.
+                let docsGrid = try ensureDirectory(parent: root, name: "DocsGrid")
+                let documents = try ensureDirectory(parent: docsGrid, name: "Documents")
+                let folders = try ensureDirectory(parent: docsGrid, name: "Folders")
+                let database = try ensureDirectory(parent: docsGrid, name: "Database")
+                let recovery = try ensureDirectory(parent: docsGrid, name: "Recovery")
                 result([
                     "databaseUri": database.absoluteString,
                     "recoveryUri": recovery.absoluteString,
-                    "libraryUri": root.absoluteString
+                    "libraryUri": folders.absoluteString,
+                    "documentsUri": documents.absoluteString
                 ])
             case "getSelectedFolder":
-                result(try selectedFolder())
+                guard let selected = try selectedFolder(), let root = URL(string: selected["uri"] ?? "") else {
+                    result(nil)
+                    return
+                }
+                let docsGrid = try ensureDirectory(parent: root, name: "DocsGrid")
+                let folders = try ensureDirectory(parent: docsGrid, name: "Folders")
+                result(["uri": folders.absoluteString, "name": "DocsGrid/Folders"])
             case "checkStorageAccess":
                 result(checkStorageAccess())
             case "savePdf":

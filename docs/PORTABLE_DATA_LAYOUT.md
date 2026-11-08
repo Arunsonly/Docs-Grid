@@ -10,26 +10,25 @@ The user-selected DocsGrid folder is the portable source for both document bytes
 
 ```text
 DocsGrid/
-├── My Files/
-│   ├── Documents/                 # Original document files
-│   └── Folders/                   # User-created hierarchy and files
-└── System/
-    ├── Database/
-    │   ├── manifest.json          # Format/schema versions, snapshot ID, hashes
-    │   ├── documents.json         # Document metadata and relative paths
-    │   ├── folders.json           # Folder IDs, names, parent IDs
-    │   ├── categories.json        # Built-in and user categories
-    │   ├── tags.json              # Tag definitions
-    │   ├── document_tags.json     # Document-to-tag relationships
-    │   ├── reminders.json         # All reminder records and recurrence state
-    │   ├── favorites.json         # Favorite document references
-    │   ├── history.json           # Recoverable history records
-    │   ├── settings.json          # Portable user preferences only
-    │   └── document_text_index.json # Optional OCR/search text index
-    └── Recovery/
-        ├── snapshots/             # Previous verified metadata snapshots
-        └── restore-reports/       # Restore result, skipped items and conflicts
+├── Documents/                     # Imported/original document files
+├── Folders/                       # User-created folder hierarchy and files
+├── Database/
+│   ├── manifest.json              # Format/schema versions, snapshot ID, hashes
+│   ├── documents.json             # Document metadata and relative paths
+│   ├── folders.json               # Folder IDs, names, parent IDs
+│   ├── categories.json             # Built-in and user categories
+│   ├── tags.json                   # Tag definitions
+│   ├── document_tags.json         # Document-to-tag relationships
+│   ├── reminders.json             # All reminder records and recurrence state
+│   ├── favorites.json             # Favorite document references
+│   ├── history.json               # Recoverable history records
+│   ├── settings.json              # Portable user preferences only
+│   └── document_text_index.json   # Optional OCR/search text index
+└── Recovery/
+    ├── snapshots/                 # Previous verified metadata snapshots
+    └── restore-reports/           # Restore result, skipped items and conflicts
 ```
+Legacy `My Files/` and `System/` directories from older installations are retained during migration; their files are never deleted or moved automatically. Existing database URIs remain valid. New installations use exactly the four top-level folders shown above. Tags, reminders, favorites and history remain metadata in `Database/`, not separate physical folders.
 
 The app-private SQLite database remains the live runtime database. These portable files are its versioned recovery representation, not a replacement for SQLite.
 
