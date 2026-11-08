@@ -106,7 +106,7 @@ class ReminderNotifications {
   }
 
   Future<void> openNotificationSettings() async {
-    await _settingsChannel.invokeMethod<void>('openSettings');
+    await _settingsChannel.invokeMethod<bool>('openSettings');
   }
 
   /// Stable across app launches; String.hashCode is not a persistence contract.
