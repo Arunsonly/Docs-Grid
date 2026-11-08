@@ -1,6 +1,7 @@
 import 'dart:typed_data';
 
 import 'package:crop_your_image/crop_your_image.dart';
+import 'package:image/image.dart' as img;
 import 'package:flutter/material.dart';
 
 class DocumentCropScreen extends StatefulWidget {
@@ -13,9 +14,35 @@ class DocumentCropScreen extends StatefulWidget {
 }
 
 class _DocumentCropScreenState extends State<DocumentCropScreen> {
-  final CropController _controller = CropController();
+  CropController _controller = CropController();
+  late Uint8List _workingImage;
+  int _imageVersion = 0;
   bool _cropping = false;
   bool _completed = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _workingImage = widget.imageBytes;
+  }
+
+  void _replaceImage(Uint8List bytes) {
+    setState(() { _workingImage = bytes; _controller = CropController(); _imageVersion++; });
+  }
+
+  void _rotate() {
+    final decoded = img.decodeImage(_workingImage);
+    if (decoded == null) return;
+    _replaceImage(Uint8List.fromList(img.encodePng(img.copyRotate(decoded, angle: 90))));
+  }
+
+  void _applyFilter(String value) {
+    if (value == 'original') { _replaceImage(widget.imageBytes); return; }
+    final decoded = img.decodeImage(widget.imageBytes);
+    if (decoded == null) return;
+    final enhanced = img.adjustColor(decoded, contrast: 1.12, brightness: 1.04, saturation: 1.04);
+    _replaceImage(Uint8List.fromList(img.encodePng(enhanced)));
+  }
 
   void _finish(CropResult result) {
     if (!mounted || _completed) return;
@@ -61,7 +88,8 @@ class _DocumentCropScreenState extends State<DocumentCropScreen> {
             ),
             Expanded(
               child: Crop(
-                image: widget.imageBytes,
+                key: ValueKey(_imageVersion),
+                image: _workingImage,
                 controller: _controller,
                 interactive: true,
                 fixCropRect: false,
