@@ -665,6 +665,19 @@ class DocumentToolsService {
     // creating any directory in the user's selected storage provider.
     final folderRows = rowsByTable['folders']!;
     final folderRowsById = PortableSnapshotManifest.validateFolderRows(folderRows);
+    final seenDocumentIds = <String>{};
+    for (final row in rowsByTable['documents']!) {
+      final id = row['id'];
+      final folderId = row['folder_id'];
+      if (id is! String || id.trim().isEmpty || id != id.trim() ||
+          !seenDocumentIds.add(id)) {
+        throw const FormatException('Snapshot contains an invalid or duplicate document ID.');
+      }
+      if (folderId != null &&
+          (folderId is! String || !folderRowsById.containsKey(folderId))) {
+        throw const FormatException('Snapshot document references a missing folder.');
+      }
+    }
 
     final pdfUris = <String, String>{};
     final pending = <String>[locations['libraryUri']!];
