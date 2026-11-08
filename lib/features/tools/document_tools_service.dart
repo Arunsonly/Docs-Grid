@@ -1108,7 +1108,7 @@ class DocumentToolsService {
       final parentId = folder['parent_id'];
       if (id is! String || id.trim().isEmpty || id != id.trim() ||
           foldersById.containsKey(id) ||
-          name is! String || name.trim().isEmpty ||
+          name is! String || name.trim().isEmpty || name != name.trim() ||
           name.trim() == '.' || name.trim() == '..' ||
           name.contains('/') || name.contains(r'\\') ||
           name.length > 255 ||
