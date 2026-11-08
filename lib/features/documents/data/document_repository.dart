@@ -77,7 +77,7 @@ class ImportCategoryOption {
   final String name;
 }
 
-String _escapeLikeWildcards(String value) {
+String escapeLikeWildcards(String value) {
   return value
       .replaceAll('\\\\', '\\\\\\\\')
       .replaceAll('%', r'\%')
@@ -105,7 +105,7 @@ class DocumentRepository {
         AND d.name LIKE ? ESCAPE '\\'
       ORDER BY d.last_opened_at DESC, d.name COLLATE NOCASE ASC
       ''',
-      [recentOnly ? 1 : 0, '%${_escapeLikeWildcards(query.trim())}%'],
+      [recentOnly ? 1 : 0, '%${escapeLikeWildcards(query.trim())}%'],
     );
     // Avoid SQLite JSON1 dependency: several Android SQLite builds do not
     // expose json_extract(). Favorite metadata is decoded in Dart instead.
