@@ -9,8 +9,8 @@ import 'package:sqflite/sqflite.dart';
 import 'package:uuid/uuid.dart';
 
 import '../../../core/database/app_database.dart';
-import '../../../core/storage/storage_location_service.dart';
 import '../../../core/storage/pdf_copy_verifier.dart';
+import '../../../core/storage/storage_location_service.dart';
 import '../../folders/data/folder_repository.dart';
 
 class DocumentRecord {
