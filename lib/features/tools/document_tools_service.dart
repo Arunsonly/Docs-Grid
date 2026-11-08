@@ -720,6 +720,7 @@ class DocumentToolsService {
     final folderIdMap = <String, String>{};
     final folderUriMap = <String, String>{};
     final matchedFolderIds = <String>{};
+    final createdFolderUris = <String>[];
     final folderRowsById = {
       for (final row in folderRows) row['id'] as String: row,
     };
@@ -753,6 +754,7 @@ class DocumentToolsService {
         final uri = existing.isNotEmpty
             ? existing.first['uri'] as String
             : await storage.createDirectory(parentUri: parentUri, name: rawName);
+        if (existing.isEmpty) createdFolderUris.add(uri);
         folderUriMap[folderId] = uri;
         final mappedParentId = parentId == null ? null : folderIdMap[parentId];
         final matchingFolder = existingFolders.where((candidate) =>
@@ -771,8 +773,15 @@ class DocumentToolsService {
       }
       return folderUriMap[oldId]!;
     }
-    for (final row in folderRows) {
-      await ensureFolder(row['id'] as String);
+    try {
+      for (final row in folderRows) {
+        await ensureFolder(row['id'] as String);
+      }
+    } catch (_) {
+      for (final uri in createdFolderUris.reversed) {
+        try { await storage.deletePdf(uri); } catch (_) {}
+      }
+      rethrow;
     }
 
     final categoryIdMap = <String, String>{};
@@ -838,7 +847,8 @@ class DocumentToolsService {
     var addedDocuments = 0;
     var linkedDocuments = 0;
     var missingPdfs = 0;
-    await db.transaction((txn) async {
+    try {
+      await db.transaction((txn) async {
       for (final row in rowsByTable['categories']!) {
         final copy = Map<String, Object?>.from(row)
           ..['id'] = categoryIdMap[row['id']];
@@ -942,10 +952,18 @@ class DocumentToolsService {
           ...row, 'document_id': documentId,
         }, conflictAlgorithm: ConflictAlgorithm.ignore);
       }
-      for (final row in rowsByTable['settings']!) {
-        await txn.insert('settings', row, conflictAlgorithm: ConflictAlgorithm.ignore);
+        for (final row in rowsByTable['settings']!) {
+          await txn.insert('settings', row, conflictAlgorithm: ConflictAlgorithm.ignore);
+        }
+      });
+    } catch (_) {
+      // The database transaction rolls back as a unit. Remove only directories
+      // created by this restore; never delete folders that already existed.
+      for (final uri in createdFolderUris.reversed) {
+        try { await storage.deletePdf(uri); } catch (_) {}
       }
-    });
+      rethrow;
+    }
 
     for (final row in rowsByTable['reminders']!) {
       if ((row['enabled'] as int? ?? 0) != 1 || row['status'] == 'completed') continue;
