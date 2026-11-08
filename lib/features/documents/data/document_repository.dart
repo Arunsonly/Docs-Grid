@@ -880,35 +880,49 @@ class DocumentRepository {
   }
   Future<void> setFavorite(DocumentRecord document, bool favorite) async {
     final db = await _database.database;
-    final rows = await db.query(
-      'documents',
-      columns: ['metadata_json'],
-      where: 'id = ? AND deleted_at IS NULL',
-      whereArgs: [document.id],
-      limit: 1,
-    );
-    if (rows.isEmpty) return;
-    final metadata = jsonDecode((rows.first['metadata_json'] as String?) ?? '{}')
-        as Map<String, dynamic>;
-    metadata['favorite'] = favorite;
-    await db.update(
-      'documents',
-      {
-        'metadata_json': jsonEncode(metadata),
-        'updated_at': DateTime.now().toUtc().toIso8601String(),
-      },
-      where: 'id = ? AND deleted_at IS NULL',
-      whereArgs: [document.id],
-    );
-    await _recordHistory(db, document.id, favorite ? 'favorited' : 'unfavorited', {});
+    await db.transaction((txn) async {
+      final rows = await txn.query(
+        'documents',
+        columns: ['metadata_json'],
+        where: 'id = ? AND deleted_at IS NULL',
+        whereArgs: [document.id],
+        limit: 1,
+      );
+      if (rows.isEmpty) return;
+      final metadata = jsonDecode((rows.first['metadata_json'] as String?) ?? '{}')
+          as Map<String, dynamic>;
+      metadata['favorite'] = favorite;
+      final count = await txn.update(
+        'documents',
+        {
+          'metadata_json': jsonEncode(metadata),
+          'updated_at': DateTime.now().toUtc().toIso8601String(),
+        },
+        where: 'id = ? AND deleted_at IS NULL',
+        whereArgs: [document.id],
+      );
+      if (count == 0) return;
+      await _recordHistory(
+        txn,
+        document.id,
+        favorite ? 'favorited' : 'unfavorited',
+        {},
+      );
+    });
   }
 
   Future<void> markOpened(DocumentRecord document) async {
     final db = await _database.database;
-    await db.update('documents', {
-      'last_opened_at': DateTime.now().toUtc().toIso8601String(),
-    }, where: 'id = ?', whereArgs: [document.id]);
-    await _recordHistory(db, document.id, 'opened', {});
+    await db.transaction((txn) async {
+      final count = await txn.update(
+        'documents',
+        {'last_opened_at': DateTime.now().toUtc().toIso8601String()},
+        where: 'id = ? AND deleted_at IS NULL',
+        whereArgs: [document.id],
+      );
+      if (count == 0) return;
+      await _recordHistory(txn, document.id, 'opened', {});
+    });
   }
 
   Future<List<DocumentRecord>> listTrash({String query = ''}) async {
