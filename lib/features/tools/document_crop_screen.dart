@@ -73,30 +73,17 @@ class _DocumentCropScreenState extends State<DocumentCropScreen> {
               ),
             ),
             Padding(
-              padding: const EdgeInsets.all(16),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: OutlinedButton(
-                      onPressed: _cropping ? null : () => Navigator.of(context).pop(),
-                      child: const Text('Retake / Cancel'),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: FilledButton.icon(
-                      onPressed: _cropping ? null : () {
-                        setState(() => _cropping = true);
-                        _controller.crop();
-                      },
-                      icon: _cropping
-                          ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
-                          : const Icon(Icons.crop),
-                      label: Text(_cropping ? 'Cropping…' : 'Apply crop'),
-                    ),
-                  ),
-                ],
-              ),
+              padding: const EdgeInsets.fromLTRB(8, 8, 8, 12),
+              child: Row(mainAxisAlignment: MainAxisAlignment.spaceEvenly, children: [
+                TextButton.icon(onPressed: _cropping ? null : () => Navigator.of(context).pop(), icon: const Icon(Icons.refresh), label: const Text('Retake')),
+                FilledButton.icon(onPressed: _cropping ? null : () { setState(() => _cropping = true); _controller.crop(); },
+                  icon: _cropping ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.crop),
+                  label: Text(_cropping ? 'Cropping…' : 'Crop')),
+                IconButton(tooltip: 'Rotate', onPressed: _cropping ? null : _rotate, icon: const Icon(Icons.rotate_right)),
+                PopupMenuButton<String>(enabled: !_cropping, tooltip: 'Filter', onSelected: _applyFilter,
+                  itemBuilder: (_) => const [PopupMenuItem(value: 'original', child: Text('Original Color')), PopupMenuItem(value: 'auto', child: Text('Auto Color'))],
+                  child: const Padding(padding: EdgeInsets.all(6), child: Column(mainAxisSize: MainAxisSize.min, children: [Icon(Icons.tune), Text('Filter', style: TextStyle(fontSize: 11))]))),
+              ]),
             ),
           ],
         ),
