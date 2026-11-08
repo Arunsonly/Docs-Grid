@@ -163,6 +163,11 @@ class MainActivity : FlutterActivity() {
             }
     }
 
+    override fun onDestroy() {
+        storageExecutor.shutdown()
+        super.onDestroy()
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
