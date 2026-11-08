@@ -51,7 +51,19 @@ class ReminderNotifications {
     return androidGranted && iosGranted;
   }
 
-  int _id(String id) => id.hashCode & 0x7fffffff;
+  /// Stable across app launches and Dart VM processes. String.hashCode is not
+  /// a persistence-safe notification identifier.
+  @visibleForTesting
+  static int notificationIdFor(String value) {
+    var hash = 0x811c9dc5;
+    for (final unit in value.codeUnits) {
+      hash ^= unit;
+      hash = (hash * 0x01000193) & 0xffffffff;
+    }
+    return hash & 0x7fffffff;
+  }
+
+  int _id(String id) => notificationIdFor(id);
 
   Future<void> schedule({
     required String id,
