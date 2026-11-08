@@ -38,8 +38,15 @@ class DocumentRecord {
   final String? folderId;
 
   factory DocumentRecord.fromMap(Map<String, Object?> row) {
-    final metadata = jsonDecode((row['metadata_json'] as String?) ?? '{}')
-        as Map<String, dynamic>;
+    Map<String, dynamic> metadata;
+    try {
+      final decoded = jsonDecode((row['metadata_json'] as String?) ?? '{}');
+      metadata = decoded is Map<String, dynamic> ? decoded : <String, dynamic>{};
+    } catch (_) {
+      // A damaged optional metadata field must not make the entire library
+      // unreadable. Preserve the document and default non-critical flags.
+      metadata = <String, dynamic>{};
+    }
     return DocumentRecord(
       id: row['id'] as String,
       name: row['name'] as String,
