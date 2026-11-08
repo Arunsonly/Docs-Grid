@@ -93,6 +93,14 @@ Status: **Initial source-review pass recorded; remediation and verification rema
 - Required action: add migration fixtures, fake MethodChannel/provider contract tests, notification failure injection, and end-to-end import/move/restore flows.
 - Status: test inventory and current test paths inspected; expanded coverage not yet implemented.
 
+### EXP-10 — Backup validation has no archive expansion/resource limits
+**Severity: High — security/reliability**
+
+- Evidence: `validateBackup` calls `ZipDecoder().decodeBytes(await zipFile.readAsBytes())` before validating manifest contents, and `restoreBackup` decodes the archive again. There is no pre-decode archive-size, total uncompressed-size, per-entry-size, or entry-count limit.
+- Risk: a malformed or highly-compressed ZIP selected by the user can cause excessive memory allocation or app termination before integrity checks complete.
+- Required action: preflight ZIP central-directory metadata and enforce explicit limits before decompression; stream validation/restore where possible; add oversized and high-compression-ratio fixtures.
+- Status: source behaviour confirmed; hardening and tests pending.
+
 ## Next execution order inside this audit
 
 1. Fix the shared database-open race and add a regression test.
