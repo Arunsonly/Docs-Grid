@@ -121,85 +121,91 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
         if (path == null) continue;
         final file = File(path);
         if (!await file.exists()) continue;
-        final folders = await FolderRepository().allFoldersWithPaths();
-        if (!mounted) return;
-        String? selectedFolderId;
-        final initialName = originalName.toLowerCase().endsWith('.pdf')
-            ? originalName.substring(0, originalName.length - 4)
-            : originalName;
-        final nameController = TextEditingController(text: initialName);
-        final config = await showDialog<Map<String, Object?>>(
-          context: context,
-          builder: (dialogContext) => StatefulBuilder(
-            builder: (dialogContext, refresh) => AlertDialog(
-              title: const Text('Save to DocsGrid'),
-              content: Column(mainAxisSize: MainAxisSize.min, children: [
-                TextField(controller: nameController, decoration: const InputDecoration(labelText: 'File name', suffixText: '.pdf')),
-                const SizedBox(height: 12),
-                DropdownButtonFormField<String?>(
-                  initialValue: selectedFolderId,
-                  isExpanded: true,
-                  decoration: const InputDecoration(labelText: 'Choose folder'),
-                  items: [
-                    const DropdownMenuItem<String?>(value: null, child: Text('My Documents (root)')),
-                    for (final option in folders)
-                      DropdownMenuItem<String?>(value: option.folder.id, child: Text(option.path, overflow: TextOverflow.ellipsis)),
-                  ],
-                  onChanged: (value) => refresh(() => selectedFolderId = value),
-                ),
-                Align(alignment: Alignment.centerRight, child: TextButton.icon(
-                  icon: const Icon(Icons.create_new_folder_outlined),
-                  label: const Text('New folder'),
-                  onPressed: () async {
-                    final controller = TextEditingController();
-                    final newName = await showDialog<String>(context: dialogContext, builder: (ctx) => AlertDialog(
-                      title: const Text('Create folder'),
-                      content: TextField(controller: controller, autofocus: true, decoration: const InputDecoration(labelText: 'Folder name')),
-                      actions: [
-                        TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-                        FilledButton(onPressed: () => Navigator.pop(ctx, controller.text.trim()), child: const Text('Create')),
-                      ],
-                    ));
-                    await WidgetsBinding.instance.endOfFrame;
-                    controller.dispose();
-                    if (newName == null || newName.trim().isEmpty || !dialogContext.mounted) return;
-                    final created = await FolderRepository().create(name: newName, parentId: selectedFolderId);
-                    final refreshed = await FolderRepository().allFoldersWithPaths();
-                    refresh(() {
-                      selectedFolderId = created.id;
-                      folders
-                        ..clear()
-                        ..addAll(refreshed);
-                    });
-                  },
-                )),
-              ]),
-              actions: [
-                TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Cancel')),
-                FilledButton(onPressed: () => Navigator.pop(dialogContext, {
-                  'name': nameController.text.trim(),
-                  'folderId': selectedFolderId,
-                }), child: const Text('Save PDF')),
-              ],
+        try {
+          final folders = await FolderRepository().allFoldersWithPaths();
+          if (!mounted) return;
+          String? selectedFolderId;
+          final initialName = originalName.toLowerCase().endsWith('.pdf')
+              ? originalName.substring(0, originalName.length - 4)
+              : originalName;
+          final nameController = TextEditingController(text: initialName);
+          final config = await showDialog<Map<String, Object?>>(
+            context: context,
+            builder: (dialogContext) => StatefulBuilder(
+              builder: (dialogContext, refresh) => AlertDialog(
+                title: const Text('Save to DocsGrid'),
+                content: Column(mainAxisSize: MainAxisSize.min, children: [
+                  TextField(controller: nameController, decoration: const InputDecoration(labelText: 'File name', suffixText: '.pdf')),
+                  const SizedBox(height: 12),
+                  DropdownButtonFormField<String?>(
+                    initialValue: selectedFolderId,
+                    isExpanded: true,
+                    decoration: const InputDecoration(labelText: 'Choose folder'),
+                    items: [
+                      const DropdownMenuItem<String?>(value: null, child: Text('My Documents (root)')),
+                      for (final option in folders)
+                        DropdownMenuItem<String?>(value: option.folder.id, child: Text(option.path, overflow: TextOverflow.ellipsis)),
+                    ],
+                    onChanged: (value) => refresh(() => selectedFolderId = value),
+                  ),
+                  Align(alignment: Alignment.centerRight, child: TextButton.icon(
+                    icon: const Icon(Icons.create_new_folder_outlined),
+                    label: const Text('New folder'),
+                    onPressed: () async {
+                      final controller = TextEditingController();
+                      final newName = await showDialog<String>(context: dialogContext, builder: (ctx) => AlertDialog(
+                        title: const Text('Create folder'),
+                        content: TextField(controller: controller, autofocus: true, decoration: const InputDecoration(labelText: 'Folder name')),
+                        actions: [
+                          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+                          FilledButton(onPressed: () => Navigator.pop(ctx, controller.text.trim()), child: const Text('Create')),
+                        ],
+                      ));
+                      await WidgetsBinding.instance.endOfFrame;
+                      controller.dispose();
+                      if (newName == null || newName.trim().isEmpty || !dialogContext.mounted) return;
+                      final created = await FolderRepository().create(name: newName, parentId: selectedFolderId);
+                      final refreshed = await FolderRepository().allFoldersWithPaths();
+                      refresh(() {
+                        selectedFolderId = created.id;
+                        folders
+                          ..clear()
+                          ..addAll(refreshed);
+                      });
+                    },
+                  )),
+                ]),
+                actions: [
+                  TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Cancel')),
+                  FilledButton(onPressed: () => Navigator.pop(dialogContext, {
+                    'name': nameController.text.trim(),
+                    'folderId': selectedFolderId,
+                  }), child: const Text('Save PDF')),
+                ],
+              ),
             ),
-          ),
-        );
-        await WidgetsBinding.instance.endOfFrame;
-        nameController.dispose();
-        if (!mounted) return;
-        if (config == null) { await file.delete(); continue; }
-        final chosenName = (config['name'] as String?)?.trim();
-        final result = await DocumentRepository().importScannedPdf(
-          file,
-          displayName: chosenName == null || chosenName.isEmpty ? originalName : chosenName,
-          targetFolderId: config['folderId'] as String?,
-          sourceType: 'share',
-        );
-        await file.delete();
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(
-            result.added == 1 ? 'Saved in DocsGrid.' : 'This PDF already exists in your library.',
-          )));
+          );
+          await WidgetsBinding.instance.endOfFrame;
+          nameController.dispose();
+          if (!mounted || config == null) continue;
+          final chosenName = (config['name'] as String?)?.trim();
+          final result = await DocumentRepository().importScannedPdf(
+            file,
+            displayName: chosenName == null || chosenName.isEmpty ? originalName : chosenName,
+            targetFolderId: config['folderId'] as String?,
+            sourceType: 'share',
+          );
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(
+              result.added == 1 ? 'Saved in DocsGrid.' : 'This PDF already exists in your library.',
+            )));
+          }
+        } finally {
+          // Shared attachments are staged in cache by the Android host.
+          // Always remove them, including cancellation and failed imports.
+          try {
+            if (await file.exists()) await file.delete();
+          } catch (_) {}
         }
       }
     } catch (error) {
