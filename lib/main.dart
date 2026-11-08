@@ -95,8 +95,10 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    WidgetsBinding.instance.addPostFrameCallback((_) => _consumeSharedPdfs());
-    WidgetsBinding.instance.addPostFrameCallback((_) => _offerRestoreOnFirstLaunch());
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      await _consumeSharedPdfs();
+      await _offerRestoreOnFirstLaunch();
+    });
   }
 
   @override
