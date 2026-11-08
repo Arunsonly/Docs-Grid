@@ -481,7 +481,7 @@ class DocumentRepository {
   /// Reconnects a missing or inaccessible PDF to a user-selected copy.
   /// If the record has a SHA-256 value, the replacement must match exactly.
   Future<void> relinkDocument(DocumentRecord document) async {
-    final picked = await FilePicker.platform.pickFiles(
+    final picked = await FilePicker.pickFiles(
       type: FileType.custom,
       allowedExtensions: ['pdf'],
     );
@@ -723,10 +723,9 @@ class DocumentRepository {
     Future<ImportDecision?> Function(String suggestedName, String? suggestedCategoryId, List<ImportCategoryOption> categories)? review,
     String? targetFolderId,
   }) async {
-    final pickedFiles = await FilePicker.platform.pickFiles(
+    final pickedFiles = await FilePicker.pickFiles(
       type: FileType.custom,
       allowedExtensions: ['pdf'],
-      allowMultiple: true,
     );
     if (pickedFiles.isEmpty) {
       return const ImportSummary(added: 0, duplicates: 0, failed: 0);
