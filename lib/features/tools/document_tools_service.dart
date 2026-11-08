@@ -1028,36 +1028,3 @@ class DocumentToolsService {
     return rawFiles.length;
   }
 }
-).hasMatch(id) || !fileIds.add(id)) {
-        throw StateError('Backup contains a missing or duplicate document reference.');
-      }
-      if (entryName != 'pdfs/$id.pdf' || expectedDigest is! String ||
-          expectedDigest.length != 64 ||
-          int.tryParse(expectedDigest, radix: 16) == null) {
-        throw StateError('Backup contains an invalid PDF entry reference.');
-      }
-      final entry = decoded.findFile(entryName as String);
-      if (entry == null || entry.isFile != true) {
-        throw StateError('Backup is incomplete: missing PDF entry.');
-      }
-      final digest = sha256.convert(entry.content as List<int>).toString();
-      if (digest != expectedDigest) throw StateError('Backup integrity check failed.');
-      documentIds.add(id);
-    }
-    final metadataDocumentIds = <String>{};
-    for (final row in rowsByTable['documents']!) {
-      if (row is! Map || row['id'] is! String ||
-          !metadataDocumentIds.add(row['id'] as String)) {
-        throw StateError('Backup contains an invalid or duplicate document metadata record.');
-      }
-      if (!documentIds.contains(row['id'])) {
-        throw StateError('Backup metadata references a document with no PDF.');
-      }
-    }
-    if (metadataDocumentIds.length != documentIds.length ||
-        !metadataDocumentIds.containsAll(documentIds)) {
-      throw StateError('Backup contains orphaned PDF entries or missing document records.');
-    }
-    return rawFiles.length;
-  }
-}
