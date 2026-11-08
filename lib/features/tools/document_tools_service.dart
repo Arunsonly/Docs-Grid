@@ -380,6 +380,9 @@ class DocumentToolsService {
     }
     final docs = await db.query('documents',
       columns: ['id', 'name', 'storage_uri', 'sha256']);
+    if (docs.length + tables.length + 1 > BackupArchiveLimits.maxEntries) {
+      throw StateError('Backup contains more entries than the supported limit.');
+    }
     var completed = 0;
     for (final row in docs) {
       final uri = row['storage_uri'] as String?;
