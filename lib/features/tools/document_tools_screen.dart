@@ -399,8 +399,11 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
             if (_results.isNotEmpty) ...[
               const SizedBox(height: 8),
               ..._results.map((r) => ListTile(dense: true,
+                leading: const Icon(Icons.picture_as_pdf_outlined),
                 title: Text((r['name'] ?? '').toString()),
-                subtitle: Text('Open PDF · Text match at character ${r['match_position']}'), onTap: () => _openSearchResult(r))),
+                subtitle: Text('Open matching PDF · Text match at character ${r['match_position']}'),
+                trailing: IconButton(tooltip: 'Open PDF', icon: const Icon(Icons.open_in_new), onPressed: () => _openSearchResult(r)),
+                onTap: () => _openSearchResult(r))),
             ],
           ])),
           const Divider(height: 1),
