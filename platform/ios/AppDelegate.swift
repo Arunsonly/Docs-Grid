@@ -44,12 +44,12 @@ import CryptoKit
                 guard let selected = try selectedFolder(), let root = URL(string: selected["uri"] ?? "") else {
                     throw storageError("Choose a DocsGrid storage folder first.")
                 }
-                // Canonical layout: only four top-level folders. Existing legacy
-                // My Files/System folders are deliberately left untouched.
-                let documents = try ensureDirectory(parent: root, name: "Documents")
-                let folders = try ensureDirectory(parent: root, name: "Folders")
-                let database = try ensureDirectory(parent: root, name: "Database")
-                let recovery = try ensureDirectory(parent: root, name: "Recovery")
+                // Match Android's portable root and preserve any legacy folders.
+                let docsGrid = try ensureDirectory(parent: root, name: "DocsGrid")
+                let documents = try ensureDirectory(parent: docsGrid, name: "Documents")
+                let folders = try ensureDirectory(parent: docsGrid, name: "Folders")
+                let database = try ensureDirectory(parent: docsGrid, name: "Database")
+                let recovery = try ensureDirectory(parent: docsGrid, name: "Recovery")
                 result([
                     "databaseUri": database.absoluteString,
                     "recoveryUri": recovery.absoluteString,
@@ -242,7 +242,8 @@ import CryptoKit
             }
             UserDefaults.standard.set(bookmarks, forKey: bookmarkListKey)
         }
-        let folders = try ensureDirectory(parent: root, name: "Folders")
+        let docsGrid = try ensureDirectory(parent: root, name: "DocsGrid")
+        let folders = try ensureDirectory(parent: docsGrid, name: "Folders")
         return ["uri": folders.absoluteString, "name": "DocsGrid/Folders"]
     }
 
