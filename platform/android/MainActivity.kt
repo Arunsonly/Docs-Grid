@@ -33,6 +33,9 @@ class MainActivity : FlutterActivity() {
         super.configureFlutterEngine(flutterEngine)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName)
             .setMethodCallHandler { call, result ->
+                // Capture the incoming share intent on the main thread so a
+                // later onNewIntent cannot be accidentally consumed or cleared.
+                val incomingShareIntent = if (call.method == "consumeSharedPdfs") intent else null
                 val response = if (call.method == "chooseFolder" || call.method == "openPdf") {
                     result
                 } else {
@@ -76,7 +79,7 @@ class MainActivity : FlutterActivity() {
                             val uri = prefs.getString("my_files_uri", null)
                             response.success(uri?.let { mapOf("uri" to it, "name" to "DocsGrid/My Files") })
                         }
-                        "consumeSharedPdfs" -> response.success(consumeSharedPdfs())
+                        "consumeSharedPdfs" -> response.success(consumeSharedPdfs(incomingShareIntent))
                         "checkStorageAccess" -> response.success(checkStorageAccess())
                         "savePdf" -> {
                             val tree = Uri.parse(call.argument<String>("treeUri")!!)
@@ -189,8 +192,8 @@ class MainActivity : FlutterActivity() {
         setIntent(intent)
     }
 
-    private fun consumeSharedPdfs(): List<Map<String, String>> {
-        val incoming = intent ?: return emptyList()
+    private fun consumeSharedPdfs(incoming: Intent?): List<Map<String, String>> {
+        incoming ?: return emptyList()
         val uris = linkedSetOf<Uri>()
         if (incoming.action == Intent.ACTION_SEND) {
             val single = if (android.os.Build.VERSION.SDK_INT >= 33) {
@@ -235,7 +238,9 @@ class MainActivity : FlutterActivity() {
                 else target.delete()
             } catch (_: Exception) { }
         }
-        setIntent(Intent())
+        mainHandler.post {
+            if (intent === incoming) setIntent(Intent())
+        }
         return output
     }
 
