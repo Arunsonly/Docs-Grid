@@ -228,12 +228,20 @@ class FolderRepository {
         });
       });
     } catch (_) {
-      if (physicalUri != null) {
-        try { await storage.deletePdf(physicalUri); } catch (_) {}
+      final createdUri = physicalUri;
+      if (createdUri != null) {
+        try { await storage.deletePdf(createdUri); } catch (_) {}
       }
       rethrow;
     }
-    return folder;
+    return Folder(
+      id: folder.id,
+      name: folder.name,
+      parentId: folder.parentId,
+      storageUri: physicalUri,
+      createdAt: folder.createdAt,
+      updatedAt: folder.updatedAt,
+    );
   }
 
   Future<void> rename(String id, String name) async {
