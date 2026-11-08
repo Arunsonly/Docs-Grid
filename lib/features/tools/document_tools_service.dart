@@ -1186,7 +1186,12 @@ class DocumentToolsService {
       if (entry == null || !entry.isFile) {
         throw StateError('Backup is incomplete: missing PDF entry.');
       }
-      final digest = sha256.convert(entry.content as List<int>).toString();
+      final pdfBytes = entry.content as List<int>;
+      if (pdfBytes.length < 5 ||
+          String.fromCharCodes(pdfBytes.take(5)) != '%PDF-') {
+        throw StateError('Backup contains a file that is not a valid PDF.');
+      }
+      final digest = sha256.convert(pdfBytes).toString();
       if (digest != expectedDigest) {
         throw StateError('Backup integrity check failed.');
       }
