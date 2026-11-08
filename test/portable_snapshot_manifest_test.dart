@@ -65,4 +65,11 @@ void main() {
     expect(() => PortableSnapshotManifest.parse(jsonEncode(value)),
       throwsFormatException);
   });
+
+  test('rejects table counts that disagree with the metadata file record', () {
+    final value = validManifest();
+    (value['tables'] as Map<String, int>)['tags'] = 99;
+    expect(() => PortableSnapshotManifest.parse(jsonEncode(value)),
+      throwsFormatException);
+  });
 }
