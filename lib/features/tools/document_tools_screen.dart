@@ -406,7 +406,17 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
               return ListTile(
                 contentPadding: EdgeInsets.zero,
                 leading: Checkbox(value: selected.contains(doc.id), onChanged: (value) => refresh(() {
-                  if (value == true) { selected.add(doc.id); } else { selected.remove(doc.id); }
+                  if (value == true) {
+                    if (selected.length >= docs.length - 1) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('Keep at least one copy outside the Recycle Bin.')),
+                      );
+                      return;
+                    }
+                    selected.add(doc.id);
+                  } else {
+                    selected.remove(doc.id);
+                  }
                 })),
                 title: Text('${doc.name}.pdf', maxLines: 1, overflow: TextOverflow.ellipsis),
                 subtitle: Text(_formatSize(doc.sizeBytes)),
@@ -469,7 +479,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
               if (dialogContext.mounted) Navigator.pop(dialogContext);
               if (mounted) setState(() => _message = 'Moved ${targets.length} duplicate PDF(s) to Recycle Bin.');
             },
-            child: Text('Delete selected (${selected.length})'),
+            child: Text('Move selected to Recycle Bin (${selected.length})'),
           ),
         ],
       ),
