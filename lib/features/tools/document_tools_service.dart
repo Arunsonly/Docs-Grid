@@ -201,6 +201,7 @@ class DocumentToolsService {
   Future<List<Map<String, Object?>>> searchText(String query) async {
     final q = query.trim();
     if (q.isEmpty) return [];
+    if (q.length > 256) throw ArgumentError('Search text must be 256 characters or fewer.');
     final db = await _database.database;
     final rows = await db.rawQuery('''
       SELECT d.id, d.name, d.storage_uri, i.extracted_text,
@@ -209,6 +210,7 @@ class DocumentToolsService {
       JOIN documents d ON d.id = i.document_id
       WHERE d.deleted_at IS NULL AND instr(lower(i.extracted_text), lower(?)) > 0
       ORDER BY match_position ASC, d.name COLLATE NOCASE
+      LIMIT 100
     ''', [q, q]);
     // OCR stores an explicit page marker before every page. Resolve the page
     // containing the first match so search results are actionable, not just a
