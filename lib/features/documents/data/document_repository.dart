@@ -812,6 +812,18 @@ class DocumentRepository {
               throw StateError('Destination folder was removed before the PDF import completed.');
             }
           }
+          if (selectedCategoryId != null) {
+            final activeCategory = await txn.query(
+              'categories',
+              columns: ['id'],
+              where: 'id = ?',
+              whereArgs: [selectedCategoryId],
+              limit: 1,
+            );
+            if (activeCategory.isEmpty) {
+              throw StateError('Selected category was removed before the PDF import completed.');
+            }
+          }
           await txn.insert('documents', {
             'id': documentId,
             'name': storedName,
