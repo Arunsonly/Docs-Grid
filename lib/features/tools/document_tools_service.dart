@@ -938,14 +938,74 @@ class DocumentToolsService {
     if (manifest['format'] != 'DocsGridBackup' || manifest['version'] != 1) {
       throw StateError('Unsupported backup format or version.');
     }
-    final files = (manifest['files'] as List<dynamic>? ?? []);
-    for (final raw in files) {
-      final item = raw as Map<String, dynamic>;
-      final entry = decoded.findFile(item['entry'] as String);
-      if (entry == null) throw StateError('Backup is incomplete: missing PDF entry.');
-      final digest = sha256.convert(entry.content as List<int>).toString();
-      if (digest != item['sha256']) throw StateError('Backup integrity check failed.');
+
+    // Validate the metadata tables before restore creates any files or writes
+    // to SQLite. OCR indexing was added after the original v1 format.
+    final tableNames = ['folders', 'documents', 'categories', 'tags',
+      'document_tags', 'reminders', 'history', 'settings', 'document_text_index'];
+    final declaredTables = manifest['tables'];
+    if (declaredTables is! Map<String, dynamic>) {
+      throw StateError('Backup manifest is missing table counts.');
     }
-    return files.length;
+    final rowsByTable = <String, List<dynamic>>{};
+    for (final table in tableNames) {
+      final archiveEntry = decoded.findFile('$table.json');
+      if (archiveEntry == null && table == 'document_text_index') {
+        rowsByTable[table] = <dynamic>[];
+        continue;
+      }
+      if (archiveEntry == null) {
+        throw StateError('Backup is incomplete: missing $table metadata.');
+      }
+      final rows = jsonDecode(utf8.decode(archiveEntry.content as List<int>));
+      if (rows is! List) throw StateError('Backup contains invalid $table metadata.');
+      final declaredCount = declaredTables[table];
+      // Older v1 archives may not declare the OCR index table.
+      if (declaredCount != null && declaredCount != rows.length) {
+        throw StateError('Backup metadata count mismatch for $table.');
+      }
+      if (declaredCount == null && table != 'document_text_index') {
+        throw StateError('Backup manifest is missing the $table count.');
+      }
+      rowsByTable[table] = rows;
+    }
+
+    final rawFiles = manifest['files'];
+    if (rawFiles is! List) throw StateError('Backup manifest has an invalid PDF list.');
+    final documentIds = <String>{};
+    final fileIds = <String>{};
+    for (final raw in rawFiles) {
+      if (raw is! Map<String, dynamic>) {
+        throw StateError('Backup manifest contains an invalid PDF record.');
+      }
+      final id = raw['documentId'];
+      final entryName = raw['entry'];
+      final expectedDigest = raw['sha256'];
+      if (id is! String || id.isEmpty || !fileIds.add(id)) {
+        throw StateError('Backup contains a missing or duplicate document reference.');
+      }
+      if (entryName != 'pdfs/$id.pdf' || expectedDigest is! String ||
+          !RegExp(r'^[a-fA-F0-9]{64}
+}
+).hasMatch(expectedDigest)) {
+        throw StateError('Backup contains an invalid PDF entry reference.');
+      }
+      final entry = decoded.findFile(entryName as String);
+      if (entry == null || entry.isFile != true) {
+        throw StateError('Backup is incomplete: missing PDF entry.');
+      }
+      final digest = sha256.convert(entry.content as List<int>).toString();
+      if (digest != expectedDigest) throw StateError('Backup integrity check failed.');
+      documentIds.add(id);
+    }
+    for (final row in rowsByTable['documents']!) {
+      if (row is! Map || row['id'] is! String || !documentIds.contains(row['id'])) {
+        throw StateError('Backup metadata references a document with no PDF.');
+      }
+    }
+    if (rowsByTable['documents']!.length != documentIds.length) {
+      throw StateError('Backup contains orphaned PDF entries or missing document records.');
+    }
+    return rawFiles.length;
   }
 }
