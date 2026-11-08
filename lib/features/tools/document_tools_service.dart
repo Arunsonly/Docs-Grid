@@ -1065,10 +1065,87 @@ class DocumentToolsService {
     final rawDocuments = jsonDecode(utf8.decode(documentsFile.content as List<int>));
     if (rawDocuments is! List) throw StateError('Backup document metadata is invalid.');
     final documentIds = <String>{};
+    final documentsById = <String, Map>{};
     for (final raw in rawDocuments) {
-      if (raw is! Map || raw['id'] is! String || (raw['id'] as String).isEmpty ||
+      if (raw is! Map || raw['id'] is! String || (raw['id'] as String).trim().isEmpty ||
           !documentIds.add(raw['id'] as String)) {
         throw StateError('Backup contains invalid or duplicate document IDs.');
+      }
+      documentsById[raw['id'] as String] = raw;
+    }
+
+    // Folder names are later used as path segments by private-storage
+    // operations. Validate the untrusted archive before any database or file
+    // writes so a crafted backup cannot inject ../ or platform separators.
+    final foldersFile = decoded.findFile('folders.json');
+    if (foldersFile == null) throw StateError('Backup is incomplete: missing folder metadata.');
+    final rawFolders = jsonDecode(utf8.decode(foldersFile.content as List<int>));
+    if (rawFolders is! List) throw StateError('Backup folder metadata is invalid.');
+    final folderIds = <String>{};
+    final parentById = <String, String?>{};
+    final siblingNames = <String>{};
+    for (final raw in rawFolders) {
+      if (raw is! Map || raw['id'] is! String || (raw['id'] as String).trim().isEmpty ||
+          !folderIds.add(raw['id'] as String) || raw['name'] is! String) {
+        throw StateError('Backup contains invalid or duplicate folder records.');
+      }
+      final name = raw['name'] as String;
+      if (name.trim().isEmpty || name == '.' || name == '..' ||
+          name.contains('/') || name.contains('\\\\') ||
+          name.contains(String.fromCharCode(0)) ||
+          name.runes.any((rune) => rune < 32 || rune == 127)) {
+        throw StateError('Backup contains an unsafe folder name.');
+      }
+      final parentId = raw['parent_id'];
+      if (parentId != null && parentId is! String) {
+        throw StateError('Backup contains an invalid folder parent reference.');
+      }
+      parentById[raw['id'] as String] = parentId as String?;
+      final siblingKey = '${parentId ?? ''}::${name.toLowerCase()}';
+      if (!siblingNames.add(siblingKey)) {
+        throw StateError('Backup contains duplicate sibling folder names.');
+      }
+    }
+    for (final entry in parentById.entries) {
+      if (entry.value != null && !folderIds.contains(entry.value)) {
+        throw StateError('Backup contains a folder with a missing parent.');
+      }
+    }
+    final folderVisitState = <String, int>{};
+    for (final id in folderIds) {
+      final chain = <String>[];
+      String? current = id;
+      while (current != null && folderVisitState[current] != 2) {
+        if (folderVisitState[current] == 1) {
+          throw StateError('Backup folder hierarchy contains a cycle.');
+        }
+        folderVisitState[current] = 1;
+        chain.add(current);
+        current = parentById[current];
+      }
+      for (final visitedId in chain) {
+        folderVisitState[visitedId] = 2;
+      }
+    }
+    final categoriesFile = decoded.findFile('categories.json');
+    if (categoriesFile == null) throw StateError('Backup is incomplete: missing category metadata.');
+    final rawCategories = jsonDecode(utf8.decode(categoriesFile.content as List<int>));
+    if (rawCategories is! List) throw StateError('Backup category metadata is invalid.');
+    final categoryIds = <String>{};
+    for (final raw in rawCategories) {
+      if (raw is! Map || raw['id'] is! String || (raw['id'] as String).trim().isEmpty ||
+          !categoryIds.add(raw['id'] as String)) {
+        throw StateError('Backup contains invalid or duplicate category records.');
+      }
+    }
+    for (final document in documentsById.values) {
+      final folderId = document['folder_id'];
+      final categoryId = document['category_id'];
+      if (folderId != null && !folderIds.contains(folderId)) {
+        throw StateError('Backup document refers to a missing folder.');
+      }
+      if (categoryId != null && !categoryIds.contains(categoryId)) {
+        throw StateError('Backup document refers to a missing category.');
       }
     }
 
