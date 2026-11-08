@@ -7,6 +7,7 @@ import '../../documents/data/document_repository.dart';
 import '../../tools/document_tools_service.dart';
 import '../../../core/storage/storage_location_service.dart';
 import '../../reminders/data/reminder_repository.dart';
+import '../../categories/data/category_repository.dart';
 
 import '../data/folder_repository.dart';
 import '../domain/folder.dart';
@@ -21,6 +22,7 @@ class FoldersScreen extends StatefulWidget {
 class _FoldersScreenState extends State<FoldersScreen> {
   final FolderRepository _repository = FolderRepository();
   final DocumentRepository _documents = DocumentRepository();
+  final CategoryRepository _categories = CategoryRepository();
   final List<Folder> _ancestors = [];
   String? _currentFolderId;
   String _currentTitle = 'Folders';
@@ -223,6 +225,53 @@ class _FoldersScreenState extends State<FoldersScreen> {
     if (saved != true) return;
     await ReminderRepository().create(title: reminderTitle, note: reminderNote, remindAt: selected, documentId: document.id);
     if (mounted) _message('Reminder saved for this PDF.');
+  }
+
+  Future<void> _chooseCategory(DocumentRecord document) async {
+    final categories = await _categories.listCategories();
+    if (!mounted) return;
+    final selected = await showDialog<String?>(
+      context: context,
+      builder: (ctx) => SimpleDialog(
+        title: const Text('Set category'),
+        children: [
+          SimpleDialogOption(onPressed: () => Navigator.pop(ctx, ''), child: const Text('Uncategorised')),
+          for (final category in categories)
+            SimpleDialogOption(onPressed: () => Navigator.pop(ctx, category.id), child: Text(category.name)),
+        ],
+      ),
+    );
+    if (selected == null) return;
+    await _categories.setDocumentCategory(document.id, selected.isEmpty ? null : selected);
+    await _refresh();
+  }
+
+  Future<void> _editTags(DocumentRecord document) async {
+    final tags = await _categories.listTags();
+    final current = await _categories.tagsForDocument(document.id);
+    if (!mounted) return;
+    final selected = current.map((tag) => tag.id).toSet();
+    final result = await showDialog<Set<String>>(context: context, builder: (ctx) => StatefulBuilder(
+      builder: (ctx, refresh) => AlertDialog(
+        title: const Text('Edit tags'),
+        content: SizedBox(width: 360, child: tags.isEmpty
+          ? const Text('Create tags in Category & Tag settings first.')
+          : Column(mainAxisSize: MainAxisSize.min, children: [
+              for (final tag in tags)
+                CheckboxListTile(dense: true, contentPadding: EdgeInsets.zero, value: selected.contains(tag.id),
+                  title: Text(tag.name), onChanged: (value) => refresh(() {
+                    if (value == true) { selected.add(tag.id); } else { selected.remove(tag.id); }
+                  })),
+            ])),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, selected), child: const Text('Save tags')),
+        ],
+      ),
+    ));
+    if (result == null) return;
+    await _categories.setDocumentTags(document.id, result.toList());
+    await _refresh();
   }
 
   Future<void> _renamePdf(DocumentRecord document) async {
@@ -472,6 +521,8 @@ class _FoldersScreenState extends State<FoldersScreen> {
                                     try {
                                       if (action == 'share') await DocumentToolsService().shareStoredPdf(document.storagePath, '${document.name}.pdf');
                                       if (action == 'favorite') await _documents.setFavorite(document, !document.isFavorite);
+                                      if (action == 'category') await _chooseCategory(document);
+                                      if (action == 'tags') await _editTags(document);
                                       if (action == 'rename') await _renamePdf(document);
                                       if (action == 'move') await _moveOne(document);
                                       if (action == 'reminder') await _addReminder(document);
@@ -484,6 +535,8 @@ class _FoldersScreenState extends State<FoldersScreen> {
                                   itemBuilder: (_) => [
                                     const PopupMenuItem(value: 'share', child: Text('Share PDF')),
                                     PopupMenuItem(value: 'favorite', child: Text(document.isFavorite ? 'Remove from Star' : 'Add to Star')),
+                                    const PopupMenuItem(value: 'category', child: Text('Set category')),
+                                    const PopupMenuItem(value: 'tags', child: Text('Edit tags')),
                                     const PopupMenuItem(value: 'rename', child: Text('Rename')),
                                     const PopupMenuItem(value: 'move', child: Text('Move to folder')),
                                     const PopupMenuItem(value: 'reminder', child: Text('Add to reminder')),
