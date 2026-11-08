@@ -25,6 +25,7 @@ void main() {
     required List<Map<String, Object?>> documents,
     List<Map<String, Object?>> folders = const [],
     bool extraUnreferencedEntry = false,
+    bool invalidPdfHeader = false,
   }) async {
     final archive = Archive();
     final tableNames = [
@@ -45,7 +46,7 @@ void main() {
 
     final fileRecords = <Map<String, Object?>>[];
     for (final id in ['doc-a', 'doc-b']) {
-      final bytes = utf8.encode('%PDF-1.4\n$id\n%%EOF');
+      final bytes = utf8.encode(invalidPdfHeader ? 'not-pdf-$id' : '%PDF-1.4\n$id\n%%EOF');
       archive.addFile(ArchiveFile('pdfs/$id.pdf', bytes.length, bytes));
       fileRecords.add({
         'documentId': id,
@@ -99,6 +100,24 @@ void main() {
     ]);
 
     expect(await service.validateBackup(file), 2);
+  });
+
+  test('rejects non-PDF content even when its manifest hash matches', () async {
+    final file = await makeBackup(
+      documents: [
+        {'id': 'doc-a', 'name': 'A'},
+        {'id': 'doc-b', 'name': 'B'},
+      ],
+      invalidPdfHeader: true,
+    );
+    await expectLater(
+      service.validateBackup(file),
+      throwsA(isA<StateError>().having(
+        (error) => error.message,
+        'message',
+        contains('not a valid PDF'),
+      )),
+    );
   });
 
   test('rejects duplicate document metadata IDs even when PDF IDs are unique', () async {
