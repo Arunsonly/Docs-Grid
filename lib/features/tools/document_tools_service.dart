@@ -651,6 +651,9 @@ class DocumentToolsService {
       rowsByTable.putIfAbsent(required, () => <Map<String, Object?>>[]);
     }
 
+    // Validate all row IDs and foreign-key relationships before scanning the
+    // selected library or creating folders from this untrusted snapshot.
+    PortableSnapshotRowsValidator.validate(rowsByTable);
     final folderRows = rowsByTable['folders']!;
     // Portable snapshots are untrusted too: reject malformed folder graphs
     // before scanning or creating anything in the user's selected library.
