@@ -10,6 +10,7 @@ import CryptoKit
     private let bookmarkListKey = "docsgrid_storage_bookmarks"
     private var pendingFolderResult: FlutterResult?
     private var documentController: UIDocumentInteractionController?
+    private let storageQueue = DispatchQueue(label: "com.docsgrid.storage", qos: .userInitiated)
 
     override func application(
         _ application: UIApplication,
@@ -29,7 +30,7 @@ import CryptoKit
                 if call.method == "chooseFolder" || call.method == "openPdf" {
                     self.handle(call, result: result)
                 } else {
-                    DispatchQueue.global(qos: .userInitiated).async {
+                    self.storageQueue.async {
                         self.handle(call) { value in
                             DispatchQueue.main.async { result(value) }
                         }
