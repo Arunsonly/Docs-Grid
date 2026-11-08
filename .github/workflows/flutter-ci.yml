@@ -63,9 +63,9 @@ jobs:
           path: |
             ~/.gradle/caches
             ~/.gradle/wrapper
-          key: gradle-\${{ runner.os }}-\${{ hashFiles('pubspec.lock') }}-9.3.1
+          key: gradle-${{ runner.os }}-${{ hashFiles('pubspec.lock') }}-9.3.1
           restore-keys: |
-            gradle-\${{ runner.os }}-
+            gradle-${{ runner.os }}-
       - name: Add checksum-pinned JetBrains Maven fallback
         run: |
           python3 - <<'PY'
