@@ -7,12 +7,33 @@ class AppDatabase {
   static final AppDatabase instance = AppDatabase._();
 
   Database? _database;
+  Future<Database>? _openingDatabase;
 
   Future<Database> get database async {
-    if (_database != null) return _database!;
+    final current = _database;
+    if (current != null) return current;
+
+    // Share the first-open Future so simultaneous first repository calls do
+    // not race to open and initialize the same SQLite database.
+    final opening = _openingDatabase;
+    if (opening != null) return opening;
+
+    final future = _openDatabase();
+    _openingDatabase = future;
+    try {
+      final opened = await future;
+      _database = opened;
+      return opened;
+    } catch (_) {
+      _openingDatabase = null;
+      rethrow;
+    }
+  }
+
+  Future<Database> _openDatabase() async {
     final directory = await getApplicationDocumentsDirectory();
     final dbPath = p.join(directory.path, 'docs_grid.db');
-    _database = await openDatabase(
+    return openDatabase(
       dbPath,
       version: 3,
       onConfigure: (db) async => db.execute('PRAGMA foreign_keys = ON'),
@@ -125,8 +146,8 @@ class AppDatabase {
         }
       },
     );
-    return _database!;
   }
+
   Future<void> _createV3Tables(DatabaseExecutor db) async {
     await db.execute('''
       CREATE TABLE IF NOT EXISTS document_text_index (
