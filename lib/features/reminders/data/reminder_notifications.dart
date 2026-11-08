@@ -159,6 +159,7 @@ class ReminderNotifications {
           body: row['note'] as String?,
           at: DateTime.parse(row['remind_at_utc'] as String).toLocal(),
           recurrence: row['recurrence_rule'] as String?,
+          documentId: row['document_id'] as String?,
         );
       } catch (_) {
         // Keep the database reminder even if the OS refuses this schedule.
