@@ -326,11 +326,27 @@ class MainActivity : FlutterActivity() {
             val check = contentResolver.openInputStream(temp)?.use { it.readBytes() }
                 ?: throw IllegalStateException("Could not verify metadata file.")
             if (!bytes.contentEquals(check)) throw IllegalStateException("Metadata verification failed.")
-            if (existing != null && !DocumentsContract.deleteDocument(contentResolver, existing)) {
-                throw IllegalStateException("Could not replace the previous metadata snapshot.")
+            // Preserve the previous verified snapshot until the new file has
+            // been published successfully. Providers that cannot rename the old
+            // file fail safely instead of deleting the only recovery copy.
+            val backupName = ".$name.previous-${java.util.UUID.randomUUID()}"
+            val backup = if (existing != null) {
+                DocumentsContract.renameDocument(contentResolver, existing, backupName)
+                    ?: throw IllegalStateException("Could not preserve the previous metadata snapshot.")
+            } else null
+            try {
+                val published = DocumentsContract.renameDocument(contentResolver, temp, name)
+                    ?: throw IllegalStateException("Could not publish metadata file.")
+                if (backup != null) {
+                    try { DocumentsContract.deleteDocument(contentResolver, backup) } catch (_: Exception) {}
+                }
+                return published
+            } catch (publishError: Exception) {
+                if (backup != null) {
+                    try { DocumentsContract.renameDocument(contentResolver, backup, name) } catch (_: Exception) {}
+                }
+                throw publishError
             }
-            return DocumentsContract.renameDocument(contentResolver, temp, name)
-                ?: throw IllegalStateException("Could not publish metadata file.")
         } catch (error: Exception) {
             try { DocumentsContract.deleteDocument(contentResolver, temp) } catch (_: Exception) {}
             throw error
