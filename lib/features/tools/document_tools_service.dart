@@ -947,16 +947,19 @@ class DocumentToolsService {
     if (!await zipFile.exists()) throw StateError('Backup file not found.');
     final decoded = ZipDecoder().decodeBytes(await zipFile.readAsBytes());
     final manifestFile = decoded.findFile('manifest.json');
-    if (manifestFile == null) throw StateError('This is not a DocsGrid backup.');
-    final manifest = jsonDecode(utf8.decode(manifestFile.content as List<int>)) as Map<String, dynamic>;
-    if (manifest['format'] != 'DocsGridBackup' || manifest['version'] != 1) {
+    if (manifestFile == null || !manifestFile.isFile) {
+      throw StateError('This is not a DocsGrid backup.');
+    }
+    final manifest = jsonDecode(utf8.decode(manifestFile.content as List<int>));
+    if (manifest is! Map<String, dynamic> ||
+        manifest['format'] != 'DocsGridBackup' || manifest['version'] != 1) {
       throw StateError('Unsupported backup format or version.');
     }
 
-    // Validate the metadata tables before restore creates any files or writes
-    // to SQLite. OCR indexing was added after the original v1 format.
-    final tableNames = ['folders', 'documents', 'categories', 'tags',
-      'document_tags', 'reminders', 'history', 'settings', 'document_text_index'];
+    final tableNames = <String>[
+      'folders', 'documents', 'categories', 'tags', 'document_tags',
+      'reminders', 'history', 'settings', 'document_text_index',
+    ];
     final declaredTables = manifest['tables'];
     if (declaredTables is! Map<String, dynamic>) {
       throw StateError('Backup manifest is missing table counts.');
@@ -968,13 +971,14 @@ class DocumentToolsService {
         rowsByTable[table] = <dynamic>[];
         continue;
       }
-      if (archiveEntry == null) {
+      if (archiveEntry == null || !archiveEntry.isFile) {
         throw StateError('Backup is incomplete: missing $table metadata.');
       }
       final rows = jsonDecode(utf8.decode(archiveEntry.content as List<int>));
-      if (rows is! List) throw StateError('Backup contains invalid $table metadata.');
+      if (rows is! List) {
+        throw StateError('Backup contains invalid $table metadata.');
+      }
       final declaredCount = declaredTables[table];
-      // Older v1 archives may not declare the OCR index table.
       if (declaredCount != null && declaredCount != rows.length) {
         throw StateError('Backup metadata count mismatch for $table.');
       }
@@ -985,7 +989,9 @@ class DocumentToolsService {
     }
 
     final rawFiles = manifest['files'];
-    if (rawFiles is! List) throw StateError('Backup manifest has an invalid PDF list.');
+    if (rawFiles is! List) {
+      throw StateError('Backup manifest has an invalid PDF list.');
+    }
     final documentIds = <String>{};
     final fileIds = <String>{};
     for (final raw in rawFiles) {
@@ -995,105 +1001,31 @@ class DocumentToolsService {
       final id = raw['documentId'];
       final entryName = raw['entry'];
       final expectedDigest = raw['sha256'];
-      if (id is! String || !RegExp(r'^[A-Za-z0-9_-]{1,128}$').hasMatch(id) || !fileIds.add(id)) {
+      if (id is! String ||
+          !RegExp(r'^[A-Za-z0-9_-]{1,128}$').hasMatch(id) ||
+          !fileIds.add(id)) {
         throw StateError('Backup contains a missing or duplicate document reference.');
       }
-      if (entryName != 'pdfs/$id.pdf' || expectedDigest is! String ||
-          !RegExp(r'^[a-fA-F0-9]{64}
+      final digestIsValid = expectedDigest is String &&
+          expectedDigest.length == 64 &&
+          expectedDigest.codeUnits.every((unit) =>
+              (unit >= 48 && unit <= 57) ||
+              (unit >= 65 && unit <= 70) ||
+              (unit >= 97 && unit <= 102));
+      if (entryName != 'pdfs/$id.pdf' || !digestIsValid) {
         throw StateError('Backup contains an invalid PDF entry reference.');
       }
       final entry = decoded.findFile(entryName as String);
-      if (entry == null || entry.isFile != true) {
+      if (entry == null || !entry.isFile) {
         throw StateError('Backup is incomplete: missing PDF entry.');
       }
       final digest = sha256.convert(entry.content as List<int>).toString();
-      if (digest != expectedDigest) throw StateError('Backup integrity check failed.');
+      if (digest != expectedDigest) {
+        throw StateError('Backup integrity check failed.');
+      }
       documentIds.add(id);
     }
-    final metadataDocumentIds = <String>{};
-    for (final row in rowsByTable['documents']!) {
-      if (row is! Map || row['id'] is! String ||
-          !metadataDocumentIds.add(row['id'] as String)) {
-        throw StateError('Backup contains an invalid or duplicate document metadata record.');
-      }
-      if (!documentIds.contains(row['id'])) {
-        throw StateError('Backup metadata references a document with no PDF.');
-      }
-    }
-    if (metadataDocumentIds.length != documentIds.length ||
-        !metadataDocumentIds.containsAll(documentIds)) {
-      throw StateError('Backup contains orphaned PDF entries or missing document records.');
-    }
-    return rawFiles.length;
-  }
-}
-).hasMatch(expectedDigest)) {
-        throw StateError('Backup contains an invalid PDF entry reference.');
-      }
-      final entry = decoded.findFile(entryName as String);
-      if (entry == null || entry.isFile != true) {
-        throw StateError('Backup is incomplete: missing PDF entry.');
-      }
-      final digest = sha256.convert(entry.content as List<int>).toString();
-      if (digest != expectedDigest) throw StateError('Backup integrity check failed.');
-      documentIds.add(id);
-    }
-    final metadataDocumentIds = <String>{};
-    for (final row in rowsByTable['documents']!) {
-      if (row is! Map || row['id'] is! String ||
-          !metadataDocumentIds.add(row['id'] as String)) {
-        throw StateError('Backup contains an invalid or duplicate document metadata record.');
-      }
-      if (!documentIds.contains(row['id'])) {
-        throw StateError('Backup metadata references a document with no PDF.');
-      }
-    }
-    if (metadataDocumentIds.length != documentIds.length ||
-        !metadataDocumentIds.containsAll(documentIds)) {
-      throw StateError('Backup contains orphaned PDF entries or missing document records.');
-    }
-    return rawFiles.length;
-  }
-}
-).hasMatch(expectedDigest)) {
-        throw StateError('Backup contains an invalid PDF entry reference.');
-      }
-      final entry = decoded.findFile(entryName as String);
-      if (entry == null || entry.isFile != true) {
-        throw StateError('Backup is incomplete: missing PDF entry.');
-      }
-      final digest = sha256.convert(entry.content as List<int>).toString();
-      if (digest != expectedDigest) throw StateError('Backup integrity check failed.');
-      documentIds.add(id);
-    }
-    final metadataDocumentIds = <String>{};
-    for (final row in rowsByTable['documents']!) {
-      if (row is! Map || row['id'] is! String ||
-          !metadataDocumentIds.add(row['id'] as String)) {
-        throw StateError('Backup contains an invalid or duplicate document metadata record.');
-      }
-      if (!documentIds.contains(row['id'])) {
-        throw StateError('Backup metadata references a document with no PDF.');
-      }
-    }
-    if (metadataDocumentIds.length != documentIds.length ||
-        !metadataDocumentIds.containsAll(documentIds)) {
-      throw StateError('Backup contains orphaned PDF entries or missing document records.');
-    }
-    return rawFiles.length;
-  }
-}
-).hasMatch(expectedDigest)) {
-        throw StateError('Backup contains an invalid PDF entry reference.');
-      }
-      final entry = decoded.findFile(entryName as String);
-      if (entry == null || entry.isFile != true) {
-        throw StateError('Backup is incomplete: missing PDF entry.');
-      }
-      final digest = sha256.convert(entry.content as List<int>).toString();
-      if (digest != expectedDigest) throw StateError('Backup integrity check failed.');
-      documentIds.add(id);
-    }
+
     final metadataDocumentIds = <String>{};
     for (final row in rowsByTable['documents']!) {
       if (row is! Map || row['id'] is! String ||
