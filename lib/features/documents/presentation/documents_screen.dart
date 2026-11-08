@@ -129,9 +129,27 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   }
 
   Future<void> _import() async {
+    final folders = await _folderRepository.allFoldersWithPaths();
+    if (!mounted) return;
+    final destination = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) => SafeArea(
+        child: ListView(shrinkWrap: true, children: [
+          const ListTile(title: Text('Choose destination folder')),
+          ListTile(leading: const Icon(Icons.home_outlined), title: const Text('My Documents (root)'), onTap: () => Navigator.pop(sheetContext, '')),
+          for (final option in folders)
+            ListTile(leading: const Icon(Icons.folder_outlined), title: Text(option.path), onTap: () => Navigator.pop(sheetContext, option.folder.id)),
+        ]),
+      ),
+    );
+    if (destination == null || !mounted) return;
     setState(() => _importing = true);
     try {
-      final result = await _repository.importPdfs(review: _reviewImport);
+      final result = await _repository.importPdfs(
+        review: _reviewImport,
+        targetFolderId: destination.isEmpty ? null : destination,
+      );
       await _load();
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
