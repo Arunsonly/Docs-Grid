@@ -429,10 +429,21 @@ class DocumentToolsService {
         await addStoredFile(metadataFile, '$table.json');
       }
 
-      final docs = await db.query('documents',
-        columns: ['id', 'name', 'storage_uri', 'sha256']);
+      final totalDocs = Sqflite.firstIntValue(
+        await db.rawQuery('SELECT COUNT(*) FROM documents'),
+      ) ?? 0;
       var completed = 0;
-      for (final row in docs) {
+      var documentOffset = 0;
+      while (true) {
+        final docs = await db.query(
+          'documents',
+          columns: ['id', 'name', 'storage_uri', 'sha256'],
+          limit: 250,
+          offset: documentOffset,
+          orderBy: 'id',
+        );
+        if (docs.isEmpty) break;
+        for (final row in docs) {
         final uri = row['storage_uri'] as String?;
         if (uri == null || uri.isEmpty) {
           throw StateError('Backup cannot be complete: "${row['name']}" has no storage reference.');
@@ -472,8 +483,10 @@ class DocumentToolsService {
             await stagedProviderFile.delete();
           }
         }
-        completed++;
-        onProgress?.call(completed, docs.length);
+          completed++;
+          onProgress?.call(completed, totalDocs);
+        }
+        documentOffset += docs.length;
       }
 
       final manifestFile = File(p.join(staging.path, 'manifest.json'));
