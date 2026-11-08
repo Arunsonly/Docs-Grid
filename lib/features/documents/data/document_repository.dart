@@ -596,6 +596,11 @@ class DocumentRepository {
         parentUri: destinationUri,
         name: safeName,
       );
+      final copiedDigest = await storage.sha256Pdf(uri);
+      if (copiedDigest != digest) {
+        try { await storage.deletePdf(uri); } catch (_) {}
+        throw StateError('Scanned PDF verification failed; the source scan was kept.');
+      }
     } else {
       final base = await getApplicationDocumentsDirectory();
       final library = Directory(p.join(base.path, 'DocsGrid', 'PDFs'));
