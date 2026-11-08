@@ -247,6 +247,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
     final rows = await db.query('documents', columns: ['id', 'name', 'storage_uri'],
       where: 'deleted_at IS NULL');
     var done = 0;
+    var noText = 0;
     var skipped = 0;
     for (final row in rows) {
       final uri = row['storage_uri'] as String?;
@@ -255,13 +256,19 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
         continue;
       }
       try {
-        await _tools.indexPdfTextFromUri(row['id'] as String, uri);
-        done++;
+        final characters = await _tools.indexPdfTextFromUri(row['id'] as String, uri);
+        if (characters == 0) {
+          noText++;
+        } else {
+          done++;
+        }
       } catch (_) {
         skipped++;
       }
     }
-    if (mounted) setState(() => _message = 'OCR indexing finished: $done indexed, $skipped skipped or failed. Provider PDFs are copied to temporary local storage for OCR.');
+    if (mounted) setState(() => _message =
+      'OCR indexing finished: $done searchable, $noText had no readable text, $skipped failed. '
+      'Scanned/image-only PDFs may need clearer pages or a supported OCR language.');
   });
 
 
