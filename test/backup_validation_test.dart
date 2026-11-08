@@ -24,6 +24,7 @@ void main() {
   Future<File> makeBackup({
     required List<Map<String, Object?>> documents,
     List<Map<String, Object?>> folders = const [],
+    bool duplicateManifestEntry = false,
   }) async {
     final archive = Archive();
     final tableNames = [
@@ -62,11 +63,33 @@ void main() {
     };
     final manifestBytes = utf8.encode(jsonEncode(manifest));
     archive.addFile(ArchiveFile('manifest.json', manifestBytes.length, manifestBytes));
+    if (duplicateManifestEntry) {
+      archive.addFile(ArchiveFile('manifest.json', manifestBytes.length, manifestBytes));
+    }
 
     final file = File('${tempDirectory.path}/test-backup.zip');
     await file.writeAsBytes(ZipEncoder().encode(archive), flush: true);
     return file;
   }
+
+  test('rejects duplicate ZIP entry names before reading backup metadata', () async {
+    final file = await makeBackup(
+      documents: [
+        {'id': 'doc-a', 'name': 'A'},
+        {'id': 'doc-b', 'name': 'B'},
+      ],
+      duplicateManifestEntry: true,
+    );
+
+    await expectLater(
+      service.validateBackup(file),
+      throwsA(isA<StateError>().having(
+        (error) => error.message,
+        'message',
+        contains('duplicate'),
+      )),
+    );
+  });
 
   test('accepts backup whose PDF and document metadata IDs match exactly', () async {
     final file = await makeBackup(documents: [
