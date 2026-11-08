@@ -121,11 +121,16 @@ class ReminderRepository {
       'created_at': now,
       'updated_at': now,
     });
-    await ReminderNotifications.instance.requestPermission();
-    await ReminderNotifications.instance.schedule(
-      id: id, title: cleanTitle, body: cleanNote, at: remindAt,
-      recurrence: recurrenceRule, documentId: documentId,
-    );
+    try {
+      await ReminderNotifications.instance.requestPermission();
+      await ReminderNotifications.instance.schedule(
+        id: id, title: cleanTitle, body: cleanNote, at: remindAt,
+        recurrence: recurrenceRule, documentId: documentId,
+      );
+    } catch (_) {
+      // The durable reminder is saved. Startup/resume reconciliation retries
+      // OS scheduling without losing the user's reminder record.
+    }
   }
 
   Future<void> update({
@@ -165,11 +170,15 @@ class ReminderRepository {
       'completed_at': null,
       'updated_at': DateTime.now().toUtc().toIso8601String(),
     }, where: 'id = ?', whereArgs: [id]);
-    await ReminderNotifications.instance.cancel(id);
-    await ReminderNotifications.instance.schedule(
-      id: id, title: cleanTitle, body: cleanNote, at: remindAt,
-      recurrence: recurrenceRule, documentId: existing.first['document_id'] as String?,
-    );
+    try {
+      await ReminderNotifications.instance.cancel(id);
+      await ReminderNotifications.instance.schedule(
+        id: id, title: cleanTitle, body: cleanNote, at: remindAt,
+        recurrence: recurrenceRule, documentId: existing.first['document_id'] as String?,
+      );
+    } catch (_) {
+      // SQLite remains authoritative; a later reconciliation repairs the queue.
+    }
   }
 
   Future<void> snooze(ReminderRecord reminder, {Duration duration = const Duration(days: 1)}) async {
@@ -185,10 +194,14 @@ class ReminderRepository {
       'snoozed_until': when.toUtc().toIso8601String(),
       'updated_at': DateTime.now().toUtc().toIso8601String(),
     }, where: 'id = ?', whereArgs: [reminder.id]);
-    await ReminderNotifications.instance.schedule(
-      id: reminder.id, title: reminder.title, body: reminder.note, at: when,
-      documentId: reminder.documentId,
-    );
+    try {
+      await ReminderNotifications.instance.schedule(
+        id: reminder.id, title: reminder.title, body: reminder.note, at: when,
+        documentId: reminder.documentId,
+      );
+    } catch (_) {
+      // Keep the snoozed reminder in SQLite for the next reconciliation.
+    }
   }
 
   Future<void> duplicate(ReminderRecord reminder) => create(
@@ -207,21 +220,25 @@ class ReminderRepository {
       'enabled': enabled ? 1 : 0,
       'updated_at': DateTime.now().toUtc().toIso8601String(),
     }, where: 'id = ?', whereArgs: [reminder.id]);
-    if (enabled) {
-      await ReminderNotifications.instance.schedule(
-        id: reminder.id, title: reminder.title, body: reminder.note,
-        at: reminder.remindAt, recurrence: reminder.recurrenceRule,
-        documentId: reminder.documentId,
-      );
-    } else {
-      await ReminderNotifications.instance.cancel(reminder.id);
+    try {
+      if (enabled) {
+        await ReminderNotifications.instance.schedule(
+          id: reminder.id, title: reminder.title, body: reminder.note,
+          at: reminder.remindAt, recurrence: reminder.recurrenceRule,
+          documentId: reminder.documentId,
+        );
+      } else {
+        await ReminderNotifications.instance.cancel(reminder.id);
+      }
+    } catch (_) {
+      // The enabled flag is saved; app resume reconciles the OS queue.
     }
   }
 
   Future<void> delete(String id) async {
     final db = await _database.database;
     await db.delete('reminders', where: 'id = ?', whereArgs: [id]);
-    await ReminderNotifications.instance.cancel(id);
+    try { await ReminderNotifications.instance.cancel(id); } catch (_) {}
   }
 
   Future<void> complete(String id) async {
@@ -230,6 +247,6 @@ class ReminderRepository {
     await db.update('reminders', {
       'status': 'completed', 'completed_at': now, 'enabled': 0, 'updated_at': now,
     }, where: 'id = ?', whereArgs: [id]);
-    await ReminderNotifications.instance.cancel(id);
+    try { await ReminderNotifications.instance.cancel(id); } catch (_) {}
   }
 }
