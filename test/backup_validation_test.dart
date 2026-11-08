@@ -4,6 +4,7 @@ import 'dart:typed_data';
 
 import 'package:archive/archive.dart';
 import 'package:crypto/crypto.dart';
+import 'package:docs_grid/features/tools/backup_archive_limits.dart';
 import 'package:docs_grid/features/tools/document_tools_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -78,6 +79,29 @@ void main() {
     await file.writeAsBytes(bytes, flush: true);
     return file;
   }
+
+  test('rejects ZIP entries whose declared expansion exceeds the limit before decoding', () async {
+    final archive = Archive()
+      ..addFile(ArchiveFile('small.txt', 1, Uint8List.fromList([65])));
+    final bytes = Uint8List.fromList(ZipEncoder().encode(archive));
+    final data = ByteData.sublistView(bytes);
+    var centralOffset = -1;
+    for (var offset = 0; offset <= bytes.length - 46; offset++) {
+      if (data.getUint32(offset, Endian.little) == 0x02014b50) {
+        centralOffset = offset;
+        break;
+      }
+    }
+    expect(centralOffset, isNonNegative);
+    data.setUint32(
+      centralOffset + 24,
+      BackupArchiveLimits.maxEntryBytes + 1,
+      Endian.little,
+    );
+    final file = File('${temp.path}/oversized.zip');
+    await file.writeAsBytes(bytes, flush: true);
+    await expectLater(BackupArchiveLimits.validate(file), throwsStateError);
+  });
 
   test('accepts a complete backup with verified metadata and PDF', () async {
     final file = await writeArchive();
