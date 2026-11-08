@@ -447,7 +447,7 @@ class DocumentToolsService {
       final manifest = <String, Object?>{
         'format': 'DocsGridPortableData',
         'formatVersion': 1,
-        'databaseSchemaVersion': await _database.schemaVersion,
+        'databaseSchemaVersion': (await db.rawQuery('PRAGMA user_version')).first.values.first,
         'snapshotId': _uuid.v4(),
         'createdAtUtc': DateTime.now().toUtc().toIso8601String(),
         'app': 'DocsGrid',
