@@ -30,16 +30,16 @@ void main() {
       expect(next, DateTime(2026, 2, 15, 9));
     });
 
-    test('clamps a 31st monthly reminder to the last day of shorter months', () {
+    test('skips shorter months that do not contain the selected calendar day', () {
       final next = ReminderNotifications.nextScheduledOccurrence(
         at: DateTime(2026, 1, 31, 9),
         now: DateTime(2026, 2, 1, 10),
         recurrence: 'monthly',
       );
-      expect(next, DateTime(2026, 2, 28, 9));
+      expect(next, DateTime(2026, 3, 31, 9));
     });
 
-    test('moves an elapsed monthly occurrence to the next month', () {
+    test('moves an elapsed monthly occurrence to the next valid month', () {
       final next = ReminderNotifications.nextScheduledOccurrence(
         at: DateTime(2026, 1, 31, 9),
         now: DateTime(2026, 2, 28, 10),
