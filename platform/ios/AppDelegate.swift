@@ -95,10 +95,11 @@ import CryptoKit
                         withIntermediateDirectories: true
                     )
                     // Never truncate or remove an existing destination. Stage in
-                    // the same directory, then atomically publish only on success.
+                    // the same directory, verify, then atomically publish.
                     guard !FileManager.default.fileExists(atPath: destination.path) else {
                         throw storageError("The destination file already exists.")
                     }
+                    let sourceDigest = try sha256Pdf(url: source)
                     let temporary = parent.appendingPathComponent(".docsgrid-copy-\(UUID().uuidString).tmp")
                     defer { try? FileManager.default.removeItem(at: temporary) }
                     FileManager.default.createFile(atPath: temporary.path, contents: nil)
@@ -112,6 +113,9 @@ import CryptoKit
                         try output.write(contentsOf: chunk)
                     }
                     try output.synchronize()
+                    guard sourceDigest == (try sha256Pdf(url: temporary)) else {
+                        throw storageError("The temporary PDF copy failed SHA-256 verification.")
+                    }
                     try FileManager.default.moveItem(at: temporary, to: destination)
                 }
                 result(true)
