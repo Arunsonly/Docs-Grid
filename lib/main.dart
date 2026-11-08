@@ -479,6 +479,16 @@ class _SettingsScreenState extends State<_SettingsScreen> {
         ),
         const Divider(height: 1),
         ListTile(
+          leading: const Icon(Icons.access_time),
+          title: const Text('Recently opened'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => Scaffold(
+            appBar: AppBar(title: const Text('Recently opened')),
+            body: const DocumentsScreen(recentOnly: true),
+          ))),
+        ),
+        const Divider(height: 1),
+        ListTile(
           leading: const Icon(Icons.history),
           title: const Text('Activity'),
           trailing: const Icon(Icons.chevron_right),
