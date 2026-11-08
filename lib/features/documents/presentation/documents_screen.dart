@@ -743,7 +743,17 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
               Row(children: [
                 Expanded(child: _dashboardMetric(Icons.picture_as_pdf_outlined, '$_totalDocumentCount', 'Documents')),
                 Expanded(child: _dashboardMetric(Icons.star_border, '$_starredCount', 'Starred')),
-                Expanded(child: _dashboardMetric(Icons.offline_pin_outlined, 'Offline', 'On device')),
+                Expanded(
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(14),
+                    onTap: _browsePhoneStorage,
+                    child: _dashboardMetric(
+                      Icons.folder_open_outlined,
+                      'Browse',
+                      'Phone storage',
+                    ),
+                  ),
+                ),
               ]),
             ]),
           ),
@@ -781,24 +791,30 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                   tooltip: 'More document actions',
                   icon: const Icon(Icons.more_vert),
                   onSelected: (action) {
-                    if (action == 'storage') _browsePhoneStorage();
                     if (action == 'trash') _showTrash();
+                    if (action == 'duplicates') {
+                      Navigator.of(context).push(
+                        MaterialPageRoute(
+                          builder: (_) => const DocumentToolsScreen(section: 'tools'),
+                        ),
+                      );
+                    }
                   },
                   itemBuilder: (_) => const [
-                    PopupMenuItem(
-                      value: 'storage',
-                      child: ListTile(
-                        contentPadding: EdgeInsets.zero,
-                        leading: Icon(Icons.folder_open_outlined),
-                        title: Text('Browse phone storage'),
-                      ),
-                    ),
                     PopupMenuItem(
                       value: 'trash',
                       child: ListTile(
                         contentPadding: EdgeInsets.zero,
                         leading: Icon(Icons.delete_outline),
                         title: Text('Recycle Bin'),
+                      ),
+                    ),
+                    PopupMenuItem(
+                      value: 'duplicates',
+                      child: ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        leading: Icon(Icons.copy_all_outlined),
+                        title: Text('Check duplicates'),
                       ),
                     ),
                   ],
