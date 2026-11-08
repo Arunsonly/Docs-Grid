@@ -1167,10 +1167,10 @@ class DocumentToolsService {
         } finally {
           output.closeSync();
         }
-        final header = await stagedFile.openRead(0, 5).fold<List<int>>(
+        final header = await stagedFile.openRead(0, 1024).fold<List<int>>(
           <int>[], (bytes, chunk) => bytes..addAll(chunk),
         );
-        if (header.length < 5 || String.fromCharCodes(header) != '%PDF-') {
+        if (!String.fromCharCodes(header).contains('%PDF-')) {
           throw StateError('Backup contains a file that is not a PDF.');
         }
         final digest = (await sha256.bind(stagedFile.openRead()).first).toString();
