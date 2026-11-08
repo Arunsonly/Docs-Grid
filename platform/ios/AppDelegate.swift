@@ -229,7 +229,22 @@ import CryptoKit
                 options: .regularExpression
             )
             let target = cache.appendingPathComponent("\(UUID().uuidString)_\(safeName).pdf")
-            try FileManager.default.copyItem(at: url, to: target)
+            let coordinator = NSFileCoordinator(filePresenter: nil)
+            var coordinationError: NSError?
+            var copyError: Error?
+            coordinator.coordinate(
+                readingItemAt: url,
+                options: [],
+                error: &coordinationError
+            ) { coordinatedURL in
+                do {
+                    try FileManager.default.copyItem(at: coordinatedURL, to: target)
+                } catch {
+                    copyError = error
+                }
+            }
+            if let coordinationError { throw coordinationError }
+            if let copyError { throw copyError }
             let handle = try FileHandle(forReadingFrom: target)
             defer { try? handle.close() }
             let header = try handle.read(upToCount: 5) ?? Data()
