@@ -1185,6 +1185,13 @@ class DocumentToolsService {
       }
       final digest = sha256.convert(bytes).toString();
       if (digest != raw['sha256']) throw StateError('Backup integrity check failed.');
+      final documentRecord = documentsById[documentId]!;
+      final metadataDigest = documentRecord['sha256'];
+      final metadataSize = documentRecord['size_bytes'];
+      if ((metadataDigest != null && metadataDigest != digest) ||
+          (metadataSize != null && metadataSize != bytes.length)) {
+        throw StateError('Backup PDF metadata does not match the verified PDF bytes.');
+      }
     }
     if (seenDocumentIds.length != documentIds.length) {
       throw StateError('Backup is incomplete: one or more document PDFs are missing.');
