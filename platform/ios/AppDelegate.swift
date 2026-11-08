@@ -96,15 +96,28 @@ import CryptoKit
                     if FileManager.default.fileExists(atPath: destination.path) {
                         try FileManager.default.removeItem(at: destination)
                     }
-                    let input = try FileHandle(forReadingFrom: source)
-                    defer { try? input.close() }
-                    FileManager.default.createFile(atPath: destination.path, contents: nil)
-                    let output = try FileHandle(forWritingTo: destination)
-                    defer { try? output.close() }
-                    while true {
-                        let chunk = try input.read(upToCount: 64 * 1024) ?? Data()
-                        if chunk.isEmpty { break }
-                        try output.write(contentsOf: chunk)
+                    do {
+                        let expectedDigest = try sha256Pdf(url: source)
+                        let input = try FileHandle(forReadingFrom: source)
+                        defer { try? input.close() }
+                        guard FileManager.default.createFile(atPath: destination.path, contents: nil) else {
+                            throw storageError("Could not create the temporary PDF copy.")
+                        }
+                        let output = try FileHandle(forWritingTo: destination)
+                        defer { try? output.close() }
+                        while true {
+                            let chunk = try input.read(upToCount: 64 * 1024) ?? Data()
+                            if chunk.isEmpty { break }
+                            try output.write(contentsOf: chunk)
+                        }
+                        try output.synchronize()
+                        let copiedDigest = try sha256Pdf(url: destination)
+                        guard expectedDigest == copiedDigest else {
+                            throw storageError("PDF copy verification failed.")
+                        }
+                    } catch {
+                        try? FileManager.default.removeItem(at: destination)
+                        throw error
                     }
                 }
                 result(true)
