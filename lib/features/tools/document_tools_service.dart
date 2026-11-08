@@ -420,6 +420,7 @@ class DocumentToolsService {
           final restored = restoredPaths[row['id']];
           if (restored == null) throw StateError('Backup is missing PDF bytes for "${row['name']}".');
           copy['storage_uri'] = restored;
+          copy['relative_path'] = p.relative(restored, from: restoreRoot.path);
           await txn.insert('documents', copy);
         }
         for (final table in ['document_tags', 'reminders', 'history', 'document_text_index']) {
