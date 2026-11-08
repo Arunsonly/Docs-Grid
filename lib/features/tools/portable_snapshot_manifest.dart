@@ -114,7 +114,8 @@ class PortableSnapshotManifest {
           name.codeUnits.any((unit) => unit < 32 || unit == 127)) {
         throw const FormatException('Snapshot contains an unsafe folder name.');
       }
-      if (parentId != null && (parentId is! String || parentId.isEmpty)) {
+      if (parentId != null &&
+          (parentId is! String || parentId.trim().isEmpty || parentId != parentId.trim())) {
         throw const FormatException('Snapshot contains an invalid folder parent reference.');
       }
       byId[id] = row;
