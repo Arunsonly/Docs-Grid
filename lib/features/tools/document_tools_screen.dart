@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:open_filex/open_filex.dart';
 import 'package:path/path.dart' as p;
 
 import '../../core/database/app_database.dart';
@@ -216,6 +217,20 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
     }
   });
 
+  Future<void> _openSearchResult(Map<String, Object?> result) async {
+    final uri = result['storage_uri']?.toString() ?? '';
+    if (uri.isEmpty) return;
+    try {
+      if (uri.startsWith('content://') || uri.startsWith('file://')) {
+        await StorageLocationService.instance.openPdf(uri);
+      } else {
+        await OpenFilex.open(uri);
+      }
+    } catch (error) {
+      if (mounted) setState(() => _message = 'Could not open matching PDF: $error');
+    }
+  }
+
   Future<void> _searchText() async {
     final rows = await _tools.searchText(_search.text);
     if (mounted) setState(() => _results = rows);
@@ -321,7 +336,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
       if (widget.section == 'tools') ...[
         Card(child: Column(children: [
           ListTile(leading: const Icon(Icons.text_snippet_outlined),
-            title: const Text('On-device OCR indexing'),
+            title: const Text('OCR Search Inside PDF'),
             trailing: IconButton(tooltip: 'Start indexing', onPressed: _busy ? null : _indexDocuments,
               icon: const Icon(Icons.play_arrow))),
           Padding(padding: const EdgeInsets.fromLTRB(16, 0, 16, 16), child: Column(children: [
@@ -333,7 +348,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
               const SizedBox(height: 8),
               ..._results.map((r) => ListTile(dense: true,
                 title: Text((r['name'] ?? '').toString()),
-                subtitle: Text('Text match at character ${r['match_position']}'))),
+                subtitle: Text('Open PDF · Text match at character ${r['match_position']}'), onTap: () => _openSearchResult(r))),
             ],
           ])),
           const Divider(height: 1),
