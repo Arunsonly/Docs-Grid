@@ -835,7 +835,8 @@ class DocumentToolsService {
           ..['id'] = newId
           ..['folder_id'] = row['folder_id'] == null ? null : folderIdMap[row['folder_id']]
           ..['category_id'] = row['category_id'] == null ? null : categoryIdMap[row['category_id']]
-          ..['storage_uri'] = linkedUri;
+          ..['storage_uri'] = linkedUri
+          ..['relative_path'] = null;
         if (linkedUri == null) {
           missingPdfs++;
           final metadata = <String, dynamic>{};
