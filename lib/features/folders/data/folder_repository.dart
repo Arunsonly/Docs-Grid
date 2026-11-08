@@ -30,16 +30,42 @@ class FolderRepository {
   }
 
   Future<List<FolderOption>> allFoldersWithPaths() async {
+    final db = await _database.database;
+    final rows = await db.query(
+      'folders',
+      where: 'deleted_at IS NULL',
+      orderBy: 'name COLLATE NOCASE ASC',
+    );
+    final folders = rows.map(Folder.fromMap).toList(growable: false);
+    final childrenByParent = <String?, List<Folder>>{};
+    for (final folder in folders) {
+      childrenByParent.putIfAbsent(folder.parentId, () => <Folder>[]).add(folder);
+    }
+
     final result = <FolderOption>[];
-    Future<void> visit(String? parentId, String prefix) async {
-      final children = await childrenOf(parentId);
-      for (final folder in children) {
-        final path = prefix.isEmpty ? folder.name : '$prefix / ${folder.name}';
-        result.add(FolderOption(folder: folder, path: path));
-        await visit(folder.id, path);
+    final visited = <String>{};
+    final stack = <({Folder folder, String prefix})>[];
+    final roots = childrenByParent[null] ?? const <Folder>[];
+    for (final folder in roots.reversed) {
+      stack.add((folder: folder, prefix: ''));
+    }
+    while (stack.isNotEmpty) {
+      final item = stack.removeLast();
+      if (!visited.add(item.folder.id)) {
+        throw StateError('Folder hierarchy contains a cycle or duplicate reference.');
+      }
+      final path = item.prefix.isEmpty
+          ? item.folder.name
+          : '${item.prefix} / ${item.folder.name}';
+      result.add(FolderOption(folder: item.folder, path: path));
+      final children = childrenByParent[item.folder.id] ?? const <Folder>[];
+      for (final child in children.reversed) {
+        stack.add((folder: child, prefix: path));
       }
     }
-    await visit(null, '');
+    if (visited.length != folders.length) {
+      throw StateError('Folder hierarchy contains an unreachable cycle or orphan.');
+    }
     return result;
   }
 
@@ -50,31 +76,46 @@ class FolderRepository {
     final selectedRoot = await StorageLocationService.instance.selectedFolder();
     if (selectedRoot == null) return null;
 
-    Future<String?> ensure(String id) async {
+    final unresolved = <Map<String, Object?>>[];
+    final visited = <String>{};
+    String? current = folderId;
+    String? parentUri;
+    while (current != null) {
+      if (!visited.add(current)) {
+        throw StateError('Folder hierarchy contains a cycle.');
+      }
       final rows = await db.query(
         'folders',
-        columns: ['name', 'parent_id', 'storage_uri_or_relative_path'],
+        columns: ['id', 'name', 'parent_id', 'storage_uri_or_relative_path'],
         where: 'id = ? AND deleted_at IS NULL',
-        whereArgs: [id],
+        whereArgs: [current],
         limit: 1,
       );
       if (rows.isEmpty) throw StateError('Folder no longer exists.');
       final row = rows.first;
-      final currentUri = row['storage_uri_or_relative_path'] as String?;
-      if (currentUri != null) return currentUri;
-      final parentId = row['parent_id'] as String?;
-      final parentUri = parentId == null ? selectedRoot['uri'] : await ensure(parentId);
+      final existingUri = row['storage_uri_or_relative_path'] as String?;
+      if (existingUri != null) {
+        parentUri = existingUri;
+        break;
+      }
+      unresolved.add(row);
+      current = row['parent_id'] as String?;
+    }
+
+    parentUri ??= selectedRoot['uri'] as String?;
+    for (final row in unresolved.reversed) {
       if (parentUri == null) return null;
+      final name = row['name'] as String;
       String childUri;
       try {
         childUri = await StorageLocationService.instance.findChildUri(
           parentUri: parentUri,
-          name: row['name'] as String,
+          name: name,
         );
       } catch (_) {
         childUri = await StorageLocationService.instance.createDirectory(
           parentUri: parentUri,
-          name: row['name'] as String,
+          name: name,
         );
       }
       await db.update(
@@ -84,12 +125,11 @@ class FolderRepository {
           'updated_at': DateTime.now().toUtc().toIso8601String(),
         },
         where: 'id = ? AND deleted_at IS NULL',
-        whereArgs: [id],
+        whereArgs: [row['id']],
       );
-      return childUri;
+      parentUri = childUri;
     }
-
-    return ensure(folderId);
+    return parentUri;
   }
 
   Future<Folder> create({required String name, String? parentId}) async {
@@ -104,42 +144,9 @@ class FolderRepository {
     final db = await _database.database;
     final storage = StorageLocationService.instance;
     final selectedRoot = await storage.selectedFolder();
-    Future<String?> ensurePhysicalFolder(String folderId) async {
-      final rows = await db.query(
-        'folders',
-        columns: ['name', 'parent_id', 'storage_uri_or_relative_path'],
-        where: 'id = ? AND deleted_at IS NULL',
-        whereArgs: [folderId],
-        limit: 1,
-      );
-      if (rows.isEmpty) throw StateError('Parent folder no longer exists.');
-      final row = rows.first;
-      final existingUri = row['storage_uri_or_relative_path'] as String?;
-      if (existingUri != null) return existingUri;
-      final ancestorId = row['parent_id'] as String?;
-      final ancestorUri = ancestorId == null
-          ? (selectedRoot == null ? null : selectedRoot['uri'])
-          : await ensurePhysicalFolder(ancestorId);
-      if (ancestorUri == null) return null;
-      final createdUri = await storage.createDirectory(
-        parentUri: ancestorUri,
-        name: row['name'] as String,
-      );
-      await db.update(
-        'folders',
-        {
-          'storage_uri_or_relative_path': createdUri,
-          'updated_at': DateTime.now().toUtc().toIso8601String(),
-        },
-        where: 'id = ? AND deleted_at IS NULL',
-        whereArgs: [folderId],
-      );
-      return createdUri;
-    }
-
     final parentStorageUri = parentId == null
-        ? (selectedRoot == null ? null : selectedRoot['uri'])
-        : await ensurePhysicalFolder(parentId);
+        ? (selectedRoot == null ? null : selectedRoot['uri'] as String?)
+        : await ensurePhysicalStorageUri(parentId);
     String? physicalUri;
     if (parentStorageUri != null) {
       physicalUri = await storage.createDirectory(parentUri: parentStorageUri, name: cleaned);
