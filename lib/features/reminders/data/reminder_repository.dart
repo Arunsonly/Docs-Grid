@@ -70,6 +70,21 @@ class ReminderRepository {
     await ReminderNotifications.instance.reconcile(rows);
   }
 
+  Future<void> _ensureDocumentIsActive(String? documentId) async {
+    if (documentId == null) return;
+    final db = await _database.database;
+    final rows = await db.query(
+      'documents',
+      columns: ['id'],
+      where: 'id = ? AND deleted_at IS NULL',
+      whereArgs: [documentId],
+      limit: 1,
+    );
+    if (rows.isEmpty) {
+      throw StateError('The linked PDF is in the Recycle Bin or no longer exists.');
+    }
+  }
+
   Future<void> create({
     required String title,
     String? note,
@@ -77,6 +92,15 @@ class ReminderRepository {
     String? recurrenceRule,
     String? documentId,
   }) async {
+    final cleanTitle = title.trim();
+    if (cleanTitle.isEmpty) throw ArgumentError('Reminder title cannot be empty.');
+    if (!remindAt.isAfter(DateTime.now())) {
+      throw ArgumentError('Reminder date and time must be in the future.');
+    }
+    if (recurrenceRule != null && !const {'daily', 'weekly'}.contains(recurrenceRule)) {
+      throw ArgumentError('Unsupported reminder recurrence.');
+    }
+    await _ensureDocumentIsActive(documentId);
     final db = await _database.database;
     final id = _uuid.v4();
     final now = DateTime.now().toUtc().toIso8601String();
@@ -85,7 +109,7 @@ class ReminderRepository {
     await db.insert('reminders', {
       'id': id,
       'document_id': documentId,
-      'title': title.trim(),
+      'title': cleanTitle,
       'note': cleanNote == null || cleanNote.isEmpty ? null : cleanNote,
       'remind_at_utc': when,
       'timezone_id': DateTime.now().timeZoneName,
@@ -98,7 +122,7 @@ class ReminderRepository {
     });
     await ReminderNotifications.instance.requestPermission();
     await ReminderNotifications.instance.schedule(
-      id: id, title: title.trim(), body: cleanNote, at: remindAt, recurrence: recurrenceRule,
+      id: id, title: cleanTitle, body: cleanNote, at: remindAt, recurrence: recurrenceRule,
     );
   }
 
@@ -109,11 +133,28 @@ class ReminderRepository {
     required DateTime remindAt,
     String? recurrenceRule,
   }) async {
+    final cleanTitle = title.trim();
+    if (cleanTitle.isEmpty) throw ArgumentError('Reminder title cannot be empty.');
+    if (!remindAt.isAfter(DateTime.now())) {
+      throw ArgumentError('Reminder date and time must be in the future.');
+    }
+    if (recurrenceRule != null && !const {'daily', 'weekly'}.contains(recurrenceRule)) {
+      throw ArgumentError('Unsupported reminder recurrence.');
+    }
     final db = await _database.database;
+    final existing = await db.query(
+      'reminders',
+      columns: ['document_id'],
+      where: 'id = ?',
+      whereArgs: [id],
+      limit: 1,
+    );
+    if (existing.isEmpty) throw StateError('Reminder no longer exists.');
+    await _ensureDocumentIsActive(existing.first['document_id'] as String?);
     final when = remindAt.toUtc().toIso8601String();
     final cleanNote = note?.trim();
     await db.update('reminders', {
-      'title': title.trim(),
+      'title': cleanTitle,
       'note': cleanNote == null || cleanNote.isEmpty ? null : cleanNote,
       'remind_at_utc': when,
       'next_fire_at_utc': when,
@@ -124,11 +165,13 @@ class ReminderRepository {
     }, where: 'id = ?', whereArgs: [id]);
     await ReminderNotifications.instance.cancel(id);
     await ReminderNotifications.instance.schedule(
-      id: id, title: title.trim(), body: cleanNote, at: remindAt, recurrence: recurrenceRule,
+      id: id, title: cleanTitle, body: cleanNote, at: remindAt, recurrence: recurrenceRule,
     );
   }
 
   Future<void> snooze(ReminderRecord reminder, {Duration duration = const Duration(days: 1)}) async {
+    if (duration <= Duration.zero) throw ArgumentError('Snooze duration must be positive.');
+    await _ensureDocumentIsActive(reminder.documentId);
     final when = DateTime.now().add(duration);
     final db = await _database.database;
     await db.update('reminders', {
@@ -150,9 +193,11 @@ class ReminderRepository {
     remindAt: reminder.remindAt.isAfter(DateTime.now())
       ? reminder.remindAt : DateTime.now().add(const Duration(days: 1)),
     recurrenceRule: reminder.recurrenceRule,
+    documentId: reminder.documentId,
   );
 
   Future<void> setEnabled(ReminderRecord reminder, bool enabled) async {
+    if (enabled) await _ensureDocumentIsActive(reminder.documentId);
     final db = await _database.database;
     await db.update('reminders', {
       'enabled': enabled ? 1 : 0,
