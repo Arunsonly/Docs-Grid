@@ -79,6 +79,19 @@ import CryptoKit
                     "libraryUri": folders.absoluteString,
                     "documentsUri": documents.absoluteString
                 ])
+            case "consumeSharedPdfs":
+                let cache = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+                    .appendingPathComponent("DocsGrid", isDirectory: true)
+                    .appendingPathComponent("incoming_docs", isDirectory: true)
+                try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
+                let files = try FileManager.default.contentsOfDirectory(
+                    at: cache,
+                    includingPropertiesForKeys: [.isRegularFileKey],
+                    options: [.skipsHiddenFiles]
+                )
+                result(files.filter { $0.pathExtension.lowercased() == "pdf" }.map { file in
+                    ["path": file.path, "name": file.deletingPathExtension().lastPathComponent]
+                })
             case "getSelectedFolder":
                 guard let selected = try selectedFolder(), let root = URL(string: selected["uri"] ?? "") else {
                     result(nil)
@@ -189,6 +202,44 @@ import CryptoKit
             }
         } catch {
             result(FlutterError(code: "STORAGE_ERROR", message: error.localizedDescription, details: nil))
+        }
+    }
+
+    override func application(
+        _ app: UIApplication,
+        open url: URL,
+        options: [UIApplication.OpenURLOptionsKey: Any] = [:]
+    ) -> Bool {
+        guard url.isFileURL else { return false }
+        let accessed = url.startAccessingSecurityScopedResource()
+        defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+        guard accessed || isInsideAppContainer(url) else { return false }
+
+        do {
+            let values = try url.resourceValues(forKeys: [.isRegularFileKey])
+            guard values.isRegularFile == true else { return false }
+            let cache = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("DocsGrid", isDirectory: true)
+                .appendingPathComponent("incoming_docs", isDirectory: true)
+            try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
+            let rawName = url.deletingPathExtension().lastPathComponent
+            let safeName = rawName.replacingOccurrences(
+                of: "[^A-Za-z0-9._ -]",
+                with: "_",
+                options: .regularExpression
+            )
+            let target = cache.appendingPathComponent("\(UUID().uuidString)_\(safeName).pdf")
+            try FileManager.default.copyItem(at: url, to: target)
+            let handle = try FileHandle(forReadingFrom: target)
+            defer { try? handle.close() }
+            let header = try handle.read(upToCount: 5) ?? Data()
+            guard header == Data("%PDF-".utf8) else {
+                try? FileManager.default.removeItem(at: target)
+                return false
+            }
+            return true
+        } catch {
+            return false
         }
     }
 
