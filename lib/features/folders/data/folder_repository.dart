@@ -1,3 +1,7 @@
+import 'dart:io';
+
+import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:uuid/uuid.dart';
 
@@ -204,6 +208,7 @@ class FolderRepository {
     );
     if (rows.isEmpty) throw StateError('Folder no longer exists.');
     final oldName = rows.first['name'] as String;
+    if (oldName == cleaned) return;
     final oldUri = rows.first['storage_uri_or_relative_path'] as String?;
     final storage = StorageLocationService.instance;
     final renamedUri = oldUri == null
@@ -212,43 +217,142 @@ class FolderRepository {
 
     final folderUriUpdates = <String, String>{};
     final documentUriUpdates = <String, String>{};
+    final privateDocumentUpdates = <String, Map<String, Object?>>{};
     final traversedFolders = <String>{};
+    Directory? renamedPrivateDirectory;
+    String? oldPrivatePath;
+    String? newPrivatePath;
+    String? privateRootPath;
+
     try {
       if (renamedUri != null) {
-      Future<void> collectDescendants(String parentId, String parentUri) async {
-        if (!traversedFolders.add(parentId)) {
-          throw StateError('Folder hierarchy contains a cycle.');
-        }
-        final childFolders = await db.query(
-          'folders',
-          columns: ['id', 'name'],
-          where: 'parent_id = ? AND deleted_at IS NULL',
-          whereArgs: [parentId],
-        );
-        for (final child in childFolders) {
-          final childId = child['id'] as String;
-          final childName = child['name'] as String;
-          final childUri = await storage.findChildUri(parentUri: parentUri, name: childName);
-          folderUriUpdates[childId] = childUri;
-          await collectDescendants(childId, childUri);
-        }
-        final docs = await db.query(
-          'documents',
-          columns: ['id', 'name'],
-          where: 'folder_id = ?',
-          whereArgs: [parentId],
-        );
-        for (final doc in docs) {
-          final documentName = '${doc['name'] as String}.pdf';
-          documentUriUpdates[doc['id'] as String] = await storage.findChildUri(
-            parentUri: parentUri,
-            name: documentName,
+        Future<void> collectDescendants(String parentId, String parentUri) async {
+          if (!traversedFolders.add(parentId)) {
+            throw StateError('Folder hierarchy contains a cycle.');
+          }
+          final childFolders = await db.query(
+            'folders',
+            columns: ['id', 'name'],
+            where: 'parent_id = ? AND deleted_at IS NULL',
+            whereArgs: [parentId],
           );
+          for (final child in childFolders) {
+            final childId = child['id'] as String;
+            final childName = validateFolderName(child['name'] as String);
+            final childUri = await storage.findChildUri(
+              parentUri: parentUri,
+              name: childName,
+            );
+            folderUriUpdates[childId] = childUri;
+            await collectDescendants(childId, childUri);
+          }
+          final docs = await db.query(
+            'documents',
+            columns: ['id', 'name'],
+            where: 'folder_id = ?',
+            whereArgs: [parentId],
+          );
+          for (final doc in docs) {
+            final documentName = '\${doc['name'] as String}.pdf';
+            documentUriUpdates[doc['id'] as String] = await storage.findChildUri(
+              parentUri: parentUri,
+              name: documentName,
+            );
+          }
+        }
+
+        await collectDescendants(id, renamedUri);
+      } else {
+        // App-private folders have no provider URI. Rename the actual private
+        // directory and update every descendant document reference atomically.
+        final base = await getApplicationDocumentsDirectory();
+        privateRootPath = p.join(base.path, 'DocsGrid', 'PDFs');
+
+        Future<List<String>> pathSegments({required bool useNewName}) async {
+          final segments = <String>[];
+          final seen = <String>{};
+          String? currentId = id;
+          while (currentId != null) {
+            if (!seen.add(currentId)) {
+              throw StateError('Folder hierarchy contains a cycle.');
+            }
+            final folderRows = await db.query(
+              'folders',
+              columns: ['name', 'parent_id'],
+              where: 'id = ? AND deleted_at IS NULL',
+              whereArgs: [currentId],
+              limit: 1,
+            );
+            if (folderRows.isEmpty) {
+              throw StateError('Folder hierarchy contains a missing parent.');
+            }
+            final rawName = currentId == id && useNewName
+                ? cleaned
+                : folderRows.first['name'] as String;
+            segments.add(validateFolderName(rawName));
+            currentId = folderRows.first['parent_id'] as String?;
+          }
+          return segments.reversed.toList();
+        }
+
+        final oldSegments = await pathSegments(useNewName: false);
+        final newSegments = await pathSegments(useNewName: true);
+        oldPrivatePath = p.joinAll([privateRootPath, ...oldSegments]);
+        newPrivatePath = p.joinAll([privateRootPath, ...newSegments]);
+        final oldDirectory = Directory(oldPrivatePath);
+        if (await oldDirectory.exists()) {
+          final newDirectory = Directory(newPrivatePath);
+          if (await newDirectory.exists()) {
+            throw StateError(
+              'A private storage folder with the new name already exists. '
+              'Resolve that folder before renaming to avoid merging documents.',
+            );
+          }
+          await newDirectory.parent.create(recursive: true);
+          renamedPrivateDirectory = await oldDirectory.rename(newDirectory.path);
+
+          Future<void> collectPrivateDocuments(
+            String folderId,
+            Set<String> visited,
+          ) async {
+            if (!visited.add(folderId)) {
+              throw StateError('Folder hierarchy contains a cycle.');
+            }
+            final documents = await db.query(
+              'documents',
+              columns: ['id', 'storage_uri'],
+              where: 'folder_id = ?',
+              whereArgs: [folderId],
+            );
+            for (final document in documents) {
+              final uri = document['storage_uri'] as String?;
+              if (uri == null ||
+                  uri.startsWith('content://') ||
+                  uri.startsWith('file://') ||
+                  !p.isWithin(oldPrivatePath!, uri)) {
+                continue;
+              }
+              final relative = p.relative(uri, from: oldPrivatePath!);
+              final updatedUri = p.join(newPrivatePath!, relative);
+              privateDocumentUpdates[document['id'] as String] = {
+                'storage_uri': updatedUri,
+                'relative_path': p.relative(updatedUri, from: privateRootPath!),
+              };
+            }
+            final children = await db.query(
+              'folders',
+              columns: ['id'],
+              where: 'parent_id = ? AND deleted_at IS NULL',
+              whereArgs: [folderId],
+            );
+            for (final child in children) {
+              await collectPrivateDocuments(child['id'] as String, visited);
+            }
+          }
+
+          await collectPrivateDocuments(id, <String>{});
         }
       }
-
-      await collectDescendants(id, renamedUri);
-    }
 
       await db.transaction((txn) async {
         final now = DateTime.now().toUtc().toIso8601String();
@@ -279,13 +383,29 @@ class FolderRepository {
             whereArgs: [entry.key],
           );
         }
+        for (final entry in privateDocumentUpdates.entries) {
+          await txn.update(
+            'documents',
+            {...entry.value, 'updated_at': now},
+            where: 'id = ?',
+            whereArgs: [entry.key],
+          );
+        }
       });
     } catch (_) {
       if (renamedUri != null) {
         try {
           await storage.renamePdf(uri: renamedUri, name: oldName);
         } catch (_) {
-          // Keep the failure visible; the old database references remain intact.
+          // Preserve the original references; report the operation failure.
+        }
+      }
+      if (renamedPrivateDirectory != null && oldPrivatePath != null) {
+        try {
+          await Directory(oldPrivatePath).parent.create(recursive: true);
+          await renamedPrivateDirectory.rename(oldPrivatePath);
+        } catch (_) {
+          // Do not delete either copy if a rollback rename cannot complete.
         }
       }
       rethrow;
