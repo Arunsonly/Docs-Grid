@@ -65,6 +65,75 @@ class ReminderNotifications {
 
   int _id(String id) => stableNotificationId(id);
 
+  /// Computes the next wall-clock occurrence without changing the stored
+  /// original date. This keeps daily/weekly reminders alive after their first
+  /// occurrence when the app is reopened or the device timezone changes.
+  static DateTime? nextScheduledOccurrence({
+    required DateTime at,
+    required DateTime now,
+    String? recurrence,
+  }) {
+    if (at.isAfter(now)) return at;
+    if (recurrence == 'daily') {
+      var next = DateTime(now.year, now.month, now.day, at.hour, at.minute, at.second);
+      if (!next.isAfter(now)) next = next.add(const Duration(days: 1));
+      return next;
+    }
+    if (recurrence == 'weekly') {
+      final daysUntil = (at.weekday - now.weekday + 7) % 7;
+      var next = DateTime(
+        now.year, now.month, now.day + daysUntil,
+        at.hour, at.minute, at.second,
+      );
+      if (!next.isAfter(now)) next = next.add(const Duration(days: 7));
+      return next;
+    }
+    return null;
+  }
+
+  /// Reconciles OS pending notifications with the SQLite source of truth.
+  /// It never requests permission; denied notifications do not block the app.
+  Future<void> reconcile(List<Map<String, Object?>> reminders) async {
+    await initialize();
+    final activeIds = <int>{};
+    for (final row in reminders) {
+      if ((row['enabled'] as int? ?? 0) != 1 ||
+          row['status'] == 'completed' || row['status'] == 'cancelled') {
+        continue;
+      }
+      final at = DateTime.parse(row['remind_at_utc'] as String).toLocal();
+      final recurrence = row['recurrence_rule'] as String?;
+      if (nextScheduledOccurrence(
+            at: at, now: DateTime.now(), recurrence: recurrence,
+          ) != null) {
+        activeIds.add(_id(row['id'] as String));
+      }
+    }
+    final pending = await _plugin.pendingNotificationRequests();
+    for (final request in pending) {
+      if (!activeIds.contains(request.id)) {
+        await _plugin.cancel(request.id);
+      }
+    }
+    for (final row in reminders) {
+      if ((row['enabled'] as int? ?? 0) != 1 ||
+          row['status'] == 'completed' || row['status'] == 'cancelled') {
+        continue;
+      }
+      try {
+        await schedule(
+          id: row['id'] as String,
+          title: row['title'] as String,
+          body: row['note'] as String?,
+          at: DateTime.parse(row['remind_at_utc'] as String).toLocal(),
+          recurrence: row['recurrence_rule'] as String?,
+        );
+      } catch (_) {
+        // Keep the database reminder even if the OS refuses this schedule.
+      }
+    }
+  }
+
   Future<void> schedule({
     required String id,
     required String title,
@@ -73,7 +142,12 @@ class ReminderNotifications {
     String? recurrence,
   }) async {
     await initialize();
-    if (!at.isAfter(DateTime.now())) {
+    final scheduledAt = nextScheduledOccurrence(
+      at: at,
+      now: DateTime.now(),
+      recurrence: recurrence,
+    );
+    if (scheduledAt == null) {
       await cancel(id);
       return;
     }
@@ -86,7 +160,7 @@ class ReminderNotifications {
       _id(id),
       title,
       body,
-      tz.TZDateTime.from(at, tz.local),
+      tz.TZDateTime.from(scheduledAt, tz.local),
       const NotificationDetails(
         android: AndroidNotificationDetails(
           // Versioned channel ID: Android does not allow changing sound
