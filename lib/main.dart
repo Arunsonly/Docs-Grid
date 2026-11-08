@@ -258,8 +258,6 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
     )));
   }
 
-  static const _titles = ['My Documents', 'Folders', 'Star', 'Settings'];
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
