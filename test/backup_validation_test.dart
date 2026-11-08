@@ -92,7 +92,7 @@ void main() {
         break;
       }
     }
-    expect(centralOffset, isNonNegative);
+    expect(centralOffset, greaterThanOrEqualTo(0));
     data.setUint32(
       centralOffset + 24,
       BackupArchiveLimits.maxEntryBytes + 1,
@@ -158,6 +158,13 @@ void main() {
   test('rejects folder names that could escape the private library path', () async {
     final file = await writeArchive(folders: const [
       {'id': 'folder-1', 'name': '../outside', 'parent_id': null},
+    ]);
+    await expectLater(DocumentToolsService().validateBackup(file), throwsStateError);
+  });
+
+  test('rejects Windows separators in archive metadata names', () async {
+    final file = await writeArchive(documents: const [
+      {'id': 'doc-1', 'name': r'..\\outside'},
     ]);
     await expectLater(DocumentToolsService().validateBackup(file), throwsStateError);
   });
