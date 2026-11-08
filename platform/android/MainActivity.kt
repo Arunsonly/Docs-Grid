@@ -264,7 +264,7 @@ class MainActivity : FlutterActivity() {
     private fun ensureDirectory(parentUri: Uri, name: String): Uri {
         return try {
             findChildUri(parentUri, name)
-        } catch (_: Exception) {
+        } catch (_: NoSuchElementException) {
             createDirectory(parentUri, name)
         }
     }
@@ -280,20 +280,21 @@ class MainActivity : FlutterActivity() {
         val parent = resolveParentUri(parentUri)
         val parentId = DocumentsContract.getDocumentId(parent)
         val children = DocumentsContract.buildChildDocumentsUriUsingTree(parentUri, parentId)
-        contentResolver.query(
+        val cursor = contentResolver.query(
             children,
             arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID, DocumentsContract.Document.COLUMN_DISPLAY_NAME),
             null, null, null
-        )?.use { cursor ->
-            val idIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
-            val nameIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
-            while (cursor.moveToNext()) {
-                if (idIndex >= 0 && nameIndex >= 0 && cursor.getString(nameIndex) == name) {
-                    return DocumentsContract.buildDocumentUriUsingTree(parentUri, cursor.getString(idIndex))
+        ) ?: throw IllegalStateException("Could not list the selected folder.")
+        cursor.use {
+            val idIndex = it.getColumnIndex(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
+            val nameIndex = it.getColumnIndex(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+            while (it.moveToNext()) {
+                if (idIndex >= 0 && nameIndex >= 0 && it.getString(nameIndex) == name) {
+                    return DocumentsContract.buildDocumentUriUsingTree(parentUri, it.getString(idIndex))
                 }
             }
         }
-        throw IllegalStateException("Could not find '$name' inside the selected folder.")
+        throw NoSuchElementException("Could not find '$name' inside the selected folder.")
     }
 
     private fun listDirectory(directoryUri: Uri): List<Map<String, Any>> {
@@ -347,11 +348,25 @@ class MainActivity : FlutterActivity() {
             val check = contentResolver.openInputStream(temp)?.use { it.readBytes() }
                 ?: throw IllegalStateException("Could not verify metadata file.")
             if (!bytes.contentEquals(check)) throw IllegalStateException("Metadata verification failed.")
-            if (existing != null && !DocumentsContract.deleteDocument(contentResolver, existing)) {
-                throw IllegalStateException("Could not replace the previous metadata snapshot.")
+            var backup: Uri? = null
+            if (existing != null) {
+                backup = DocumentsContract.renameDocument(
+                    contentResolver, existing, ".$name.backup-${java.util.UUID.randomUUID()}"
+                ) ?: throw IllegalStateException("Could not safely stage the previous metadata file.")
             }
-            return DocumentsContract.renameDocument(contentResolver, temp, name)
-                ?: throw IllegalStateException("Could not publish metadata file.")
+            try {
+                val published = DocumentsContract.renameDocument(contentResolver, temp, name)
+                    ?: throw IllegalStateException("Could not publish metadata file.")
+                // The new file is now verified and published. Failure to remove
+                // the old backup must not invalidate the successful replacement.
+                backup?.let { try { DocumentsContract.deleteDocument(contentResolver, it) } catch (_: Exception) {} }
+                return published
+            } catch (error: Exception) {
+                if (backup != null) {
+                    try { DocumentsContract.renameDocument(contentResolver, backup, name) } catch (_: Exception) {}
+                }
+                throw error
+            }
         } catch (error: Exception) {
             try { DocumentsContract.deleteDocument(contentResolver, temp) } catch (_: Exception) {}
             throw error
