@@ -264,7 +264,7 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
         destinations: const [
           NavigationDestination(icon: Icon(Icons.description_outlined), label: 'Files'),
           NavigationDestination(icon: Icon(Icons.folder_outlined), label: 'Folders'),
-          NavigationDestination(icon: Icon(Icons.star_border), label: 'Saved'),
+          NavigationDestination(icon: Icon(Icons.star_border), label: 'Star'),
           NavigationDestination(icon: Icon(Icons.settings_outlined), label: 'Settings'),
         ],
       ),
