@@ -89,23 +89,30 @@ import CryptoKit
                 try withAllBookmarkAccess {
                     let accessed = source.startAccessingSecurityScopedResource()
                     defer { if accessed { source.stopAccessingSecurityScopedResource() } }
+                    let parent = destination.deletingLastPathComponent()
                     try FileManager.default.createDirectory(
-                        at: destination.deletingLastPathComponent(),
+                        at: parent,
                         withIntermediateDirectories: true
                     )
-                    if FileManager.default.fileExists(atPath: destination.path) {
-                        try FileManager.default.removeItem(at: destination)
+                    // Never truncate or remove an existing destination. Stage in
+                    // the same directory, then atomically publish only on success.
+                    guard !FileManager.default.fileExists(atPath: destination.path) else {
+                        throw storageError("The destination file already exists.")
                     }
+                    let temporary = parent.appendingPathComponent(".docsgrid-copy-\\(UUID().uuidString).tmp")
+                    defer { try? FileManager.default.removeItem(at: temporary) }
+                    FileManager.default.createFile(atPath: temporary.path, contents: nil)
                     let input = try FileHandle(forReadingFrom: source)
                     defer { try? input.close() }
-                    FileManager.default.createFile(atPath: destination.path, contents: nil)
-                    let output = try FileHandle(forWritingTo: destination)
+                    let output = try FileHandle(forWritingTo: temporary)
                     defer { try? output.close() }
                     while true {
                         let chunk = try input.read(upToCount: 64 * 1024) ?? Data()
                         if chunk.isEmpty { break }
                         try output.write(contentsOf: chunk)
                     }
+                    try output.synchronize()
+                    try FileManager.default.moveItem(at: temporary, to: destination)
                 }
                 result(true)
             case "sha256Pdf":
