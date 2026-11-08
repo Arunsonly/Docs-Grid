@@ -387,23 +387,22 @@ class DocumentToolsService {
     final folderDirectoryNames = <String, String>{
       for (final row in folderRows) (row['id'] as String): 'folder_${_uuid.v4()}',
     };
-    final resolvingFolderIds = <String>{};
     String folderPath(String id) {
       final known = folderPaths[id];
       if (known != null) return known;
-      if (!resolvingFolderIds.add(id)) {
-        throw StateError('Backup folder hierarchy contains a cycle.');
+      final unresolved = <String>[];
+      String? current = id;
+      while (current != null && !folderPaths.containsKey(current)) {
+        unresolved.add(current);
+        final row = folderRows.firstWhere((r) => r['id'] == current);
+        current = row['parent_id'] as String?;
       }
-      try {
-        final row = folderRows.firstWhere((r) => r['id'] == id);
-        final parent = row['parent_id'] as String?;
-        final base = parent == null ? restoreRoot.path : folderPath(parent);
-        final path = p.join(base, folderDirectoryNames[id]!);
-        folderPaths[id] = path;
-        return path;
-      } finally {
-        resolvingFolderIds.remove(id);
+      var base = current == null ? restoreRoot.path : folderPaths[current]!;
+      for (final folderId in unresolved.reversed) {
+        base = p.join(base, folderDirectoryNames[folderId]!);
+        folderPaths[folderId] = base;
       }
+      return folderPaths[id]!;
     }
 
     var databaseCommitted = false;
