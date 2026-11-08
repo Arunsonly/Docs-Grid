@@ -22,19 +22,44 @@ void main() {
     String entryName = 'pdfs/doc-1.pdf',
     List<int> pdfBytes = const [37, 80, 68, 70, 45, 49, 46, 52],
     bool includePdf = true,
+    bool corruptMetadataHash = false,
     List<Map<String, Object?>> documents = const [
       {'id': 'doc-1', 'name': 'Policy'},
     ],
   }) async {
     final archive = Archive();
-    final documentBytes = utf8.encode(jsonEncode(documents));
-    archive.addFile(ArchiveFile('documents.json', documentBytes.length, documentBytes));
+    final tableRows = <String, List<Map<String, Object?>>>{ 
+      'folders': [],
+      'documents': documents,
+      'categories': [],
+      'tags': [],
+      'document_tags': [],
+      'reminders': [],
+      'history': [],
+      'settings': [],
+      'document_text_index': [],
+    };
+    final metadataFiles = <Map<String, Object?>>[];
+    for (final entry in tableRows.entries) {
+      final bytes = Uint8List.fromList(utf8.encode(jsonEncode(entry.value)));
+      final name = '${entry.key}.json';
+      archive.addFile(ArchiveFile(name, bytes.length, bytes));
+      metadataFiles.add({
+        'entry': name,
+        'sizeBytes': bytes.length,
+        'sha256': corruptMetadataHash && entry.key == 'documents'
+            ? List.filled(64, '0').join()
+            : sha256.convert(bytes).toString(),
+        'recordCount': entry.value.length,
+      });
+    }
     if (includePdf) {
       archive.addFile(ArchiveFile(entryName, pdfBytes.length, Uint8List.fromList(pdfBytes)));
     }
     final manifest = {
       'format': 'DocsGridBackup',
       'version': 1,
+      'metadataFiles': metadataFiles,
       'files': [
         {
           'documentId': 'doc-1',
@@ -51,9 +76,14 @@ void main() {
     return file;
   }
 
-  test('accepts a complete backup with a PDF signature and matching hash', () async {
+  test('accepts a complete backup with verified metadata and PDF', () async {
     final file = await writeArchive();
     expect(await DocumentToolsService().validateBackup(file), 1);
+  });
+
+  test('rejects modified metadata when its SHA-256 does not match', () async {
+    final file = await writeArchive(corruptMetadataHash: true);
+    await expectLater(DocumentToolsService().validateBackup(file), throwsStateError);
   });
 
   test('rejects archive paths that do not match the document ID', () async {
