@@ -158,9 +158,41 @@ class DocumentToolsService {
     bool useCamera = false,
   }) async {
     final picker = ImagePicker();
-    var selected = useCamera
-        ? _singleImage(await picker.pickImage(source: ImageSource.camera, imageQuality: 95))
-        : await picker.pickMultiImage(imageQuality: 95);
+    var selected = <XFile>[];
+    if (useCamera) {
+      // Capture a page at a time, allowing a multi-page document without
+      // requiring the user to leave the scanner and start a new PDF.
+      while (context.mounted) {
+        final image = await picker.pickImage(
+          source: ImageSource.camera,
+          imageQuality: 95,
+        );
+        if (image == null) break;
+        selected.add(image);
+        if (!context.mounted) return null;
+        final addAnother = await showDialog<bool>(
+          context: context,
+          builder: (dialogContext) => AlertDialog(
+            title: Text('Page ${selected.length} captured'),
+            content: const Text('Would you like to scan another page into this PDF?'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext, false),
+                child: const Text('Finish'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(dialogContext, true),
+                child: const Text('Scan next page'),
+              ),
+            ],
+          ),
+        );
+        if (!context.mounted) return null;
+        if (addAnother != true) break;
+      }
+    } else {
+      selected = await picker.pickMultiImage(imageQuality: 95);
+    }
     if (!context.mounted || selected.isEmpty) return null;
     if (selected.length > 1) {
       final ordered = List<XFile>.from(selected);
@@ -224,8 +256,6 @@ class DocumentToolsService {
     await file.writeAsBytes(await pdf.save(), flush: true);
     return file;
   }
-
-  List<XFile> _singleImage(XFile? image) => image == null ? <XFile>[] : <XFile>[image];
 
 
   Future<void> shareStoredPdf(String storageUri, String displayName) async {
