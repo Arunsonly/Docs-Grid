@@ -41,6 +41,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
         case 'gallery': _scan(); break;
         case 'backup': _backup(); break;
         case 'tools': break;
+        case 'duplicates': _showDuplicates(); break;
       }
     });
   }
