@@ -313,8 +313,8 @@ class DocumentToolsService {
     for (final table in tables) {
       final rows = await db.query(table);
       (manifest['tables'] as Map<String, int>)[table] = rows.length;
-      archive.addFile(ArchiveFile('$table.json', utf8.encode(jsonEncode(rows)).length,
-        Uint8List.fromList(utf8.encode(jsonEncode(rows)))));
+      final metadataBytes = Uint8List.fromList(utf8.encode(jsonEncode(rows)));
+      archive.addFile(ArchiveFile('$table.json', metadataBytes.length, metadataBytes));
     }
     final docs = await db.query('documents',
       columns: ['id', 'name', 'storage_uri', 'sha256']);
@@ -368,8 +368,13 @@ class DocumentToolsService {
     final backups = Directory(p.join(directory.path, 'DocsGrid', 'Backups'));
     await backups.create(recursive: true);
     final output = File(p.join(backups.path, 'DocsGrid_${DateTime.now().toUtc().millisecondsSinceEpoch}.zip'));
-    await output.writeAsBytes(zipped, flush: true);
-    return output;
+    try {
+      await output.writeAsBytes(zipped, flush: true);
+      return output;
+    } catch (_) {
+      try { if (await output.exists()) await output.delete(); } catch (_) {}
+      rethrow;
+    }
   }
 
 
