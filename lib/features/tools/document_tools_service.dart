@@ -587,36 +587,89 @@ class DocumentToolsService {
     }
   }
 
-  Future<String?> verifyLatestPortableMetadataSnapshot() async {
-    final locations = await StorageLocationService.instance.portableDataLocations();
-    final children = await StorageLocationService.instance.listDirectory(locations['databaseUri']!);
+  /// Returns the newest fully verified snapshot, skipping incomplete or
+  /// damaged snapshots left by an interrupted export. A broken newest folder
+  /// must not hide an older recoverable snapshot.
+  Future<Map<String, Object?>?> _findLatestVerifiedPortableSnapshot() async {
+    final storage = StorageLocationService.instance;
+    final locations = await storage.portableDataLocations();
+    final children = await storage.listDirectory(locations['databaseUri']!);
     final snapshots = children
         .where((entry) => entry['isDirectory'] == true &&
+            entry['name'] is String &&
             (entry['name'] as String).startsWith('snapshot_'))
         .toList()
       ..sort((a, b) => (b['name'] as String).compareTo(a['name'] as String));
-    if (snapshots.isEmpty) return null;
 
-    final snapshot = snapshots.first;
-    final snapshotUri = snapshot['uri'] as String;
-    final manifestText = await StorageLocationService.instance.readTextFile(
-      await _findChildUri(snapshotUri, 'manifest.json'),
-    );
-    final manifest = PortableSnapshotManifest.parse(manifestText);
-    for (final record in manifest.files) {
-      final uri = await _findChildUri(snapshotUri, record.path);
-      final contents = await StorageLocationService.instance.readTextFile(uri);
-      final bytes = utf8.encode(contents);
-      if (bytes.length != record.sizeBytes ||
-          sha256.convert(bytes).toString() != record.sha256) {
-        throw StateError('Recovery snapshot verification failed for ${record.path}.');
-      }
-      final rows = jsonDecode(contents);
-      if (rows is! List || rows.length != record.recordCount) {
-        throw StateError('Recovery snapshot record count mismatch for ${record.path}.');
+    for (final snapshot in snapshots) {
+      try {
+        final snapshotUri = snapshot['uri'] as String;
+        final manifestText = await storage.readTextFile(
+          await _findChildUri(snapshotUri, 'manifest.json'),
+        );
+        final manifest = PortableSnapshotManifest.parse(manifestText);
+        final rowsByTable = <String, List<Map<String, Object?>>>{};
+        for (final record in manifest.files) {
+          final table = record.path.substring(0, record.path.length - 5);
+          if (!const {
+            'folders', 'documents', 'categories', 'tags', 'document_tags',
+            'reminders', 'history', 'settings', 'document_text_index',
+            'schema_migrations',
+          }.contains(table)) {
+            throw StateError('Snapshot contains unsupported table: $table.');
+          }
+          final uri = await _findChildUri(snapshotUri, record.path);
+          final contents = await storage.readTextFile(uri);
+          final bytes = utf8.encode(contents);
+          if (bytes.length != record.sizeBytes ||
+              sha256.convert(bytes).toString() != record.sha256) {
+            throw StateError('Recovery snapshot verification failed for ${record.path}.');
+          }
+          final decoded = jsonDecode(contents);
+          if (decoded is! List || decoded.length != record.recordCount ||
+              decoded.any((row) => row is! Map)) {
+            throw StateError('Recovery snapshot record count or row shape is invalid for ${record.path}.');
+          }
+          rowsByTable[table] = decoded
+              .map((row) => Map<String, Object?>.from(row as Map))
+              .toList();
+        }
+
+        final folderRows = rowsByTable['folders'];
+        final documentRows = rowsByTable['documents'];
+        if (folderRows == null || documentRows == null) {
+          throw StateError('Recovery snapshot is missing core metadata.');
+        }
+        final foldersById = PortableSnapshotManifest.validateFolderRows(folderRows);
+        final documentIds = <String>{};
+        for (final row in documentRows) {
+          final id = row['id'];
+          final folderId = row['folder_id'];
+          if (id is! String || id.trim().isEmpty || id != id.trim() ||
+              !documentIds.add(id)) {
+            throw StateError('Recovery snapshot contains an invalid or duplicate document ID.');
+          }
+          if (folderId != null &&
+              (folderId is! String || !foldersById.containsKey(folderId))) {
+            throw StateError('Recovery snapshot references a missing folder.');
+          }
+        }
+        return {
+          'name': snapshot['name'] as String,
+          'uri': snapshotUri,
+          'manifestText': manifestText,
+          'manifest': manifest,
+        };
+      } catch (_) {
+        // Try the next older snapshot. Never mutate or delete a failed copy.
       }
     }
-    return snapshot['name'] as String;
+    return null;
+  }
+
+  Future<String?> verifyLatestPortableMetadataSnapshot() async {
+    final snapshot = await _findLatestVerifiedPortableSnapshot();
+    return snapshot?['name'] as String?;
   }
 
   /// Restores the newest portable snapshot additively. Existing records are
@@ -624,20 +677,12 @@ class DocumentToolsService {
   /// SHA-256 from the currently selected library and are never overwritten.
   Future<Map<String, int>> restoreLatestPortableMetadataSnapshot() async {
     final storage = StorageLocationService.instance;
-    final locations = await storage.portableDataLocations();
-    final children = await storage.listDirectory(locations['databaseUri']!);
-    final snapshots = children
-        .where((entry) => entry['isDirectory'] == true &&
-            (entry['name'] as String).startsWith('snapshot_'))
-        .toList()
-      ..sort((a, b) => (b['name'] as String).compareTo(a['name'] as String));
-    if (snapshots.isEmpty) throw StateError('No portable recovery snapshot was found.');
-
-    final snapshotUri = snapshots.first['uri'] as String;
-    final manifestText = await storage.readTextFile(
-      await _findChildUri(snapshotUri, 'manifest.json'),
-    );
-    final manifest = PortableSnapshotManifest.parse(manifestText);
+    final snapshot = await _findLatestVerifiedPortableSnapshot();
+    if (snapshot == null) {
+      throw StateError('No complete, verified portable recovery snapshot was found.');
+    }
+    final snapshotUri = snapshot['uri'] as String;
+    final manifest = snapshot['manifest'] as PortableSnapshotManifest;
     if (manifest.databaseSchemaVersion > 3) {
       throw StateError('This recovery snapshot was created by a newer DocsGrid database version. Update the app before restoring it.');
     }
