@@ -41,7 +41,7 @@ jobs:
           text = wrapper.read_text()
           text, count = re.subn(
               r'^distributionUrl=.*$',
-              r'distributionUrl=https\://downloads.gradle.org/distributions/gradle-9.3.1-bin.zip',
+              r'distributionUrl=https\://mirrors.huaweicloud.com/gradle/gradle-9.3.1-bin.zip',
               text, count=1, flags=re.M
           )
           if count != 1:
@@ -55,7 +55,7 @@ jobs:
           else:
               text = text.rstrip() + '\ndistributionSha256Sum=b266d5ff6b90eada6dc3b20cb090e3731302e553a27c5d3e4df1f0d76beaff06\n'
           wrapper.write_text(text)
-          print('Pinned Gradle 9.3.1 binary distribution with official SHA-256')
+          print('Pinned Gradle 9.3.1 mirror with official upstream SHA-256 verification')
           PY
       - name: Cache Gradle distributions and dependencies
         uses: actions/cache@v4
