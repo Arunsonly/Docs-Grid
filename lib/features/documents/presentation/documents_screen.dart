@@ -681,24 +681,30 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     ],
   );
 
-  Widget _emptyState() => Center(
-    child: Padding(
-      padding: const EdgeInsets.all(28),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          const Icon(Icons.picture_as_pdf_outlined, size: 58),
-          const SizedBox(height: 12),
-          Text(widget.favoritesOnly ? 'No starred PDFs yet' : widget.recentOnly ? 'No recently opened PDFs' : 'Your library is empty',
-              style: Theme.of(context).textTheme.titleLarge),
-          const SizedBox(height: 6),
-          Text(widget.recentOnly ? 'Open a PDF and it will appear here.' : 'Import PDF files from your phone to get started.', textAlign: TextAlign.center),
-          if (!widget.favoritesOnly && !widget.recentOnly) ...[
-            const SizedBox(height: 16),
-            FilledButton.icon(onPressed: _importing ? null : _import,
-              icon: const Icon(Icons.add), label: const Text('Import PDFs')),
-          ],
-        ],
+  Widget _emptyState() => SingleChildScrollView(
+    physics: const AlwaysScrollableScrollPhysics(),
+    child: ConstrainedBox(
+      constraints: BoxConstraints(minHeight: MediaQuery.sizeOf(context).height * 0.22),
+      child: Center(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.picture_as_pdf_outlined, size: 48),
+              const SizedBox(height: 8),
+              Text(widget.favoritesOnly ? 'No starred PDFs yet' : widget.recentOnly ? 'No recently opened PDFs' : 'Your library is empty',
+                  style: Theme.of(context).textTheme.titleLarge, textAlign: TextAlign.center),
+              const SizedBox(height: 6),
+              Text(widget.recentOnly ? 'Open a PDF and it will appear here.' : 'Import PDF files from your phone to get started.', textAlign: TextAlign.center),
+              if (!widget.favoritesOnly && !widget.recentOnly) ...[
+                const SizedBox(height: 12),
+                FilledButton.icon(onPressed: _importing ? null : _import,
+                  icon: const Icon(Icons.add), label: const Text('Import PDFs')),
+              ],
+            ],
+          ),
+        ),
       ),
     ),
   );
