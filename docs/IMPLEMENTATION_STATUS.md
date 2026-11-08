@@ -72,4 +72,5 @@ The following changes are on `feature/complete-ten-features` and remain subject 
 
 - Reminder permission review found that ordinary reminders requested Android exact-alarm special access and switched to exact scheduling whenever access was already granted. This contradicted the approved least-privilege architecture, which specifies inexact scheduling for ordinary document reminders.
 - The reminder scheduler now requests only notification permission and always uses Android inexact scheduling. The generated CI manifest no longer declares `SCHEDULE_EXACT_ALARM`. This avoids an unnecessary special-access prompt and permission declaration.
-- Verification gate: run the full Android/iOS analyze, unit/widget test and build workflow on this branch. Physical notification delivery, reboot and vendor-specific scheduling still require device testing.
+- Scanner audit also found that the generated temporary PDF was not cleaned up when the user cancelled naming/folder selection, navigated away, or import failed. The scanner screen now removes its temporary output in a `finally` block after every exit path.
+- Verification gate: run the full Android/iOS analyze, unit/widget test and build workflow on this branch. Physical notification delivery, reboot, scanner camera/gallery flows and vendor-specific scheduling still require device testing.
