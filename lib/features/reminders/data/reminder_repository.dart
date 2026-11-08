@@ -59,6 +59,7 @@ class ReminderRepository {
     String? note,
     required DateTime remindAt,
     String? recurrenceRule,
+    String? documentId,
   }) async {
     final db = await _database.database;
     final id = _uuid.v4();
@@ -67,6 +68,7 @@ class ReminderRepository {
     final cleanNote = note?.trim();
     await db.insert('reminders', {
       'id': id,
+      'document_id': documentId,
       'title': title.trim(),
       'note': cleanNote == null || cleanNote.isEmpty ? null : cleanNote,
       'remind_at_utc': when,
