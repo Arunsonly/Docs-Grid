@@ -1067,9 +1067,6 @@ class DocumentToolsService {
           body: row['note'] as String?,
           at: DateTime.parse(row['remind_at_utc'] as String).toLocal(),
           recurrence: row['recurrence_rule'] as String?,
-          documentId: row['document_id'] == null
-              ? null
-              : documentIdMap[row['document_id']],
         );
       } catch (_) {
         // The reminder record is restored even if the OS blocks notifications.
