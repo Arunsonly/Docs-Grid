@@ -192,7 +192,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
       builder: (dialogContext) => AlertDialog(
         title: const Text('Restore DocsGrid folder data?'),
         content: Text(
-          'Verified snapshot: $snapshot\\n\\n$androidNote\\n'
+          'Verified snapshot: $snapshot\n\n$androidNote\n'
           'Existing records will be retained. Imported IDs will be remapped if needed. '
           'PDFs will be matched by SHA-256; files not found will keep their metadata '
           'and be marked for relinking. No PDF file will be overwritten or deleted.',
