@@ -597,34 +597,58 @@ class DocumentToolsService {
 
       final db = await _database.database;
       await db.transaction((txn) async {
+        var batch = txn.batch();
+        var pending = 0;
+        Future<void> flushBatch() async {
+          if (pending == 0) return;
+          await batch.commit(noResult: true);
+          batch = txn.batch();
+          pending = 0;
+        }
+        void queueInsert(
+          String table,
+          Map<String, Object?> row, {
+          ConflictAlgorithm? conflictAlgorithm,
+        }) {
+          batch.insert(table, row, conflictAlgorithm: conflictAlgorithm);
+          pending++;
+        }
+
         for (final row in folderRows) {
           final copy = Map<String, Object?>.from(row);
           copy['storage_uri_or_relative_path'] = folderPath(row['id'] as String);
-          await txn.insert('folders', copy);
+          queueInsert('folders', copy);
+          if (pending >= 500) await flushBatch();
         }
         for (final row in rowsByTable['categories']!) {
-          await txn.insert('categories', row, conflictAlgorithm: ConflictAlgorithm.ignore);
+          queueInsert('categories', row, conflictAlgorithm: ConflictAlgorithm.ignore);
+          if (pending >= 500) await flushBatch();
         }
         for (final row in rowsByTable['tags']!) {
-          await txn.insert('tags', row);
+          queueInsert('tags', row);
+          if (pending >= 500) await flushBatch();
         }
         for (final row in rowsByTable['documents']!) {
           final copy = Map<String, Object?>.from(row);
           final restored = restoredPaths[row['id']];
           if (restored == null) throw StateError('Backup is missing PDF bytes for "${row['name']}".');
           copy['storage_uri'] = restored;
-          await txn.insert('documents', copy);
+          queueInsert('documents', copy);
+          if (pending >= 500) await flushBatch();
         }
         for (final table in ['document_tags', 'reminders', 'history', 'document_text_index']) {
           for (final row in rowsByTable[table]!) {
-            await txn.insert(table, row);
+            queueInsert(table, row);
+            if (pending >= 500) await flushBatch();
           }
         }
         // Preferences are additive: never overwrite settings already configured
         // on this device when importing a backup from another installation.
         for (final row in rowsByTable['settings']!) {
-          await txn.insert('settings', row, conflictAlgorithm: ConflictAlgorithm.ignore);
+          queueInsert('settings', row, conflictAlgorithm: ConflictAlgorithm.ignore);
+          if (pending >= 500) await flushBatch();
         }
+        await flushBatch();
       });
       databaseCommitted = true;
       for (final row in rowsByTable['reminders']!) {
