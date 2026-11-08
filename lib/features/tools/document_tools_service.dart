@@ -1010,6 +1010,13 @@ class DocumentToolsService {
         throw StateError('Backup references a missing parent folder.');
       }
     }
+    for (final raw in rowsByTable['documents']!) {
+      if (raw is! Map) throw StateError('Backup contains invalid document metadata.');
+      final folderId = raw['folder_id'];
+      if (folderId != null && (folderId is! String || !foldersById.containsKey(folderId))) {
+        throw StateError('Backup document references a missing folder.');
+      }
+    }
     final visitingFolders = <String>{};
     final visitedFolders = <String>{};
     void visitFolder(String id) {
