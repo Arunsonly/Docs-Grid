@@ -118,7 +118,6 @@ class DocumentToolsService {
       await document.close();
     }
     final text = pages.join('\n\n').trim();
-    final db = await _database.database;
     await db.insert('document_text_index', {
       'document_id': documentId,
       'extracted_text': text,
