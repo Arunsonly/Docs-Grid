@@ -582,8 +582,9 @@ class DocumentToolsService {
       );
       return snapshotName;
     } catch (_) {
-      // Keep the incomplete directory for diagnostics; without manifest it
-      // cannot be selected as a valid recovery snapshot.
+      // A snapshot without its final manifest is not recoverable. Remove the
+      // partial directory so failed exports do not accumulate storage debris.
+      try { await StorageLocationService.instance.deletePdf(snapshotUri); } catch (_) {}
       rethrow;
     }
   }
