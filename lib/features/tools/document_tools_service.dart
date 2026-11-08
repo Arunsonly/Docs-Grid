@@ -988,6 +988,44 @@ class DocumentToolsService {
       rowsByTable[table] = rows;
     }
 
+    // Preflight the complete folder graph before restore creates any files.
+    final foldersById = <String, Map<String, dynamic>>{};
+    for (final raw in rowsByTable['folders']!) {
+      if (raw is! Map) {
+        throw StateError('Backup contains invalid folder metadata.');
+      }
+      final folder = Map<String, dynamic>.from(raw);
+      final id = folder['id'];
+      final parentId = folder['parent_id'];
+      if (id is! String || id.trim().isEmpty || id != id.trim() ||
+          foldersById.containsKey(id) ||
+          (parentId != null && (parentId is! String || parentId.isEmpty))) {
+        throw StateError('Backup contains an invalid or duplicate folder ID.');
+      }
+      foldersById[id] = folder;
+    }
+    for (final folder in foldersById.values) {
+      final parentId = folder['parent_id'] as String?;
+      if (parentId != null && !foldersById.containsKey(parentId)) {
+        throw StateError('Backup references a missing parent folder.');
+      }
+    }
+    final visitingFolders = <String>{};
+    final visitedFolders = <String>{};
+    void visitFolder(String id) {
+      if (visitingFolders.contains(id)) {
+        throw StateError('Backup folder hierarchy contains a cycle.');
+      }
+      if (!visitedFolders.add(id)) return;
+      visitingFolders.add(id);
+      final parentId = foldersById[id]!['parent_id'] as String?;
+      if (parentId != null) visitFolder(parentId);
+      visitingFolders.remove(id);
+    }
+    for (final id in foldersById.keys) {
+      visitFolder(id);
+    }
+
     final rawFiles = manifest['files'];
     if (rawFiles is! List) {
       throw StateError('Backup manifest has an invalid PDF list.');
