@@ -63,8 +63,31 @@ class DocumentToolsService {
     if (!_indexingDocumentIds.add(documentId)) {
       throw StateError('This document is already being indexed.');
     }
+    final db = await _database.database;
+    final previousIndex = await db.query(
+      'document_text_index',
+      columns: ['document_id'],
+      where: 'document_id = ?',
+      whereArgs: [documentId],
+      limit: 1,
+    );
     try {
+      await db.update(
+        'documents',
+        {'extracted_text_status': 'indexing'},
+        where: 'id = ? AND deleted_at IS NULL',
+        whereArgs: [documentId],
+      );
       return await _indexPdfTextInternal(documentId, path);
+    } catch (_) {
+      // Keep an older successful index usable if a re-index attempt fails.
+      await db.update(
+        'documents',
+        {'extracted_text_status': previousIndex.isEmpty ? 'failed' : 'indexed'},
+        where: 'id = ? AND deleted_at IS NULL',
+        whereArgs: [documentId],
+      );
+      rethrow;
     } finally {
       _indexingDocumentIds.remove(documentId);
     }
@@ -89,7 +112,10 @@ class DocumentToolsService {
     final document = await pdfx.PdfDocument.openFile(path);
     final pageCount = document.pagesCount;
     final recognizer = TextRecognizer(script: TextRecognitionScript.latin);
-    final pages = <String>[];
+    final devanagariRecognizer = Platform.isAndroid
+        ? TextRecognizer(script: TextRecognitionScript.devanagiri)
+        : null;
+    final pages = StringBuffer();
     try {
       for (var pageNumber = 1; pageNumber <= document.pagesCount; pageNumber++) {
         final page = await document.getPage(pageNumber);
@@ -104,8 +130,15 @@ class DocumentToolsService {
           final image = File(p.join(temp.path, 'ocr_${_uuid.v4()}.png'));
           await image.writeAsBytes(rendered.bytes, flush: true);
           try {
-            final result = await recognizer.processImage(InputImage.fromFilePath(image.path));
-            pages.add('--- Page $pageNumber ---\n${result.text}');
+            final input = InputImage.fromFilePath(image.path);
+            final latinResult = await recognizer.processImage(input);
+            final extracted = <String>[latinResult.text];
+            if (devanagariRecognizer != null) {
+              final devanagariResult = await devanagariRecognizer.processImage(input);
+              if (devanagariResult.text.isNotEmpty) extracted.add(devanagariResult.text);
+            }
+            final pageText = extracted.where((value) => value.trim().isNotEmpty).join('\n');
+            pages.write('--- Page $pageNumber ---\n$pageText\n\n');
           } finally {
             if (await image.exists()) await image.delete();
           }
@@ -115,17 +148,24 @@ class DocumentToolsService {
       }
     } finally {
       await recognizer.close();
+      await devanagariRecognizer?.close();
       await document.close();
     }
-    final text = pages.join('\n\n').trim();
-    await db.insert('document_text_index', {
-      'document_id': documentId,
-      'extracted_text': text,
-      'indexed_at': DateTime.now().toUtc().toIso8601String(),
-      'page_count': pageCount,
-    }, conflictAlgorithm: ConflictAlgorithm.replace);
-    await db.update('documents', {'extracted_text_status': text.isEmpty ? 'empty' : 'indexed'},
-      where: 'id = ?', whereArgs: [documentId]);
+    final text = pages.toString().trim();
+    await db.transaction((txn) async {
+      await txn.insert('document_text_index', {
+        'document_id': documentId,
+        'extracted_text': text,
+        'indexed_at': DateTime.now().toUtc().toIso8601String(),
+        'page_count': pageCount,
+      }, conflictAlgorithm: ConflictAlgorithm.replace);
+      await txn.update(
+        'documents',
+        {'extracted_text_status': text.isEmpty ? 'empty' : 'indexed'},
+        where: 'id = ? AND deleted_at IS NULL',
+        whereArgs: [documentId],
+      );
+    });
     return text.length;
   }
 
