@@ -54,64 +54,72 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
 
   Future<void> _scan({bool camera = false}) => _run(() async {
     final file = await _tools.scanToPdf(context: context, useCamera: camera);
-    if (!mounted || file == null) return;
-
-    final nameController = TextEditingController();
-    final chosenName = await showDialog<String?>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Name your PDF'),
-        content: TextField(
-          controller: nameController,
-          autofocus: true,
-          decoration: const InputDecoration(
-            labelText: 'File name (optional)',
-            hintText: 'Leave blank to use automatic name',
-            suffixText: '.pdf',
-          ),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(dialogContext, null), child: const Text('Skip')),
-          FilledButton(onPressed: () => Navigator.pop(dialogContext, nameController.text.trim()), child: const Text('Continue')),
-        ],
-      ),
-    );
-    nameController.dispose();
-    if (!mounted) return;
-
-    final folders = await FolderRepository().allFoldersWithPaths();
-    if (!mounted) return;
-    final destination = await showModalBottomSheet<String>(
-      context: context,
-      showDragHandle: true,
-      builder: (sheetContext) => SafeArea(
-        child: ListView(shrinkWrap: true, children: [
-          const ListTile(title: Text('Choose DocsGrid folder')),
-          ListTile(
-            leading: const Icon(Icons.home_outlined),
-            title: const Text('My Documents (root)'),
-            onTap: () => Navigator.pop(sheetContext, ''),
-          ),
-          for (final option in folders)
-            ListTile(
-              leading: const Icon(Icons.folder_outlined),
-              title: Text(option.path),
-              onTap: () => Navigator.pop(sheetContext, option.folder.id),
+    if (file == null) return;
+    try {
+      if (!mounted) return;
+      final nameController = TextEditingController();
+      final chosenName = await showDialog<String?>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('Name your PDF'),
+          content: TextField(
+            controller: nameController,
+            autofocus: true,
+            decoration: const InputDecoration(
+              labelText: 'File name (optional)',
+              hintText: 'Leave blank to use automatic name',
+              suffixText: '.pdf',
             ),
-        ]),
-      ),
-    );
-    if (!mounted || destination == null) return;
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(dialogContext, null), child: const Text('Skip')),
+            FilledButton(onPressed: () => Navigator.pop(dialogContext, nameController.text.trim()), child: const Text('Continue')),
+          ],
+        ),
+      );
+      nameController.dispose();
+      if (!mounted) return;
 
-    final imported = await DocumentRepository().importScannedPdf(
-      file,
-      displayName: chosenName == null || chosenName.isEmpty ? null : chosenName,
-      targetFolderId: destination.isEmpty ? null : destination,
-    );
-    if (mounted) {
-      setState(() => _message = imported.added == 1
-        ? 'PDF saved in DocsGrid: ${chosenName == null || chosenName.isEmpty ? p.basename(file.path) : chosenName}.pdf'
-        : 'This PDF already exists. Duplicate was not added.');
+      final folders = await FolderRepository().allFoldersWithPaths();
+      if (!mounted) return;
+      final destination = await showModalBottomSheet<String>(
+        context: context,
+        showDragHandle: true,
+        builder: (sheetContext) => SafeArea(
+          child: ListView(shrinkWrap: true, children: [
+            const ListTile(title: Text('Choose DocsGrid folder')),
+            ListTile(
+              leading: const Icon(Icons.home_outlined),
+              title: const Text('My Documents (root)'),
+              onTap: () => Navigator.pop(sheetContext, ''),
+            ),
+            for (final option in folders)
+              ListTile(
+                leading: const Icon(Icons.folder_outlined),
+                title: Text(option.path),
+                onTap: () => Navigator.pop(sheetContext, option.folder.id),
+              ),
+          ]),
+        ),
+      );
+      if (!mounted || destination == null) return;
+
+      final imported = await DocumentRepository().importScannedPdf(
+        file,
+        displayName: chosenName == null || chosenName.isEmpty ? null : chosenName,
+        targetFolderId: destination.isEmpty ? null : destination,
+      );
+      if (mounted) {
+        setState(() => _message = imported.added == 1
+          ? 'PDF saved in DocsGrid: ${chosenName == null || chosenName.isEmpty ? p.basename(file.path) : chosenName}.pdf'
+          : 'This PDF already exists. Duplicate was not added.');
+      }
+    } finally {
+      // Scanner output is only a staging file; the verified library copy is
+      // authoritative. Remove the staging copy even when the user cancels.
+      try {
+        if (await file.exists()) await file.delete();
+      } catch (_) {}
     }
   });
 
