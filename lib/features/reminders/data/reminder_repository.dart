@@ -44,6 +44,13 @@ class ReminderRepository {
   final AppDatabase _database;
   static const _uuid = Uuid();
 
+  @visibleForTesting
+  static String validateTitle(String title) {
+    final cleaned = title.trim();
+    if (cleaned.isEmpty) throw ArgumentError('Reminder title cannot be empty.');
+    return cleaned;
+  }
+
   Future<List<ReminderRecord>> list() async {
     final db = await _database.database;
     final rows = await db.rawQuery('''
@@ -61,6 +68,7 @@ class ReminderRepository {
     String? recurrenceRule,
     String? documentId,
   }) async {
+    final cleanTitle = validateTitle(title);
     final db = await _database.database;
     final id = _uuid.v4();
     final now = DateTime.now().toUtc().toIso8601String();
@@ -69,7 +77,7 @@ class ReminderRepository {
     await db.insert('reminders', {
       'id': id,
       'document_id': documentId,
-      'title': title.trim(),
+      'title': cleanTitle,
       'note': cleanNote == null || cleanNote.isEmpty ? null : cleanNote,
       'remind_at_utc': when,
       'timezone_id': DateTime.now().timeZoneName,
@@ -82,7 +90,7 @@ class ReminderRepository {
     });
     await ReminderNotifications.instance.requestPermission();
     await ReminderNotifications.instance.schedule(
-      id: id, title: title.trim(), body: cleanNote, at: remindAt, recurrence: recurrenceRule,
+      id: id, title: cleanTitle, body: cleanNote, at: remindAt, recurrence: recurrenceRule,
     );
   }
 
@@ -93,11 +101,12 @@ class ReminderRepository {
     required DateTime remindAt,
     String? recurrenceRule,
   }) async {
+    final cleanTitle = validateTitle(title);
     final db = await _database.database;
     final when = remindAt.toUtc().toIso8601String();
     final cleanNote = note?.trim();
     await db.update('reminders', {
-      'title': title.trim(),
+      'title': cleanTitle,
       'note': cleanNote == null || cleanNote.isEmpty ? null : cleanNote,
       'remind_at_utc': when,
       'next_fire_at_utc': when,
@@ -108,7 +117,7 @@ class ReminderRepository {
     }, where: 'id = ?', whereArgs: [id]);
     await ReminderNotifications.instance.cancel(id);
     await ReminderNotifications.instance.schedule(
-      id: id, title: title.trim(), body: cleanNote, at: remindAt, recurrence: recurrenceRule,
+      id: id, title: cleanTitle, body: cleanNote, at: remindAt, recurrence: recurrenceRule,
     );
   }
 
