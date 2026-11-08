@@ -418,7 +418,9 @@ class DocumentToolsService {
         final destinationDir = folderId == null ? restoreRoot : Directory(folderPath(folderId));
         await destinationDir.create(recursive: true);
         final requestedName = p.basename((item['originalName'] as String?) ?? 'document.pdf')
-            .replaceAll(RegExp(r'[<>:"/\\\\|?*\\x00-\\x1F]'), '_')
+            .replaceAll(RegExp(r'[<>:"|?*\x00-\x1F]'), '_')
+            .replaceAll('/', '_')
+            .replaceAll('\\', '_')
             .trim();
         final safeName = requestedName.isEmpty
             ? 'document.pdf'
