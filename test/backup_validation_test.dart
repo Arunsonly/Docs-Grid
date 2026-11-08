@@ -19,7 +19,7 @@ void main() {
   });
 
   Future<File> writeArchive({
-    String entryName = 'pdfs/doc-1.pdf',
+    String? entryName,
     List<int> pdfBytes = const [37, 80, 68, 70, 45, 49, 46, 52],
     bool includePdf = true,
     bool corruptMetadataHash = false,
@@ -28,6 +28,8 @@ void main() {
     ],
   }) async {
     final archive = Archive();
+    final resolvedEntryName = entryName ??
+        'pdfs/${DocumentToolsService.safeRestorePathToken('doc-1')}.pdf';
     final tableRows = <String, List<Map<String, Object?>>>{ 
       'folders': [],
       'documents': documents,
@@ -54,7 +56,7 @@ void main() {
       });
     }
     if (includePdf) {
-      archive.addFile(ArchiveFile(entryName, pdfBytes.length, Uint8List.fromList(pdfBytes)));
+      archive.addFile(ArchiveFile(resolvedEntryName, pdfBytes.length, Uint8List.fromList(pdfBytes)));
     }
     final manifest = {
       'format': 'DocsGridBackup',
@@ -63,7 +65,7 @@ void main() {
       'files': [
         {
           'documentId': 'doc-1',
-          'entry': entryName,
+          'entry': resolvedEntryName,
           'sha256': sha256.convert(pdfBytes).toString(),
         },
       ],
@@ -89,6 +91,11 @@ void main() {
   test('rejects archive paths that do not match the document ID', () async {
     final file = await writeArchive(entryName: '../../documents.json');
     await expectLater(DocumentToolsService().validateBackup(file), throwsStateError);
+  });
+
+  test('continues to accept legacy v1 PDF entry names', () async {
+    final file = await writeArchive(entryName: 'pdfs/doc-1.pdf');
+    expect(await DocumentToolsService().validateBackup(file), 1);
   });
 
   test('rejects non-PDF content even when its hash matches the manifest', () async {
