@@ -136,8 +136,8 @@ class DocumentToolsService {
           if (rendered == null) continue;
           final temp = await getTemporaryDirectory();
           final image = File(p.join(temp.path, 'ocr_${_uuid.v4()}.png'));
-          await image.writeAsBytes(rendered.bytes, flush: true);
           try {
+            await image.writeAsBytes(rendered.bytes, flush: true);
             final input = InputImage.fromFilePath(image.path);
             final latinResult = await recognizer.processImage(input);
             final extracted = <String>[latinResult.text];
