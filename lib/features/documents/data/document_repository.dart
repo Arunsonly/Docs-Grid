@@ -145,7 +145,9 @@ class DocumentRepository {
         limit: 1,
       );
       if (rows.isEmpty) throw StateError('Destination folder no longer exists.');
-      segments.add(rows.first['name'] as String);
+      // Older databases may contain names that bypassed current validation.
+      // Never let a legacy dot-segment escape the private DocsGrid root.
+      segments.add(FolderRepository.validateFolderName(rows.first['name'] as String));
       currentId = rows.first['parent_id'] as String?;
     }
     var directory = root;
