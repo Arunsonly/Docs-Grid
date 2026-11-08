@@ -66,3 +66,10 @@ The following changes are on `feature/complete-ten-features` and remain subject 
 - The latest pre-review CI run passed Android analyze, tests and debug APK build/upload, and iOS analyze, tests and unsigned build.
 - The current source-review fixes have been committed after that run and must pass a fresh Android/iOS CI run.
 - No hosted CI run can certify Android SAF permissions, iOS security-scoped bookmark persistence, physical notification delivery, cloud-provider access or real-device recovery. These remain manual device test gates.
+
+
+## Audit findings and fixes — 2026-11-08
+
+- Reminder permission review found that ordinary reminders requested Android exact-alarm special access and switched to exact scheduling whenever access was already granted. This contradicted the approved least-privilege architecture, which specifies inexact scheduling for ordinary document reminders.
+- The reminder scheduler now requests only notification permission and always uses Android inexact scheduling. The generated CI manifest no longer declares `SCHEDULE_EXACT_ALARM`. This avoids an unnecessary special-access prompt and permission declaration.
+- Verification gate: run the full Android/iOS analyze, unit/widget test and build workflow on this branch. Physical notification delivery, reboot and vendor-specific scheduling still require device testing.
