@@ -502,14 +502,12 @@ class DocumentToolsService {
         final at = DateTime.parse(row['remind_at_utc'] as String).toLocal();
         try {
           await ReminderNotifications.instance.schedule(
-            id: reminderIdMap[row['id']]!,
+            id: row['id'] as String,
             title: row['title'] as String,
             body: row['note'] as String?,
             at: at,
             recurrence: row['recurrence_rule'] as String?,
-            documentId: row['document_id'] == null
-                ? null
-                : documentIdMap[row['document_id']],
+            documentId: row['document_id'] as String?,
           );
         } catch (_) {
           // Imported records remain valid even if the OS declines a notification.
