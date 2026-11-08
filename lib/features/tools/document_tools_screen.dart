@@ -117,18 +117,20 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
 
   Future<void> _backup() => _run(() async {
     final archive = await _tools.createBackup();
-    if (!mounted) return;
-    final directory = await FilePicker.getDirectoryPath(
-      dialogTitle: 'Choose where to save DocsGrid backup',
+    final stamp = DateTime.now().toIso8601String().replaceAll(':', '-').split('.').first;
+    final bytes = await archive.readAsBytes();
+    final saved = await FilePicker.platform.saveFile(
+      dialogTitle: 'Save DocsGrid backup',
+      fileName: 'DocsGrid_Backup_$stamp.zip',
+      type: FileType.custom,
+      allowedExtensions: ['zip'],
+      bytes: bytes,
     );
-    if (directory == null || directory.isEmpty) {
-      if (mounted) setState(() => _message = 'Backup was created temporarily. Choose a folder to save a permanent copy.');
+    if (saved == null || saved.isEmpty) {
+      if (mounted) setState(() => _message = 'Backup export cancelled. Your documents were not changed.');
       return;
     }
-    final stamp = DateTime.now().toIso8601String().replaceAll(':', '-').split('.').first;
-    final target = File(p.join(directory, 'DocsGrid_Backup_$stamp.zip'));
-    await archive.copy(target.path);
-    if (mounted) setState(() => _message = 'Offline backup saved successfully: ${target.path}');
+    if (mounted) setState(() => _message = 'Backup created successfully. Keep the ZIP file somewhere safe; choose it under Restore backup on a new installation.');
   });
 
   Future<void> _createRecoverySnapshot() => _run(() async {
