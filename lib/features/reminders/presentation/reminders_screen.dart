@@ -36,30 +36,35 @@ class _RemindersScreenState extends State<RemindersScreen> {
     final result = await showDialog<bool>(context: context, builder: (dialogContext) => StatefulBuilder(
       builder: (context, setDialogState) => AlertDialog(
         title: Text(existing == null ? 'New reminder' : 'Edit reminder'),
-        content: Column(mainAxisSize: MainAxisSize.min, children: [
-          TextField(controller: title, autofocus: true, decoration: const InputDecoration(labelText: 'Reminder title')),
-          TextField(controller: note, maxLines: 2, decoration: const InputDecoration(labelText: 'Note (optional)')),
-          DropdownButtonFormField<String>(
-            initialValue: recurrence,
-            decoration: const InputDecoration(labelText: 'Repeat'),
-            items: const [
-              DropdownMenuItem(value: 'none', child: Text('Does not repeat')),
-              DropdownMenuItem(value: 'daily', child: Text('Daily')),
-              DropdownMenuItem(value: 'weekly', child: Text('Weekly')),
-            ],
-            onChanged: (value) => setDialogState(() => recurrence = value ?? 'none'),
+        content: SizedBox(
+          width: 440,
+          child: SingleChildScrollView(
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              TextField(controller: title, autofocus: true, decoration: const InputDecoration(labelText: 'Reminder title')),
+              TextField(controller: note, maxLines: 2, decoration: const InputDecoration(labelText: 'Note (optional)')),
+              DropdownButtonFormField<String>(
+                initialValue: recurrence,
+                decoration: const InputDecoration(labelText: 'Repeat'),
+                items: const [
+                  DropdownMenuItem(value: 'none', child: Text('Does not repeat')),
+                  DropdownMenuItem(value: 'daily', child: Text('Daily')),
+                  DropdownMenuItem(value: 'weekly', child: Text('Weekly')),
+                ],
+                onChanged: (value) => setDialogState(() => recurrence = value ?? 'none'),
+              ),
+              const SizedBox(height: 8),
+              ListTile(contentPadding: EdgeInsets.zero, leading: const Icon(Icons.calendar_month_outlined),
+                title: const Text('Date & time'),
+                subtitle: Text('${selected.day.toString().padLeft(2, '0')}/${selected.month.toString().padLeft(2, '0')}/${selected.year} · ${selected.hour.toString().padLeft(2, '0')}:${selected.minute.toString().padLeft(2, '0')}'),
+                onTap: () async {
+                  final date = await showDatePicker(context: context, initialDate: selected, firstDate: DateTime.now(), lastDate: DateTime.now().add(const Duration(days: 3650)));
+                  if (date == null || !context.mounted) return;
+                  final time = await showTimePicker(context: context, initialTime: TimeOfDay.fromDateTime(selected));
+                  if (time != null) setDialogState(() => selected = DateTime(date.year, date.month, date.day, time.hour, time.minute));
+                }),
+            ]),
           ),
-          const SizedBox(height: 8),
-          ListTile(contentPadding: EdgeInsets.zero, leading: const Icon(Icons.calendar_month_outlined),
-            title: const Text('Date & time'),
-            subtitle: Text('${selected.day.toString().padLeft(2, '0')}/${selected.month.toString().padLeft(2, '0')}/${selected.year} · ${selected.hour.toString().padLeft(2, '0')}:${selected.minute.toString().padLeft(2, '0')}'),
-            onTap: () async {
-              final date = await showDatePicker(context: context, initialDate: selected, firstDate: DateTime.now(), lastDate: DateTime.now().add(const Duration(days: 3650)));
-              if (date == null || !context.mounted) return;
-              final time = await showTimePicker(context: context, initialTime: TimeOfDay.fromDateTime(selected));
-              if (time != null) setDialogState(() => selected = DateTime(date.year, date.month, date.day, time.hour, time.minute));
-            }),
-        ]),
+        ),
         actions: [TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')),
           FilledButton(onPressed: () { if (title.text.trim().isNotEmpty && selected.isAfter(DateTime.now())) Navigator.pop(dialogContext, true); }, child: Text(existing == null ? 'Save' : 'Update'))],
       ),
