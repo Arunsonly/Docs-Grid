@@ -1091,7 +1091,7 @@ class DocumentToolsService {
         throw StateError('Backup contains invalid $table metadata.');
       }
       final declaredCount = declaredTables[table];
-      if (declaredCount is! int && !(table == 'document_text_index' && declaredCount == null)) {
+      if (declaredCount is! int) {
         throw StateError('Backup manifest has an invalid count for $table.');
       }
       if (declaredCount != null && declaredCount != rows.length) {
