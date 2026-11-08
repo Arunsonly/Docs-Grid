@@ -1,0 +1,27 @@
+import 'package:docs_grid/features/tools/document_tools_service.dart';
+import 'package:flutter_test/flutter_test.dart';
+
+void main() {
+  group('Backup restore path tokens', () {
+    test('never embeds raw path separators from untrusted IDs', () {
+      final token = DocumentToolsService.safeRestorePathToken('../../outside');
+      expect(token, matches(RegExp(r'^[a-f0-9]{64}$')));
+      expect(token, isNot(contains('/')));
+      expect(token, isNot(contains(r'\\')));
+    });
+
+    test('is deterministic for the same source ID', () {
+      expect(
+        DocumentToolsService.safeRestorePathToken('folder-123'),
+        DocumentToolsService.safeRestorePathToken('folder-123'),
+      );
+    });
+
+    test('different IDs map to distinct path tokens in representative cases', () {
+      expect(
+        DocumentToolsService.safeRestorePathToken('folder-123'),
+        isNot(DocumentToolsService.safeRestorePathToken('folder-124')),
+      );
+    });
+  });
+}
