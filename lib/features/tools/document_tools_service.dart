@@ -20,6 +20,7 @@ import '../../core/database/app_database.dart';
 import '../../core/storage/storage_location_service.dart';
 import '../reminders/data/reminder_notifications.dart';
 import 'document_crop_screen.dart';
+import 'portable_snapshot_manifest.dart';
 
 /// Local-only utilities for indexing, scanning, sharing and portable backups.
 /// This service never uploads document contents to a remote server.
@@ -486,30 +487,18 @@ class DocumentToolsService {
     final manifestText = await StorageLocationService.instance.readTextFile(
       await _findChildUri(snapshotUri, 'manifest.json'),
     );
-    final manifest = jsonDecode(manifestText) as Map<String, dynamic>;
-    if (manifest['format'] != 'DocsGridPortableData' || manifest['formatVersion'] != 1) {
-      throw StateError('The latest recovery snapshot has an unsupported format.');
-    }
-    final files = manifest['files'];
-    if (files is! List) throw StateError('Recovery snapshot manifest is incomplete.');
-    for (final raw in files) {
-      if (raw is! Map) throw StateError('Recovery snapshot contains an invalid file record.');
-      final record = Map<String, dynamic>.from(raw);
-      final filename = record['path'];
-      if (filename is! String || filename.isEmpty ||
-          filename.contains('/') || filename.contains('\\')) {
-        throw StateError('Recovery snapshot contains an unsafe metadata path.');
-      }
-      final uri = await _findChildUri(snapshotUri, filename);
+    final manifest = PortableSnapshotManifest.parse(manifestText);
+    for (final record in manifest.files) {
+      final uri = await _findChildUri(snapshotUri, record.path);
       final contents = await StorageLocationService.instance.readTextFile(uri);
       final bytes = utf8.encode(contents);
-      if (bytes.length != record['sizeBytes'] ||
-          sha256.convert(bytes).toString() != record['sha256']) {
-        throw StateError('Recovery snapshot verification failed for $filename.');
+      if (bytes.length != record.sizeBytes ||
+          sha256.convert(bytes).toString() != record.sha256) {
+        throw StateError('Recovery snapshot verification failed for ${record.path}.');
       }
       final rows = jsonDecode(contents);
-      if (rows is! List || rows.length != record['recordCount']) {
-        throw StateError('Recovery snapshot record count mismatch for $filename.');
+      if (rows is! List || rows.length != record.recordCount) {
+        throw StateError('Recovery snapshot record count mismatch for ${record.path}.');
       }
     }
     return snapshot['name'] as String;
