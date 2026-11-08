@@ -78,9 +78,20 @@ class CategoryRepository {
     }
     final db = await _database.database;
     await db.transaction((txn) async {
-      await txn.update('documents', {'category_id': null},
-          where: 'category_id = ?', whereArgs: [category.id]);
-      await txn.delete('categories', where: 'id = ?', whereArgs: [category.id]);
+      final deleted = await txn.delete(
+        'categories',
+        where: 'id = ? AND is_builtin = 0',
+        whereArgs: [category.id],
+      );
+      if (deleted == 0) {
+        throw StateError('Category no longer exists or is built in.');
+      }
+      await txn.update(
+        'documents',
+        {'category_id': null},
+        where: 'category_id = ?',
+        whereArgs: [category.id],
+      );
     });
   }
 
