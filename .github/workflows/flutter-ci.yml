@@ -6,7 +6,7 @@ concurrency:
 
 on:
   push:
-    branches: [main, feature/complete-ten-features]
+    branches: [main, feature/complete-ten-features, fix/crop-ocr-performance]
   pull_request:
     branches: [main]
   workflow_dispatch:
