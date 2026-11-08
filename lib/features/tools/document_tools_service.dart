@@ -1207,6 +1207,65 @@ class DocumentToolsService {
         !metadataDocumentIds.containsAll(documentIds)) {
       throw StateError('Backup contains orphaned PDF entries or missing document records.');
     }
+    Set<String> uniqueIdsFor(String table) {
+      final ids = <String>{};
+      for (final raw in rowsByTable[table]!) {
+        if (raw is! Map || raw['id'] is! String ||
+            (raw['id'] as String).trim().isEmpty ||
+            !ids.add(raw['id'] as String)) {
+          throw StateError('Backup contains an invalid or duplicate $table ID.');
+        }
+      }
+      return ids;
+    }
+
+    final categoryIds = uniqueIdsFor('categories');
+    final tagIds = uniqueIdsFor('tags');
+    uniqueIdsFor('reminders');
+    uniqueIdsFor('history');
+    for (final row in rowsByTable['documents']!) {
+      final categoryId = (row as Map)['category_id'];
+      if (categoryId != null &&
+          (categoryId is! String || !categoryIds.contains(categoryId))) {
+        throw StateError('Backup document references a missing category.');
+      }
+    }
+    final tagLinks = <String>{};
+    for (final raw in rowsByTable['document_tags']!) {
+      if (raw is! Map) throw StateError('Backup contains an invalid document-tag link.');
+      final documentId = raw['document_id'];
+      final tagId = raw['tag_id'];
+      if (documentId is! String || !metadataDocumentIds.contains(documentId) ||
+          tagId is! String || !tagIds.contains(tagId) ||
+          !tagLinks.add('$documentId\u0000$tagId')) {
+        throw StateError('Backup contains a duplicate or invalid document-tag reference.');
+      }
+    }
+    for (final table in ['reminders', 'history']) {
+      for (final raw in rowsByTable[table]!) {
+        if (raw is! Map) throw StateError('Backup contains invalid $table metadata.');
+        final documentId = raw['document_id'];
+        if (documentId != null &&
+            (documentId is! String || !metadataDocumentIds.contains(documentId))) {
+          throw StateError('Backup $table record references a missing document.');
+        }
+      }
+    }
+    for (final raw in rowsByTable['document_text_index']!) {
+      if (raw is! Map || raw['document_id'] is! String ||
+          !metadataDocumentIds.contains(raw['document_id'])) {
+        throw StateError('Backup text index references a missing document.');
+      }
+    }
+    final settingKeys = <String>{};
+    for (final raw in rowsByTable['settings']!) {
+      if (raw is! Map || raw['key'] is! String ||
+          (raw['key'] as String).isEmpty ||
+          !settingKeys.add(raw['key'] as String)) {
+        throw StateError('Backup contains an invalid or duplicate setting key.');
+      }
+    }
+
     final expectedEntries = <String>{
       'manifest.json',
       for (final table in tableNames)
