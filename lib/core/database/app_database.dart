@@ -1,10 +1,15 @@
+import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart';
 
 class AppDatabase {
-  AppDatabase._();
+  AppDatabase._({Future<Database> Function()? opener}) : _opener = opener;
+  @visibleForTesting
+  AppDatabase.forTesting(Future<Database> Function() opener) : this._(opener: opener);
+
   static final AppDatabase instance = AppDatabase._();
+  final Future<Database> Function()? _opener;
 
   Database? _database;
   Future<Database>? _openingDatabase;
@@ -18,7 +23,7 @@ class AppDatabase {
     final opening = _openingDatabase;
     if (opening != null) return opening;
 
-    final future = _openDatabase();
+    final future = _opener?.call() ?? _openDatabase();
     _openingDatabase = future;
     try {
       final opened = await future;
