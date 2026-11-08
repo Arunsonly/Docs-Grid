@@ -310,7 +310,7 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun writeTextFile(parentUri: Uri, name: String, contents: String): Uri {
-        require(!name.contains("/") && !name.contains("\\\\") && name.isNotBlank()) {
+        require(!name.contains("/") && !name.contains("\\") && name.isNotBlank()) {
             "Invalid metadata filename."
         }
         val parent = resolveParentUri(parentUri)
