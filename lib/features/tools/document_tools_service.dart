@@ -665,7 +665,9 @@ class DocumentToolsService {
           ? locations['libraryUri']!
           : await ensureFolder(parentId, visiting);
       final rawName = row['name'] as String;
-      if (rawName.trim().isEmpty || rawName.contains('/') || rawName.contains('\\')) {
+      if (rawName.trim().isEmpty || rawName == '.' || rawName == '..' ||
+          rawName.contains('/') || rawName.contains('\\') ||
+          rawName.contains(String.fromCharCode(0))) {
         throw StateError('Snapshot contains an invalid folder name.');
       }
       final siblings = await storage.listDirectory(parentUri);
