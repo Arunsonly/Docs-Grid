@@ -358,11 +358,11 @@ class DocumentToolsService {
       'files': <Map<String, Object?>>[],
     };
 
-    final temp = await getTemporaryDirectory();
-    final staging = await temp.createTemp('docsgrid_backup_');
     final directory = await getApplicationDocumentsDirectory();
     final backups = Directory(p.join(directory.path, 'DocsGrid', 'Backups'));
     await backups.create(recursive: true);
+    final temp = await getTemporaryDirectory();
+    final staging = await temp.createTemp('docsgrid_backup_');
     final output = File(p.join(
       backups.path,
       'DocsGrid_${DateTime.now().toUtc().millisecondsSinceEpoch}_${_uuid.v4()}.zip',
