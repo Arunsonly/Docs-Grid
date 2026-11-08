@@ -96,6 +96,7 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     WidgetsBinding.instance.addPostFrameCallback((_) => _consumeSharedPdfs());
+    WidgetsBinding.instance.addPostFrameCallback((_) => _offerRestoreOnFirstLaunch());
   }
 
   @override
@@ -107,6 +108,29 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
+  }
+
+  Future<void> _offerRestoreOnFirstLaunch() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (prefs.getBool('docsgrid_restore_prompt_shown') == true) return;
+    await prefs.setBool('docsgrid_restore_prompt_shown', true);
+    if (!mounted) return;
+    final restore = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Restore your DocsGrid data?'),
+        content: const Text('If you have a DocsGrid backup ZIP on this phone, SD card, USB drive or cloud storage, you can restore your PDFs, folders, reminders, tags and settings now.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Later')),
+          FilledButton.icon(onPressed: () => Navigator.pop(ctx, true), icon: const Icon(Icons.restore), label: const Text('Restore Data')),
+        ],
+      ),
+    );
+    if (restore != true || !mounted) return;
+    await Navigator.of(context).push(MaterialPageRoute(builder: (_) => Scaffold(
+      appBar: AppBar(title: const Text('Restore Data')),
+      body: const DocumentToolsScreen(section: 'backup_restore'),
+    )));
   }
 
   Future<void> _consumeSharedPdfs() async {
@@ -218,7 +242,7 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
           const ListTile(title: Text('Quick actions'), subtitle: Text('Scan, create PDFs, search document text and set reminders.')),
           ListTile(leading: const Icon(Icons.document_scanner_outlined), title: const Text('Scan using camera'), onTap: () => Navigator.pop(sheetContext, 'camera')),
           ListTile(leading: const Icon(Icons.photo_library_outlined), title: const Text('Create PDF from gallery'), onTap: () => Navigator.pop(sheetContext, 'gallery')),
-          ListTile(leading: const Icon(Icons.manage_search_outlined), title: const Text('On-device text indexing & search'), onTap: () => Navigator.pop(sheetContext, 'tools')),
+          ListTile(leading: const Icon(Icons.manage_search_outlined), title: const Text('OCR Search Inside PDF'), onTap: () => Navigator.pop(sheetContext, 'tools')),
           ListTile(leading: const Icon(Icons.notifications_active_outlined), title: const Text('Set a reminder'), onTap: () => Navigator.pop(sheetContext, 'reminder')),
         ]),
       ),
@@ -234,7 +258,7 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
     )));
   }
 
-  static const _titles = ['My Documents', 'Folders', 'Saved', 'Settings'];
+  static const _titles = ['My Documents', 'Folders', 'Star', 'Settings'];
 
   @override
   Widget build(BuildContext context) {
@@ -444,21 +468,12 @@ class _SettingsScreenState extends State<_SettingsScreen> {
         const Divider(height: 1),
         ListTile(
           leading: const Icon(Icons.backup_outlined),
-          title: const Text('Backup'),
+          title: const Text('Backup & Restore'),
+          subtitle: const Text('Create backup · Restore backup'),
           trailing: const Icon(Icons.chevron_right),
           onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => Scaffold(
-            appBar: AppBar(title: const Text('Backup')),
-            body: const DocumentToolsScreen(section: 'backup', quickAction: 'backup'),
-          ))),
-        ),
-        const Divider(height: 1),
-        ListTile(
-          leading: const Icon(Icons.settings_backup_restore_outlined),
-          title: const Text('Backup restore'),
-          trailing: const Icon(Icons.chevron_right),
-          onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => Scaffold(
-            appBar: AppBar(title: const Text('Backup restore')),
-            body: const DocumentToolsScreen(section: 'restore'),
+            appBar: AppBar(title: const Text('Backup & Restore')),
+            body: const DocumentToolsScreen(section: 'backup_restore'),
           ))),
         ),
         const Divider(height: 1),
