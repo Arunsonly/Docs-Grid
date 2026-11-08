@@ -29,7 +29,7 @@ void main() {
   }) async {
     final archive = Archive();
     final resolvedEntryName = entryName ??
-        'pdfs/${DocumentToolsService.safeRestorePathToken('doc-1')}.pdf';
+        "pdfs/${DocumentToolsService.safeRestorePathToken('doc-1')}.pdf";
     final tableRows = <String, List<Map<String, Object?>>>{ 
       'folders': [],
       'documents': documents,
