@@ -900,6 +900,7 @@ class DocumentRepository {
         }
       }
     });
+    await _reconcileReminders();
   }
 
   /// Move several PDFs using the same verified copy/commit/cleanup path as a single move.
@@ -916,6 +917,20 @@ class DocumentRepository {
     }
     return {'moved': moved, 'failures': failures};
   }
+  Future<void> _reconcileReminders() async {
+    final db = await _database.database;
+    final rows = await db.rawQuery('''
+      SELECT r.*
+      FROM reminders r
+      LEFT JOIN documents d ON d.id = r.document_id
+      WHERE r.enabled = 1
+        AND r.status NOT IN (?, ?)
+        AND (r.document_id IS NULL OR d.deleted_at IS NULL)
+      ORDER BY r.remind_at_utc ASC
+    ''', ['completed', 'cancelled']);
+    await ReminderNotifications.instance.reconcile(rows);
+  }
+
   Future<void> setFavorite(DocumentRecord document, bool favorite) async {
     final db = await _database.database;
     final rows = await db.query(
@@ -971,15 +986,20 @@ class DocumentRepository {
       'updated_at': DateTime.now().toUtc().toIso8601String(),
     }, where: 'id = ? AND deleted_at IS NOT NULL', whereArgs: [document.id]);
     await _recordHistory(db, document.id, 'restored', {});
+    await _reconcileReminders();
   }
 
   Future<void> moveToTrash(DocumentRecord document) async {
     final db = await _database.database;
-    await db.update('documents', {
-      'deleted_at': DateTime.now().toUtc().toIso8601String(),
-      'updated_at': DateTime.now().toUtc().toIso8601String(),
-    }, where: 'id = ?', whereArgs: [document.id]);
-    await _recordHistory(db, document.id, 'moved_to_recycle_bin', {});
+    await db.transaction((txn) async {
+      final changed = await txn.update('documents', {
+        'deleted_at': DateTime.now().toUtc().toIso8601String(),
+        'updated_at': DateTime.now().toUtc().toIso8601String(),
+      }, where: 'id = ? AND deleted_at IS NULL', whereArgs: [document.id]);
+      if (changed == 0) throw StateError('PDF record is already in the Recycle Bin.');
+      await _recordHistory(txn, document.id, 'moved_to_recycle_bin', {});
+    });
+    await _reconcileReminders();
   }
 
   Future<void> rename(DocumentRecord document, String newName) async {
