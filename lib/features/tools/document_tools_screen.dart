@@ -331,6 +331,12 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
           title: const Text('Verify backup ZIP'),
           trailing: const Icon(Icons.chevron_right),
           onTap: _busy ? null : _verifyBackup),
+        const Divider(height: 1),
+        ListTile(leading: const Icon(Icons.folder_special_outlined),
+          title: const Text('Verify DocsGrid folder snapshot'),
+          subtitle: const Text('Checks the latest portable metadata snapshot before recovery work.'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: _busy ? null : _verifyRecoverySnapshot),
       ])),
     ],
   );
