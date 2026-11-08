@@ -337,7 +337,7 @@ import CryptoKit
     }
 
     private func writeTextFile(parent: URL, name: String, contents: String) throws -> URL {
-        guard !name.isEmpty, !name.contains("/"), !name.contains("\\\\") else {
+        guard !name.isEmpty, !name.contains("/"), !name.contains("\\") else {
             throw storageError("Invalid metadata filename.")
         }
         return try withAllBookmarkAccess {
