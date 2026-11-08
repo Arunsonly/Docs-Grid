@@ -188,22 +188,35 @@ class DocumentToolsService {
 
 
   Future<void> shareStoredPdf(String storageUri, String displayName) async {
-    String path;
-    if (storageUri.startsWith('content://')) {
-      final temp = await getTemporaryDirectory();
-      final safeName = p.basename(displayName).replaceAll(RegExp(r'[^A-Za-z0-9._ -]'), '_');
-      final target = File(p.join(temp.path, 'share_${DateTime.now().microsecondsSinceEpoch}_$safeName'));
-      await StorageLocationService.instance.copyPdfToPath(
-        sourceUri: storageUri,
-        destinationPath: target.path,
-      );
-      path = target.path;
-    } else {
-      path = storageUri.startsWith('file://') ? Uri.parse(storageUri).toFilePath() : storageUri;
+    String? stagedPath;
+    try {
+      String path;
+      if (storageUri.startsWith('content://')) {
+        final temp = await getTemporaryDirectory();
+        final safeName = p.basename(displayName).replaceAll(RegExp(r'[^A-Za-z0-9._ -]'), '_');
+        final target = File(p.join(temp.path, 'share_${DateTime.now().microsecondsSinceEpoch}_$safeName'));
+        stagedPath = target.path;
+        await StorageLocationService.instance.copyPdfToPath(
+          sourceUri: storageUri,
+          destinationPath: target.path,
+        );
+        path = target.path;
+      } else {
+        path = storageUri.startsWith('file://') ? Uri.parse(storageUri).toFilePath() : storageUri;
+      }
+      final file = File(path);
+      if (!await file.exists()) throw StateError('PDF is no longer available to share.');
+      await SharePlus.instance.share(ShareParams(files: [XFile(path)], text: displayName));
+    } finally {
+      if (stagedPath != null) {
+        try {
+          final staged = File(stagedPath);
+          if (await staged.exists()) await staged.delete();
+        } catch (_) {
+          // A temporary copy is non-authoritative; do not mask share errors.
+        }
+      }
     }
-    final file = File(path);
-    if (!await file.exists()) throw StateError('PDF is no longer available to share.');
-    await SharePlus.instance.share(ShareParams(files: [XFile(path)], text: displayName));
   }
 
   /// Shares several stored PDFs in one native share sheet.
@@ -212,22 +225,35 @@ class DocumentToolsService {
       throw ArgumentError('PDF locations and names must be non-empty and have matching lengths.');
     }
     final temp = await getTemporaryDirectory();
-    final files = <XFile>[];
-    for (var i = 0; i < storageUris.length; i++) {
-      final uri = storageUris[i];
-      final safeName = p.basename(displayNames[i]).replaceAll(RegExp(r'[^A-Za-z0-9._ -]'), '_');
-      String path;
-      if (uri.startsWith('content://')) {
-        final target = File(p.join(temp.path, 'share_${DateTime.now().microsecondsSinceEpoch}_${i}_$safeName'));
-        await StorageLocationService.instance.copyPdfToPath(sourceUri: uri, destinationPath: target.path);
-        path = target.path;
-      } else {
-        path = uri.startsWith('file://') ? Uri.parse(uri).toFilePath() : uri;
+    final stagedPaths = <String>[];
+    try {
+      final files = <XFile>[];
+      for (var i = 0; i < storageUris.length; i++) {
+        final uri = storageUris[i];
+        final safeName = p.basename(displayNames[i]).replaceAll(RegExp(r'[^A-Za-z0-9._ -]'), '_');
+        String path;
+        if (uri.startsWith('content://')) {
+          final target = File(p.join(temp.path, 'share_${DateTime.now().microsecondsSinceEpoch}_${i}_$safeName'));
+          stagedPaths.add(target.path);
+          await StorageLocationService.instance.copyPdfToPath(sourceUri: uri, destinationPath: target.path);
+          path = target.path;
+        } else {
+          path = uri.startsWith('file://') ? Uri.parse(uri).toFilePath() : uri;
+        }
+        if (!await File(path).exists()) throw StateError('PDF is unavailable: ${displayNames[i]}');
+        files.add(XFile(path, name: safeName));
       }
-      if (!await File(path).exists()) throw StateError('PDF is unavailable: ${displayNames[i]}');
-      files.add(XFile(path, name: safeName));
+      await SharePlus.instance.share(ShareParams(files: files, text: 'DocsGrid documents'));
+    } finally {
+      for (final path in stagedPaths) {
+        try {
+          final staged = File(path);
+          if (await staged.exists()) await staged.delete();
+        } catch (_) {
+          // Best-effort cleanup of temporary share copies.
+        }
+      }
     }
-    await SharePlus.instance.share(ShareParams(files: files, text: 'DocsGrid documents'));
   }
   Future<void> shareFile(String path, {String? text}) async {
     final file = File(path);
