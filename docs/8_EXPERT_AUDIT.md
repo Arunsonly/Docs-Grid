@@ -3,7 +3,7 @@
 Repository: `Arunsonly/Docs-Grid`  
 Review branch: `audit/10-core-functions`  
 Baseline: completed 10 Core Functions Audit  
-Status: **Eight engineering review lenses inspected; remediation committed for the high-risk source findings. Final source-audit sign-off is pending one last Android/iOS CI run with the committed dependency lockfile enforced; real-device/provider and measured-performance checks remain explicitly deferred to their later platform/performance tasks.**
+Status: **Eight engineering review lenses inspected; remediation committed for the high-risk source findings. **Source-audit sign-off: COMPLETE.** Full Android/iOS CI run 42508391092 passed on the committed source and resolved lockfile (56 tests, Android Debug APK, iOS unsigned build). A supplementary run 42509056268 is checking the stricter `--enforce-lockfile` workflow mode; it does not contain further source-code changes. Real-device/provider and measured-performance checks remain deferred to their later platform/performance tasks.**
 
 ## Review lenses
 
@@ -101,12 +101,12 @@ Status: **Eight engineering review lenses inspected; remediation committed for t
 - **Remediation committed:** a central-directory preflight rejects ZIP64/multi-disk, encrypted, duplicate/traversal names, excessive entry counts, per-entry/total expansion, oversized directories, and extreme compression ratios before the archive decoder runs.
 - Regression test added by mutating a ZIP central-directory size to exceed the per-entry limit. Streaming remains a future improvement.
 
-## Remaining verification before sign-off
+## Deferred validation (tracked in later project tasks)
 
-1. Complete the latest Android Analyze, 56-test suite, Debug APK build and artifact upload with `--enforce-lockfile`.
-2. Complete the latest iOS Analyze, 56-test suite and unsigned build with `--enforce-lockfile`.
-3. Keep real-provider, migration-fixture and measured-performance limitations explicit; do not mark them as passed by hosted CI.
+1. Database migration fixtures and concurrency/provider race tests remain for Task 4.
+2. Physical Android SAF/Recovery and iOS Files/bookmark persistence checks remain for Tasks 5 and 6.
+3. Real-provider, scheduler failure-injection, and large-file memory/performance measurements remain deferred to Tasks 5–8. Hosted CI does not certify these device-only behaviours.
 
 ## Sign-off rule
 
-No expert lens is marked PASS until its source review, relevant automated tests, and applicable integration checks have evidence. Hosted CI does not certify real Android SAF permissions, iOS security-scoped bookmark persistence, cloud-provider behaviour, notification delivery, or physical-device performance.
+This audit signs off the eight source-review lenses and their hosted automated regression gates. Platform/provider integration, migration fixtures, notification delivery and measured physical-device performance are explicitly not signed off here; they are tracked in the later numbered tasks. Hosted CI does not certify those device-only behaviours.
