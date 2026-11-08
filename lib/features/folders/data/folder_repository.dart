@@ -448,6 +448,18 @@ class FolderRepository {
       throw StateError('Folder is not empty. Move its contents before deleting it.');
     }
     final storageUri = folder.first['storage_uri_or_relative_path'] as String?;
+    if (storageUri != null &&
+        (storageUri.startsWith('content://') || storageUri.startsWith('file://'))) {
+      // The database may not know about files created by another app inside
+      // the selected provider folder. Never recursively delete those files.
+      final physicalChildren = await StorageLocationService.instance.listDirectory(storageUri);
+      if (physicalChildren.isNotEmpty) {
+        throw StateError(
+          'This folder contains files or subfolders not tracked by DocsGrid. '
+          'Remove or move those items before deleting the folder.',
+        );
+      }
+    }
     final now = DateTime.now().toUtc().toIso8601String();
     await db.transaction((txn) async {
       final count = await txn.update(
