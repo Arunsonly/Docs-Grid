@@ -1,6 +1,6 @@
 # DocsGrid implementation status
 
-Last updated: 2026-11-07
+Last updated: 2026-11-08
 
 This is an implementation tracker, not a release claim. A green CI build does not mean physical-device testing has passed.
 
@@ -46,17 +46,17 @@ Do not label Core Storage and PDF Management physically verified or release-read
 
 ## Ten requested product features — implementation branch update
 
-The following changes are on `feature/complete-ten-features` and remain subject to CI and device verification.
+The ten feature implementations originate on `feature/complete-ten-features`; the current `audit/10-core-functions` branch adds the source-review fixes and regression coverage below. All remain subject to fresh CI and device verification.
 
 | # | Feature | Current code status | Known limitation / test gate |
 |---|---|---|---|
 | 1 | Smart Import & Auto Rename | Multi-PDF import, PDF signature validation, SHA-256 duplicate check, safe names/collision suffixes; if the picker has no local path, current fallback reads the selected file into memory | A provider that exposes neither a local path nor a read stream still falls back to in-memory bytes; large-file tests required |
 | 2 | Smart Folder & Subfolder Management | Existing nested folder CRUD and physical storage mapping retained | Verify deep folder rename/move on Android and iOS providers |
-| 3 | Smart Category & Tags | Existing built-in/custom categories and reusable tags retained | Add migration and multi-document assignment regression tests |
-| 4 | Advanced PDF Search (OCR) | On-device PDF page rendering + ML Kit OCR; extracted text persisted in SQLite; text query searches indexed PDFs; provider URI is copied to temporary storage for OCR | Latin script recognizer only in current implementation; OCR is user-triggered and can be CPU/memory intensive |
-| 5 | Duplicate Detection | Exact SHA-256 duplicate groups with a review choice; non-kept copies move to Recycle Bin, not permanent deletion | Needs UX/device regression tests and duplicate groups with 3+ copies |
+| 3 | Smart Category & Tags | Built-in/custom categories, reusable tags, transactional tag assignment and safe category deletion retained; category/tag name validation has boundary tests | Database-backed multi-document assignment and upgrade regression tests remain
+| 4 | Advanced PDF Search (OCR) | On-device PDF page rendering + ML Kit OCR; Android recognizes Latin and bundled Devanagari scripts; iOS uses Latin; extracted text persists in SQLite; literal LIKE wildcard escaping is covered by tests; provider URI is staged locally for OCR | iOS non-Latin OCR is not supported by ML Kit; OCR remains user-triggered and can be CPU/memory intensive
+| 5 | Duplicate Detection | Exact SHA-256 duplicate groups; keep-one review revalidates the group and moves all other copies to Recycle Bin in one SQLite transaction with history; no PDF bytes are permanently deleted | Database-backed duplicate groups with 3+ copies and concurrent-change regression tests remain
 | 6 | Favorites & Recent Documents | Existing Saved and Recently opened screens/actions retained | Verify sort and history after app restart |
-| 7 | Expiry Reminder System | Device-local scheduled notifications; Android notification permission and reboot receivers; daily and weekly repeating reminders; disable, snooze, complete and delete cancel/reschedule notifications | Monthly recurrence not yet available; iOS/Android notification delivery and reboot must be tested on physical devices; Android uses inexact scheduling |
+| 7 | Expiry Reminder System | Device-local notifications; Android permission and reboot receivers; daily, weekly and monthly recurrence; snooze has an independent notification ID so recurring schedules remain intact; disable, complete and delete cancel both schedules | iOS/Android delivery, reboot and snooze interactions require physical-device tests; Android uses inexact scheduling
 | 8 | Document Scanner & Quick Share | Camera single-page scan and multi-image gallery-to-PDF; scanner output imported into the library; document menu shares local and provider-backed PDFs | No perspective crop/edge detection or multi-page camera capture workflow yet |
 | 9 | Document History & Recycle Bin | Existing action history, soft delete, restore and confirmed permanent delete retained; duplicate cleanup uses Recycle Bin | Verify rollback and history consistency after app restart |
 | 10 | Backup & Restore | ZIP backup includes DB tables and local PDFs; manifest and SHA-256 verification; additive restore stages files, inserts metadata transactionally and aborts on ID conflicts | Provider-backed content URIs are copied to temporary local files for inclusion; unavailable providers stop the backup rather than creating a partial archive. Test large archives, rollback, and restore across fresh installs |
