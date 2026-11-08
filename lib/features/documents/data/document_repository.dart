@@ -597,9 +597,9 @@ class DocumentRepository {
         name: safeName,
       );
     } else {
-      final base = await getApplicationDocumentsDirectory();
-      final library = Directory(p.join(base.path, 'DocsGrid', 'PDFs'));
-      await library.create(recursive: true);
+      // Keep scanner imports in the same nested private-folder layout used by
+      // ordinary imports; metadata folder_id and the on-disk path must agree.
+      final library = await _privateFolderFor(targetFolderId);
       final target = await _uniqueFile(library, safeName);
       await source.copy(target.path);
       final copiedDigest = (await sha256.bind(target.openRead()).first).toString();
@@ -607,8 +607,12 @@ class DocumentRepository {
         await target.delete();
         throw StateError('Scanned PDF verification failed.');
       }
+      final base = await getApplicationDocumentsDirectory();
       uri = target.path;
-      relativePath = p.relative(target.path, from: library.path);
+      relativePath = p.relative(
+        target.path,
+        from: p.join(base.path, 'DocsGrid', 'PDFs'),
+      );
     }
 
     final now = DateTime.now().toUtc().toIso8601String();
