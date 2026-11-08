@@ -1,5 +1,7 @@
 import 'dart:convert';
 
+import 'package:flutter/services.dart';
+
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_timezone/flutter_timezone.dart';
 import 'package:timezone/data/latest.dart' as tzdata;
@@ -11,6 +13,7 @@ class ReminderNotifications {
   static final ReminderNotifications instance = ReminderNotifications._();
 
   final FlutterLocalNotificationsPlugin _plugin = FlutterLocalNotificationsPlugin();
+  static const MethodChannel _settingsChannel = MethodChannel('docsgrid/notifications');
   bool _ready = false;
 
   static void Function(String documentId)? onDocumentNotificationTap;
@@ -83,6 +86,27 @@ class ReminderNotifications {
     final ios = _plugin.resolvePlatformSpecificImplementation<IOSFlutterLocalNotificationsPlugin>();
     final iosGranted = await ios?.requestPermissions(alert: true, badge: true, sound: true) ?? true;
     return androidGranted && iosGranted;
+  }
+
+  Future<bool> areNotificationsEnabled() async {
+    await initialize();
+    final android = _plugin.resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>();
+    final androidEnabled = await android?.areNotificationsEnabled() ?? true;
+    if (!androidEnabled) return false;
+    final channels = await android?.getNotificationChannels();
+    if (channels != null) {
+      final reminderChannel = channels.where((channel) => channel.id == 'docsgrid_reminders_v3');
+      if (reminderChannel.isNotEmpty && reminderChannel.first.importance == Importance.none) {
+        return false;
+      }
+    }
+    final ios = _plugin.resolvePlatformSpecificImplementation<IOSFlutterLocalNotificationsPlugin>();
+    final permissions = await ios?.checkPermissions();
+    return permissions?.isEnabled ?? true;
+  }
+
+  Future<void> openNotificationSettings() async {
+    await _settingsChannel.invokeMethod<void>('openSettings');
   }
 
   /// Stable across app launches; String.hashCode is not a persistence contract.
