@@ -593,7 +593,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               const Text('YOUR OFFLINE DRIVE', style: TextStyle(color: Colors.white70, fontSize: 11, letterSpacing: 1.4, fontWeight: FontWeight.w700)),
               const SizedBox(height: 6),
-              const Text('All your documents,\none place.', style: TextStyle(color: Colors.white, fontSize: 23, height: 1.15, fontWeight: FontWeight.w800)),
+              Text('${_size(_documents.fold<int>(0, (total, document) => total + document.sizeBytes))} occupied', style: const TextStyle(color: Colors.white70, fontSize: 12, fontWeight: FontWeight.w600)),
               const SizedBox(height: 14),
               Row(children: [
                 Expanded(child: _dashboardMetric(Icons.picture_as_pdf_outlined, '${_documents.length}', 'Documents')),
@@ -689,7 +689,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
         children: [
           const Icon(Icons.picture_as_pdf_outlined, size: 58),
           const SizedBox(height: 12),
-          Text(widget.favoritesOnly ? 'No saved PDFs yet' : widget.recentOnly ? 'No recently opened PDFs' : 'Your library is empty',
+          Text(widget.favoritesOnly ? 'No starred PDFs yet' : widget.recentOnly ? 'No recently opened PDFs' : 'Your library is empty',
               style: Theme.of(context).textTheme.titleLarge),
           const SizedBox(height: 6),
           Text(widget.recentOnly ? 'Open a PDF and it will appear here.' : 'Import PDF files from your phone to get started.', textAlign: TextAlign.center),
@@ -744,7 +744,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
           },
           itemBuilder: (_) => [
             PopupMenuItem(value: 'favorite',
-              child: Text(document.isFavorite ? 'Remove from Saved' : 'Add to Saved')),
+              child: Text(document.isFavorite ? 'Remove from Star' : 'Add to Star')),
             const PopupMenuItem(value: 'category', child: Text('Set category')),
             const PopupMenuItem(value: 'move', child: Text('Move to folder')),
             const PopupMenuItem(value: 'tags', child: Text('Edit tags')),
