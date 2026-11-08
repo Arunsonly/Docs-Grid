@@ -198,9 +198,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
       throw StateError('No verified DocsGrid snapshot was found in the selected folder.');
     }
     if (!mounted) return;
-    final androidNote = Platform.isAndroid
-        ? 'Choose the parent folder that contains the existing DocsGrid folder.'
-        : 'Choose the existing DocsGrid data folder that contains System/Database.';
+    const androidNote = 'Choose the parent folder that contains the DocsGrid folder.';
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
