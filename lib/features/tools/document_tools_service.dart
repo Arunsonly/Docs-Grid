@@ -397,6 +397,80 @@ class DocumentToolsService {
     }
   }
 
+  /// Writes a versioned, verified metadata snapshot into the user-selected
+  /// DocsGrid/System/Database folder. PDF bytes remain in the library folder;
+  /// documents.json retains their relative paths and SHA-256 values.
+  Future<String> createPortableMetadataSnapshot() async {
+    final locations = await StorageLocationService.instance.portableDataLocations();
+    final db = await _database.database;
+    final tableRows = await db.rawQuery(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+    );
+    final tableNames = tableRows
+        .map((row) => row['name'] as String)
+        .where((name) => name != 'android_metadata')
+        .toList(growable: false);
+    if (!tableNames.contains('documents') || !tableNames.contains('folders')) {
+      throw StateError('The DocsGrid database is incomplete; no snapshot was written.');
+    }
+
+    final stamp = DateTime.now().toUtc().toIso8601String()
+        .replaceAll(':', '-').replaceAll('.', '-');
+    final snapshotName = 'snapshot_$stamp';
+    final snapshotUri = await StorageLocationService.instance.createDirectory(
+      parentUri: locations['databaseUri']!,
+      name: snapshotName,
+    );
+    final fileRecords = <Map<String, Object?>>[];
+    final recordCounts = <String, int>{};
+
+    try {
+      for (final table in tableNames) {
+        final rows = await db.query(table);
+        final contents = jsonEncode(rows);
+        final bytes = utf8.encode(contents);
+        final filename = '$table.json';
+        await StorageLocationService.instance.writeTextFile(
+          parentUri: snapshotUri,
+          name: filename,
+          contents: contents,
+        );
+        fileRecords.add({
+          'path': filename,
+          'sizeBytes': bytes.length,
+          'sha256': sha256.convert(bytes).toString(),
+          'recordCount': rows.length,
+        });
+        recordCounts[table] = rows.length;
+      }
+
+      final manifest = <String, Object?>{
+        'format': 'DocsGridPortableData',
+        'formatVersion': 1,
+        'databaseSchemaVersion': await _database.schemaVersion,
+        'snapshotId': _uuid.v4(),
+        'createdAtUtc': DateTime.now().toUtc().toIso8601String(),
+        'app': 'DocsGrid',
+        'tables': recordCounts,
+        'files': fileRecords,
+        'libraryUri': locations['libraryUri'],
+        'notes': 'PDF files remain in the selected library. This snapshot stores metadata and indexes.',
+      };
+      // Manifest is published last; folders without it are incomplete and
+      // must never be treated as a valid recovery snapshot.
+      await StorageLocationService.instance.writeTextFile(
+        parentUri: snapshotUri,
+        name: 'manifest.json',
+        contents: jsonEncode(manifest),
+      );
+      return snapshotName;
+    } catch (_) {
+      // Keep the incomplete directory for diagnostics; without manifest it
+      // cannot be selected as a valid recovery snapshot.
+      rethrow;
+    }
+  }
+
   Future<int> validateBackup(File zipFile) async {
     if (!await zipFile.exists()) throw StateError('Backup file not found.');
     final decoded = ZipDecoder().decodeBytes(await zipFile.readAsBytes());
