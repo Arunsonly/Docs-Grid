@@ -37,6 +37,16 @@ class MainActivity : FlutterActivity() {
                                 startActivityForResult(intent, requestChooseFolder)
                             }
                         }
+                        "getPortableDataLocations" -> {
+                            val prefs = getSharedPreferences("docsgrid_storage", MODE_PRIVATE)
+                            val database = prefs.getString("database_uri", null)
+                                ?: throw IllegalStateException("DocsGrid Database folder is not configured. Re-select the library folder.")
+                            val recovery = prefs.getString("recovery_uri", null)
+                                ?: throw IllegalStateException("DocsGrid Recovery folder is not configured. Re-select the library folder.")
+                            val library = prefs.getString("my_files_uri", null)
+                                ?: throw IllegalStateException("DocsGrid library folder is not configured. Re-select the library folder.")
+                            result.success(mapOf("databaseUri" to database, "recoveryUri" to recovery, "libraryUri" to library))
+                        }
                         "getSelectedFolder" -> {
                             val prefs = getSharedPreferences("docsgrid_storage", MODE_PRIVATE)
                             val uri = prefs.getString("my_files_uri", null)
