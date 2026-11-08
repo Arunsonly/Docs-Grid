@@ -136,6 +136,16 @@ class MainActivity : FlutterActivity() {
                             val name = call.argument<String>("name")!!
                             result.success(findChildUri(parent, name).toString())
                         }
+                        "findChildUriIfExists" -> {
+                            val parent = Uri.parse(call.argument<String>("parentUri")!!)
+                            val name = call.argument<String>("name")!!
+                            val found = try {
+                                findChildUri(parent, name)
+                            } catch (_: NoSuchElementException) {
+                                null
+                            }
+                            result.success(found?.toString())
+                        }
                         "renamePdf" -> {
                             val uri = Uri.parse(call.argument<String>("uri")!!)
                             val name = call.argument<String>("name")!!
