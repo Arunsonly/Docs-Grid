@@ -139,6 +139,24 @@ void main() {
     }
   });
 
+  test('rejects documents that reference missing folders before restore', () async {
+    final file = await makeBackup(
+      documents: [
+        {'id': 'doc-a', 'name': 'A', 'folder_id': 'missing-folder'},
+        {'id': 'doc-b', 'name': 'B'},
+      ],
+    );
+
+    await expectLater(
+      service.validateBackup(file),
+      throwsA(isA<StateError>().having(
+        (error) => error.message,
+        'message',
+        contains('missing folder'),
+      )),
+    );
+  });
+
   test('rejects a PDF whose document metadata row is missing', () async {
     final file = await makeBackup(documents: [
       {'id': 'doc-a', 'name': 'A'},
