@@ -518,7 +518,6 @@ class DocumentToolsService {
       ..sort((a, b) => (b['name'] as String).compareTo(a['name'] as String));
     if (snapshots.isEmpty) throw StateError('No portable recovery snapshot was found.');
 
-    final snapshotName = snapshots.first['name'] as String;
     final snapshotUri = snapshots.first['uri'] as String;
     final manifestText = await storage.readTextFile(
       await _findChildUri(snapshotUri, 'manifest.json'),
