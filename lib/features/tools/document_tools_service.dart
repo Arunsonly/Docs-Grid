@@ -385,13 +385,47 @@ class DocumentToolsService {
       encoder.create(output.path);
       encoderOpened = true;
 
-      // Encode one table at a time and stream the temporary file into the ZIP.
-      // Avoid keeping duplicate JSON strings and byte arrays for every table.
+      // Page database rows into JSON files so a large history/documents table
+      // does not have to be materialized as one giant List in memory.
+      const orderBy = <String, String>{
+        'folders': 'id',
+        'documents': 'id',
+        'categories': 'id',
+        'tags': 'id',
+        'document_tags': 'document_id, tag_id',
+        'reminders': 'id',
+        'history': 'id',
+        'settings': 'key',
+        'document_text_index': 'document_id',
+      };
       for (final table in tables) {
-        final rows = await db.query(table);
-        (manifest['tables'] as Map<String, int>)[table] = rows.length;
         final metadataFile = File(p.join(staging.path, '$table.json'));
-        await metadataFile.writeAsString(jsonEncode(rows), encoding: utf8, flush: true);
+        final outputFile = await metadataFile.open(mode: FileMode.write);
+        var offset = 0;
+        var rowCount = 0;
+        try {
+          await outputFile.writeString('[');
+          while (true) {
+            final rows = await db.query(
+              table,
+              limit: 500,
+              offset: offset,
+              orderBy: orderBy[table],
+            );
+            if (rows.isEmpty) break;
+            for (final row in rows) {
+              if (rowCount > 0) await outputFile.writeString(',');
+              await outputFile.writeString(jsonEncode(row), encoding: utf8);
+              rowCount++;
+            }
+            offset += rows.length;
+          }
+          await outputFile.writeString(']');
+          await outputFile.flush();
+        } finally {
+          await outputFile.close();
+        }
+        (manifest['tables'] as Map<String, int>)[table] = rowCount;
         await addStoredFile(metadataFile, '$table.json');
       }
 
