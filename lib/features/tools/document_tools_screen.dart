@@ -7,6 +7,8 @@ import 'package:path/path.dart' as p;
 
 import '../../core/database/app_database.dart';
 import '../documents/data/document_repository.dart';
+import '../categories/data/category_repository.dart';
+import '../reminders/data/reminder_repository.dart';
 import '../folders/data/folder_repository.dart';
 import 'document_tools_service.dart';
 import '../../core/storage/storage_location_service.dart';
@@ -22,6 +24,7 @@ class DocumentToolsScreen extends StatefulWidget {
 
 class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
   final _tools = DocumentToolsService();
+  final _categories = CategoryRepository();
   final _search = TextEditingController();
   List<Map<String, Object?>> _results = [];
   bool _busy = false;
@@ -284,6 +287,111 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
   });
 
 
+  Future<void> _duplicateRename(DocumentRecord document) async {
+    final controller = TextEditingController(text: document.name);
+    final name = await showDialog<String>(context: context, builder: (ctx) => AlertDialog(
+      title: const Text('Rename PDF'),
+      content: TextField(controller: controller, autofocus: true, decoration: const InputDecoration(labelText: 'File name', suffixText: '.pdf')),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+        FilledButton(onPressed: () => Navigator.pop(ctx, controller.text), child: const Text('Save')),
+      ],
+    ));
+    await WidgetsBinding.instance.endOfFrame;
+    controller.dispose();
+    if (name == null) return;
+    await DocumentRepository().rename(document, name);
+  }
+
+  Future<void> _duplicateMove(DocumentRecord document) async {
+    final folders = await FolderRepository().allFoldersWithPaths();
+    if (!mounted) return;
+    final destination = await showModalBottomSheet<String>(
+      context: context, showDragHandle: true,
+      builder: (ctx) => SafeArea(child: ListView(shrinkWrap: true, children: [
+        const ListTile(title: Text('Move PDF to folder')),
+        ListTile(leading: const Icon(Icons.home_outlined), title: const Text('My Documents (root)'), onTap: () => Navigator.pop(ctx, '')),
+        for (final folder in folders)
+          ListTile(leading: const Icon(Icons.folder_outlined), title: Text(folder.path), onTap: () => Navigator.pop(ctx, folder.folder.id)),
+      ])),
+    );
+    if (destination == null) return;
+    await DocumentRepository().moveToFolder(document, destination.isEmpty ? null : destination);
+  }
+
+  Future<void> _duplicateCategory(DocumentRecord document) async {
+    final categories = await _categories.listCategories();
+    if (!mounted) return;
+    final selected = await showDialog<String?>(context: context, builder: (ctx) => SimpleDialog(
+      title: const Text('Set category'),
+      children: [
+        SimpleDialogOption(onPressed: () => Navigator.pop(ctx, ''), child: const Text('Uncategorised')),
+        for (final category in categories)
+          SimpleDialogOption(onPressed: () => Navigator.pop(ctx, category.id), child: Text(category.name)),
+      ],
+    ));
+    if (selected == null) return;
+    await _categories.setDocumentCategory(document.id, selected.isEmpty ? null : selected);
+  }
+
+  Future<void> _duplicateTags(DocumentRecord document) async {
+    final tags = await _categories.listTags();
+    final current = await _categories.tagsForDocument(document.id);
+    if (!mounted) return;
+    final selected = current.map((tag) => tag.id).toSet();
+    final result = await showDialog<Set<String>>(context: context, builder: (ctx) => StatefulBuilder(
+      builder: (ctx, refresh) => AlertDialog(
+        title: const Text('Edit tags'),
+        content: SizedBox(width: 360, child: tags.isEmpty
+          ? const Text('Create tags in Category & Tag settings first.')
+          : Column(mainAxisSize: MainAxisSize.min, children: [
+              for (final tag in tags)
+                CheckboxListTile(dense: true, contentPadding: EdgeInsets.zero, value: selected.contains(tag.id),
+                  title: Text(tag.name), onChanged: (value) => refresh(() {
+                    if (value == true) { selected.add(tag.id); } else { selected.remove(tag.id); }
+                  })),
+            ])),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, selected), child: const Text('Save tags')),
+        ],
+      ),
+    ));
+    if (result != null) await _categories.setDocumentTags(document.id, result.toList());
+  }
+
+  Future<void> _duplicateReminder(DocumentRecord document) async {
+    final title = TextEditingController(text: 'Reminder - ${document.name}');
+    final note = TextEditingController();
+    var selected = DateTime.now().add(const Duration(days: 1));
+    final saved = await showDialog<bool>(context: context, builder: (ctx) => StatefulBuilder(
+      builder: (ctx, refresh) => AlertDialog(
+        scrollable: true, title: const Text('Add to reminder'),
+        content: Column(mainAxisSize: MainAxisSize.min, children: [
+          TextField(controller: title, decoration: const InputDecoration(labelText: 'Reminder title')),
+          TextField(controller: note, maxLines: 2, decoration: const InputDecoration(labelText: 'Note (optional)')),
+          ListTile(contentPadding: EdgeInsets.zero, title: const Text('Date & time'),
+            subtitle: Text('${selected.day.toString().padLeft(2, '0')}/${selected.month.toString().padLeft(2, '0')}/${selected.year} · ${selected.hour.toString().padLeft(2, '0')}:${selected.minute.toString().padLeft(2, '0')}'),
+            onTap: () async {
+              final date = await showDatePicker(context: ctx, initialDate: selected, firstDate: DateTime.now(), lastDate: DateTime.now().add(const Duration(days: 3650)));
+              if (date == null || !ctx.mounted) return;
+              final time = await showTimePicker(context: ctx, initialTime: TimeOfDay.fromDateTime(selected));
+              if (time != null) refresh(() => selected = DateTime(date.year, date.month, date.day, time.hour, time.minute));
+            }),
+        ]),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          FilledButton(onPressed: () { if (title.text.trim().isNotEmpty && selected.isAfter(DateTime.now())) Navigator.pop(ctx, true); }, child: const Text('Save')),
+        ],
+      ),
+    ));
+    await WidgetsBinding.instance.endOfFrame;
+    final reminderTitle = title.text.trim();
+    final reminderNote = note.text.trim();
+    title.dispose(); note.dispose();
+    if (saved == true) await ReminderRepository().create(title: reminderTitle, note: reminderNote, remindAt: selected, documentId: document.id);
+  }
+
   Future<void> _reviewDuplicateGroup(String sha) async {
     final db = await AppDatabase.instance.database;
     final rows = await db.query('documents',
@@ -327,15 +435,33 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
                       } else { await OpenFilex.open(uri); }
                     } else if (action == 'share') {
                       await _tools.shareStoredPdf(doc.storagePath, '${doc.name}.pdf');
+                    } else if (action == 'favorite') {
+                      await DocumentRepository().setFavorite(doc, !doc.isFavorite);
+                    } else if (action == 'category') {
+                      await _duplicateCategory(doc);
+                    } else if (action == 'tags') {
+                      await _duplicateTags(doc);
+                    } else if (action == 'rename') {
+                      await _duplicateRename(doc);
+                    } else if (action == 'move') {
+                      await _duplicateMove(doc);
+                    } else if (action == 'reminder') {
+                      await _duplicateReminder(doc);
                     } else if (action == 'trash') {
                       await DocumentRepository().moveToTrash(doc);
                       refresh(() => selected.remove(doc.id));
                     }
                   },
-                  itemBuilder: (_) => const [
-                    PopupMenuItem(value: 'open', child: Text('Open PDF')),
-                    PopupMenuItem(value: 'share', child: Text('Share PDF')),
-                    PopupMenuItem(value: 'trash', child: Text('Move to Recycle Bin')),
+                  itemBuilder: (_) => [
+                    const PopupMenuItem(value: 'open', child: Text('Open PDF')),
+                    const PopupMenuItem(value: 'share', child: Text('Share PDF')),
+                    PopupMenuItem(value: 'favorite', child: Text(doc.isFavorite ? 'Remove from Star' : 'Add to Star')),
+                    const PopupMenuItem(value: 'category', child: Text('Set category')),
+                    const PopupMenuItem(value: 'tags', child: Text('Edit tags')),
+                    const PopupMenuItem(value: 'rename', child: Text('Rename')),
+                    const PopupMenuItem(value: 'move', child: Text('Move to folder')),
+                    const PopupMenuItem(value: 'reminder', child: Text('Add to reminder')),
+                    const PopupMenuItem(value: 'trash', child: Text('Move to Recycle Bin')),
                   ],
                 ),
               );
