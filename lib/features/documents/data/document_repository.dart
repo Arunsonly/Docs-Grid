@@ -779,6 +779,40 @@ class DocumentRepository {
     return candidate;
   }
 
+  /// Soft-delete a group of PDFs atomically; the physical files remain recoverable.
+  Future<void> moveManyToTrash(List<DocumentRecord> documents) async {
+    if (documents.isEmpty) return;
+    final db = await _database.database;
+    final now = DateTime.now().toUtc().toIso8601String();
+    await db.transaction((txn) async {
+      for (final document in documents) {
+        final changed = await txn.update(
+          'documents',
+          {'deleted_at': now, 'updated_at': now},
+          where: 'id = ? AND deleted_at IS NULL',
+          whereArgs: [document.id],
+        );
+        if (changed > 0) {
+          await _recordHistory(txn, document.id, 'moved_to_recycle_bin', {'bulk': true});
+        }
+      }
+    });
+  }
+
+  /// Move several PDFs using the same verified copy/commit/cleanup path as a single move.
+  Future<Map<String, Object>> moveManyToFolder(List<DocumentRecord> documents, String? folderId) async {
+    var moved = 0;
+    final failures = <String>[];
+    for (final document in documents) {
+      try {
+        await moveToFolder(document, folderId);
+        moved++;
+      } catch (error) {
+        failures.add('${document.name}: $error');
+      }
+    }
+    return {'moved': moved, 'failures': failures};
+  }
   Future<void> setFavorite(DocumentRecord document, bool favorite) async {
     final db = await _database.database;
     final rows = await db.query(
