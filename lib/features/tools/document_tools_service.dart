@@ -292,6 +292,11 @@ class DocumentToolsService {
     final rowsByTable = <String, List<Map<String, Object?>>>{};
     for (final table in tableNames) {
       final entry = decoded.findFile('$table.json');
+      // Older v1 backups predate OCR indexing; keep them restorable.
+      if (entry == null && table == 'document_text_index') {
+        rowsByTable[table] = <Map<String, Object?>>[];
+        continue;
+      }
       if (entry == null) throw StateError('Backup is incomplete: missing $table metadata.');
       final rows = jsonDecode(utf8.decode(entry.content as List<int>)) as List<dynamic>;
       rowsByTable[table] = rows.map((e) => Map<String, Object?>.from(e as Map)).toList();
