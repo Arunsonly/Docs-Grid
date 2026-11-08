@@ -1,6 +1,6 @@
 # DocsGrid implementation status
 
-Last updated: 2026-11-07
+Last updated: 2026-11-08
 
 This is an implementation tracker, not a release claim. A green CI build does not mean physical-device testing has passed.
 
@@ -25,7 +25,7 @@ This is an implementation tracker, not a release claim. A green CI build does no
 - Migration mirrors the folder hierarchy. For each PDF it copies and verifies SHA-256, commits the new database location, and only then removes the old copy. It can be retried after interruption.
 - PDF moves use copy-and-verify, then commit metadata, then clean up the old copy. If metadata commit fails, the original remains. If source cleanup fails after commit, the app reports that both copies may remain.
 - Folder rename refreshes descendant folder and PDF storage references. Empty-folder deletion restores the visible database record if physical deletion fails.
-- Relinking accepts a user-selected PDF and checks its header and saved SHA-256 before changing the record. Current implementation requires FilePicker to expose a readable local path; provider selections without a local path are rejected with an actionable error instead of being treated as valid.
+- Relinking accepts a user-selected PDF, stages pathless provider selections into app cache, and checks its header and saved SHA-256 before changing the record. Cache staging is cleaned after success or failure; provider and large-file behaviour still needs device testing.
 - Import can read provider selections into memory when FilePicker does not expose a local path. This is a large-file memory risk and requires cloud-provider/device testing; do not treat provider support as fully validated.
 - iOS Files providers (including cloud providers) may need to download a file before it can be read. This requires real-device/provider testing.
 - App-private fallback files remain inside the app container and may be removed on uninstall. Files in a verified external location are independent of the app container.
@@ -56,7 +56,7 @@ The following changes are on `feature/complete-ten-features` and remain subject 
 | 4 | Advanced PDF Search (OCR) | On-device PDF page rendering + ML Kit OCR; extracted text persisted in SQLite; text query searches indexed PDFs; provider URI is copied to temporary storage for OCR | Latin script recognizer only in current implementation; OCR is user-triggered and can be CPU/memory intensive |
 | 5 | Duplicate Detection | Exact SHA-256 duplicate groups with a review choice; non-kept copies move to Recycle Bin, not permanent deletion | Needs UX/device regression tests and duplicate groups with 3+ copies |
 | 6 | Favorites & Recent Documents | Existing Saved and Recently opened screens/actions retained | Verify sort and history after app restart |
-| 7 | Expiry Reminder System | Device-local scheduled notifications; Android notification permission and reboot receivers; daily and weekly repeating reminders; disable, snooze, complete and delete cancel/reschedule notifications | Monthly recurrence not yet available; iOS/Android notification delivery and reboot must be tested on physical devices; Android uses inexact scheduling |
+| 7 | Expiry Reminder System | Device-local scheduled notifications; Android notification permission and reboot receivers; daily, weekly and monthly repeating reminders; disable, snooze, complete and delete cancel/reschedule notifications; recurring month-end dates clamp to the last valid day | iOS/Android notification delivery and reboot must be tested on physical devices; Android uses inexact scheduling |
 | 8 | Document Scanner & Quick Share | Camera single-page scan and multi-image gallery-to-PDF; scanner output imported into the library; document menu shares local and provider-backed PDFs | No perspective crop/edge detection or multi-page camera capture workflow yet |
 | 9 | Document History & Recycle Bin | Existing action history, soft delete, restore and confirmed permanent delete retained; duplicate cleanup uses Recycle Bin | Verify rollback and history consistency after app restart |
 | 10 | Backup & Restore | ZIP backup includes DB tables and local PDFs; manifest and SHA-256 verification; additive restore stages files, inserts metadata transactionally and aborts on ID conflicts | Provider-backed content URIs are copied to temporary local files for inclusion; unavailable providers stop the backup rather than creating a partial archive. Test large archives, rollback, and restore across fresh installs |
@@ -81,3 +81,8 @@ The following changes are on `feature/complete-ten-features` and remain subject 
 - Reminder notification IDs previously used `String.hashCode`, which is not a persistence contract across process launches. The scheduler now uses deterministic FNV-1a IDs and has a regression test for stable values.
 - Portable restore UI now consistently instructs both Android and iOS users to select the parent folder containing `DocsGrid`, matching both native implementations.
 - Verification gate: Run #571 passed Android analyze, Flutter unit/widget tests, strict Gradle dependency checksum bootstrap, Android debug APK build and artifact upload; iOS analyze, unit/widget tests and unsigned build also passed. Subsequent folder-path and notification-ID fixes require a fresh full CI run. Physical notification delivery, reboot, scanner camera/gallery flows and vendor-specific scheduling still require device testing.
+
+
+- Reminder recurrence coverage now includes monthly repeats. Dates such as the 29th–31st clamp to the final valid day in shorter months, then return to the original day when a later month supports it. Unit tests cover ordinary monthly recurrence and month-end behaviour.
+- Reminder notification reconciliation now retains the linked document ID as the notification payload, so tapping a restored reminder can still open its PDF after backup or portable recovery.
+- FilePicker provider selections without a local path are staged in the app cache for import/relink and removed in cleanup. The plugin API used here exposes bytes rather than a stream in this path, so large cloud-provider files remain a memory-pressure test gate; this limitation is documented rather than described as streamed.
