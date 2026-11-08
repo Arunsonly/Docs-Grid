@@ -65,6 +65,43 @@ class ReminderNotifications {
   }
 
   int _id(String id) => notificationIdFor(id);
+  int _snoozeId(String id) => notificationIdFor('$id:snooze');
+
+  Future<void> scheduleSnooze({
+    required String id,
+    required String title,
+    String? body,
+    required DateTime at,
+  }) async {
+    await initialize();
+    if (!at.isAfter(DateTime.now())) {
+      await _plugin.cancel(_snoozeId(id));
+      return;
+    }
+    await _plugin.zonedSchedule(
+      _snoozeId(id),
+      title,
+      body,
+      tz.TZDateTime.from(at, tz.local),
+      const NotificationDetails(
+        android: AndroidNotificationDetails(
+          'docsgrid_reminders_v2',
+          'Document reminders',
+          channelDescription: 'Audible local reminders for your documents',
+          importance: Importance.max,
+          priority: Priority.high,
+          playSound: true,
+          enableVibration: true,
+        ),
+        iOS: DarwinNotificationDetails(
+          presentAlert: true,
+          presentBadge: true,
+          presentSound: true,
+        ),
+      ),
+      androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
+    );
+  }
 
   /// Computes the next local wall-clock occurrence for a reminder.
   /// Monthly repeats retain the chosen day and skip months that lack it.
@@ -161,5 +198,6 @@ class ReminderNotifications {
   Future<void> cancel(String id) async {
     await initialize();
     await _plugin.cancel(_id(id));
+    await _plugin.cancel(_snoozeId(id));
   }
 }
