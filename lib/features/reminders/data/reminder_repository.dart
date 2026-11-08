@@ -92,6 +92,7 @@ class ReminderRepository {
     required DateTime remindAt,
     String? recurrenceRule,
     String? documentId,
+    bool requestPermission = false,
   }) async {
     final cleanTitle = title.trim();
     if (cleanTitle.isEmpty) throw ArgumentError('Reminder title cannot be empty.');
@@ -122,7 +123,10 @@ class ReminderRepository {
       'updated_at': now,
     });
     try {
-      await ReminderNotifications.instance.requestPermission();
+      if (requestPermission &&
+          !await ReminderNotifications.instance.areNotificationsEnabled()) {
+        await ReminderNotifications.instance.requestPermission();
+      }
       await ReminderNotifications.instance.schedule(
         id: id, title: cleanTitle, body: cleanNote, at: remindAt,
         recurrence: recurrenceRule, documentId: documentId,
