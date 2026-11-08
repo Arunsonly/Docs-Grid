@@ -6,26 +6,43 @@ import android.provider.OpenableColumns
 import android.database.Cursor
 import android.net.Uri
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.provider.DocumentsContract
 import java.security.MessageDigest
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
+import java.util.concurrent.Executors
 
 class MainActivity : FlutterActivity() {
     private val channelName = "docsgrid/storage"
     private val requestChooseFolder = 4817
     private var pendingFolderResult: MethodChannel.Result? = null
+    private val storageExecutor = Executors.newSingleThreadExecutor()
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName)
             .setMethodCallHandler { call, result ->
+                val response = if (call.method == "chooseFolder" || call.method == "openPdf") {
+                    result
+                } else {
+                    object : MethodChannel.Result {
+                        override fun success(value: Any?) { mainHandler.post { response.success(value) } }
+                        override fun error(code: String, message: String?, details: Any?) {
+                            mainHandler.post { response.error(code, message, details) }
+                        }
+                        override fun notImplemented() { mainHandler.post { response.notImplemented() } }
+                    }
+                }
+                val operation = Runnable {
                 try {
                     when (call.method) {
                         "chooseFolder" -> {
                             if (pendingFolderResult != null) {
-                                result.error("BUSY", "Folder picker is already open.", null)
+                                response.error("BUSY", "Folder picker is already open.", null)
                             } else {
                                 pendingFolderResult = result
                                 val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)
@@ -45,31 +62,31 @@ class MainActivity : FlutterActivity() {
                                 ?: throw IllegalStateException("DocsGrid Recovery folder is not configured. Re-select the library folder.")
                             val library = prefs.getString("my_files_uri", null)
                                 ?: throw IllegalStateException("DocsGrid library folder is not configured. Re-select the library folder.")
-                            result.success(mapOf("databaseUri" to database, "recoveryUri" to recovery, "libraryUri" to library))
+                            response.success(mapOf("databaseUri" to database, "recoveryUri" to recovery, "libraryUri" to library))
                         }
                         "getSelectedFolder" -> {
                             val prefs = getSharedPreferences("docsgrid_storage", MODE_PRIVATE)
                             val uri = prefs.getString("my_files_uri", null)
-                            result.success(uri?.let { mapOf("uri" to it, "name" to "DocsGrid/My Files") })
+                            response.success(uri?.let { mapOf("uri" to it, "name" to "DocsGrid/My Files") })
                         }
-                        "consumeSharedPdfs" -> result.success(consumeSharedPdfs())
-                        "checkStorageAccess" -> result.success(checkStorageAccess())
+                        "consumeSharedPdfs" -> response.success(consumeSharedPdfs())
+                        "checkStorageAccess" -> response.success(checkStorageAccess())
                         "savePdf" -> {
                             val tree = Uri.parse(call.argument<String>("treeUri")!!)
                             val name = call.argument<String>("name")!!
                             val bytes = call.argument<ByteArray>("bytes")!!
-                            result.success(createPdf(tree, name, bytes).toString())
+                            response.success(createPdf(tree, name, bytes).toString())
                         }
                         "createDirectory" -> {
                             val parent = Uri.parse(call.argument<String>("parentUri")!!)
                             val name = call.argument<String>("name")!!
-                            result.success(createDirectory(parent, name).toString())
+                            response.success(createDirectory(parent, name).toString())
                         }
                         "copyPdf" -> {
                             val source = Uri.parse(call.argument<String>("sourceUri")!!)
                             val parent = Uri.parse(call.argument<String>("parentUri")!!)
                             val name = call.argument<String>("name")!!
-                            result.success(copyPdf(source, parent, name).toString())
+                            response.success(copyPdf(source, parent, name).toString())
                         }
                         "copyPdfToPath" -> {
                             val source = Uri.parse(call.argument<String>("sourceUri")!!)
@@ -82,49 +99,49 @@ class MainActivity : FlutterActivity() {
                                     output.flush()
                                 }
                             } ?: throw IllegalStateException("Could not read the source PDF.")
-                            result.success(true)
+                            response.success(true)
                         }
                         "sha256Pdf" -> {
                             val uri = Uri.parse(call.argument<String>("uri")!!)
-                            result.success(digest(uri).joinToString("") { "%02x".format(it) })
+                            response.success(digest(uri).joinToString("") { "%02x".format(it) })
                         }
                         "writeTextFile" -> {
                             val parent = Uri.parse(call.argument<String>("parentUri")!!)
                             val name = call.argument<String>("name")!!
                             val contents = call.argument<String>("contents")!!
-                            result.success(writeTextFile(parent, name, contents).toString())
+                            response.success(writeTextFile(parent, name, contents).toString())
                         }
                         "readTextFile" -> {
                             val uri = Uri.parse(call.argument<String>("uri")!!)
                             val bytes = contentResolver.openInputStream(uri)?.use { it.readBytes() }
                                 ?: throw IllegalStateException("Could not read metadata file.")
-                            result.success(String(bytes, Charsets.UTF_8))
+                            response.success(String(bytes, Charsets.UTF_8))
                         }
                         "listDirectory" -> {
                             val uri = Uri.parse(call.argument<String>("uri")!!)
-                            result.success(listDirectory(uri))
+                            response.success(listDirectory(uri))
                         }
                         "readPdf" -> {
                             val uri = Uri.parse(call.argument<String>("uri")!!)
                             val bytes = contentResolver.openInputStream(uri)?.use { it.readBytes() }
                                 ?: throw IllegalStateException("Could not read the selected PDF.")
-                            result.success(bytes)
+                            response.success(bytes)
                         }
                         "findChildUri" -> {
                             val parent = Uri.parse(call.argument<String>("parentUri")!!)
                             val name = call.argument<String>("name")!!
-                            result.success(findChildUri(parent, name).toString())
+                            response.success(findChildUri(parent, name).toString())
                         }
                         "renamePdf" -> {
                             val uri = Uri.parse(call.argument<String>("uri")!!)
                             val name = call.argument<String>("name")!!
                             val renamed = DocumentsContract.renameDocument(contentResolver, uri, name)
                                 ?: throw IllegalStateException("Android could not rename this PDF.")
-                            result.success(renamed.toString())
+                            response.success(renamed.toString())
                         }
                         "deletePdf" -> {
                             val uri = Uri.parse(call.argument<String>("uri")!!)
-                            result.success(deleteDocumentSafely(uri))
+                            response.success(deleteDocumentSafely(uri))
                         }
                         "openPdf" -> {
                             val uri = Uri.parse(call.argument<String>("uri")!!)
@@ -133,13 +150,16 @@ class MainActivity : FlutterActivity() {
                                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                             }
                             startActivity(Intent.createChooser(intent, "Open PDF"))
-                            result.success(true)
+                            response.success(true)
                         }
-                        else -> result.notImplemented()
+                        else -> response.notImplemented()
                     }
                 } catch (error: Exception) {
-                    result.error("STORAGE_ERROR", error.message ?: "Storage operation failed.", null)
+                    response.error("STORAGE_ERROR", error.message ?: "Storage operation failed.", null)
                 }
+                }
+                if (call.method == "chooseFolder" || call.method == "openPdf") operation.run()
+                else storageExecutor.execute(operation)
             }
     }
 
