@@ -1115,7 +1115,7 @@ class DocumentToolsService {
           name.codeUnits.any((unit) => unit < 32 || unit == 127) ||
           (parentId != null &&
               (parentId is! String || parentId.trim().isEmpty || parentId != parentId.trim()))) {
-        throw StateError('Backup contains an invalid folder ID, name, or parent reference.');
+        throw StateError('Backup contains an invalid or duplicate folder ID, name, or parent reference.');
       }
       foldersById[id] = folder;
     }
