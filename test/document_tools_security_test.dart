@@ -25,7 +25,11 @@ void main() {
     });
 
     test('OCR search escapes SQL LIKE wildcards and backslashes', () {
-      expect(DocumentToolsService.escapeLikeQuery(r'a%b_c\\d'), r'a\\%b\\_c\\\\d');
+      final slash = String.fromCharCode(92);
+      expect(
+        DocumentToolsService.escapeLikeQuery('a%b_c${slash}d'),
+        'a${slash}%b${slash}_c${slash}${slash}d',
+      );
     });
 
     test('OCR search leaves ordinary text unchanged', () {
