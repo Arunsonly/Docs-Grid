@@ -15,6 +15,13 @@ class _RemindersScreenState extends State<RemindersScreen> {
   void initState() { super.initState(); _future = _repository.list(); }
   Future<void> _refresh() async { final next = _repository.list(); setState(() => _future = next); await next; }
 
+  void _showError(Object error) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Reminder action failed: $error')),
+    );
+  }
+
   Future<void> _requestNotificationPermission() async {
     try {
       await ReminderNotifications.instance.requestPermission();
@@ -72,12 +79,16 @@ class _RemindersScreenState extends State<RemindersScreen> {
       ),
     ));
     if (result == true) {
-      if (existing == null) {
-        await _repository.create(title: title.text, note: note.text, remindAt: selected, recurrenceRule: recurrence == 'none' ? null : recurrence);
-      } else {
-        await _repository.update(id: existing.id, title: title.text, note: note.text, remindAt: selected, recurrenceRule: recurrence == 'none' ? null : recurrence);
+      try {
+        if (existing == null) {
+          await _repository.create(title: title.text, note: note.text, remindAt: selected, recurrenceRule: recurrence == 'none' ? null : recurrence);
+        } else {
+          await _repository.update(id: existing.id, title: title.text, note: note.text, remindAt: selected, recurrenceRule: recurrence == 'none' ? null : recurrence);
+        }
+        if (mounted) await _refresh();
+      } catch (error) {
+        _showError(error);
       }
-      await _refresh();
     }
     title.dispose(); note.dispose();
   }
@@ -88,7 +99,14 @@ class _RemindersScreenState extends State<RemindersScreen> {
       actions: [TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')),
         FilledButton.tonal(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Delete'))],
     ));
-    if (ok == true) await _repository.delete(item.id);
+    if (ok == true) {
+      try {
+        await _repository.delete(item.id);
+        if (mounted) await _refresh();
+      } catch (error) {
+        _showError(error);
+      }
+    }
   }
 
   @override
@@ -124,13 +142,17 @@ class _RemindersScreenState extends State<RemindersScreen> {
           return Card(elevation: 0, child: ListTile(leading: CircleAvatar(child: Icon(item.status == 'completed' ? Icons.check : Icons.alarm)),
             title: Text(item.title), subtitle: Text([if (item.note?.isNotEmpty == true) item.note!, if (item.recurrenceRule != null) 'Repeats ${item.recurrenceRule}', label, if (item.status == 'completed') 'Completed', if (item.enabled && date.isBefore(DateTime.now()) && item.status != 'completed') 'Past due'].join('\n')),
             trailing: PopupMenuButton<String>(onSelected: (value) async {
-              if (value == 'toggle') await _repository.setEnabled(item, !item.enabled);
-              if (value == 'complete') await _repository.complete(item.id);
-              if (value == 'snooze') await _repository.snooze(item);
-              if (value == 'duplicate') await _repository.duplicate(item);
-              if (value == 'edit') { await _add(existing: item); return; }
-              if (value == 'delete') await _delete(item);
-              await _refresh();
+              try {
+                if (value == 'toggle') await _repository.setEnabled(item, !item.enabled);
+                if (value == 'complete') await _repository.complete(item.id);
+                if (value == 'snooze') await _repository.snooze(item);
+                if (value == 'duplicate') await _repository.duplicate(item);
+                if (value == 'edit') { await _add(existing: item); return; }
+                if (value == 'delete') { await _delete(item); return; }
+                if (mounted) await _refresh();
+              } catch (error) {
+                _showError(error);
+              }
             }, itemBuilder: (_) => [
               const PopupMenuItem(value: 'edit', child: Text('Edit')),
               PopupMenuItem(value: 'toggle', child: Text(item.enabled ? 'Disable' : 'Enable')),
