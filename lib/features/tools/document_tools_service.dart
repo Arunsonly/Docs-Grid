@@ -570,7 +570,7 @@ class DocumentToolsService {
       return restoredPaths.length;
     } catch (_) {
       if (!databaseCommitted && await restoreRoot.exists()) {
-        await restoreRoot.delete(recursive: true);
+        try { await restoreRoot.delete(recursive: true); } catch (_) {}
       }
       rethrow;
     }
