@@ -38,8 +38,17 @@ class _HistoryScreenState extends State<HistoryScreen> {
       ),
     );
     if (confirmed != true) return;
-    await _repository.clear();
-    await _refresh();
+    try {
+      await _repository.clear();
+      if (!mounted) return;
+      await _refresh();
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not clear history: $error')),
+        );
+      }
+    }
   }
 
   String _label(ActivityRecord record) {
