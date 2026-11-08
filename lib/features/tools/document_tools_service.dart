@@ -524,6 +524,9 @@ class DocumentToolsService {
       await _findChildUri(snapshotUri, 'manifest.json'),
     );
     final manifest = PortableSnapshotManifest.parse(manifestText);
+    if (manifest.databaseSchemaVersion > 3) {
+      throw StateError('This recovery snapshot was created by a newer DocsGrid database version. Update the app before restoring it.');
+    }
     final rowsByTable = <String, List<Map<String, Object?>>>{};
     for (final file in manifest.files) {
       final contents = await storage.readTextFile(
@@ -541,7 +544,7 @@ class DocumentToolsService {
       final table = file.path.substring(0, file.path.length - 5);
       if (!const {
         'folders', 'documents', 'categories', 'tags', 'document_tags',
-        'reminders', 'history', 'settings', 'document_text_index',
+        'reminders', 'history', 'settings', 'document_text_index', 'schema_migrations',
       }.contains(table)) {
         throw StateError('Snapshot contains unsupported table: $table.');
       }
@@ -673,15 +676,22 @@ class DocumentToolsService {
           ..['id'] = tagIdMap[row['id']];
         await txn.insert('tags', copy, conflictAlgorithm: ConflictAlgorithm.ignore);
       }
-      final sortedFolders = folderRows.toList()
-        ..sort((a, b) => (a['parent_id'] == null ? 0 : 1).compareTo(b['parent_id'] == null ? 0 : 1));
-      for (final row in sortedFolders) {
+      final insertedFolders = <String>{};
+      Future<void> insertFolder(String oldId) async {
+        if (!insertedFolders.add(oldId)) return;
+        final row = folderRowsById[oldId];
+        if (row == null) throw StateError('Snapshot folder parent is missing.');
+        final parentId = row['parent_id'] as String?;
+        if (parentId != null) await insertFolder(parentId);
         await txn.insert('folders', {
           ...row,
-          'id': folderIdMap[row['id']],
-          'parent_id': row['parent_id'] == null ? null : folderIdMap[row['parent_id']],
-          'storage_uri_or_relative_path': folderUriMap[row['id']],
+          'id': folderIdMap[oldId],
+          'parent_id': parentId == null ? null : folderIdMap[parentId],
+          'storage_uri_or_relative_path': folderUriMap[oldId],
         }, conflictAlgorithm: ConflictAlgorithm.ignore);
+      }
+      for (final row in folderRows) {
+        await insertFolder(row['id'] as String);
       }
       for (final row in rowsByTable['documents']!) {
         final oldId = row['id'] as String;
@@ -768,7 +778,6 @@ class DocumentToolsService {
       'documentsAdded': addedDocuments,
       'documentsLinked': linkedDocuments,
       'pdfsMissing': missingPdfs,
-      'snapshot': snapshotName.hashCode,
     };
   }
 
