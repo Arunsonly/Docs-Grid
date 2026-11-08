@@ -740,7 +740,31 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
           child: _loading
               ? const Center(child: CircularProgressIndicator())
               : _error != null
-                  ? Center(child: Text('Could not load documents\n$_error', textAlign: TextAlign.center))
+                  ? Center(
+                      child: Padding(
+                        padding: const EdgeInsets.all(24),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(Icons.cloud_off_outlined, size: 42),
+                            const SizedBox(height: 12),
+                            const Text(
+                              'Could not load documents',
+                              style: TextStyle(fontWeight: FontWeight.w600),
+                              textAlign: TextAlign.center,
+                            ),
+                            const SizedBox(height: 6),
+                            Text(_error!, textAlign: TextAlign.center),
+                            const SizedBox(height: 14),
+                            FilledButton.icon(
+                              onPressed: _load,
+                              icon: const Icon(Icons.refresh),
+                              label: const Text('Try again'),
+                            ),
+                          ],
+                        ),
+                      ),
+                    )
                   : _documents.isEmpty
                       ? _emptyState()
                       : RefreshIndicator(
