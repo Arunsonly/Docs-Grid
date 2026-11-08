@@ -142,6 +142,10 @@ import CryptoKit
                 let parent = try urlArg(args, "parentUri")
                 let name = try stringArg(args, "name")
                 result(try findChild(parent: parent, name: name).absoluteString)
+            case "findChildUriIfExists":
+                let parent = try urlArg(args, "parentUri")
+                let name = try stringArg(args, "name")
+                result(try findChildIfExists(parent: parent, name: name)?.absoluteString)
             case "renamePdf":
                 let url = try urlArg(args, "uri")
                 let name = try stringArg(args, "name")
@@ -421,6 +425,15 @@ import CryptoKit
                 throw storageError("Could not find '\(name)' inside the selected folder.")
             }
             return match
+        }
+    }
+
+    private func findChildIfExists(parent: URL, name: String) throws -> URL? {
+        try withAllBookmarkAccess {
+            let children = try FileManager.default.contentsOfDirectory(
+                at: parent, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]
+            )
+            return children.first(where: { $0.lastPathComponent == name })
         }
     }
 
