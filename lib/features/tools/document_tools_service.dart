@@ -1104,11 +1104,18 @@ class DocumentToolsService {
       }
       final folder = Map<String, dynamic>.from(raw);
       final id = folder['id'];
+      final name = folder['name'];
       final parentId = folder['parent_id'];
       if (id is! String || id.trim().isEmpty || id != id.trim() ||
           foldersById.containsKey(id) ||
-          (parentId != null && (parentId is! String || parentId.isEmpty))) {
-        throw StateError('Backup contains an invalid or duplicate folder ID.');
+          name is! String || name.trim().isEmpty ||
+          name.trim() == '.' || name.trim() == '..' ||
+          name.contains('/') || name.contains(r'\\') ||
+          name.length > 255 ||
+          name.codeUnits.any((unit) => unit < 32 || unit == 127) ||
+          (parentId != null &&
+              (parentId is! String || parentId.trim().isEmpty || parentId != parentId.trim()))) {
+        throw StateError('Backup contains an invalid folder ID, name, or parent reference.');
       }
       foldersById[id] = folder;
     }
