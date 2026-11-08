@@ -9,6 +9,7 @@ import 'features/documents/data/document_repository.dart';
 import 'features/categories/presentation/categories_screen.dart';
 import 'features/history/presentation/history_screen.dart';
 import 'features/reminders/presentation/reminders_screen.dart';
+import 'features/reminders/data/reminder_repository.dart';
 import 'features/folders/presentation/folders_screen.dart';
 import 'features/folders/data/folder_repository.dart';
 import 'core/storage/storage_location_service.dart';
@@ -89,24 +90,44 @@ class DocsGridHome extends StatefulWidget {
 class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver {
   int _selectedIndex = 0;
   bool _checkingIncomingShare = false;
+  bool _reconcilingReminders = false;
   static const MethodChannel _storageChannel = MethodChannel('docsgrid/storage');
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    WidgetsBinding.instance.addPostFrameCallback((_) => _consumeSharedPdfs());
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _consumeSharedPdfs();
+      _reconcileReminders();
+    });
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) _consumeSharedPdfs();
+    if (state == AppLifecycleState.resumed) {
+      _consumeSharedPdfs();
+      _reconcileReminders();
+    }
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
+  }
+
+  Future<void> _reconcileReminders() async {
+    if (_reconcilingReminders) return;
+    _reconcilingReminders = true;
+    try {
+      await ReminderRepository().reconcileNotifications();
+    } catch (_) {
+      // Startup must remain usable when notification permission or the OS
+      // scheduler is unavailable. Reconciliation is retried on next resume.
+    } finally {
+      _reconcilingReminders = false;
+    }
   }
 
   Future<void> _consumeSharedPdfs() async {
