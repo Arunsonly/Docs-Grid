@@ -57,6 +57,46 @@ class ReminderNotifications {
 
   int _id(String id) => id.hashCode & 0x7fffffff;
 
+  /// Computes the next local wall-clock occurrence for recurring reminders.
+  /// Monthly reminders retain the selected calendar day; shorter months are skipped.
+  @visibleForTesting
+  static DateTime? nextScheduledOccurrence({
+    required DateTime at,
+    required DateTime now,
+    String? recurrence,
+  }) {
+    if (at.isAfter(now)) return at;
+    if (recurrence == 'daily') {
+      var next = DateTime(now.year, now.month, now.day, at.hour, at.minute, at.second);
+      if (!next.isAfter(now)) {
+        next = DateTime(now.year, now.month, now.day + 1, at.hour, at.minute, at.second);
+      }
+      return next;
+    }
+    if (recurrence == 'weekly') {
+      final daysUntil = (at.weekday - now.weekday + 7) % 7;
+      var next = DateTime(now.year, now.month, now.day + daysUntil, at.hour, at.minute, at.second);
+      if (!next.isAfter(now)) {
+        next = DateTime(now.year, now.month, now.day + 7, at.hour, at.minute, at.second);
+      }
+      return next;
+    }
+    if (recurrence == 'monthly') {
+      var year = now.year;
+      var month = now.month;
+      while (true) {
+        final lastDay = DateTime(year, month + 1, 0).day;
+        if (at.day <= lastDay) {
+          final candidate = DateTime(year, month, at.day, at.hour, at.minute, at.second);
+          if (candidate.isAfter(now)) return candidate;
+        }
+        month++;
+        if (month > 12) { month = 1; year++; }
+      }
+    }
+    return null;
+  }
+
   Future<void> schedule({
     required String id,
     required String title,
@@ -65,7 +105,12 @@ class ReminderNotifications {
     String? recurrence,
   }) async {
     await initialize();
-    if (!at.isAfter(DateTime.now())) {
+    final scheduledAt = nextScheduledOccurrence(
+      at: at,
+      now: DateTime.now(),
+      recurrence: recurrence,
+    );
+    if (scheduledAt == null) {
       await cancel(id);
       return;
     }
@@ -82,7 +127,7 @@ class ReminderNotifications {
       _id(id),
       title,
       body,
-      tz.TZDateTime.from(at, tz.local),
+      tz.TZDateTime.from(scheduledAt, tz.local),
       const NotificationDetails(
         android: AndroidNotificationDetails(
           // Versioned channel ID: Android does not allow changing sound
