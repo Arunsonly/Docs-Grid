@@ -164,7 +164,7 @@ void main() {
 
   test('rejects Windows separators in archive metadata names', () async {
     final file = await writeArchive(documents: const [
-      {'id': 'doc-1', 'name': r'..\\outside'},
+      {'id': 'doc-1', 'name': r'..\outside'},
     ]);
     await expectLater(DocumentToolsService().validateBackup(file), throwsStateError);
   });
