@@ -66,7 +66,7 @@ jobs:
           key: gradle-${{ runner.os }}-${{ hashFiles('pubspec.lock') }}-9.3.1
           restore-keys: |
             gradle-${{ runner.os }}-
-      - name: Add checksum-pinned JetBrains Maven fallback
+      - name: Add JetBrains Maven fallback
         run: |
           python3 - <<'PY'
           from pathlib import Path
@@ -78,22 +78,7 @@ jobs:
           if mirror not in source:
               source = source.replace('mavenCentral()', mirror + '\n        mavenCentral()')
           settings.write_text(source)
-          verification = Path('android/gradle/verification-metadata.xml')
-          verification.write_text('''<verification-metadata>
-            <configuration>
-              <verify-metadata>false</verify-metadata>
-              <verify-signatures>false</verify-signatures>
-            </configuration>
-            <components>
-              <component group="org.jetbrains.kotlin" name="kotlin-compiler-embeddable" version="2.2.21">
-                <artifact name="kotlin-compiler-embeddable-2.2.21.jar">
-                  <sha256 value="9588fa696ac5507af764fd5660df6894185e12704ec1bc3f5cb772af4987f295"/>
-                </artifact>
-              </component>
-            </components>
-          </verification-metadata>
-          ''')
-          print('Added JetBrains Maven fallback with SHA-256 verification for Kotlin compiler')
+          print('Configured JetBrains Maven fallback ahead of Maven Central')
           PY
       - name: Use non-conflicting DocsGrid Android package ID
         run: |
@@ -192,7 +177,7 @@ jobs:
           p = Path('android/app/src/main/AndroidManifest.xml')
           s = p.read_text()
           marker = '<application'
-          permissions = '    <uses-permission android:name="android.permission.CAMERA"/>\n    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>\n    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM"/>\n    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>\n    '
+          permissions = '    <uses-permission android:name="android.permission.CAMERA"/>\n    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>\n    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>\n    '
           s = s.replace(marker, permissions + marker, 1)
           receivers = '''\n    <receiver android:exported="false" android:name="com.dexterous.flutterlocalnotifications.ScheduledNotificationReceiver"/>\n    <receiver android:enabled="true" android:exported="false" android:name="com.dexterous.flutterlocalnotifications.ScheduledNotificationBootReceiver">\n        <intent-filter>\n            <action android:name="android.intent.action.BOOT_COMPLETED"/>\n            <action android:name="android.intent.action.MY_PACKAGE_REPLACED"/>\n            <action android:name="android.intent.action.QUICKBOOT_POWERON"/>\n        </intent-filter>\n    </receiver>\n    '''
           # Make DocsGrid appear in Android's Share sheet for PDF attachments.
@@ -232,6 +217,30 @@ jobs:
         run: flutter analyze
       - name: Widget and unit tests
         run: flutter test
+      - name: Bootstrap and verify Android dependency checksums
+        run: |
+          rm -f android/gradle/verification-metadata.xml
+          cd android
+          ./gradlew --write-verification-metadata sha256 assembleDebug
+          cd ..
+          python3 - <<'PY'
+          from pathlib import Path
+          metadata = Path('android/gradle/verification-metadata.xml')
+          if not metadata.exists():
+              raise SystemExit('Gradle did not generate dependency verification metadata')
+          expected = '9588fa696ac5507af764fd5660df6894185e12704ec1bc3f5cb772af4987f295'
+          if expected not in metadata.read_text():
+              raise SystemExit('Kotlin compiler SHA-256 does not match JetBrains upstream metadata')
+          print('Full dependency metadata generated; Kotlin compiler checksum matches JetBrains upstream')
+          PY
+      - name: Upload Gradle verification metadata
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docsgrid-gradle-verification-metadata
+          path: android/gradle/verification-metadata.xml
+          if-no-files-found: warn
+          retention-days: 14
       - name: Build debug APK
         run: |
           for attempt in 1 2 3; do
