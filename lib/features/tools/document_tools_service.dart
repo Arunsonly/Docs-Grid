@@ -601,6 +601,7 @@ class DocumentToolsService {
     if (verified == null) {
       throw StateError('No complete, verified DocsGrid recovery snapshot was found.');
     }
+    final storage = StorageLocationService.instance;
     final locations = Map<String, String>.from(verified['locations'] as Map);
     final snapshotUri = verified['uri'] as String;
     final manifest = verified['manifest'] as PortableSnapshotManifest;
