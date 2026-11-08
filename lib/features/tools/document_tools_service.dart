@@ -82,12 +82,16 @@ class DocumentToolsService {
       return await _indexPdfTextInternal(documentId, path);
     } catch (_) {
       // Keep an older successful index usable if a re-index attempt fails.
-      await db.update(
-        'documents',
-        {'extracted_text_status': previousIndex.isEmpty ? 'failed' : 'indexed'},
-        where: 'id = ? AND deleted_at IS NULL',
-        whereArgs: [documentId],
-      );
+      try {
+        await db.update(
+          'documents',
+          {'extracted_text_status': previousIndex.isEmpty ? 'failed' : 'indexed'},
+          where: 'id = ? AND deleted_at IS NULL',
+          whereArgs: [documentId],
+        );
+      } catch (_) {
+        // Preserve the original OCR failure if status recovery also fails.
+      }
       rethrow;
     } finally {
       _indexingDocumentIds.remove(documentId);
