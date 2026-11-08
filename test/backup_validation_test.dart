@@ -24,7 +24,7 @@ void main() {
   Future<File> makeBackup({
     required List<Map<String, Object?>> documents,
     List<Map<String, Object?>> folders = const [],
-    bool duplicateManifestEntry = false,
+    bool extraUnreferencedEntry = false,
   }) async {
     final archive = Archive();
     final tableNames = [
@@ -63,8 +63,9 @@ void main() {
     };
     final manifestBytes = utf8.encode(jsonEncode(manifest));
     archive.addFile(ArchiveFile('manifest.json', manifestBytes.length, manifestBytes));
-    if (duplicateManifestEntry) {
-      archive.addFile(ArchiveFile('manifest.json', manifestBytes.length, manifestBytes));
+    if (extraUnreferencedEntry) {
+      final extra = utf8.encode('unexpected');
+      archive.addFile(ArchiveFile('unexpected.txt', extra.length, extra));
     }
 
     final file = File('${tempDirectory.path}/test-backup.zip');
@@ -72,13 +73,13 @@ void main() {
     return file;
   }
 
-  test('rejects duplicate ZIP entry names before reading backup metadata', () async {
+  test('rejects unreferenced ZIP entries', () async {
     final file = await makeBackup(
       documents: [
         {'id': 'doc-a', 'name': 'A'},
         {'id': 'doc-b', 'name': 'B'},
       ],
-      duplicateManifestEntry: true,
+      extraUnreferencedEntry: true,
     );
 
     await expectLater(
@@ -86,7 +87,7 @@ void main() {
       throwsA(isA<StateError>().having(
         (error) => error.message,
         'message',
-        contains('duplicate'),
+        contains('unexpected'),
       )),
     );
   });
