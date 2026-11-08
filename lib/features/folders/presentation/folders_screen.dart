@@ -368,14 +368,26 @@ class _FoldersScreenState extends State<FoldersScreen> {
                 child: Text(_currentTitle,
                     style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700)),
               ),
-              IconButton(
-                tooltip: 'Add PDF to this folder',
-                onPressed: () async {
-                  final result = await _documents.importPdfs(targetFolderId: _currentFolderId);
-                  await _refresh();
-                  if (mounted) _message('Added ${result.added} · Duplicates ${result.duplicates}');
+              PopupMenuButton<String>(
+                tooltip: 'Folder actions',
+                icon: const Icon(Icons.more_vert),
+                onSelected: (action) async {
+                  if (action == 'add_pdf') {
+                    final result = await _documents.importPdfs(targetFolderId: _currentFolderId);
+                    await _refresh();
+                    if (mounted) _message('Added ${result.added} · Duplicates ${result.duplicates}');
+                  }
                 },
-                icon: const Icon(Icons.picture_as_pdf_outlined),
+                itemBuilder: (_) => const [
+                  PopupMenuItem(
+                    value: 'add_pdf',
+                    child: ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      leading: Icon(Icons.picture_as_pdf_outlined),
+                      title: Text('Add PDF to this folder'),
+                    ),
+                  ),
+                ],
               ),
               IconButton(
                 tooltip: 'Create folder',
