@@ -187,6 +187,7 @@ class FolderRepository {
     );
     if (rows.isEmpty) throw StateError('Folder no longer exists.');
     final oldName = rows.first['name'] as String;
+    if (oldName == cleaned) return;
     final oldUri = rows.first['storage_uri_or_relative_path'] as String?;
     final storage = StorageLocationService.instance;
     final renamedUri = oldUri == null
