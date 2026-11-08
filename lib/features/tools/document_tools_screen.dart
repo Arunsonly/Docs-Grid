@@ -382,94 +382,81 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
     if (saved == true) await ReminderRepository().create(title: reminderTitle, note: reminderNote, remindAt: selected, documentId: document.id);
   }
 
-  Future<void> _reviewDuplicateGroup(String sha) async {
+  Future<void> _reviewDuplicateGroup(List<String> documentIds, String duplicateType) async {
+    if (documentIds.length < 2) return;
     final db = await AppDatabase.instance.database;
+    final placeholders = List.filled(documentIds.length, '?').join(',');
     final rows = await db.query('documents',
-      where: 'sha256 = ? AND deleted_at IS NULL', whereArgs: [sha],
+      where: 'id IN ($placeholders) AND deleted_at IS NULL',
+      whereArgs: documentIds,
       orderBy: 'created_at ASC');
     final docs = rows.map(DocumentRecord.fromMap).toList();
     if (docs.length < 2 || !mounted) return;
-    final selected = <String>{};
     await showDialog<void>(context: context, builder: (dialogContext) => StatefulBuilder(
       builder: (context, refresh) => AlertDialog(
-        title: const Text('Duplicate PDFs'),
+        title: Text('Duplicate PDFs · $duplicateType'),
         content: SizedBox(width: 440, height: 380, child: Column(children: [
-          const Text('Open each file to compare it. Select copies you want to move to Recycle Bin.'),
+          const Text('Review each matching PDF. Move unwanted copies to Recycle Bin one at a time.'),
           const SizedBox(height: 8),
-          Expanded(child: ListView.separated(
-            itemCount: docs.length,
-            separatorBuilder: (_, _) => const Divider(height: 1),
-            itemBuilder: (context, index) {
-              final doc = docs[index];
-              return ListTile(
-                contentPadding: EdgeInsets.zero,
-                leading: Checkbox(value: selected.contains(doc.id), onChanged: (value) => refresh(() {
-                  if (value == true) { selected.add(doc.id); } else { selected.remove(doc.id); }
-                })),
-                title: Text('${doc.name}.pdf', maxLines: 1, overflow: TextOverflow.ellipsis),
-                subtitle: Text(_formatSize(doc.sizeBytes)),
-                onTap: () async {
-                  final uri = doc.storagePath;
-                  if (uri.startsWith('content://') || uri.startsWith('file://')) {
-                    await StorageLocationService.instance.openPdf(uri);
-                  } else {
-                    await OpenFilex.open(uri);
-                  }
-                },
-                trailing: PopupMenuButton<String>(
-                  onSelected: (action) async {
-                    if (action == 'open') {
-                      final uri = doc.storagePath;
-                      if (uri.startsWith('content://') || uri.startsWith('file://')) {
-                        await StorageLocationService.instance.openPdf(uri);
-                      } else { await OpenFilex.open(uri); }
-                    } else if (action == 'share') {
-                      await _tools.shareStoredPdf(doc.storagePath, '${doc.name}.pdf');
-                    } else if (action == 'favorite') {
-                      await DocumentRepository().setFavorite(doc, !doc.isFavorite);
-                    } else if (action == 'category') {
-                      await _duplicateCategory(doc);
-                    } else if (action == 'tags') {
-                      await _duplicateTags(doc);
-                    } else if (action == 'rename') {
-                      await _duplicateRename(doc);
-                    } else if (action == 'move') {
-                      await _duplicateMove(doc);
-                    } else if (action == 'reminder') {
-                      await _duplicateReminder(doc);
-                    } else if (action == 'trash') {
-                      await DocumentRepository().moveToTrash(doc);
-                      refresh(() => selected.remove(doc.id));
+          Expanded(child: docs.isEmpty
+            ? const Center(child: Text('No remaining duplicates in this group.'))
+            : ListView.separated(
+              itemCount: docs.length,
+              separatorBuilder: (_, _) => const Divider(height: 1),
+              itemBuilder: (context, index) {
+                final doc = docs[index];
+                return ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.picture_as_pdf_outlined),
+                  title: Text('${doc.name}.pdf', maxLines: 1, overflow: TextOverflow.ellipsis),
+                  subtitle: Text(_formatSize(doc.sizeBytes)),
+                  onTap: () async {
+                    final uri = doc.storagePath;
+                    if (uri.startsWith('content://') || uri.startsWith('file://')) {
+                      await StorageLocationService.instance.openPdf(uri);
+                    } else {
+                      await OpenFilex.open(uri);
                     }
                   },
-                  itemBuilder: (_) => [
-                    const PopupMenuItem(value: 'open', child: Text('Open PDF')),
-                    const PopupMenuItem(value: 'share', child: Text('Share PDF')),
-                    PopupMenuItem(value: 'favorite', child: Text(doc.isFavorite ? 'Remove from Star' : 'Add to Star')),
-                    const PopupMenuItem(value: 'category', child: Text('Set category')),
-                    const PopupMenuItem(value: 'tags', child: Text('Edit tags')),
-                    const PopupMenuItem(value: 'rename', child: Text('Rename')),
-                    const PopupMenuItem(value: 'move', child: Text('Move to folder')),
-                    const PopupMenuItem(value: 'reminder', child: Text('Add to reminder')),
-                    const PopupMenuItem(value: 'trash', child: Text('Move to Recycle Bin')),
-                  ],
-                ),
-              );
-            },
-          )),
+                  trailing: PopupMenuButton<String>(
+                    onSelected: (action) async {
+                      if (action == 'open') {
+                        final uri = doc.storagePath;
+                        if (uri.startsWith('content://') || uri.startsWith('file://')) {
+                          await StorageLocationService.instance.openPdf(uri);
+                        } else { await OpenFilex.open(uri); }
+                      } else if (action == 'share') {
+                        await _tools.shareStoredPdf(doc.storagePath, '${doc.name}.pdf');
+                      } else if (action == 'trash') {
+                        final confirmed = await showDialog<bool>(
+                          context: dialogContext,
+                          builder: (confirmContext) => AlertDialog(
+                            title: const Text('Move this copy to Recycle Bin?'),
+                            content: Text('${doc.name}.pdf will remain recoverable in Recycle Bin.'),
+                            actions: [
+                              TextButton(onPressed: () => Navigator.pop(confirmContext, false), child: const Text('Cancel')),
+                              FilledButton(onPressed: () => Navigator.pop(confirmContext, true), child: const Text('Move')),
+                            ],
+                          ),
+                        );
+                        if (confirmed == true) {
+                          await DocumentRepository().moveToTrash(doc);
+                          refresh(() => docs.removeWhere((item) => item.id == doc.id));
+                          if (mounted) setState(() => _message = 'Moved one duplicate to Recycle Bin. Remaining matches stay open.');
+                        }
+                      }
+                    },
+                    itemBuilder: (_) => const [
+                      PopupMenuItem(value: 'open', child: Text('Open PDF')),
+                      PopupMenuItem(value: 'share', child: Text('Share PDF')),
+                      PopupMenuItem(value: 'trash', child: Text('Move this copy to Recycle Bin')),
+                    ],
+                  ),
+                );
+              },
+            )),
         ])),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Close')),
-          FilledButton.tonal(
-            onPressed: selected.isEmpty ? null : () async {
-              final targets = docs.where((d) => selected.contains(d.id)).toList();
-              for (final doc in targets) { await DocumentRepository().moveToTrash(doc); }
-              if (dialogContext.mounted) Navigator.pop(dialogContext);
-              if (mounted) setState(() => _message = 'Moved ${targets.length} duplicate PDF(s) to Recycle Bin.');
-            },
-            child: Text('Delete selected (${selected.length})'),
-          ),
-        ],
+        actions: [TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Back'))],
       ),
     ));
   }
@@ -481,19 +468,21 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
   }
 
   Future<void> _showDuplicates() async {
-    final groups = await _tools.findExactDuplicates();
+    final groups = await _tools.findDuplicateGroups();
     if (!mounted) return;
     await showDialog<void>(context: context, builder: (context) => AlertDialog(
-      title: const Text('Duplicate review'),
+      title: const Text('Check Duplicate File'),
       content: SizedBox(width: 420, child: groups.isEmpty
-        ? const Text('No duplicate PDF found.')
+        ? const Text('No duplicates found. Run OCR indexing first to detect matching scanned/text content.')
         : ListView(shrinkWrap: true, children: groups.map((g) => ListTile(
-            title: Text('${g['copies']} matching PDF files'),
+            leading: Icon(g['duplicate_type'] == 'SHA-256' ? Icons.fingerprint : Icons.text_snippet_outlined),
+            title: Text('${g['copies']} matching PDF files · ${g['duplicate_type']}'),
             subtitle: Text((g['names'] ?? '').toString()),
             trailing: const Icon(Icons.chevron_right),
             onTap: () {
               Navigator.pop(context);
-              _reviewDuplicateGroup(g['sha256'] as String);
+              final ids = (g['document_ids'] ?? '').toString().split(',').where((id) => id.isNotEmpty).toList();
+              _reviewDuplicateGroup(ids, g['duplicate_type'] as String);
             },
           )).toList())),
       actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('Close'))],
