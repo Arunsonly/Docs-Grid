@@ -78,13 +78,28 @@ class MainActivity : FlutterActivity() {
                             val source = Uri.parse(call.argument<String>("sourceUri")!!)
                             val destinationPath = call.argument<String>("destinationPath")!!
                             val destination = java.io.File(destinationPath)
-                            destination.parentFile?.mkdirs()
-                            contentResolver.openInputStream(source)?.use { input ->
-                                destination.outputStream().buffered().use { output ->
-                                    input.copyTo(output, 64 * 1024)
-                                    output.flush()
+                            val parent = destination.parentFile
+                                ?: throw IllegalArgumentException("Destination folder is invalid.")
+                            if (!parent.exists() && !parent.mkdirs()) {
+                                throw IllegalStateException("Could not create the destination folder.")
+                            }
+                            if (destination.exists()) {
+                                throw IllegalStateException("The destination file already exists.")
+                            }
+                            val temporary = java.io.File(parent, ".docsgrid-copy-${java.util.UUID.randomUUID()}.tmp")
+                            try {
+                                contentResolver.openInputStream(source)?.use { input ->
+                                    temporary.outputStream().buffered().use { output ->
+                                        input.copyTo(output, 64 * 1024)
+                                        output.flush()
+                                    }
+                                } ?: throw IllegalStateException("Could not read the source PDF.")
+                                if (destination.exists() || !temporary.renameTo(destination)) {
+                                    throw IllegalStateException("Could not safely publish the copied PDF.")
                                 }
-                            } ?: throw IllegalStateException("Could not read the source PDF.")
+                            } finally {
+                                if (temporary.exists()) temporary.delete()
+                            }
                             result.success(true)
                         }
                         "sha256Pdf" -> {
