@@ -124,6 +124,13 @@ void main() {
     await expectLater(DocumentToolsService().validateBackup(file), throwsStateError);
   });
 
+  test('rejects document names that could escape the library directory', () async {
+    final file = await writeArchive(documents: const [
+      {'id': 'doc-1', 'name': '../../outside'},
+    ]);
+    await expectLater(DocumentToolsService().validateBackup(file), throwsStateError);
+  });
+
   test('rejects missing parents and cyclic folder graphs', () async {
     final missingParent = await writeArchive(folders: const [
       {'id': 'folder-1', 'name': 'Folder', 'parent_id': 'missing'},
