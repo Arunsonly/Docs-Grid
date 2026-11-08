@@ -141,6 +141,14 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
     }
   });
 
+  Future<void> _verifyRecoverySnapshot() => _run(() async {
+    final name = await _tools.verifyLatestPortableMetadataSnapshot();
+    if (!mounted) return;
+    setState(() => _message = name == null
+      ? 'No portable recovery snapshot found. Create one first.'
+      : 'Recovery snapshot verified successfully: $name');
+  });
+
   Future<void> _verifyBackup() => _run(() async {
     final picked = await FilePicker.pickFiles(type: FileType.custom, allowedExtensions: ['zip']);
     if (picked.isEmpty || picked.single.path == null) return;
@@ -301,6 +309,12 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
           subtitle: const Text('Saves tags, reminders, folders, settings and metadata beside your library.'),
           trailing: const Icon(Icons.chevron_right),
           onTap: _busy ? null : _createRecoverySnapshot),
+        const Divider(height: 1),
+        ListTile(leading: const Icon(Icons.verified_user_outlined),
+          title: const Text('Verify latest recovery snapshot'),
+          subtitle: const Text('Checks metadata files, hashes and record counts.'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: _busy ? null : _verifyRecoverySnapshot),
         const Divider(height: 1),
         ListTile(leading: const Icon(Icons.backup_outlined),
           title: const Text('Create offline backup'),
