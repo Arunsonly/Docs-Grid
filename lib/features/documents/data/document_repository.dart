@@ -10,6 +10,7 @@ import 'package:uuid/uuid.dart';
 
 import '../../../core/database/app_database.dart';
 import '../../../core/storage/storage_location_service.dart';
+import '../../../core/storage/pdf_copy_verifier.dart';
 import '../../folders/data/folder_repository.dart';
 
 class DocumentRecord {
@@ -204,21 +205,11 @@ class DocumentRepository {
         parentUri: destinationUri,
         name: '${document.name}.pdf',
       );
-      try {
-        final copiedDigest = await storage.sha256Pdf(newStorageUri);
-        if (copiedDigest != sourceDigest) {
-          throw StateError('PDF verification failed; original file was kept.');
-        }
-      } catch (_) {
-        // The destination is disposable until its checksum is verified.
-        // Never touch the original source on this failure path.
-        try {
-          await storage.deletePdf(newStorageUri);
-        } catch (_) {
-          // Retain the source and surface the verification error.
-        }
-        rethrow;
-      }
+      await PdfCopyVerifier.verifyOrDeleteOnFailure(
+        expectedSha256: sourceDigest,
+        readDestinationSha256: () => storage.sha256Pdf(newStorageUri),
+        deleteDestination: () => storage.deletePdf(newStorageUri),
+      );
       copiedToNewLocation = newStorageUri != sourceUri;
     } else {
       // With no external folder selected, preserve the same folder hierarchy
