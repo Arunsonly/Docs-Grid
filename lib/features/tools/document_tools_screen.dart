@@ -249,8 +249,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
     var skipped = 0;
     var alreadyIndexed = 0;
     for (final row in rows) {
-      if (row['extracted_text_status'] == 'indexed' ||
-          row['extracted_text_status'] == 'empty') {
+      if (row['extracted_text_status'] == 'indexed') {
         alreadyIndexed++;
         continue;
       }
