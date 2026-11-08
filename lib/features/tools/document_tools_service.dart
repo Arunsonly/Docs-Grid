@@ -658,6 +658,61 @@ class DocumentToolsService {
             throw StateError('Recovery snapshot references a missing folder.');
           }
         }
+        Set<String> uniqueSnapshotIds(String table) {
+          final ids = <String>{};
+          for (final row in rowsByTable[table] ?? const <Map<String, Object?>>[]) {
+            final id = row['id'];
+            if (id is! String || id.trim().isEmpty || !ids.add(id)) {
+              throw StateError('Snapshot contains an invalid or duplicate $table ID.');
+            }
+          }
+          return ids;
+        }
+
+        final categoryIds = uniqueSnapshotIds('categories');
+        final tagIds = uniqueSnapshotIds('tags');
+        uniqueSnapshotIds('reminders');
+        uniqueSnapshotIds('history');
+        for (final row in documentRows) {
+          final categoryId = row['category_id'];
+          if (categoryId != null &&
+              (categoryId is! String || !categoryIds.contains(categoryId))) {
+            throw StateError('Snapshot document references a missing category.');
+          }
+        }
+        final tagLinks = <String>{};
+        for (final row in rowsByTable['document_tags'] ?? const <Map<String, Object?>>[]) {
+          final documentId = row['document_id'];
+          final tagId = row['tag_id'];
+          if (documentId is! String || !documentIds.contains(documentId) ||
+              tagId is! String || !tagIds.contains(tagId) ||
+              !tagLinks.add(jsonEncode([documentId, tagId]))) {
+            throw StateError('Snapshot contains an invalid or duplicate document-tag link.');
+          }
+        }
+        for (final table in ['reminders', 'history']) {
+          for (final row in rowsByTable[table] ?? const <Map<String, Object?>>[]) {
+            final documentId = row['document_id'];
+            if (documentId != null &&
+                (documentId is! String || !documentIds.contains(documentId))) {
+              throw StateError('Snapshot $table record references a missing document.');
+            }
+          }
+        }
+        for (final row in rowsByTable['document_text_index'] ?? const <Map<String, Object?>>[]) {
+          if (row['document_id'] is! String ||
+              !documentIds.contains(row['document_id'])) {
+            throw StateError('Snapshot text index references a missing document.');
+          }
+        }
+        final settingKeys = <String>{};
+        for (final row in rowsByTable['settings'] ?? const <Map<String, Object?>>[]) {
+          final key = row['key'];
+          if (key is! String || key.isEmpty || !settingKeys.add(key)) {
+            throw StateError('Snapshot contains an invalid or duplicate setting key.');
+          }
+        }
+
         return {
           'name': snapshot['name'] as String,
           'uri': snapshotUri,
