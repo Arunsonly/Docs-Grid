@@ -356,8 +356,8 @@ class DocumentToolsService {
   /// Additively restores a verified archive. Existing document/folder IDs are
   /// never overwritten; any collision aborts the database transaction.
   Future<int> restoreBackup(File zipFile) async {
-    await validateBackup(zipFile);
-    final decoded = ZipDecoder().decodeBytes(await zipFile.readAsBytes());
+    // Decode and verify once; large backups can contain many multi-megabyte PDFs.
+    final decoded = await _decodeValidatedBackup(zipFile);
     final manifestFile = decoded.findFile('manifest.json')!;
     final manifest = jsonDecode(utf8.decode(manifestFile.content as List<int>)) as Map<String, dynamic>;
     final tableNames = ['folders', 'documents', 'categories', 'tags',
@@ -963,6 +963,13 @@ class DocumentToolsService {
   }
 
   Future<int> validateBackup(File zipFile) async {
+    final decoded = await _decodeValidatedBackup(zipFile);
+    final manifestFile = decoded.findFile('manifest.json')!;
+    final manifest = jsonDecode(utf8.decode(manifestFile.content as List<int>)) as Map<String, dynamic>;
+    return (manifest['files'] as List<dynamic>).length;
+  }
+
+  Future<Archive> _decodeValidatedBackup(File zipFile) async {
     if (!await zipFile.exists()) throw StateError('Backup file not found.');
     final decoded = ZipDecoder().decodeBytes(await zipFile.readAsBytes());
     final manifestFile = decoded.findFile('manifest.json');
@@ -1020,6 +1027,6 @@ class DocumentToolsService {
         !seenDocuments.containsAll(documentIds)) {
       throw StateError('Backup is incomplete: every document must have exactly one PDF entry.');
     }
-    return rawFiles.length;
+    return decoded;
   }
 }
