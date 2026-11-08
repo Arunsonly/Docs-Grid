@@ -1075,11 +1075,7 @@ class DocumentToolsService {
 
   Future<Archive> _decodeValidatedBackup(File zipFile) async {
     if (!await zipFile.exists()) throw StateError('Backup file not found.');
-    final decoded = ZipDecoder().decodeBytes(
-      await zipFile.readAsBytes(),
-      verify: true,
-      throwOnError: true,
-    );
+    final decoded = ZipDecoder().decodeBytes(await zipFile.readAsBytes());
     final manifestFile = decoded.findFile('manifest.json');
     if (manifestFile == null) throw StateError('This is not a DocsGrid backup.');
     final manifest = jsonDecode(utf8.decode(manifestFile.content as List<int>));
