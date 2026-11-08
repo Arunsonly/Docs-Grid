@@ -74,15 +74,69 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     }
   }
 
+  Future<ImportDecision?> _reviewImport(
+    String suggestedName,
+    String? suggestedCategoryId,
+    List<ImportCategoryOption> categories,
+  ) async {
+    final nameController = TextEditingController(text: suggestedName);
+    String? selectedCategoryId = suggestedCategoryId;
+    final result = await showDialog<ImportDecision>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, refreshDialog) => AlertDialog(
+          title: const Text('Confirm document details'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                TextField(
+                  controller: nameController,
+                  autofocus: true,
+                  decoration: const InputDecoration(labelText: 'Document name', suffixText: '.pdf'),
+                ),
+                const SizedBox(height: 12),
+                DropdownButtonFormField<String?>(
+                  value: selectedCategoryId,
+                  isExpanded: true,
+                  decoration: const InputDecoration(labelText: 'Suggested category'),
+                  items: [
+                    const DropdownMenuItem<String?>(value: null, child: Text('No category')),
+                    for (final category in categories)
+                      DropdownMenuItem<String?>(value: category.id, child: Text(category.name)),
+                  ],
+                  onChanged: (value) => refreshDialog(() => selectedCategoryId = value),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Skip')),
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, ImportDecision(
+                name: nameController.text,
+                categoryId: selectedCategoryId,
+              )),
+              child: const Text('Import PDF'),
+            ),
+          ],
+        ),
+      ),
+    );
+    nameController.dispose();
+    return result;
+  }
+
   Future<void> _import() async {
     setState(() => _importing = true);
     try {
-      final result = await _repository.importPdfs();
+      final result = await _repository.importPdfs(review: _reviewImport);
       await _load();
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(
-          'Added ${result.added} · Duplicates ${result.duplicates} · Failed ${result.failed}',
+          'Added ${result.added} · Duplicates ${result.duplicates} · Skipped ${result.skipped} · Failed ${result.failed}',
         )),
       );
     } catch (error) {
