@@ -12,7 +12,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   android:
@@ -160,13 +160,6 @@ jobs:
           cp platform/android/MainActivity.kt android/app/src/main/kotlin/com/docsgrid/docs_grid/MainActivity.kt
       - name: Install packages
         run: flutter pub get
-      - name: Upload resolved dependency lockfile
-        uses: actions/upload-artifact@v4
-        with:
-          name: docsgrid-pubspec-lock
-          path: pubspec.lock
-          if-no-files-found: error
-          retention-days: 1
       - name: Generate DocsGrid launcher icons
         run: |
           sudo apt-get update
@@ -187,6 +180,18 @@ jobs:
           path: build/app/outputs/flutter-apk/app-debug.apk
           if-no-files-found: error
           retention-days: 14
+      - name: Commit resolved dependency lockfile
+        if: github.event_name == 'push' && github.ref == 'refs/heads/audit/10-core-functions'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add pubspec.lock
+          if git diff --cached --quiet; then
+            echo "pubspec.lock is already up to date"
+          else
+            git commit -m "chore: lock Flutter dependencies"
+            git push origin HEAD:refs/heads/audit/10-core-functions
+          fi
 
   ios:
     name: iOS analyze, test and unsigned build
