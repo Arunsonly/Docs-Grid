@@ -480,8 +480,13 @@ class MainActivity : FlutterActivity() {
             return
         }
         val uri = data.data!!
-        val flags = data.flags and
-            (Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+        val requiredFlags = Intent.FLAG_GRANT_READ_URI_PERMISSION or
+            Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+        val flags = data.flags and requiredFlags
+        if (flags != requiredFlags) {
+            callback?.error("PERMISSION", "The selected folder did not grant both read and write access.", null)
+            return
+        }
         try {
             contentResolver.takePersistableUriPermission(uri, flags)
         } catch (_: SecurityException) {
