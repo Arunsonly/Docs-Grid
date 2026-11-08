@@ -8,7 +8,7 @@ void main() {
     expect(find.text('DocsGrid · My Documents'), findsOneWidget);
     expect(find.text('Files'), findsOneWidget);
     expect(find.text('Folders'), findsWidgets);
-    expect(find.text('Saved'), findsOneWidget);
+    expect(find.text('Star'), findsOneWidget);
     expect(find.text('Settings'), findsOneWidget);
   });
 
