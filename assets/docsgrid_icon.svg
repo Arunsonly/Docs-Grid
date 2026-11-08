@@ -1,20 +1,12 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
-<defs><linearGradient id="bg" x1="0" y1="1" x2="1" y2="0"><stop offset="0" stop-color="#102a9b"/><stop offset=".48" stop-color="#0874cf"/><stop offset="1" stop-color="#08d5df"/></linearGradient></defs>
-<rect width="1024" height="1024" rx="190" fill="url(#bg)"/>
-<g fill="#fff">
-<rect x="205" y="226" width="184" height="184" rx="38"/><rect x="420" y="226" width="184" height="184" rx="38"/><rect x="635" y="226" width="184" height="184" rx="38"/>
-<rect x="205" y="420" width="184" height="184" rx="38"/><rect x="420" y="420" width="184" height="184" rx="38"/><rect x="635" y="420" width="184" height="184" rx="38"/>
-<rect x="205" y="614" width="184" height="184" rx="38"/><rect x="420" y="614" width="184" height="184" rx="38"/><rect x="635" y="614" width="184" height="184" rx="38"/>
-</g>
-<g fill="none" stroke="#073d80" stroke-width="18" stroke-linecap="round">
-<path d="M250 285h94 M250 325h112 M250 365h72 M680 285h94 M680 325h112 M680 365h72"/>
-<path d="M250 479h112 M250 519h112 M250 559h72"/>
-<path d="M680 479h112 M680 519h112 M680 559h72"/>
-<path d="M250 673h112 M250 713h112 M250 753h72"/>
-</g>
-<path d="M478 267h65l42 42v85H478z" fill="#0874cf"/>
-<path d="M478 267v42h42" fill="none" stroke="#0874cf" stroke-width="13" stroke-linejoin="round"/>
-<g fill="#073d80"><rect x="458" y="534" width="32" height="44" rx="10"/><rect x="505" y="501" width="32" height="77" rx="10"/><rect x="552" y="465" width="32" height="113" rx="10"/>
-<path d="M459 690h49l17 17h67q12 0 12 12v55q0 12-12 12H459q-12 0-12-12v-72q0-12 12-12z"/>
-<circle cx="698" cy="678" r="25"/><circle cx="765" cy="693" r="22"/><path d="M655 757q3-49 43-49t43 49z M737 760q4-39 31-39t32 39z"/>
-</g></svg>
+<defs>
+  <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#123B91"/><stop offset=".55" stop-color="#087FC7"/><stop offset="1" stop-color="#08AFC0"/></linearGradient>
+  <linearGradient id="paper" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#FFFFFF"/><stop offset="1" stop-color="#DDEBFF"/></linearGradient>
+</defs>
+<rect width="1024" height="1024" rx="210" fill="url(#bg)"/>
+<path d="M260 190h360l150 150v470H260z" fill="url(#paper)" opacity=".16" stroke="#FFFFFF" stroke-width="24" stroke-linejoin="round"/>
+<path d="M620 190v150h150" fill="none" stroke="#FFFFFF" stroke-width="24" stroke-linejoin="round"/>
+<text x="512" y="605" text-anchor="middle" font-family="DejaVu Sans, Arial, sans-serif" font-size="300" font-weight="900" letter-spacing="-22" fill="#FFFFFF">D&amp;G</text>
+<path d="M300 710h424" stroke="#FFFFFF" stroke-width="22" stroke-linecap="round" opacity=".9"/>
+<text x="512" y="790" text-anchor="middle" font-family="DejaVu Sans, Arial, sans-serif" font-size="72" font-weight="700" letter-spacing="14" fill="#FFFFFF">DOCSGRID</text>
+</svg>
