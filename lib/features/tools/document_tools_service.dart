@@ -4,7 +4,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 
 import 'package:archive/archive.dart';
-import 'package:archive/archive_io.dart' show ZipFileEncoder;
+import 'package:archive/archive_io.dart' show InputFileStream, OutputFileStream, ZipFileEncoder;
 import 'package:crypto/crypto.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import 'package:image_picker/image_picker.dart';
@@ -441,26 +441,20 @@ class DocumentToolsService {
 
   /// Additively restores a verified archive. Existing document/folder IDs are
   /// never overwritten; any collision aborts the database transaction.
+  /// Additively restores a verified archive. Existing document/folder IDs are
+  /// never overwritten; any collision aborts the database transaction.
   Future<int> restoreBackup(File zipFile) async {
-    // Decode and verify once; large backups can contain many multi-megabyte PDFs.
-    final decoded = await _decodeValidatedBackup(zipFile);
-    final manifestFile = decoded.findFile('manifest.json')!;
-    final manifest = jsonDecode(utf8.decode(manifestFile.content as List<int>)) as Map<String, dynamic>;
-    final tableNames = ['folders', 'documents', 'categories', 'tags',
-      'document_tags', 'reminders', 'history', 'settings', 'document_text_index'];
-    final rowsByTable = <String, List<Map<String, Object?>>>{};
-    for (final table in tableNames) {
-      final entry = decoded.findFile('$table.json');
-      // Older v1 backups predate OCR indexing; keep them restorable.
-      if (entry == null && table == 'document_text_index') {
-        rowsByTable[table] = <Map<String, Object?>>[];
-        continue;
-      }
-      if (entry == null) throw StateError('Backup is incomplete: missing $table metadata.');
-      final rows = jsonDecode(utf8.decode(entry.content as List<int>)) as List<dynamic>;
-      rowsByTable[table] = rows.map((e) => Map<String, Object?>.from(e as Map)).toList();
+    final backup = await _decodeValidatedBackup(zipFile);
+    try {
+      return await _restoreValidatedBackup(backup);
+    } finally {
+      await backup.dispose();
     }
+  }
 
+  Future<int> _restoreValidatedBackup(_ValidatedBackup backup) async {
+    final manifest = backup.manifest;
+    final rowsByTable = backup.rowsByTable;
     final folderRows = rowsByTable['folders']!;
     // A ZIP is untrusted input. Validate parent links before creating any
     // directories, and never use imported IDs as filesystem path segments.
@@ -515,11 +509,14 @@ class DocumentToolsService {
         // Use a fresh local filename; imported document IDs are database keys,
         // not trusted path components.
         final destination = File(p.join(destinationDir.path, '${_uuid.v4()}_$safeName'));
-        final entry = decoded.findFile(item['entry'] as String)!;
-        final bytes = entry.content as List<int>;
-        final digest = sha256.convert(bytes).toString();
-        if (digest != item['sha256']) throw StateError('PDF integrity check failed during restore.');
-        await destination.writeAsBytes(bytes, flush: true);
+        final stagedPath = backup.stagedPdfPaths[id];
+        if (stagedPath == null) throw StateError('Backup is missing staged PDF bytes.');
+        await File(stagedPath).copy(destination.path);
+        final digest = (await sha256.bind(destination.openRead()).first).toString();
+        if (digest != item['sha256']) {
+          await destination.delete();
+          throw StateError('PDF integrity check failed during restore.');
+        }
         restoredPaths[id] = destination.path;
       }
 
@@ -1068,70 +1065,123 @@ class DocumentToolsService {
   }
 
   Future<int> validateBackup(File zipFile) async {
-    final decoded = await _decodeValidatedBackup(zipFile);
-    final manifestFile = decoded.findFile('manifest.json')!;
-    final manifest = jsonDecode(utf8.decode(manifestFile.content as List<int>)) as Map<String, dynamic>;
-    return (manifest['files'] as List<dynamic>).length;
+    final backup = await _decodeValidatedBackup(zipFile);
+    try {
+      return (backup.manifest['files'] as List<dynamic>).length;
+    } finally {
+      await backup.dispose();
+    }
   }
 
-  Future<Archive> _decodeValidatedBackup(File zipFile) async {
+  Future<_ValidatedBackup> _decodeValidatedBackup(File zipFile) async {
     if (!await zipFile.exists()) throw StateError('Backup file not found.');
-    final decoded = ZipDecoder().decodeBytes(await zipFile.readAsBytes());
-    final manifestFile = decoded.findFile('manifest.json');
-    if (manifestFile == null) throw StateError('This is not a DocsGrid backup.');
-    final manifest = jsonDecode(utf8.decode(manifestFile.content as List<int>));
-    if (manifest is! Map<String, dynamic> ||
-        manifest['format'] != 'DocsGridBackup' || manifest['version'] != 1) {
-      throw StateError('Unsupported backup format or version.');
-    }
+    final input = InputFileStream(zipFile.path);
+    Directory? staging;
+    try {
+      final decoded = ZipDecoder().decodeStream(input);
+      final manifestFile = decoded.findFile('manifest.json');
+      if (manifestFile == null) throw StateError('This is not a DocsGrid backup.');
+      final manifestValue = jsonDecode(utf8.decode(manifestFile.content as List<int>));
+      if (manifestValue is! Map<String, dynamic> ||
+          manifestValue['format'] != 'DocsGridBackup' ||
+          manifestValue['version'] != 1) {
+        throw StateError('Unsupported backup format or version.');
+      }
+      final manifest = manifestValue;
+      final documentsFile = decoded.findFile('documents.json');
+      if (documentsFile == null) {
+        throw StateError('Backup is incomplete: missing documents metadata.');
+      }
+      final rawDocuments = jsonDecode(utf8.decode(documentsFile.content as List<int>));
+      if (rawDocuments is! List) throw StateError('Backup document metadata is invalid.');
+      final documentIds = <String>{};
+      for (final raw in rawDocuments) {
+        if (raw is! Map || raw['id'] is! String ||
+            (raw['id'] as String).trim().isEmpty ||
+            !documentIds.add(raw['id'] as String)) {
+          throw StateError('Backup contains an invalid or duplicate document ID.');
+        }
+      }
 
-    final documentsFile = decoded.findFile('documents.json');
-    if (documentsFile == null) throw StateError('Backup is incomplete: missing documents metadata.');
-    final rawDocuments = jsonDecode(utf8.decode(documentsFile.content as List<int>));
-    if (rawDocuments is! List) throw StateError('Backup document metadata is invalid.');
-    final documentIds = <String>{};
-    for (final raw in rawDocuments) {
-      if (raw is! Map || raw['id'] is! String ||
-          (raw['id'] as String).trim().isEmpty ||
-          !documentIds.add(raw['id'] as String)) {
-        throw StateError('Backup contains an invalid or duplicate document ID.');
+      final rawFiles = manifest['files'];
+      if (rawFiles is! List) throw StateError('Backup file manifest is invalid.');
+      staging = await (await getTemporaryDirectory()).createTemp('docsgrid_restore_');
+      final stagedPdfPaths = <String, String>{};
+      final seenDocuments = <String>{};
+      final seenEntries = <String>{};
+      for (final raw in rawFiles) {
+        if (raw is! Map ||
+            raw['documentId'] is! String ||
+            raw['entry'] is! String ||
+            raw['sha256'] is! String ||
+            !RegExp(r'^[a-fA-F0-9]{64}$').hasMatch(raw['sha256'] as String) ||
+            (raw['originalName'] != null && raw['originalName'] is! String)) {
+          throw StateError('Backup contains an invalid PDF manifest record.');
+        }
+        final documentId = raw['documentId'] as String;
+        final entryName = raw['entry'] as String;
+        if (!documentIds.contains(documentId) ||
+            !seenDocuments.add(documentId) ||
+            !seenEntries.add(entryName) ||
+            !entryName.startsWith('pdfs/') ||
+            entryName.contains('\\') ||
+            entryName.split('/').any((part) => part.isEmpty || part == '.' || part == '..')) {
+          throw StateError('Backup contains an unsafe or duplicate PDF entry.');
+        }
+        final entry = decoded.findFile(entryName);
+        if (entry == null) throw StateError('Backup is incomplete: missing PDF entry.');
+        final stagedFile = File(p.join(staging.path, '${_uuid.v4()}.pdf'));
+        final output = OutputFileStream(stagedFile.path);
+        try {
+          entry.writeContent(output);
+        } finally {
+          output.closeSync();
+        }
+        final digest = (await sha256.bind(stagedFile.openRead()).first).toString();
+        if (digest != (raw['sha256'] as String).toLowerCase()) {
+          throw StateError('Backup integrity check failed.');
+        }
+        stagedPdfPaths[documentId] = stagedFile.path;
       }
+      if (seenDocuments.length != documentIds.length ||
+          !seenDocuments.containsAll(documentIds)) {
+        throw StateError('Backup is incomplete: every document must have exactly one PDF entry.');
+      }
+      input.closeSync();
+      return _ValidatedBackup(
+        manifest: manifest,
+        rowsByTable: <String, List<Map<String, Object?>>>{},
+        stagedPdfPaths: stagedPdfPaths,
+        stagingDirectory: staging,
+      );
+    } catch (_) {
+      try { input.closeSync(); } catch (_) {}
+      if (staging != null) {
+        try { if (await staging.exists()) await staging.delete(recursive: true); } catch (_) {}
+      }
+      rethrow;
     }
-
-    final rawFiles = manifest['files'];
-    if (rawFiles is! List) throw StateError('Backup file manifest is invalid.');
-    final seenDocuments = <String>{};
-    final seenEntries = <String>{};
-    for (final raw in rawFiles) {
-      if (raw is! Map ||
-          raw['documentId'] is! String ||
-          raw['entry'] is! String ||
-          raw['sha256'] is! String ||
-          !RegExp(r'^[a-fA-F0-9]{64}$').hasMatch(raw['sha256'] as String) ||
-          (raw['originalName'] != null && raw['originalName'] is! String)) {
-        throw StateError('Backup contains an invalid PDF manifest record.');
-      }
-      final documentId = raw['documentId'] as String;
-      final entryName = raw['entry'] as String;
-      if (!documentIds.contains(documentId) ||
-          !seenDocuments.add(documentId) ||
-          !seenEntries.add(entryName) ||
-          !entryName.startsWith('pdfs/') ||
-          entryName.contains('\\') ||
-          entryName.split('/').any((part) => part.isEmpty || part == '.' || part == '..')) {
-        throw StateError('Backup contains an unsafe or duplicate PDF entry.');
-      }
-      final entry = decoded.findFile(entryName);
-      if (entry == null) throw StateError('Backup is incomplete: missing PDF entry.');
-      final digest = sha256.convert(entry.content as List<int>).toString();
-      if (digest != (raw['sha256'] as String).toLowerCase()) {
-        throw StateError('Backup integrity check failed.');
-      }
-    }
-    if (seenDocuments.length != documentIds.length ||
-        !seenDocuments.containsAll(documentIds)) {
-      throw StateError('Backup is incomplete: every document must have exactly one PDF entry.');
-    }
-    return decoded;
   }
+class _ValidatedBackup {
+  const _ValidatedBackup({
+    required this.manifest,
+    required this.rowsByTable,
+    required this.stagedPdfPaths,
+    required this.stagingDirectory,
+  });
+
+  final Map<String, dynamic> manifest;
+  final Map<String, List<Map<String, Object?>>> rowsByTable;
+  final Map<String, String> stagedPdfPaths;
+  final Directory stagingDirectory;
+
+  Future<void> dispose() async {
+    try {
+      if (await stagingDirectory.exists()) {
+        await stagingDirectory.delete(recursive: true);
+      }
+    } catch (_) {}
+  }
+}
+
 }
