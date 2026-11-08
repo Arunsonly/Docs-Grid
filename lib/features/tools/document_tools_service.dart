@@ -436,6 +436,9 @@ class DocumentToolsService {
       onProgress?.call(completed, docs.length);
     }
     final manifestBytes = utf8.encode(jsonEncode(manifest));
+    if (expandedBytes + manifestBytes.length > BackupArchiveLimits.maxExpandedBytes) {
+      throw StateError('Backup manifest exceeds the supported total size limit.');
+    }
     archive.addFile(ArchiveFile('manifest.json', manifestBytes.length, manifestBytes));
     final zipped = ZipEncoder().encode(archive);
     if (zipped.length > BackupArchiveLimits.maxArchiveBytes) {
