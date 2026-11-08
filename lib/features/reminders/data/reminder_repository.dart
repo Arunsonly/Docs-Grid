@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:uuid/uuid.dart';
 
 import '../../../core/database/app_database.dart';
@@ -48,6 +49,62 @@ class ReminderRepository {
   ReminderRepository({AppDatabase? database}) : _database = database ?? AppDatabase.instance;
   final AppDatabase _database;
   static const _uuid = Uuid();
+
+  @visibleForTesting
+  static bool shouldHaveScheduledNotification({
+    required int enabled,
+    required String status,
+  }) => enabled == 1 && status == 'scheduled';
+
+  /// Reconciles SQLite reminder state with OS notifications after startup or
+  /// app resume. A DB commit can succeed while the OS scheduler is unavailable;
+  /// replaying the desired state makes those failures recoverable.
+  Future<int> reconcileNotifications() async {
+    final db = await _database.database;
+    final rows = await db.query('reminders');
+    var failures = 0;
+    for (final row in rows) {
+      final id = row['id'] as String;
+      try {
+        if (!shouldHaveScheduledNotification(
+          enabled: row['enabled'] as int,
+          status: row['status'] as String,
+        )) {
+          await ReminderNotifications.instance.cancel(id);
+          continue;
+        }
+
+        final remindAt = DateTime.parse(row['remind_at_utc'] as String).toLocal();
+        final recurrence = row['recurrence_rule'] as String?;
+        final rawSnooze = row['snoozed_until'] as String?;
+        final snoozedUntil = rawSnooze == null ? null : DateTime.parse(rawSnooze).toLocal();
+        final title = row['title'] as String;
+        final note = row['note'] as String?;
+
+        if (recurrence != null || snoozedUntil == null || !snoozedUntil.isAfter(DateTime.now())) {
+          await ReminderNotifications.instance.schedule(
+            id: id,
+            title: title,
+            body: note,
+            at: remindAt,
+            recurrence: recurrence,
+          );
+        }
+        if (snoozedUntil != null && snoozedUntil.isAfter(DateTime.now())) {
+          await ReminderNotifications.instance.scheduleSnooze(
+            id: id,
+            title: title,
+            body: note,
+            at: snoozedUntil,
+          );
+        }
+      } catch (_) {
+        // Keep the persisted reminder. A later resume will retry reconciliation.
+        failures++;
+      }
+    }
+    return failures;
+  }
 
   Future<List<ReminderRecord>> list() async {
     final db = await _database.database;
