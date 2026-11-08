@@ -70,6 +70,28 @@ jobs:
           gradle.write_text(s)
           print(f'Configured app compileSdk 36 in {gradle}')
           PY
+      - name: Bundle Android Devanagari OCR model
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          candidates = [Path('android/app/build.gradle.kts'), Path('android/app/build.gradle')]
+          gradle = next((p for p in candidates if p.exists()), None)
+          if gradle is None:
+              raise SystemExit('Flutter did not generate android/app/build.gradle(.kts)')
+          s = gradle.read_text()
+          if gradle.suffix == '.kts':
+              dependency = 'implementation("com.google.mlkit:text-recognition-devanagari:16.0.1")'
+          else:
+              dependency = "implementation 'com.google.mlkit:text-recognition-devanagari:16.0.1'"
+          if dependency not in s:
+              match = re.search(r'dependencies\\s*\\{', s)
+              if not match:
+                  raise SystemExit('Could not locate Android dependencies block')
+              s = s[:match.end()] + '\\n    ' + dependency + s[match.end():]
+          gradle.write_text(s)
+          print(f'Bundled Devanagari OCR model in {gradle}')
+          PY
       - name: Enable Android core library desugaring for scheduled notifications
         run: |
           python3 - <<'PY'
