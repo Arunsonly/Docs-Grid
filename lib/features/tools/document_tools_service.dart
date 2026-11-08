@@ -711,6 +711,7 @@ class DocumentToolsService {
     final existingHistory = await db.query('history');
     final folderIdMap = <String, String>{};
     final folderUriMap = <String, String>{};
+    final createdFolderUris = <String>[];
     final matchedFolderIds = <String>{};
     Future<String> ensureFolder(String oldId, Set<String> visiting) async {
       final known = folderUriMap[oldId];
@@ -727,9 +728,11 @@ class DocumentToolsService {
       final siblings = await storage.listDirectory(parentUri);
       final existing = siblings.where((entry) =>
           entry['isDirectory'] == true && entry['name'] == rawName);
-      final uri = existing.isNotEmpty
+      final alreadyExists = existing.isNotEmpty;
+      final uri = alreadyExists
           ? existing.first['uri'] as String
           : await storage.createDirectory(parentUri: parentUri, name: rawName);
+      if (!alreadyExists) createdFolderUris.add(uri);
       folderUriMap[oldId] = uri;
       final mappedParentId = parentId == null ? null : folderIdMap[parentId];
       final matchingFolder = existingFolders.where((candidate) =>
@@ -747,14 +750,30 @@ class DocumentToolsService {
       visiting.remove(oldId);
       return uri;
     }
-    for (final row in folderRows) {
-      await ensureFolder(row['id'] as String, <String>{});
+    final reminderIdMap = <String, String>{};
+    var addedDocuments = 0;
+    var linkedDocuments = 0;
+    var missingPdfs = 0;
+    Future<void> rollbackCreatedFolders() async {
+      for (final uri in createdFolderUris.reversed) {
+        try {
+          // Never remove a folder that acquired user content during restore.
+          if ((await storage.listDirectory(uri)).isEmpty) {
+            await storage.deletePdf(uri);
+          }
+        } catch (_) {
+          // Keep any uncertain provider data rather than risking user files.
+        }
+      }
     }
+    try {
+      for (final row in folderRows) {
+        await ensureFolder(row['id'] as String, <String>{});
+      }
 
     final categoryIdMap = <String, String>{};
     final tagIdMap = <String, String>{};
     final documentIdMap = <String, String>{};
-    final reminderIdMap = <String, String>{};
     final historyIdMap = <String, String>{};
     for (final row in rowsByTable['categories']!) {
       final oldId = row['id'] as String;
@@ -811,9 +830,6 @@ class DocumentToolsService {
           : (existingHistory.any((v) => v['id'] == oldId) ? _uuid.v4() : oldId);
     }
 
-    var addedDocuments = 0;
-    var linkedDocuments = 0;
-    var missingPdfs = 0;
     await db.transaction((txn) async {
       for (final row in rowsByTable['categories']!) {
         final copy = Map<String, Object?>.from(row)
@@ -919,6 +935,10 @@ class DocumentToolsService {
         await txn.insert('settings', row, conflictAlgorithm: ConflictAlgorithm.ignore);
       }
     });
+    } catch (_) {
+      await rollbackCreatedFolders();
+      rethrow;
+    }
 
     for (final row in rowsByTable['reminders']!) {
       if ((row['enabled'] as int? ?? 0) != 1 || row['status'] == 'completed') continue;
