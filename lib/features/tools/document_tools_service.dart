@@ -209,7 +209,7 @@ class DocumentToolsService {
     final db = await _database.database;
     final archive = Archive();
     final tables = ['folders', 'documents', 'categories', 'tags',
-      'document_tags', 'reminders', 'history', 'settings'];
+      'document_tags', 'reminders', 'history', 'settings', 'document_text_index'];
     final manifest = <String, Object?>{
       'format': 'DocsGridBackup',
       'version': 1,
@@ -288,7 +288,7 @@ class DocumentToolsService {
     final manifestFile = decoded.findFile('manifest.json')!;
     final manifest = jsonDecode(utf8.decode(manifestFile.content as List<int>)) as Map<String, dynamic>;
     final tableNames = ['folders', 'documents', 'categories', 'tags',
-      'document_tags', 'reminders', 'history', 'settings'];
+      'document_tags', 'reminders', 'history', 'settings', 'document_text_index'];
     final rowsByTable = <String, List<Map<String, Object?>>>{};
     for (final table in tableNames) {
       final entry = decoded.findFile('$table.json');
@@ -356,10 +356,15 @@ class DocumentToolsService {
           copy['storage_uri'] = restored;
           await txn.insert('documents', copy);
         }
-        for (final table in ['document_tags', 'reminders', 'history', 'settings']) {
+        for (final table in ['document_tags', 'reminders', 'history', 'document_text_index']) {
           for (final row in rowsByTable[table]!) {
             await txn.insert(table, row);
           }
+        }
+        // Preferences are additive: never overwrite settings already configured
+        // on this device when importing a backup from another installation.
+        for (final row in rowsByTable['settings']!) {
+          await txn.insert('settings', row, conflictAlgorithm: ConflictAlgorithm.ignore);
         }
       });
       databaseCommitted = true;
