@@ -14,14 +14,19 @@ import java.io.FileNotFoundException
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
-import java.util.concurrent.Executors
+import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 
 class MainActivity : FlutterActivity() {
     private class ChildNotFoundException(message: String) : FileNotFoundException(message)
     private val channelName = "docsgrid/storage"
     private val requestChooseFolder = 4817
     private var pendingFolderResult: MethodChannel.Result? = null
-    private val storageExecutor = Executors.newSingleThreadExecutor()
+    private val storageExecutor = ThreadPoolExecutor(
+        1, 1, 0L, TimeUnit.MILLISECONDS, ArrayBlockingQueue(64)
+    )
     private val mainHandler = Handler(Looper.getMainLooper())
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -162,8 +167,15 @@ class MainActivity : FlutterActivity() {
                     response.error("STORAGE_ERROR", error.message ?: "Storage operation failed.", null)
                 }
                 }
-                if (call.method == "chooseFolder" || call.method == "openPdf") operation.run()
-                else storageExecutor.execute(operation)
+                if (call.method == "chooseFolder" || call.method == "openPdf") {
+                    operation.run()
+                } else {
+                    try {
+                        storageExecutor.execute(operation)
+                    } catch (_: RejectedExecutionException) {
+                        response.error("BUSY", "Storage is busy. Try again shortly.", null)
+                    }
+                }
             }
     }
 
