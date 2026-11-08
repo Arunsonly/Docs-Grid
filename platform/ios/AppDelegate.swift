@@ -180,7 +180,7 @@ import CryptoKit
 
     private func stringArgAllowEmpty(_ args: [String: Any], _ key: String) throws -> String {
         guard let value = args[key] as? String else {
-            throw storageError("Missing required value: \\(key)")
+            throw storageError("Missing required value: \(key)")
         }
         return value
     }
