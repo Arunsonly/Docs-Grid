@@ -27,7 +27,7 @@ class PortableSnapshotRowsValidator {
       }
     }
 
-    void requiredInt(String table, String field, {int? min}) {
+    void optionalInt(String table, String field, {int? min}) {\n      for (final row in tables[table] ?? const <Map<String, Object?>>[]) {\n        final value = row[field];\n        if (value != null && (value is! int || (min != null && value < min))) {\n          throw FormatException('Snapshot contains an invalid $table.$field value.');\n        }\n      }\n    }\n\n    void requiredInt(String table, String field, {int? min}) {
       for (final row in tables[table] ?? const <Map<String, Object?>>[]) {
         final value = row[field];
         if (value is! int || (min != null && value < min)) {
@@ -108,7 +108,7 @@ class PortableSnapshotRowsValidator {
     optionalString('reminders', 'note');
     optionalString('reminders', 'recurrence_rule');
     optionalString('reminders', 'recurrence_end_at');
-    optionalString('reminders', 'lead_days');
+    optionalInt('reminders', 'lead_days');\n    optionalInt('reminders', 'notification_id');\n    requiredInt('categories', 'is_builtin', min: 0);
     optionalString('reminders', 'snoozed_until');
     optionalString('reminders', 'completed_at');
     optionalString('history', 'details_json');
