@@ -54,6 +54,19 @@ class ReminderRepository {
     return rows.map(ReminderRecord.fromMap).toList();
   }
 
+  /// Rebuilds pending OS notifications from the durable reminder records.
+  /// Safe to call at startup and whenever the app returns to the foreground.
+  Future<void> rescheduleEnabled() async {
+    final db = await _database.database;
+    final rows = await db.query(
+      'reminders',
+      where: 'enabled = 1 AND status NOT IN (?, ?)',
+      whereArgs: ['completed', 'cancelled'],
+      orderBy: 'remind_at_utc ASC',
+    );
+    await ReminderNotifications.instance.reconcile(rows);
+  }
+
   Future<void> create({
     required String title,
     String? note,
