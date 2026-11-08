@@ -1047,7 +1047,7 @@ class DocumentToolsService {
       if (!entry.isFile ||
           name.isEmpty ||
           name.startsWith('/') ||
-          name.contains(r'\\') ||
+          name.contains(String.fromCharCode(92)) ||
           name.codeUnits.any((unit) => unit < 32 || unit == 127) ||
           segments.any((segment) => segment == '.' || segment == '..') ||
           !archiveNames.add(name)) {
@@ -1110,7 +1110,7 @@ class DocumentToolsService {
           foldersById.containsKey(id) ||
           name is! String || name.trim().isEmpty || name != name.trim() ||
           name.trim() == '.' || name.trim() == '..' ||
-          name.contains('/') || name.contains(r'\\') ||
+          name.contains('/') || name.contains(String.fromCharCode(92)) ||
           name.length > 255 ||
           name.codeUnits.any((unit) => unit < 32 || unit == 127) ||
           (parentId != null &&
