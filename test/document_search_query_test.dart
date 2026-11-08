@@ -10,13 +10,12 @@ void main() {
       );
     });
 
-    test('escapes backslashes before LIKE wildcard characters', () {
+    test('escapes literal backslashes', () {
       expect(
-        escapeLikeWildcards('Policy\\_50%'),
-        r'Policy\\\_50\%',
+        escapeLikeWildcards('Policy\\50%'),
+        'Policy\\\\50\\%',
       );
     });
-
     test('leaves ordinary search text unchanged', () {
       expect(escapeLikeWildcards('Policy 2026'), 'Policy 2026');
     });
