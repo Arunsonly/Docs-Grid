@@ -69,6 +69,14 @@ Status: **Initial source-review pass recorded; remediation and verification rema
 - Required action: distinguish a genuine not-found result from provider/permission errors; fail closed for unknown failures; add fake-provider tests.
 - Status: broad catch behaviour confirmed by source inspection; provider-specific reproduction pending.
 
+### EXP-09 — Deleting a database-empty folder could remove unmanaged external files
+**Severity: High — data safety**
+
+- Evidence: folder deletion previously checked only DocsGrid database rows before calling the platform's generic delete operation. iOS used `FileManager.removeItem` for a directory, which can remove its contents; Android delegated directory deletion to the selected SAF provider.
+- Risk: files manually added through Files/another file manager, or otherwise not represented in SQLite, could be deleted with the folder.
+- **Remediation committed:** Android now checks the provider's actual directory contents before deleting a directory; iOS now enumerates the actual directory (including hidden entries) and refuses deletion unless it is empty.
+- Status: source fix committed; platform compile CI pending; physical/provider race testing remains required.
+
 ### EXP-07 — Hosted CI dependency/toolchain resolution is not fully reproducible
 **Severity: Medium — release engineering**
 
