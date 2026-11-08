@@ -7,7 +7,7 @@ import 'package:path/path.dart' as p;
 
 import '../../core/database/app_database.dart';
 import '../documents/data/document_repository.dart';
-import '../../folders/data/folder_repository.dart';
+import '../folders/data/folder_repository.dart';
 import 'document_tools_service.dart';
 import '../../core/storage/storage_location_service.dart';
 
