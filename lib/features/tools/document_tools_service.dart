@@ -430,7 +430,9 @@ class DocumentToolsService {
           final restored = restoredPaths[row['id']];
           if (restored == null) throw StateError('Backup is missing PDF bytes for "${row['name']}".');
           copy['storage_uri'] = restored;
-          copy['relative_path'] = p.relative(restored, from: restoreRoot.path);
+          // The restored staging tree is not the canonical private library
+          // root, so no library-relative path can be asserted here.
+          copy['relative_path'] = null;
           await txn.insert('documents', copy);
         }
         for (final table in ['document_tags', 'reminders', 'history', 'document_text_index']) {
