@@ -1103,6 +1103,27 @@ class DocumentToolsService {
         }
       }
 
+      final tableNames = ['folders', 'documents', 'categories', 'tags',
+        'document_tags', 'reminders', 'history', 'settings', 'document_text_index'];
+      final rowsByTable = <String, List<Map<String, Object?>>>{};
+      for (final table in tableNames) {
+        final tableFile = decoded.findFile('$table.json');
+        if (tableFile == null && table == 'document_text_index') {
+          rowsByTable[table] = <Map<String, Object?>>[];
+          continue;
+        }
+        if (tableFile == null) {
+          throw StateError('Backup is incomplete: missing $table metadata.');
+        }
+        final tableRows = jsonDecode(utf8.decode(tableFile.content as List<int>));
+        if (tableRows is! List) throw StateError('Backup contains invalid $table metadata.');
+        rowsByTable[table] = tableRows
+            .map((value) => Map<String, Object?>.from(value as Map))
+            .toList();
+      }
+      BackupFolderGraphValidator.validate(rowsByTable['folders']!);
+      PortableSnapshotRowsValidator.validate(rowsByTable);
+
       final rawFiles = manifest['files'];
       if (rawFiles is! List) throw StateError('Backup file manifest is invalid.');
       staging = await (await getTemporaryDirectory()).createTemp('docsgrid_restore_');
@@ -1150,7 +1171,7 @@ class DocumentToolsService {
       input.closeSync();
       return _ValidatedBackup(
         manifest: manifest,
-        rowsByTable: <String, List<Map<String, Object?>>>{},
+        rowsByTable: rowsByTable,
         stagedPdfPaths: stagedPdfPaths,
         stagingDirectory: staging,
       );
@@ -1162,6 +1183,8 @@ class DocumentToolsService {
       rethrow;
     }
   }
+}
+
 class _ValidatedBackup {
   const _ValidatedBackup({
     required this.manifest,
@@ -1184,4 +1207,3 @@ class _ValidatedBackup {
   }
 }
 
-}
