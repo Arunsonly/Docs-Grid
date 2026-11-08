@@ -581,6 +581,12 @@ class DocumentToolsService {
     }
 
     final db = await _database.database;
+    final existingFolders = await db.query('folders');
+    final existingCategories = await db.query('categories');
+    final existingTags = await db.query('tags');
+    final existingDocuments = await db.query('documents');
+    final existingReminders = await db.query('reminders');
+    final existingHistory = await db.query('history');
     final folderRows = rowsByTable['folders']!;
     final folderIdMap = <String, String>{};
     final folderUriMap = <String, String>{};
@@ -633,13 +639,6 @@ class DocumentToolsService {
     final documentIdMap = <String, String>{};
     final reminderIdMap = <String, String>{};
     final historyIdMap = <String, String>{};
-    final existingFolders = await db.query('folders');
-    final existingCategories = await db.query('categories');
-    final existingTags = await db.query('tags');
-    final existingDocuments = await db.query('documents');
-    final existingReminders = await db.query('reminders');
-    final existingHistory = await db.query('history');
-
     for (final row in rowsByTable['categories']!) {
       final oldId = row['id'] as String;
       final sameName = existingCategories.where((v) =>
