@@ -795,6 +795,24 @@ class DocumentRepository {
     return ImportSummary(added: added, duplicates: duplicates, failed: failed, skipped: skipped);
   }
 
+  String? _suggestCategoryId(String fileName, List<ImportCategoryOption> categories) {
+    final value = fileName.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), ' ');
+    const rules = <String, List<String>>{
+      'identity': ['aadhaar', 'aadhar', 'pan card', 'passport', 'voter', 'driving licence', 'driving license'],
+      'insurance': ['policy', 'insurance', 'claim', 'premium', 'renewal'],
+      'finance': ['bank', 'statement', 'invoice', 'receipt', 'upi', 'loan', 'tax', 'itr'],
+      'medical': ['medical', 'health', 'prescription', 'doctor', 'lab report', 'blood test'],
+      'property': ['property', 'house', 'land', 'rent', 'registry', 'sale deed'],
+      'vehicle': ['vehicle', 'car', 'bike', 'motor', 'registration', 'rc book', 'chassis'],
+      'education': ['education', 'school', 'college', 'marksheet', 'degree', 'certificate'],
+    };
+    for (final category in categories) {
+      final keywords = rules[category.name.toLowerCase()];
+      if (keywords != null && keywords.any((word) => value.contains(word))) return category.id;
+    }
+    return null;
+  }
+
   String _safePdfName(String name) {
     var cleaned = p.basename(name).replaceAll(RegExp(r'[<>:"/\\|?*]'), '_').trim();
     if (cleaned.isEmpty) cleaned = 'Document.pdf';
