@@ -250,8 +250,12 @@ class DocumentToolsService {
     } finally {
       // Provider PDFs are copied into cache because share_plus needs a local
       // path. Remove only that temporary copy after the native share sheet ends.
-      if (stagedProviderFile != null && await stagedProviderFile.exists()) {
-        await stagedProviderFile.delete();
+      if (stagedProviderFile != null) {
+        try {
+          if (await stagedProviderFile.exists()) await stagedProviderFile.delete();
+        } catch (_) {
+          // Cache cleanup must not mask the share result or affect the source PDF.
+        }
       }
     }
   }
