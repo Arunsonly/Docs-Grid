@@ -121,23 +121,12 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
 
   Future<void> _backup() => _run(() async {
     final archive = await _tools.createBackup();
-    final stamp = DateTime.now().toIso8601String().replaceAll(':', '-').split('.').first;
-    final saved = await FilePicker.saveFile(
-      dialogTitle: 'Save DocsGrid backup',
-      fileName: 'DocsGrid_Backup_$stamp.zip',
-      mimeType: 'application/zip',
-    );
-    if (saved == null) {
-      if (mounted) setState(() => _message = 'Backup export cancelled. Your documents were not changed.');
-      return;
+    // Share the on-disk ZIP directly. The platform share sheet lets the user
+    // save it to Files/Drive without loading the whole archive into RAM.
+    await _tools.shareFile(archive.path, text: 'DocsGrid backup');
+    if (mounted) {
+      setState(() => _message = 'Backup created. Use the share sheet to save a copy somewhere safe.');
     }
-    try {
-      await archive.copy(saved);
-    } catch (_) {
-      try { await File(saved).delete(); } catch (_) {}
-      rethrow;
-    }
-    if (mounted) setState(() => _message = 'Backup created successfully. Keep the ZIP file somewhere safe; choose it under Restore backup on a new installation.');
   });
 
   Future<void> _restoreBackup() => _run(() async {
