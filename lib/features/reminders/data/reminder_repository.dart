@@ -131,6 +131,15 @@ class ReminderRepository {
       'updated_at': DateTime.now().toUtc().toIso8601String(),
     }, where: 'id = ?', whereArgs: [reminder.id]);
     if (changed == 0) throw StateError('Reminder no longer exists.');
+    if (reminder.recurrenceRule != null) {
+      await ReminderNotifications.instance.schedule(
+        id: reminder.id,
+        title: reminder.title,
+        body: reminder.note,
+        at: reminder.remindAt,
+        recurrence: reminder.recurrenceRule,
+      );
+    }
     await ReminderNotifications.instance.scheduleSnooze(
       id: reminder.id, title: reminder.title, body: reminder.note, at: when,
     );
