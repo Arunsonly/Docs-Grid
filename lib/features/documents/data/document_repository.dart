@@ -914,7 +914,12 @@ class DocumentRepository {
         AND (r.document_id IS NULL OR d.deleted_at IS NULL)
       ORDER BY r.remind_at_utc ASC
     ''', ['completed', 'cancelled']);
-    await ReminderNotifications.instance.reconcile(rows);
+    try {
+      await ReminderNotifications.instance.reconcile(rows);
+    } catch (_) {
+      // Trash and restore are database/file operations; OS notification
+      // failures must not make a completed document action appear to fail.
+    }
   }
 
   Future<void> setFavorite(DocumentRecord document, bool favorite) async {
