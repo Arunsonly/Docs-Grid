@@ -1031,11 +1031,14 @@ class DocumentRepository {
 
   Future<void> restoreFromTrash(DocumentRecord document) async {
     final db = await _database.database;
-    await db.update('documents', {
-      'deleted_at': null,
-      'updated_at': DateTime.now().toUtc().toIso8601String(),
-    }, where: 'id = ? AND deleted_at IS NOT NULL', whereArgs: [document.id]);
-    await _recordHistory(db, document.id, 'restored', {});
+    await db.transaction((txn) async {
+      final count = await txn.update('documents', {
+        'deleted_at': null,
+        'updated_at': DateTime.now().toUtc().toIso8601String(),
+      }, where: 'id = ? AND deleted_at IS NOT NULL', whereArgs: [document.id]);
+      if (count == 0) throw StateError('PDF is no longer in the Recycle Bin.');
+      await _recordHistory(txn, document.id, 'restored', {});
+    });
     await _reconcileReminders();
   }
 
@@ -1127,13 +1130,17 @@ class DocumentRepository {
     final db = await _database.database;
     final trashed = await db.query(
       'documents',
-      columns: ['id'],
+      columns: ['storage_uri'],
       where: 'id = ? AND deleted_at IS NOT NULL',
       whereArgs: [document.id],
       limit: 1,
     );
     if (trashed.isEmpty) {
       throw StateError('Only documents in the Recycle Bin can be permanently deleted.');
+    }
+    final currentStoragePath = (trashed.first['storage_uri'] as String?)?.trim();
+    if (currentStoragePath == null || currentStoragePath.isEmpty) {
+      throw StateError('The PDF has no saved storage location; repair or relink it before permanent deletion.');
     }
     final reminderRows = await db.query(
       'reminders',
@@ -1144,11 +1151,11 @@ class DocumentRepository {
 
     // Keep the database record until the physical delete succeeds. The
     // Recycle Bin remains the recovery point if storage access is unavailable.
-    if (document.storagePath.startsWith('content://') ||
-        document.storagePath.startsWith('file://')) {
-      await StorageLocationService.instance.deletePdf(document.storagePath);
+    if (currentStoragePath.startsWith('content://') ||
+        currentStoragePath.startsWith('file://')) {
+      await StorageLocationService.instance.deletePdf(currentStoragePath);
     } else {
-      final file = File(document.storagePath);
+      final file = File(currentStoragePath);
       if (await file.exists()) await file.delete();
     }
 
