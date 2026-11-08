@@ -64,6 +64,7 @@ class BackupArchiveLimits {
       final data = ByteData.sublistView(directory);
       var offset = 0;
       var expandedTotal = 0;
+      final backslash = String.fromCharCode(92);
       final names = <String>{};
 
       for (var index = 0; index < entryCount; index++) {
@@ -89,8 +90,8 @@ class BackupArchiveLimits {
         }
         final nameBytes = directory.sublist(offset + 46, offset + 46 + nameLength);
         final name = utf8.decode(nameBytes, allowMalformed: false);
-        if (name.startsWith('/') || name.startsWith('\\\\') ||
-            name.contains('\\\\') ||
+        if (name.startsWith('/') || name.startsWith(backslash) ||
+            name.contains(backslash) ||
             name.split('/').any((segment) => segment == '..' || segment.isEmpty) ||
             RegExp(r'^[A-Za-z]:').hasMatch(name) ||
             !names.add(name)) {
