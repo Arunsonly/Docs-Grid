@@ -266,7 +266,8 @@ class FolderRepository {
         // App-private folders have no provider URI. Rename the actual private
         // directory and update every descendant document reference atomically.
         final base = await getApplicationDocumentsDirectory();
-        privateRootPath = p.join(base.path, 'DocsGrid', 'PDFs');
+        final privateRoot = p.join(base.path, 'DocsGrid', 'PDFs');
+        privateRootPath = privateRoot;
 
         Future<List<String>> pathSegments({required bool useNewName}) async {
           final segments = <String>[];
@@ -297,11 +298,13 @@ class FolderRepository {
 
         final oldSegments = await pathSegments(useNewName: false);
         final newSegments = await pathSegments(useNewName: true);
-        oldPrivatePath = p.joinAll([privateRootPath, ...oldSegments]);
-        newPrivatePath = p.joinAll([privateRootPath, ...newSegments]);
-        final oldDirectory = Directory(oldPrivatePath);
+        final oldPath = p.joinAll([privateRoot, ...oldSegments]);
+        final newPath = p.joinAll([privateRoot, ...newSegments]);
+        oldPrivatePath = oldPath;
+        newPrivatePath = newPath;
+        final oldDirectory = Directory(oldPath);
         if (await oldDirectory.exists()) {
-          final newDirectory = Directory(newPrivatePath);
+          final newDirectory = Directory(newPath);
           if (await newDirectory.exists()) {
             throw StateError(
               'A private storage folder with the new name already exists. '
@@ -329,14 +332,14 @@ class FolderRepository {
               if (uri == null ||
                   uri.startsWith('content://') ||
                   uri.startsWith('file://') ||
-                  !p.isWithin(oldPrivatePath!, uri)) {
+                  !p.isWithin(oldPath, uri)) {
                 continue;
               }
-              final relative = p.relative(uri, from: oldPrivatePath!);
-              final updatedUri = p.join(newPrivatePath!, relative);
+              final relative = p.relative(uri, from: oldPath);
+              final updatedUri = p.join(newPath, relative);
               privateDocumentUpdates[document['id'] as String] = {
                 'storage_uri': updatedUri,
-                'relative_path': p.relative(updatedUri, from: privateRootPath!),
+                'relative_path': p.relative(updatedUri, from: privateRoot),
               };
             }
             final children = await db.query(
