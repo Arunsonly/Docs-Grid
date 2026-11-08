@@ -4,7 +4,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart';
 
 class AppDatabase {
-  AppDatabase._({Future<Database> Function()? opener}) : _opener = opener;
+  AppDatabase._({this._opener});
   @visibleForTesting
   AppDatabase.forTesting(Future<Database> Function() opener) : this._(opener: opener);
 
