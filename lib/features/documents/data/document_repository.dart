@@ -921,20 +921,36 @@ class DocumentRepository {
 
   Future<void> restoreFromTrash(DocumentRecord document) async {
     final db = await _database.database;
-    await db.update('documents', {
-      'deleted_at': null,
-      'updated_at': DateTime.now().toUtc().toIso8601String(),
-    }, where: 'id = ? AND deleted_at IS NOT NULL', whereArgs: [document.id]);
-    await _recordHistory(db, document.id, 'restored', {});
+    await db.transaction((txn) async {
+      final now = DateTime.now().toUtc().toIso8601String();
+      final count = await txn.update(
+        'documents',
+        {'deleted_at': null, 'updated_at': now},
+        where: 'id = ? AND deleted_at IS NOT NULL',
+        whereArgs: [document.id],
+      );
+      if (count == 0) {
+        throw StateError('This PDF is no longer in the Recycle Bin.');
+      }
+      await _recordHistory(txn, document.id, 'restored', {});
+    });
   }
 
   Future<void> moveToTrash(DocumentRecord document) async {
     final db = await _database.database;
-    await db.update('documents', {
-      'deleted_at': DateTime.now().toUtc().toIso8601String(),
-      'updated_at': DateTime.now().toUtc().toIso8601String(),
-    }, where: 'id = ?', whereArgs: [document.id]);
-    await _recordHistory(db, document.id, 'moved_to_recycle_bin', {});
+    await db.transaction((txn) async {
+      final now = DateTime.now().toUtc().toIso8601String();
+      final count = await txn.update(
+        'documents',
+        {'deleted_at': now, 'updated_at': now},
+        where: 'id = ? AND deleted_at IS NULL',
+        whereArgs: [document.id],
+      );
+      if (count == 0) {
+        throw StateError('This PDF is no longer in the active library.');
+      }
+      await _recordHistory(txn, document.id, 'moved_to_recycle_bin', {});
+    });
   }
 
   Future<void> rename(DocumentRecord document, String newName) async {
