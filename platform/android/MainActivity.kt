@@ -38,9 +38,9 @@ class MainActivity : FlutterActivity() {
                             }
                         }
                         "getSelectedFolder" -> {
-                            val uri = getSharedPreferences("docsgrid_storage", MODE_PRIVATE)
-                                .getString("tree_uri", null)
-                            result.success(uri?.let { mapOf("uri" to it, "name" to "Selected folder") })
+                            val prefs = getSharedPreferences("docsgrid_storage", MODE_PRIVATE)
+                            val uri = prefs.getString("my_files_uri", null)
+                            result.success(uri?.let { mapOf("uri" to it, "name" to "DocsGrid/My Files") })
                         }
                         "consumeSharedPdfs" -> result.success(consumeSharedPdfs())
                         "checkStorageAccess" -> result.success(checkStorageAccess())
@@ -214,6 +214,14 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    private fun ensureDirectory(parentUri: Uri, name: String): Uri {
+        return try {
+            findChildUri(parentUri, name)
+        } catch (_: Exception) {
+            createDirectory(parentUri, name)
+        }
+    }
+
     private fun createDirectory(parentUri: Uri, name: String): Uri {
         return DocumentsContract.createDocument(
             contentResolver, resolveParentUri(parentUri),
@@ -347,8 +355,23 @@ class MainActivity : FlutterActivity() {
             callback?.error("PERMISSION", "Could not retain folder access.", null)
             return
         }
-        getSharedPreferences("docsgrid_storage", MODE_PRIVATE).edit()
-            .putString("tree_uri", uri.toString()).apply()
-        callback?.success(mapOf("uri" to uri.toString(), "name" to "Selected folder"))
+        try {
+            // Create or reconnect the app's shared folder layout using SAF.
+            val docsGrid = ensureDirectory(uri, "DocsGrid")
+            val myFiles = ensureDirectory(docsGrid, "My Files")
+            val system = ensureDirectory(docsGrid, "System")
+            val database = ensureDirectory(system, "Database")
+            val recovery = ensureDirectory(system, "Recovery")
+            getSharedPreferences("docsgrid_storage", MODE_PRIVATE).edit()
+                .putString("tree_uri", uri.toString())
+                .putString("docsgrid_uri", docsGrid.toString())
+                .putString("my_files_uri", myFiles.toString())
+                .putString("database_uri", database.toString())
+                .putString("recovery_uri", recovery.toString())
+                .apply()
+            callback?.success(mapOf("uri" to myFiles.toString(), "name" to "DocsGrid/My Files", "rootUri" to docsGrid.toString()))
+        } catch (error: Exception) {
+            callback?.error("LAYOUT_ERROR", "Could not prepare DocsGrid folders. Existing data was not changed: " + error.message, null)
+        }
     }
 }
