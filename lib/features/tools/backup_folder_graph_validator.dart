@@ -15,27 +15,21 @@ class BackupFolderGraphValidator {
       parents[id] = parentId as String?;
     }
 
-    final visiting = <String>{};
     final visited = <String>{};
-
-    void visit(String id) {
-      if (visited.contains(id)) return;
-      if (!visiting.add(id)) {
-        throw StateError('Backup folder hierarchy contains a cycle.');
-      }
-      final parentId = parents[id];
-      if (parentId != null) {
-        if (!parents.containsKey(parentId)) {
+    for (final id in parents.keys) {
+      final chain = <String>{};
+      String? current = id;
+      while (current != null && !visited.contains(current)) {
+        if (!chain.add(current)) {
+          throw StateError('Backup folder hierarchy contains a cycle.');
+        }
+        final parentId = parents[current];
+        if (parentId != null && !parents.containsKey(parentId)) {
           throw StateError('Backup folder hierarchy refers to a missing parent.');
         }
-        visit(parentId);
+        current = parentId;
       }
-      visiting.remove(id);
-      visited.add(id);
-    }
-
-    for (final id in parents.keys) {
-      visit(id);
+      visited.addAll(chain);
     }
   }
 }
