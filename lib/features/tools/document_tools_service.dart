@@ -504,6 +504,274 @@ class DocumentToolsService {
     return snapshot['name'] as String;
   }
 
+  /// Restores the newest portable snapshot additively. Existing records are
+  /// retained; imported IDs are remapped where needed. PDFs are relinked by
+  /// SHA-256 from the currently selected library and are never overwritten.
+  Future<Map<String, int>> restoreLatestPortableMetadataSnapshot() async {
+    final storage = StorageLocationService.instance;
+    final locations = await storage.portableDataLocations();
+    final children = await storage.listDirectory(locations['databaseUri']!);
+    final snapshots = children
+        .where((entry) => entry['isDirectory'] == true &&
+            (entry['name'] as String).startsWith('snapshot_'))
+        .toList()
+      ..sort((a, b) => (b['name'] as String).compareTo(a['name'] as String));
+    if (snapshots.isEmpty) throw StateError('No portable recovery snapshot was found.');
+
+    final snapshotName = snapshots.first['name'] as String;
+    final snapshotUri = snapshots.first['uri'] as String;
+    final manifestText = await storage.readTextFile(
+      await _findChildUri(snapshotUri, 'manifest.json'),
+    );
+    final manifest = PortableSnapshotManifest.parse(manifestText);
+    final rowsByTable = <String, List<Map<String, Object?>>>{};
+    for (final file in manifest.files) {
+      final contents = await storage.readTextFile(
+        await _findChildUri(snapshotUri, file.path),
+      );
+      final bytes = utf8.encode(contents);
+      if (bytes.length != file.sizeBytes ||
+          sha256.convert(bytes).toString() != file.sha256) {
+        throw StateError('Snapshot integrity check failed for ${file.path}.');
+      }
+      final decoded = jsonDecode(contents);
+      if (decoded is! List || decoded.length != file.recordCount) {
+        throw StateError('Snapshot record count mismatch for ${file.path}.');
+      }
+      final table = file.path.substring(0, file.path.length - 5);
+      if (!const {
+        'folders', 'documents', 'categories', 'tags', 'document_tags',
+        'reminders', 'history', 'settings', 'document_text_index',
+      }.contains(table)) {
+        throw StateError('Snapshot contains unsupported table: $table.');
+      }
+      rowsByTable[table] = decoded
+          .map((value) => Map<String, Object?>.from(value as Map))
+          .toList();
+    }
+    for (final required in ['folders', 'documents', 'categories', 'tags',
+      'document_tags', 'reminders', 'history', 'settings', 'document_text_index']) {
+      rowsByTable.putIfAbsent(required, () => <Map<String, Object?>>[]);
+    }
+
+    final pdfUris = <String, String>{};
+    final pending = <String>[locations['libraryUri']!];
+    final visited = <String>{};
+    while (pending.isNotEmpty) {
+      final directoryUri = pending.removeLast();
+      if (!visited.add(directoryUri)) continue;
+      final entries = await storage.listDirectory(directoryUri);
+      for (final entry in entries) {
+        final uri = entry['uri'] as String;
+        final name = entry['name'] as String;
+        if (entry['isDirectory'] == true) {
+          pending.add(uri);
+        } else if (name.toLowerCase().endsWith('.pdf')) {
+          try {
+            final digest = await storage.sha256Pdf(uri);
+            pdfUris.putIfAbsent(digest, () => uri);
+          } catch (_) {
+            // Non-PDF provider entries and unreadable files are not candidates.
+          }
+        }
+      }
+    }
+
+    final db = await _database.database;
+    final folderRows = rowsByTable['folders']!;
+    final folderIdMap = <String, String>{};
+    final folderUriMap = <String, String>{};
+    final folderRowsById = {
+      for (final row in folderRows) row['id'] as String: row,
+    };
+    Future<String> ensureFolder(String oldId, Set<String> visiting) async {
+      final known = folderUriMap[oldId];
+      if (known != null) return known;
+      if (!visiting.add(oldId)) throw StateError('Snapshot folder hierarchy contains a cycle.');
+      final row = folderRowsById[oldId];
+      if (row == null) throw StateError('Snapshot refers to a missing parent folder.');
+      final parentId = row['parent_id'] as String?;
+      final parentUri = parentId == null
+          ? locations['libraryUri']!
+          : await ensureFolder(parentId, visiting);
+      final rawName = row['name'] as String;
+      if (rawName.trim().isEmpty || rawName.contains('/') || rawName.contains('\\')) {
+        throw StateError('Snapshot contains an invalid folder name.');
+      }
+      final siblings = await storage.listDirectory(parentUri);
+      final existing = siblings.where((entry) =>
+          entry['isDirectory'] == true && entry['name'] == rawName);
+      final uri = existing.isNotEmpty
+          ? existing.first['uri'] as String
+          : await storage.createDirectory(parentUri: parentUri, name: rawName);
+      folderUriMap[oldId] = uri;
+      folderIdMap[oldId] = _uuid.v4();
+      visiting.remove(oldId);
+      return uri;
+    }
+    for (final row in folderRows) {
+      await ensureFolder(row['id'] as String, <String>{});
+    }
+
+    final categoryIdMap = <String, String>{};
+    final tagIdMap = <String, String>{};
+    final documentIdMap = <String, String>{};
+    final reminderIdMap = <String, String>{};
+    final historyIdMap = <String, String>{};
+    final existingCategories = await db.query('categories');
+    final existingTags = await db.query('tags');
+    final existingDocuments = await db.query('documents');
+    final existingReminders = await db.query('reminders');
+    final existingHistory = await db.query('history');
+
+    for (final row in rowsByTable['categories']!) {
+      final oldId = row['id'] as String;
+      final sameName = existingCategories.where((v) =>
+          (v['name'] as String).toLowerCase() == (row['name'] as String).toLowerCase());
+      categoryIdMap[oldId] = sameName.isNotEmpty
+          ? sameName.first['id'] as String
+          : oldId;
+    }
+    for (final row in rowsByTable['tags']!) {
+      final oldId = row['id'] as String;
+      final sameName = existingTags.where((v) =>
+          (v['name'] as String).toLowerCase() == (row['name'] as String).toLowerCase());
+      tagIdMap[oldId] = sameName.isNotEmpty ? sameName.first['id'] as String : oldId;
+    }
+    for (final row in rowsByTable['documents']!) {
+      final oldId = row['id'] as String;
+      final digest = row['sha256'] as String?;
+      final sameFile = digest == null ? const <Map<String, Object?>>[] :
+          existingDocuments.where((v) => v['sha256'] == digest).toList();
+      final idCollision = existingDocuments.any((v) => v['id'] == oldId);
+      documentIdMap[oldId] = sameFile.isNotEmpty
+          ? sameFile.first['id'] as String
+          : (idCollision ? _uuid.v4() : oldId);
+    }
+    for (final row in rowsByTable['reminders']!) {
+      final oldId = row['id'] as String;
+      reminderIdMap[oldId] = existingReminders.any((v) => v['id'] == oldId)
+          ? _uuid.v4() : oldId;
+    }
+    for (final row in rowsByTable['history']!) {
+      final oldId = row['id'] as String;
+      historyIdMap[oldId] = existingHistory.any((v) => v['id'] == oldId)
+          ? _uuid.v4() : oldId;
+    }
+
+    var addedDocuments = 0;
+    var linkedDocuments = 0;
+    var missingPdfs = 0;
+    await db.transaction((txn) async {
+      for (final row in rowsByTable['categories']!) {
+        final copy = Map<String, Object?>.from(row)
+          ..['id'] = categoryIdMap[row['id']];
+        await txn.insert('categories', copy, conflictAlgorithm: ConflictAlgorithm.ignore);
+      }
+      for (final row in rowsByTable['tags']!) {
+        final copy = Map<String, Object?>.from(row)
+          ..['id'] = tagIdMap[row['id']];
+        await txn.insert('tags', copy, conflictAlgorithm: ConflictAlgorithm.ignore);
+      }
+      final sortedFolders = folderRows.toList()
+        ..sort((a, b) => (a['parent_id'] == null ? 0 : 1).compareTo(b['parent_id'] == null ? 0 : 1));
+      for (final row in sortedFolders) {
+        await txn.insert('folders', {
+          ...row,
+          'id': folderIdMap[row['id']],
+          'parent_id': row['parent_id'] == null ? null : folderIdMap[row['parent_id']],
+          'storage_uri_or_relative_path': folderUriMap[row['id']],
+        }, conflictAlgorithm: ConflictAlgorithm.ignore);
+      }
+      for (final row in rowsByTable['documents']!) {
+        final oldId = row['id'] as String;
+        final newId = documentIdMap[oldId]!;
+        final alreadyPresent = existingDocuments.any((v) => v['id'] == newId);
+        final digest = row['sha256'] as String?;
+        final linkedUri = digest == null ? null : pdfUris[digest];
+        if (alreadyPresent) {
+          if (linkedUri != null) {
+            await txn.update('documents', {'storage_uri': linkedUri},
+              where: 'id = ? AND (storage_uri IS NULL OR storage_uri = ?)',
+              whereArgs: [newId, '']);
+            linkedDocuments++;
+          }
+          continue;
+        }
+        final copy = Map<String, Object?>.from(row)
+          ..['id'] = newId
+          ..['folder_id'] = row['folder_id'] == null ? null : folderIdMap[row['folder_id']]
+          ..['category_id'] = row['category_id'] == null ? null : categoryIdMap[row['category_id']]
+          ..['storage_uri'] = linkedUri;
+        if (linkedUri == null) {
+          missingPdfs++;
+          final metadata = <String, dynamic>{};
+          final oldMetadata = copy['metadata_json'];
+          if (oldMetadata is String && oldMetadata.isNotEmpty) {
+            try { metadata.addAll(jsonDecode(oldMetadata) as Map<String, dynamic>); } catch (_) {}
+          }
+          metadata['docsGridRecoveryStatus'] = 'pdf_missing_relink_required';
+          copy['metadata_json'] = jsonEncode(metadata);
+        } else {
+          linkedDocuments++;
+        }
+        await txn.insert('documents', copy);
+        addedDocuments++;
+      }
+      for (final row in rowsByTable['document_tags']!) {
+        final documentId = documentIdMap[row['document_id']];
+        final tagId = tagIdMap[row['tag_id']];
+        if (documentId == null || tagId == null) continue;
+        await txn.insert('document_tags', {
+          ...row, 'document_id': documentId, 'tag_id': tagId,
+        }, conflictAlgorithm: ConflictAlgorithm.ignore);
+      }
+      for (final row in rowsByTable['reminders']!) {
+        final copy = Map<String, Object?>.from(row)
+          ..['id'] = reminderIdMap[row['id']]
+          ..['document_id'] = row['document_id'] == null ? null : documentIdMap[row['document_id']];
+        await txn.insert('reminders', copy, conflictAlgorithm: ConflictAlgorithm.ignore);
+      }
+      for (final row in rowsByTable['history']!) {
+        final copy = Map<String, Object?>.from(row)
+          ..['id'] = historyIdMap[row['id']]
+          ..['document_id'] = row['document_id'] == null ? null : documentIdMap[row['document_id']];
+        await txn.insert('history', copy, conflictAlgorithm: ConflictAlgorithm.ignore);
+      }
+      for (final row in rowsByTable['document_text_index']!) {
+        final documentId = documentIdMap[row['document_id']];
+        if (documentId == null) continue;
+        await txn.insert('document_text_index', {
+          ...row, 'document_id': documentId,
+        }, conflictAlgorithm: ConflictAlgorithm.ignore);
+      }
+      for (final row in rowsByTable['settings']!) {
+        await txn.insert('settings', row, conflictAlgorithm: ConflictAlgorithm.ignore);
+      }
+    });
+
+    for (final row in rowsByTable['reminders']!) {
+      if ((row['enabled'] as int? ?? 0) != 1 || row['status'] == 'completed') continue;
+      try {
+        await ReminderNotifications.instance.schedule(
+          id: reminderIdMap[row['id']]!,
+          title: row['title'] as String,
+          body: row['note'] as String?,
+          at: DateTime.parse(row['remind_at_utc'] as String).toLocal(),
+          recurrence: row['recurrence_rule'] as String?,
+        );
+      } catch (_) {
+        // The reminder record is restored even if the OS blocks notifications.
+      }
+    }
+    return {
+      'documentsAdded': addedDocuments,
+      'documentsLinked': linkedDocuments,
+      'pdfsMissing': missingPdfs,
+      'snapshot': snapshotName.hashCode,
+    };
+  }
+
   Future<String> _findChildUri(String parentUri, String name) async {
     final children = await StorageLocationService.instance.listDirectory(parentUri);
     Map<String, Object?>? match;
