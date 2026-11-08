@@ -33,8 +33,7 @@ This is an implementation tracker, not a release claim. A green CI build does no
 
 ## Verification status
 
-- Latest fully successful CI run before the current review fixes: [42369846464](https://github.com/Arunsonly/Docs-Grid/actions/runs/42369846464), commit `b7c199f320c337db9b30050e0da74aa82e28e02b`. Android analyze, tests, debug APK build and artifact upload succeeded; iOS analyze, tests and unsigned build succeeded.
-- A subsequent five-pass source review identified and fixed the legacy v1 database-upgrade tracking-table failure, iOS Files `file://` URI handling for OCR/sharing, and stale Settings feature-status copy. These newer commits require a fresh CI run before their APK is considered verified.
+- Latest full CI run: [#687](https://github.com/Arunsonly/Docs-Grid/actions/runs/42482285110), commit `dfcff6004f711c88033a612dceb3978b3e951526`. Android analyze, Flutter tests, strict Gradle dependency verification, debug APK build and artifact upload passed; iOS analyze, Flutter tests and unsigned build passed.
 - CI does not verify OS permission prompts, real provider behaviour, cloud downloads, app restart persistence or real-device file operations.
 - Physical Android and iPhone checks have not yet been performed. They require actual devices with the app installed and cannot be certified by a hosted CI runner.
 - Android release signing, iOS signing/TestFlight, large-PDF stress tests and data-recovery drills remain outstanding.
@@ -63,8 +62,7 @@ The following changes are on `feature/complete-ten-features` and remain subject 
 
 ### Current branch verification
 
-- The latest pre-review CI run passed Android analyze, tests and debug APK build/upload, and iOS analyze, tests and unsigned build.
-- The current source-review fixes have been committed after that run and must pass a fresh Android/iOS CI run.
+- The latest source-review branch passed full Android and iOS hosted CI in Run #687. The Android debug APK artifact is available from that run.
 - No hosted CI run can certify Android SAF permissions, iOS security-scoped bookmark persistence, physical notification delivery, cloud-provider access or real-device recovery. These remain manual device test gates.
 
 
@@ -89,3 +87,8 @@ The following changes are on `feature/complete-ten-features` and remain subject 
 
 - Camera scanning now supports capturing successive pages into one PDF, with a Finish/Scan next page choice after each capture. The existing page ordering and crop steps are then applied to the captured set.
 - iOS now registers PDF documents as an Open-In destination, coordinates reads from Files/cloud providers, stages validated PDFs in app cache, and exposes them through the same import handoff used by the Flutter UI. Physical iPhone and cloud-provider testing remains required.
+
+- Final code-review pass added SHA-256 verification to external folder moves, scanner imports and storage migration, with cleanup of failed destination copies while retaining originals.
+- Duplicate cleanup now prevents selecting every matching copy for Recycle Bin, preserving at least one live copy.
+- Camera scanning now captures multiple pages into one PDF; iOS PDF Open-In imports are staged through coordinated Files-provider reads.
+- The latest complete hosted CI run is #687 and passed both platforms. Only physical-device/provider checks and human PR review remain before merge; those are deliberately separate from source-level completion.
