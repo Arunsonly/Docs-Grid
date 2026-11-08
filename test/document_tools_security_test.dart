@@ -23,5 +23,13 @@ void main() {
         isNot(DocumentToolsService.safeRestorePathToken('folder-124')),
       );
     });
+
+    test('OCR search escapes SQL LIKE wildcards and backslashes', () {
+      expect(DocumentToolsService.escapeLikeQuery(r'a%b_c\\d'), r'a\\%b\\_c\\\\d');
+    });
+
+    test('OCR search leaves ordinary text unchanged', () {
+      expect(DocumentToolsService.escapeLikeQuery('Policy 2026'), 'Policy 2026');
+    });
   });
 }
