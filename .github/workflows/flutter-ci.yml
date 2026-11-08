@@ -1,7 +1,7 @@
 name: Flutter CI
 
 concurrency:
-  group: docsgrid-${{ github.workflow }}-${{ github.ref }}-${{ github.sha }}
+  group: docsgrid-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 on:
