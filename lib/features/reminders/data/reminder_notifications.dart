@@ -149,16 +149,25 @@ class ReminderNotifications {
       return next;
     }
     if (recurrence == 'monthly') {
-      DateTime occurrenceInMonth(int year, int month) {
+      var year = now.year;
+      var month = now.month;
+      // Match the selected calendar day. Months without that day (for
+      // example February for a 29th–31st reminder) are skipped rather than
+      // silently changing the user's chosen date.
+      while (true) {
         final lastDay = DateTime(year, month + 1, 0).day;
-        final day = at.day > lastDay ? lastDay : at.day;
-        return DateTime(year, month, day, at.hour, at.minute, at.second);
+        if (at.day <= lastDay) {
+          final candidate = DateTime(
+            year, month, at.day, at.hour, at.minute, at.second,
+          );
+          if (candidate.isAfter(now)) return candidate;
+        }
+        month++;
+        if (month > 12) {
+          month = 1;
+          year++;
+        }
       }
-      var next = occurrenceInMonth(now.year, now.month);
-      if (!next.isAfter(now)) {
-        next = occurrenceInMonth(now.year, now.month + 1);
-      }
-      return next;
     }
     return null;
   }
