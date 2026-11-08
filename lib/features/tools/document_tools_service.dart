@@ -526,6 +526,9 @@ class DocumentToolsService {
     final folderRowsById = <String, Map<String, Object?>>{
       for (final row in folderRows) row['id'] as String: row,
     };
+    final documentsById = <String, Map<String, Object?>>{
+      for (final row in rowsByTable['documents']!) row['id'] as String: row,
+    };
     // A ZIP is untrusted input. Validate parent links before creating any
     // directories, and never use imported IDs as filesystem path segments.
     BackupFolderGraphValidator.validate(folderRows);
@@ -565,7 +568,8 @@ class DocumentToolsService {
       }
       for (final item in fileRows) {
         final id = item['documentId'] as String;
-        final document = rowsByTable['documents']!.firstWhere((r) => r['id'] == id);
+        final document = documentsById[id];
+        if (document == null) throw StateError('Backup contains an unknown document reference.');
         final folderId = document['folder_id'] as String?;
         final destinationDir = folderId == null ? restoreRoot : Directory(folderPath(folderId));
         await destinationDir.create(recursive: true);
