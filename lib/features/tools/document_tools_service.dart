@@ -212,7 +212,7 @@ class DocumentToolsService {
       final safeName = p.basename(displayNames[i]).replaceAll(RegExp(r'[^A-Za-z0-9._ -]'), '_');
       String path;
       if (uri.startsWith('content://')) {
-        final target = File(p.join(temp.path, 'share_${DateTime.now().microsecondsSinceEpoch}_$i_$safeName'));
+        final target = File(p.join(temp.path, 'share_${DateTime.now().microsecondsSinceEpoch}_${i}_$safeName'));
         await StorageLocationService.instance.copyPdfToPath(sourceUri: uri, destinationPath: target.path);
         path = target.path;
       } else {
