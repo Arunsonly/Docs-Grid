@@ -76,7 +76,9 @@ class ReminderNotifications {
     if (at.isAfter(now)) return at;
     if (recurrence == 'daily') {
       var next = DateTime(now.year, now.month, now.day, at.hour, at.minute, at.second);
-      if (!next.isAfter(now)) next = next.add(const Duration(days: 1));
+      if (!next.isAfter(now)) {
+        next = DateTime(now.year, now.month, now.day + 1, at.hour, at.minute, at.second);
+      }
       return next;
     }
     if (recurrence == 'weekly') {
@@ -85,7 +87,9 @@ class ReminderNotifications {
         now.year, now.month, now.day + daysUntil,
         at.hour, at.minute, at.second,
       );
-      if (!next.isAfter(now)) next = next.add(const Duration(days: 7));
+      if (!next.isAfter(now)) {
+        next = DateTime(now.year, now.month, now.day + 7, at.hour, at.minute, at.second);
+      }
       return next;
     }
     return null;
