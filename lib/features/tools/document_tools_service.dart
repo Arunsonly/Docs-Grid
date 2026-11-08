@@ -44,7 +44,7 @@ class DocumentToolsService {
     return value
         .replaceAll(slash, '$slash$slash')
         .replaceAll('%', '$slash%')
-        .replaceAll('_', '$slash' '_');
+        .replaceAll('_', '${slash}_');
   }
 
   Future<List<Map<String, Object?>>> findExactDuplicates() async {
