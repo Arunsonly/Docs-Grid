@@ -81,7 +81,11 @@ class DocumentToolsService {
     }
     final document = await pdfx.PdfDocument.openFile(path);
     final pageCount = document.pagesCount;
-    final recognizer = TextRecognizer(script: TextRecognitionScript.latin);
+    final latinRecognizer = TextRecognizer(script: TextRecognitionScript.latin);
+    // Android can bundle both scripts. iOS ML Kit currently supports Latin only.
+    final devanagariRecognizer = Platform.isAndroid
+        ? TextRecognizer(script: TextRecognitionScript.devanagiri)
+        : null;
     final pages = <String>[];
     try {
       for (var pageNumber = 1; pageNumber <= document.pagesCount; pageNumber++) {
@@ -97,8 +101,17 @@ class DocumentToolsService {
           final image = File(p.join(temp.path, 'ocr_${_uuid.v4()}.png'));
           await image.writeAsBytes(rendered.bytes, flush: true);
           try {
-            final result = await recognizer.processImage(InputImage.fromFilePath(image.path));
-            pages.add('--- Page $pageNumber ---\n${result.text}');
+            final inputImage = InputImage.fromFilePath(image.path);
+            final latinResult = await latinRecognizer.processImage(inputImage);
+            final scriptResults = <String>[latinResult.text];
+            if (devanagariRecognizer != null) {
+              final devanagariResult = await devanagariRecognizer.processImage(inputImage);
+              if (devanagariResult.text.trim().isNotEmpty &&
+                  devanagariResult.text.trim() != latinResult.text.trim()) {
+                scriptResults.add(devanagariResult.text);
+              }
+            }
+            pages.add('--- Page $pageNumber ---\n${scriptResults.join('\n')}');
           } finally {
             if (await image.exists()) await image.delete();
           }
@@ -107,7 +120,8 @@ class DocumentToolsService {
         }
       }
     } finally {
-      await recognizer.close();
+      await latinRecognizer.close();
+      await devanagariRecognizer?.close();
       await document.close();
     }
     final text = pages.join('\n\n').trim();
