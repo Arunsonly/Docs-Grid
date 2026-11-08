@@ -79,9 +79,9 @@ class ImportCategoryOption {
 
 String _escapeLikeWildcards(String value) {
   return value
-      .replaceAll(r'\\', r'\\\\')
-      .replaceAll('%', r'\\%')
-      .replaceAll('_', r'\\_');
+      .replaceAll('\\\\', '\\\\\\\\')
+      .replaceAll('%', r'\%')
+      .replaceAll('_', r'\_');
 }
 
 class DocumentRepository {
