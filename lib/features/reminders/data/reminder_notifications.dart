@@ -65,7 +65,11 @@ class ReminderNotifications {
   }
 
   int _id(String id) => notificationIdFor(id);
-  int _snoozeId(String id) => notificationIdFor('$id:snooze');
+
+  @visibleForTesting
+  static int snoozeNotificationIdFor(String id) => notificationIdFor('$id:snooze');
+
+  int _snoozeId(String id) => snoozeNotificationIdFor(id);
 
   Future<void> scheduleSnooze({
     required String id,
