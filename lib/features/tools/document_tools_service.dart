@@ -132,14 +132,25 @@ class DocumentToolsService {
     final q = query.trim();
     if (q.isEmpty) return [];
     final db = await _database.database;
-    return db.rawQuery('''
+    final rows = await db.rawQuery('''
       SELECT d.id, d.name, d.storage_uri, i.extracted_text,
              instr(lower(i.extracted_text), lower(?)) AS match_position
       FROM document_text_index i
       JOIN documents d ON d.id = i.document_id
-      WHERE d.deleted_at IS NULL AND i.extracted_text LIKE ?
+      WHERE d.deleted_at IS NULL AND lower(i.extracted_text) LIKE lower(?)
       ORDER BY match_position ASC, d.name COLLATE NOCASE
     ''', [q, '%$q%']);
+    // OCR stores an explicit page marker before every page. Resolve the page
+    // containing the first match so search results are actionable, not just a
+    // generic "text found" indication.
+    for (final row in rows) {
+      final text = row['extracted_text']?.toString() ?? '';
+      final position = (row['match_position'] as int? ?? 1) - 1;
+      final prefix = text.substring(0, position.clamp(0, text.length));
+      final markers = RegExp(r'--- Page (\\d+) ---').allMatches(prefix).toList();
+      row['match_page'] = markers.isEmpty ? 1 : int.parse(markers.last.group(1)!);
+    }
+    return rows;
   }
 
   Future<File?> scanToPdf({
