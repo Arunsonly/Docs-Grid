@@ -1071,6 +1071,14 @@ class DocumentToolsService {
           !documentIds.add(raw['id'] as String)) {
         throw StateError('Backup contains invalid or duplicate document IDs.');
       }
+      final documentName = raw['name'];
+      if (documentName is! String || documentName.trim().isEmpty ||
+          documentName == '.' || documentName == '..' ||
+          documentName.contains('/') || documentName.contains('\\\\') ||
+          documentName.contains(String.fromCharCode(0)) ||
+          documentName.runes.any((rune) => rune < 32 || rune == 127)) {
+        throw StateError('Backup contains an unsafe document name.');
+      }
       documentsById[raw['id'] as String] = raw;
     }
 
