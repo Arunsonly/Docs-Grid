@@ -41,3 +41,10 @@ void main() {
     expect(record.documentName, 'Policy');
   });
 }
+
+
+  test('ReminderRepository validates titles before persistence', () {
+    expect(ReminderRepository.validateTitle('  Renew policy  '), 'Renew policy');
+    expect(() => ReminderRepository.validateTitle(''), throwsArgumentError);
+    expect(() => ReminderRepository.validateTitle('   '), throwsArgumentError);
+  });
