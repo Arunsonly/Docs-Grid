@@ -32,6 +32,7 @@ class DocumentToolsService {
 
   final AppDatabase _database;
   static const _uuid = Uuid();
+  final Set<String> _indexingDocumentIds = <String>{};
 
   Future<List<Map<String, Object?>>> findExactDuplicates() async {
     final db = await _database.database;
@@ -59,6 +60,26 @@ class DocumentToolsService {
   }
 
   Future<int> indexPdfText(String documentId, String path) async {
+    if (!_indexingDocumentIds.add(documentId)) {
+      throw StateError('This document is already being indexed.');
+    }
+    try {
+      return await _indexPdfTextInternal(documentId, path);
+    } finally {
+      _indexingDocumentIds.remove(documentId);
+    }
+  }
+
+  Future<int> _indexPdfTextInternal(String documentId, String path) async {
+    final db = await _database.database;
+    final documentRows = await db.query(
+      'documents',
+      columns: ['id'],
+      where: 'id = ? AND deleted_at IS NULL',
+      whereArgs: [documentId],
+      limit: 1,
+    );
+    if (documentRows.isEmpty) throw StateError('Document no longer exists in the library.');
     final file = File(path);
     if (!await file.exists()) throw StateError('PDF is not available on this device.');
     final header = await file.openRead(0, 5).fold<List<int>>(<int>[], (a, b) => a..addAll(b));
@@ -139,9 +160,9 @@ class DocumentToolsService {
              instr(lower(i.extracted_text), lower(?)) AS match_position
       FROM document_text_index i
       JOIN documents d ON d.id = i.document_id
-      WHERE d.deleted_at IS NULL AND lower(i.extracted_text) LIKE lower(?)
+      WHERE d.deleted_at IS NULL AND instr(lower(i.extracted_text), lower(?)) > 0
       ORDER BY match_position ASC, d.name COLLATE NOCASE
-    ''', [q, '%$q%']);
+    ''', [q, q]);
     // OCR stores an explicit page marker before every page. Resolve the page
     // containing the first match so search results are actionable, not just a
     // generic "text found" indication.
