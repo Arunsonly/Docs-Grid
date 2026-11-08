@@ -38,17 +38,17 @@ jobs:
           android = Path('android/app/src/main/AndroidManifest.xml')
           text = android.read_text()
           text, count = re.subn(r'<application([^>]*?)android:label="[^"]*"',
-                                r'<application\\1android:label="DocsGrid"', text, count=1)
+                                r'<application\1android:label="DocsGrid"', text, count=1)
           if count != 1:
               raise SystemExit('Could not set Android application label')
           android.write_text(text)
           ios = Path('ios/Runner/Info.plist')
           text = ios.read_text()
           if '<key>CFBundleDisplayName</key>' in text:
-              text = re.sub(r'<key>CFBundleDisplayName</key>\\s*<string>.*?</string>',
-                            '<key>CFBundleDisplayName</key>\\n\\t<string>DocsGrid</string>', text, count=1, flags=re.S)
+              text = re.sub(r'<key>CFBundleDisplayName</key>\s*<string>.*?</string>',
+                            '<key>CFBundleDisplayName</key>\n\t<string>DocsGrid</string>', text, count=1, flags=re.S)
           else:
-              text = text.replace('</dict>', '<key>CFBundleDisplayName</key>\\n\\t<string>DocsGrid</string>\\n</dict>', 1)
+              text = text.replace('</dict>', '<key>CFBundleDisplayName</key>\n\t<string>DocsGrid</string>\n</dict>', 1)
           ios.write_text(text)
           PY
       - name: Set Android compile SDK for image cropper dependencies
