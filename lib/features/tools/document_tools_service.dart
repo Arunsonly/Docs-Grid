@@ -37,6 +37,13 @@ class DocumentToolsService {
   static String safeRestorePathToken(String value) =>
       sha256.convert(utf8.encode(value)).toString();
 
+  /// Escapes user text for a literal SQLite LIKE substring search.
+  @visibleForTesting
+  static String escapeLikeQuery(String value) =>
+      value.replaceAll(r'\\', r'\\\\')
+          .replaceAll('%', r'\\%')
+          .replaceAll('_', r'\\_');
+
   Future<List<Map<String, Object?>>> findExactDuplicates() async {
     final db = await _database.database;
     return db.rawQuery('''
@@ -138,14 +145,15 @@ class DocumentToolsService {
     final q = query.trim();
     if (q.isEmpty) return [];
     final db = await _database.database;
+    final pattern = '%${escapeLikeQuery(q)}%';
     return db.rawQuery('''
       SELECT d.id, d.name, d.storage_uri, i.extracted_text,
              instr(lower(i.extracted_text), lower(?)) AS match_position
       FROM document_text_index i
       JOIN documents d ON d.id = i.document_id
-      WHERE d.deleted_at IS NULL AND i.extracted_text LIKE ?
+      WHERE d.deleted_at IS NULL AND i.extracted_text LIKE ? ESCAPE '\\'
       ORDER BY match_position ASC, d.name COLLATE NOCASE
-    ''', [q, '%$q%']);
+    ''', [q, pattern]);
   }
 
   Future<File?> scanToPdf({
