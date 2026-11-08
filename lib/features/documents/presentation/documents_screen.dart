@@ -28,6 +28,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   bool _loading = true;
   bool _importing = false;
   bool _searchInsideText = false;
+  final Set<String> _selectedIds = <String>{};
   int _loadGeneration = 0;
   String? _error;
 
@@ -91,6 +92,64 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     } finally {
       if (mounted) setState(() => _importing = false);
     }
+  }
+
+  void _toggleSelected(DocumentRecord document) {
+    setState(() {
+      if (!_selectedIds.add(document.id)) _selectedIds.remove(document.id);
+    });
+  }
+
+  Future<void> _bulkTrash() async {
+    final selected = _documents.where((d) => _selectedIds.contains(d.id)).toList();
+    if (selected.isEmpty) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Move selected PDFs to Recycle Bin?'),
+        content: Text('${selected.length} PDFs will be hidden. Files will not be erased.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Move')),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    await _repository.moveManyToTrash(selected);
+    if (!mounted) return;
+    setState(_selectedIds.clear);
+    await _load();
+  }
+
+  Future<void> _bulkMove() async {
+    final selected = _documents.where((d) => _selectedIds.contains(d.id)).toList();
+    if (selected.isEmpty) return;
+    final folders = await _folderRepository.allFoldersWithPaths();
+    if (!mounted) return;
+    final destination = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) => SafeArea(
+        child: ListView(
+          shrinkWrap: true,
+          children: [
+            const ListTile(title: Text('Move selected PDFs to')),
+            ListTile(leading: const Icon(Icons.home_outlined), title: const Text('Root / No folder'), onTap: () => Navigator.pop(sheetContext, '')),
+            for (final option in folders)
+              ListTile(leading: const Icon(Icons.folder_outlined), title: Text(option.path), onTap: () => Navigator.pop(sheetContext, option.folder.id)),
+          ],
+        ),
+      ),
+    );
+    if (destination == null) return;
+    final result = await _repository.moveManyToFolder(selected, destination.isEmpty ? null : destination);
+    if (!mounted) return;
+    setState(_selectedIds.clear);
+    await _load();
+    final failures = result['failures'] as List<String>;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text('Moved ${result['moved']} of ${selected.length} PDFs' + (failures.isEmpty ? '' : ' · ${failures.length} failed')),
+    ));
   }
 
   Future<void> _open(DocumentRecord document) async {
@@ -433,6 +492,19 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   Widget build(BuildContext context) {
     return Column(
       children: [
+        if (_selectedIds.isNotEmpty)
+          Material(
+            color: Theme.of(context).colorScheme.secondaryContainer,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+              child: Row(children: [
+                IconButton(tooltip: 'Clear selection', onPressed: () => setState(_selectedIds.clear), icon: const Icon(Icons.close)),
+                Expanded(child: Text('${_selectedIds.length} selected', style: const TextStyle(fontWeight: FontWeight.w700))),
+                IconButton(tooltip: 'Move selected', onPressed: _bulkMove, icon: const Icon(Icons.drive_file_move_outline)),
+                IconButton(tooltip: 'Move selected to Recycle Bin', onPressed: _bulkTrash, icon: const Icon(Icons.delete_outline)),
+              ]),
+            ),
+          ),
         if (!widget.favoritesOnly && !widget.recentOnly)
           Container(
             margin: const EdgeInsets.fromLTRB(16, 10, 16, 8),
@@ -561,11 +633,15 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
 
   Widget _documentTile(DocumentRecord document) {
     final file = File(document.storagePath);
+    final selected = _selectedIds.contains(document.id);
     return Card(
       elevation: 0,
       child: ListTile(
-        onTap: () => _open(document),
-        leading: const CircleAvatar(child: Icon(Icons.picture_as_pdf_outlined)),
+        onLongPress: () => _toggleSelected(document),
+        onTap: () => _selectedIds.isNotEmpty ? _toggleSelected(document) : _open(document),
+        leading: _selectedIds.isNotEmpty
+            ? Checkbox(value: selected, onChanged: (_) => _toggleSelected(document))
+            : const CircleAvatar(child: Icon(Icons.picture_as_pdf_outlined)),
         title: Text('${document.name}.pdf', maxLines: 1, overflow: TextOverflow.ellipsis),
         subtitle: Text([
           _size(document.sizeBytes),
