@@ -58,9 +58,11 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
 
   Future<void> _scan({bool camera = false}) => _run(() async {
     final file = await _tools.scanToPdf(context: context, useCamera: camera);
-    if (!mounted || file == null) return;
+    if (file == null) return;
+    try {
+      if (!mounted) return;
 
-    final nameController = TextEditingController();
+      final nameController = TextEditingController();
     final chosenName = await showDialog<String?>(
       context: context,
       builder: (dialogContext) => AlertDialog(
@@ -116,6 +118,11 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
       setState(() => _message = imported.added == 1
         ? 'PDF saved in DocsGrid: ${chosenName == null || chosenName.isEmpty ? p.basename(file.path) : chosenName}.pdf'
         : 'This PDF already exists. Duplicate was not added.');
+      }
+    } finally {
+      // Scanner output lives in the temporary directory. Always remove it
+      // after import, cancellation, navigation away, or an import failure.
+      if (await file.exists()) await file.delete();
     }
   });
 
