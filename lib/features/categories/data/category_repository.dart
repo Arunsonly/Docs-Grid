@@ -78,12 +78,14 @@ class CategoryRepository {
     }
     final db = await _database.database;
     await db.transaction((txn) async {
-      final deleted = await txn.delete(
+      final current = await txn.query(
         'categories',
-        where: 'id = ? AND is_builtin = 0',
+        columns: ['is_builtin'],
+        where: 'id = ?',
         whereArgs: [category.id],
+        limit: 1,
       );
-      if (deleted == 0) {
+      if (current.isEmpty || (current.first['is_builtin'] as int? ?? 0) == 1) {
         throw StateError('Category no longer exists or is built in.');
       }
       await txn.update(
@@ -92,6 +94,12 @@ class CategoryRepository {
         where: 'category_id = ?',
         whereArgs: [category.id],
       );
+      final deleted = await txn.delete(
+        'categories',
+        where: 'id = ? AND is_builtin = 0',
+        whereArgs: [category.id],
+      );
+      if (deleted == 0) throw StateError('Category changed during deletion.');
     });
   }
 
