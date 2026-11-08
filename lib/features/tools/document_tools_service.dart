@@ -584,6 +584,7 @@ class DocumentToolsService {
     final folderRows = rowsByTable['folders']!;
     final folderIdMap = <String, String>{};
     final folderUriMap = <String, String>{};
+    final matchedFolderIds = <String>{};
     final folderRowsById = {
       for (final row in folderRows) row['id'] as String: row,
     };
@@ -608,7 +609,18 @@ class DocumentToolsService {
           ? existing.first['uri'] as String
           : await storage.createDirectory(parentUri: parentUri, name: rawName);
       folderUriMap[oldId] = uri;
-      folderIdMap[oldId] = _uuid.v4();
+      final mappedParentId = parentId == null ? null : folderIdMap[parentId];
+      final matchingFolder = existingFolders.where((candidate) =>
+          candidate['name'] == rawName &&
+          candidate['parent_id'] == mappedParentId &&
+          !matchedFolderIds.contains(candidate['id']));
+      if (matchingFolder.isNotEmpty) {
+        final existing = matchingFolder.first;
+        folderIdMap[oldId] = existing['id'] as String;
+        matchedFolderIds.add(existing['id'] as String);
+      } else {
+        folderIdMap[oldId] = _uuid.v4();
+      }
       visiting.remove(oldId);
       return uri;
     }
@@ -621,6 +633,7 @@ class DocumentToolsService {
     final documentIdMap = <String, String>{};
     final reminderIdMap = <String, String>{};
     final historyIdMap = <String, String>{};
+    final existingFolders = await db.query('folders');
     final existingCategories = await db.query('categories');
     final existingTags = await db.query('tags');
     final existingDocuments = await db.query('documents');
@@ -653,13 +666,28 @@ class DocumentToolsService {
     }
     for (final row in rowsByTable['reminders']!) {
       final oldId = row['id'] as String;
-      reminderIdMap[oldId] = existingReminders.any((v) => v['id'] == oldId)
-          ? _uuid.v4() : oldId;
+      final mappedDocumentId = row['document_id'] == null
+          ? null : documentIdMap[row['document_id']];
+      final duplicate = existingReminders.where((v) =>
+          v['document_id'] == mappedDocumentId &&
+          v['title'] == row['title'] &&
+          v['remind_at_utc'] == row['remind_at_utc']);
+      reminderIdMap[oldId] = duplicate.isNotEmpty
+          ? duplicate.first['id'] as String
+          : (existingReminders.any((v) => v['id'] == oldId) ? _uuid.v4() : oldId);
     }
     for (final row in rowsByTable['history']!) {
       final oldId = row['id'] as String;
-      historyIdMap[oldId] = existingHistory.any((v) => v['id'] == oldId)
-          ? _uuid.v4() : oldId;
+      final mappedDocumentId = row['document_id'] == null
+          ? null : documentIdMap[row['document_id']];
+      final duplicate = existingHistory.where((v) =>
+          v['document_id'] == mappedDocumentId &&
+          v['action'] == row['action'] &&
+          v['created_at'] == row['created_at'] &&
+          v['details_json'] == row['details_json']);
+      historyIdMap[oldId] = duplicate.isNotEmpty
+          ? duplicate.first['id'] as String
+          : (existingHistory.any((v) => v['id'] == oldId) ? _uuid.v4() : oldId);
     }
 
     var addedDocuments = 0;
@@ -683,12 +711,20 @@ class DocumentToolsService {
         if (row == null) throw StateError('Snapshot folder parent is missing.');
         final parentId = row['parent_id'] as String?;
         if (parentId != null) await insertFolder(parentId);
-        await txn.insert('folders', {
+        final mappedId = folderIdMap[oldId]!;
+        final values = {
           ...row,
-          'id': folderIdMap[oldId],
+          'id': mappedId,
           'parent_id': parentId == null ? null : folderIdMap[parentId],
           'storage_uri_or_relative_path': folderUriMap[oldId],
-        }, conflictAlgorithm: ConflictAlgorithm.ignore);
+        };
+        if (existingFolders.any((candidate) => candidate['id'] == mappedId)) {
+          await txn.update('folders', {
+            'storage_uri_or_relative_path': folderUriMap[oldId],
+          }, where: 'id = ?', whereArgs: [mappedId]);
+        } else {
+          await txn.insert('folders', values, conflictAlgorithm: ConflictAlgorithm.ignore);
+        }
       }
       for (final row in folderRows) {
         await insertFolder(row['id'] as String);
@@ -702,8 +738,7 @@ class DocumentToolsService {
         if (alreadyPresent) {
           if (linkedUri != null) {
             await txn.update('documents', {'storage_uri': linkedUri},
-              where: 'id = ? AND (storage_uri IS NULL OR storage_uri = ?)',
-              whereArgs: [newId, '']);
+              where: 'id = ?', whereArgs: [newId]);
             linkedDocuments++;
           }
           continue;
@@ -737,14 +772,18 @@ class DocumentToolsService {
         }, conflictAlgorithm: ConflictAlgorithm.ignore);
       }
       for (final row in rowsByTable['reminders']!) {
+        final mappedId = reminderIdMap[row['id']]!;
+        if (existingReminders.any((v) => v['id'] == mappedId)) continue;
         final copy = Map<String, Object?>.from(row)
-          ..['id'] = reminderIdMap[row['id']]
+          ..['id'] = mappedId
           ..['document_id'] = row['document_id'] == null ? null : documentIdMap[row['document_id']];
         await txn.insert('reminders', copy, conflictAlgorithm: ConflictAlgorithm.ignore);
       }
       for (final row in rowsByTable['history']!) {
+        final mappedId = historyIdMap[row['id']]!;
+        if (existingHistory.any((v) => v['id'] == mappedId)) continue;
         final copy = Map<String, Object?>.from(row)
-          ..['id'] = historyIdMap[row['id']]
+          ..['id'] = mappedId
           ..['document_id'] = row['document_id'] == null ? null : documentIdMap[row['document_id']];
         await txn.insert('history', copy, conflictAlgorithm: ConflictAlgorithm.ignore);
       }
