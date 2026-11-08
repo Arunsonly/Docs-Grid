@@ -143,14 +143,7 @@ class FolderRepository {
   }
 
   Future<Folder> create({required String name, String? parentId}) async {
-    final cleaned = name.trim();
-    if (cleaned.isEmpty) throw ArgumentError('Folder name cannot be empty.');
-    if (cleaned == '.' || cleaned == '..') {
-      throw ArgumentError('Folder name cannot be . or ..');
-    }
-    if (cleaned.contains('/') || cleaned.contains('\\\\')) {
-      throw ArgumentError('Folder name cannot contain path separators.');
-    }
+    final cleaned = validateFolderName(name);
     final db = await _database.database;
     final storage = StorageLocationService.instance;
     final selectedRoot = await storage.selectedFolder();
@@ -189,11 +182,7 @@ class FolderRepository {
   }
 
   Future<void> rename(String id, String name) async {
-    final cleaned = name.trim();
-    if (cleaned.isEmpty) throw ArgumentError('Folder name cannot be empty.');
-    if (cleaned.contains('/') || cleaned.contains('\\\\')) {
-      throw ArgumentError('Folder name cannot contain path separators.');
-    }
+    final cleaned = validateFolderName(name);
     final db = await _database.database;
     final rows = await db.query(
       'folders',
@@ -204,6 +193,7 @@ class FolderRepository {
     );
     if (rows.isEmpty) throw StateError('Folder no longer exists.');
     final oldName = rows.first['name'] as String;
+    if (oldName == cleaned) return;
     final oldUri = rows.first['storage_uri_or_relative_path'] as String?;
     final storage = StorageLocationService.instance;
     final renamedUri = oldUri == null
