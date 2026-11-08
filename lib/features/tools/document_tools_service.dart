@@ -35,6 +35,16 @@ class DocumentToolsService {
   static const _uuid = Uuid();
   static final Set<String> _indexingDocumentIds = <String>{};
 
+  /// Normalizes OCR text for exact-content duplicate comparison.
+  /// Keeps letters and numbers from all scripts (including Devanagari).
+  @visibleForTesting
+  static String normalizeDuplicateText(String raw) => raw
+      .toLowerCase()
+      .replaceAll(RegExp(r'--- page \\d+ ---'), ' ')
+      .replaceAll(RegExp(r'[^\\p{L}\\p{N}]+', unicode: true), ' ')
+      .trim()
+      .replaceAll(RegExp(r'\\s+'), ' ');
+
   /// Finds exact file duplicates and OCR-text duplicates locally.
   /// OCR groups require a sufficiently long extracted text to avoid false positives.
   Future<List<Map<String, Object?>>> findDuplicateGroups() async {
@@ -56,12 +66,7 @@ class DocumentToolsService {
     final textGroups = <String, List<Map<String, Object?>>>{};
     for (final row in indexed) {
       final raw = row['extracted_text']?.toString() ?? '';
-      final normalized = raw
-          .toLowerCase()
-          .replaceAll(RegExp(r'--- page \\d+ ---'), ' ')
-          .replaceAll(RegExp(r'[^\\p{L}\\p{N}]+', unicode: true), ' ')
-          .trim()
-          .replaceAll(RegExp(r'\\s+'), ' ');
+      final normalized = normalizeDuplicateText(raw);
       if (normalized.length < 80) continue;
       final key = sha256.convert(utf8.encode(normalized)).toString();
       textGroups.putIfAbsent(key, () => []).add(row);
