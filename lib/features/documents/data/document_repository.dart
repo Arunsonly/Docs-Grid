@@ -638,6 +638,18 @@ class DocumentRepository {
     final now = DateTime.now().toUtc().toIso8601String();
     try {
       await db.transaction((txn) async {
+        if (targetFolderId != null) {
+          final activeFolder = await txn.query(
+            'folders',
+            columns: ['id'],
+            where: 'id = ? AND deleted_at IS NULL',
+            whereArgs: [targetFolderId],
+            limit: 1,
+          );
+          if (activeFolder.isEmpty) {
+            throw StateError('Destination folder was removed before the PDF import completed.');
+          }
+        }
         await txn.insert('documents', {
           'id': id,
           'name': p.basenameWithoutExtension(safeName),
@@ -788,6 +800,18 @@ class DocumentRepository {
         final now = DateTime.now().toUtc().toIso8601String();
         final documentId = _uuid.v4();
         await db.transaction((txn) async {
+          if (targetFolderId != null) {
+            final activeFolder = await txn.query(
+              'folders',
+              columns: ['id'],
+              where: 'id = ? AND deleted_at IS NULL',
+              whereArgs: [targetFolderId],
+              limit: 1,
+            );
+            if (activeFolder.isEmpty) {
+              throw StateError('Destination folder was removed before the PDF import completed.');
+            }
+          }
           await txn.insert('documents', {
             'id': documentId,
             'name': storedName,
