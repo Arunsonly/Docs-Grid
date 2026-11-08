@@ -191,6 +191,9 @@ class MainActivity : FlutterActivity() {
         }
         val output = mutableListOf<Map<String, String>>()
         val shareDir = java.io.File(cacheDir, "incoming_docs").apply { mkdirs() }
+        // These files are only hand-off copies. Remove leftovers from a prior
+        // interrupted share/import before staging the current incoming items.
+        shareDir.listFiles()?.forEach { stale -> try { stale.delete() } catch (_: Exception) {} }
         uris.forEachIndexed { index, uri ->
             try {
                 val mime = contentResolver.getType(uri)
