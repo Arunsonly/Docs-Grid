@@ -70,7 +70,6 @@ class ReminderNotifications {
         : recurrence == 'weekly'
             ? DateTimeComponents.dayOfWeekAndTime
             : null;
-    final android = _plugin.resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>();
     await _plugin.zonedSchedule(
       _id(id),
       title,
