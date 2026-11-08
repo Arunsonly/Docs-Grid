@@ -39,10 +39,13 @@ class DocumentToolsService {
 
   /// Escapes user text for a literal SQLite LIKE substring search.
   @visibleForTesting
-  static String escapeLikeQuery(String value) =>
-      value.replaceAll(r'\\', r'\\\\')
-          .replaceAll('%', r'\\%')
-          .replaceAll('_', r'\\_');
+  static String escapeLikeQuery(String value) {
+    final slash = String.fromCharCode(92);
+    return value
+        .replaceAll(slash, '$slash$slash')
+        .replaceAll('%', '$slash%')
+        .replaceAll('_', '$slash' '_');
+  }
 
   Future<List<Map<String, Object?>>> findExactDuplicates() async {
     final db = await _database.database;
