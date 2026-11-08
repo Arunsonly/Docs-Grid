@@ -26,7 +26,7 @@ class FolderRepository {
     if (cleaned == '.' || cleaned == '..') {
       throw ArgumentError('Folder name cannot be . or ..');
     }
-    if (cleaned.contains('/') || cleaned.contains('\\\\')) {
+    if (cleaned.contains('/') || cleaned.contains('\\')) {
       throw ArgumentError('Folder name cannot contain path separators.');
     }
     return cleaned;
