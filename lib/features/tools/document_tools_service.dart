@@ -1133,7 +1133,7 @@ class DocumentToolsService {
 
       final rawFiles = manifest['files'];
       if (rawFiles is! List) throw StateError('Backup file manifest is invalid.');
-      staging = await (await getTemporaryDirectory()).createTemp('docsgrid_restore_');
+      staging = await Directory.systemTemp.createTemp('docsgrid_restore_');
       final stagedPdfPaths = <String, String>{};
       final seenDocuments = <String>{};
       final seenEntries = <String>{};
