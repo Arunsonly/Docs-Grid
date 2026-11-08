@@ -23,6 +23,25 @@ void main() {
     expect(record.documentId, isNull);
   });
 
+  test('notification reconciliation only schedules enabled scheduled reminders', () {
+    expect(
+      ReminderRepository.shouldHaveScheduledNotification(enabled: 1, status: 'scheduled'),
+      isTrue,
+    );
+    expect(
+      ReminderRepository.shouldHaveScheduledNotification(enabled: 0, status: 'scheduled'),
+      isFalse,
+    );
+    expect(
+      ReminderRepository.shouldHaveScheduledNotification(enabled: 1, status: 'completed'),
+      isFalse,
+    );
+    expect(
+      ReminderRepository.shouldHaveScheduledNotification(enabled: 1, status: 'schedule_error'),
+      isFalse,
+    );
+  });
+
   test('ReminderRecord maps disabled and completed state', () {
     final record = ReminderRecord.fromMap({
       'id': 'reminder-2',
