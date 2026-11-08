@@ -15,12 +15,21 @@ class DocumentCropScreen extends StatefulWidget {
 class _DocumentCropScreenState extends State<DocumentCropScreen> {
   final CropController _controller = CropController();
   bool _cropping = false;
+  bool _completed = false;
 
   void _finish(CropResult result) {
-    if (!mounted) return;
+    if (!mounted || _completed) return;
     switch (result) {
       case CropSuccess(:final croppedImage):
-        Navigator.of(context).pop<Uint8List>(croppedImage);
+        // crop_your_image can still be notifying dependents when onCropped
+        // fires. Pop only after the current frame has completed; popping
+        // synchronously here caused Flutter's _dependents.isEmpty assertion
+        // on some Android devices.
+        _completed = true;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted) return;
+          Navigator.of(context).pop<Uint8List>(croppedImage);
+        });
       case CropFailure(:final cause):
         setState(() => _cropping = false);
         ScaffoldMessenger.of(context).showSnackBar(
@@ -46,7 +55,7 @@ class _DocumentCropScreenState extends State<DocumentCropScreen> {
             const Padding(
               padding: EdgeInsets.fromLTRB(20, 8, 20, 12),
               child: Text(
-                'Adjust the corners to include only the document. Pinch to zoom and move the image if needed.',
+                'Move and resize the crop frame to include only the document. Pinch to zoom, then apply the crop.',
                 textAlign: TextAlign.center,
               ),
             ),
@@ -70,7 +79,7 @@ class _DocumentCropScreenState extends State<DocumentCropScreen> {
                   Expanded(
                     child: OutlinedButton(
                       onPressed: _cropping ? null : () => Navigator.of(context).pop(),
-                      child: const Text('Cancel'),
+                      child: const Text('Retake / Cancel'),
                     ),
                   ),
                   const SizedBox(width: 12),
@@ -83,7 +92,7 @@ class _DocumentCropScreenState extends State<DocumentCropScreen> {
                       icon: _cropping
                           ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
                           : const Icon(Icons.crop),
-                      label: Text(_cropping ? 'Cropping…' : 'Use this crop'),
+                      label: Text(_cropping ? 'Cropping…' : 'Apply crop'),
                     ),
                   ),
                 ],
