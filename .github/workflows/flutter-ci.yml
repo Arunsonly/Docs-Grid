@@ -66,19 +66,26 @@ jobs:
           key: gradle-${{ runner.os }}-${{ hashFiles('pubspec.lock') }}-9.3.1
           restore-keys: |
             gradle-${{ runner.os }}-
-      - name: Add JetBrains Maven fallback
+      - name: Add checksum-verified Kotlin Maven mirror
         run: |
           python3 - <<'PY'
           from pathlib import Path
-          settings = Path('android/settings.gradle.kts')
-          if not settings.exists():
-              raise SystemExit('Android settings.gradle.kts was not generated')
-          source = settings.read_text()
-          mirror = 'maven { url = uri("https://cache-redirector.jetbrains.com/maven-central") }'
-          if mirror not in source:
-              source = source.replace('mavenCentral()', mirror + '\n        mavenCentral()')
-          settings.write_text(source)
-          print('Configured JetBrains Maven fallback ahead of Maven Central')
+          import os
+          mirror = 'maven { url = uri("https://artifacts-oss.talend.com/nexus/content/groups/public") }'
+          settings_files = [
+              Path('android/settings.gradle.kts'),
+              Path(os.environ['FLUTTER_ROOT']) / 'packages/flutter_tools/gradle/settings.gradle.kts',
+          ]
+          for settings in settings_files:
+              if not settings.exists():
+                  raise SystemExit(f'Missing Gradle settings file: {settings}')
+              source = settings.read_text()
+              if mirror not in source:
+                  if 'mavenCentral()' not in source:
+                      raise SystemExit(f'No Maven Central repository in {settings}')
+                  source = source.replace('mavenCentral()', mirror + '\n        mavenCentral()')
+              settings.write_text(source)
+          print('Added checksum-verified Kotlin Maven mirror to Android and Flutter included builds')
           PY
       - name: Use non-conflicting DocsGrid Android package ID
         run: |
