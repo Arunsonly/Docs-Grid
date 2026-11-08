@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -9,6 +10,7 @@ import 'features/documents/data/document_repository.dart';
 import 'features/categories/presentation/categories_screen.dart';
 import 'features/history/presentation/history_screen.dart';
 import 'features/reminders/presentation/reminders_screen.dart';
+import 'features/reminders/data/reminder_repository.dart';
 import 'features/folders/presentation/folders_screen.dart';
 import 'features/folders/data/folder_repository.dart';
 import 'core/storage/storage_location_service.dart';
@@ -96,6 +98,7 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     WidgetsBinding.instance.addPostFrameCallback((_) async {
+      await _refreshReminderSchedules();
       await _consumeSharedPdfs();
       await _offerRestoreOnFirstLaunch();
     });
@@ -103,7 +106,19 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) _consumeSharedPdfs();
+    if (state == AppLifecycleState.resumed) {
+      unawaited(_refreshReminderSchedules());
+      unawaited(_consumeSharedPdfs());
+    }
+  }
+
+  Future<void> _refreshReminderSchedules() async {
+    try {
+      await ReminderRepository().rescheduleEnabled();
+    } catch (_) {
+      // Document access remains available even if the OS notification queue
+      // cannot be reconciled (for example, when notification permission is off).
+    }
   }
 
   @override
