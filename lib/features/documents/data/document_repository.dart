@@ -646,7 +646,9 @@ class DocumentRepository {
     return const ImportSummary(added: 1, duplicates: 0, failed: 0);
   }
 
-  Future<ImportSummary> importPdfs() async {
+  Future<ImportSummary> importPdfs({
+    Future<ImportDecision?> Function(String suggestedName, String? suggestedCategoryId, List<ImportCategoryOption> categories)? review,
+  }) async {
     final pickedFiles = await FilePicker.pickFiles(
       type: FileType.custom,
       allowedExtensions: ['pdf'],
@@ -667,6 +669,12 @@ class DocumentRepository {
     var added = 0;
     var duplicates = 0;
     var failed = 0;
+    var skipped = 0;
+    final categoryRows = await db.query('categories', columns: ['id', 'name'], orderBy: 'name COLLATE NOCASE');
+    final categoryOptions = categoryRows.map((row) => ImportCategoryOption(
+      id: row['id'] as String,
+      name: row['name'] as String,
+    )).toList(growable: false);
 
     for (final picked in pickedFiles) {
       String? createdUri;
@@ -702,7 +710,19 @@ class DocumentRepository {
           continue;
         }
 
-        final safeName = _safePdfName(picked.name);
+        final suggestedName = p.basenameWithoutExtension(picked.name);
+        final suggestedCategoryId = _suggestCategoryId(picked.name, categoryOptions);
+        final decision = review == null
+            ? ImportDecision(name: suggestedName, categoryId: suggestedCategoryId)
+            : await review(suggestedName, suggestedCategoryId, categoryOptions);
+        if (decision == null) {
+          skipped++;
+          continue;
+        }
+        final safeName = _safePdfName(decision.name);
+        final selectedCategoryId = categoryOptions.any((item) => item.id == decision.categoryId)
+            ? decision.categoryId
+            : null;
         late final String storedName;
         late final String? relativePath;
         if (selectedFolder != null) {
@@ -748,6 +768,7 @@ class DocumentRepository {
             'mime_type': 'application/pdf',
             'size_bytes': sizeBytes,
             'sha256': digest,
+            'category_id': selectedCategoryId,
             'extracted_text_status': 'pending',
             'created_at': now,
             'updated_at': now,
@@ -771,7 +792,7 @@ class DocumentRepository {
         failed++;
       }
     }
-    return ImportSummary(added: added, duplicates: duplicates, failed: failed);
+    return ImportSummary(added: added, duplicates: duplicates, failed: failed, skipped: skipped);
   }
 
   String _safePdfName(String name) {
