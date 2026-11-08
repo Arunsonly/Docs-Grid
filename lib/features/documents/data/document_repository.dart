@@ -662,6 +662,7 @@ class DocumentRepository {
     final pickedFiles = await FilePicker.pickFiles(
       type: FileType.custom,
       allowedExtensions: ['pdf'],
+      withReadStream: true,
     );
     if (pickedFiles.isEmpty) {
       return const ImportSummary(added: 0, duplicates: 0, failed: 0);
@@ -688,26 +689,40 @@ class DocumentRepository {
 
     for (final picked in pickedFiles) {
       String? createdUri;
+      File? stagedSource;
       try {
         final sourcePath = picked.path;
-        final sourceFile = sourcePath == null ? null : File(sourcePath);
-        final fallbackBytes = sourceFile == null ? await picked.readAsBytes() : null;
-        if (sourceFile != null && !await sourceFile.exists()) {
-          throw StateError('The selected PDF is no longer accessible.');
+        late final File sourceFile;
+        if (sourcePath != null && sourcePath.isNotEmpty) {
+          sourceFile = File(sourcePath);
+          if (!await sourceFile.exists()) {
+            throw StateError('The selected PDF is no longer accessible.');
+          }
+        } else {
+          // Some cloud and document providers expose a stream rather than a
+          // filesystem path. Stage that stream in cache so large PDFs are not
+          // loaded into the Dart heap as one Uint8List.
+          final temp = await getTemporaryDirectory();
+          stagedSource = File(p.join(temp.path, 'import_${_uuid.v4()}.pdf'));
+          final readStream = picked.readStream;
+          if (readStream != null) {
+            await readStream.pipe(stagedSource.openWrite());
+          } else {
+            // Last-resort compatibility for providers that expose neither a
+            // path nor a stream. This is intentionally the only in-memory path.
+            await stagedSource.writeAsBytes(await picked.readAsBytes(), flush: true);
+          }
+          sourceFile = stagedSource;
         }
-        final header = sourceFile != null
-            ? await sourceFile.openRead(0, 5).fold<List<int>>(<int>[], (a, b) => a..addAll(b))
-            : fallbackBytes!.take(5).toList();
+
+        final header = await sourceFile.openRead(0, 5)
+            .fold<List<int>>(<int>[], (a, b) => a..addAll(b));
         if (header.length < 5 || String.fromCharCodes(header) != '%PDF-') {
           failed++;
           continue;
         }
-        final digest = sourceFile != null
-            ? (await sha256.bind(sourceFile.openRead()).first).toString()
-            : sha256.convert(fallbackBytes!).toString();
-        final sizeBytes = sourceFile != null
-            ? await sourceFile.length()
-            : fallbackBytes!.length;
+        final digest = (await sha256.bind(sourceFile.openRead()).first).toString();
+        final sizeBytes = await sourceFile.length();
         final existing = await db.query(
           'documents',
           columns: ['id'],
@@ -736,17 +751,11 @@ class DocumentRepository {
         late final String storedName;
         late final String? relativePath;
         if (destinationFolderUri != null) {
-          createdUri = sourceFile != null
-              ? await storage.copyPdf(
-                  sourceUri: Uri.file(sourceFile.path).toString(),
-                  parentUri: destinationFolderUri,
-                  name: safeName,
-                )
-              : await storage.savePdf(
-                  treeUri: destinationFolderUri,
-                  name: safeName,
-                  bytes: fallbackBytes!,
-                );
+          createdUri = await storage.copyPdf(
+            sourceUri: Uri.file(sourceFile.path).toString(),
+            parentUri: destinationFolderUri,
+            name: safeName,
+          );
           final copiedDigest = await storage.sha256Pdf(createdUri);
           if (copiedDigest != digest) {
             throw StateError('Imported PDF failed SHA-256 verification in selected storage.');
@@ -755,11 +764,7 @@ class DocumentRepository {
           relativePath = null;
         } else {
           final target = await _uniqueFile(library!, safeName);
-          if (sourceFile != null) {
-            await sourceFile.copy(target.path);
-          } else {
-            await target.writeAsBytes(fallbackBytes!, flush: true);
-          }
+          await sourceFile.copy(target.path);
           final copiedDigest = (await sha256.bind(target.openRead()).first).toString();
           if (copiedDigest != digest) {
             await target.delete();
@@ -805,6 +810,14 @@ class DocumentRepository {
           } catch (_) {}
         }
         failed++;
+      } finally {
+        if (stagedSource != null) {
+          try {
+            if (await stagedSource.exists()) await stagedSource.delete();
+          } catch (_) {
+            // Never let cache cleanup affect the imported source or DB record.
+          }
+        }
       }
     }
     return ImportSummary(added: added, duplicates: duplicates, failed: failed, skipped: skipped);
