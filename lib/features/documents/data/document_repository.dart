@@ -251,6 +251,18 @@ class DocumentRepository {
 
     try {
       await db.transaction((txn) async {
+        if (folderId != null) {
+          final destination = await txn.query(
+            'folders',
+            columns: ['id'],
+            where: 'id = ? AND deleted_at IS NULL',
+            whereArgs: [folderId],
+            limit: 1,
+          );
+          if (destination.isEmpty) {
+            throw StateError('Destination folder was removed before the move completed.');
+          }
+        }
         final count = await txn.update(
           'documents',
           {
