@@ -415,7 +415,7 @@ class DocumentToolsService {
           throw StateError('Backup references a missing parent folder.');
         }
         final base = parent == null ? restoreRoot.path : folderPath(parent);
-        final path = p.join(base, 'folder_$id');
+        // Never use untrusted archive IDs as filesystem path components.\n        final path = p.join(base, 'folder_${_uuid.v4()}');
         folderPaths[id] = path;
         return path;
       } finally {
@@ -435,7 +435,7 @@ class DocumentToolsService {
         final destinationDir = folderId == null ? restoreRoot : Directory(folderPath(folderId));
         await destinationDir.create(recursive: true);
         final safeName = p.basename((item['originalName'] as String?) ?? 'document.pdf');
-        final destination = File(p.join(destinationDir.path, '${id}_$safeName'));
+        // IDs come from the archive; use a generated filename to prevent path traversal.\n        final destination = File(p.join(destinationDir.path, '${_uuid.v4()}_$safeName'));
         final entry = decoded.findFile(item['entry'] as String)!;
         final bytes = entry.content as List<int>;
         final digest = sha256.convert(bytes).toString();
@@ -993,7 +993,40 @@ class DocumentToolsService {
       final id = raw['documentId'];
       final entryName = raw['entry'];
       final expectedDigest = raw['sha256'];
-      if (id is! String || id.isEmpty || !fileIds.add(id)) {
+      if (id is! String || !RegExp(r'^[A-Za-z0-9_-]{1,128}
+        throw StateError('Backup contains a missing or duplicate document reference.');
+      }
+      if (entryName != 'pdfs/$id.pdf' || expectedDigest is! String ||
+          expectedDigest.length != 64 ||
+          int.tryParse(expectedDigest, radix: 16) == null) {
+        throw StateError('Backup contains an invalid PDF entry reference.');
+      }
+      final entry = decoded.findFile(entryName as String);
+      if (entry == null || entry.isFile != true) {
+        throw StateError('Backup is incomplete: missing PDF entry.');
+      }
+      final digest = sha256.convert(entry.content as List<int>).toString();
+      if (digest != expectedDigest) throw StateError('Backup integrity check failed.');
+      documentIds.add(id);
+    }
+    final metadataDocumentIds = <String>{};
+    for (final row in rowsByTable['documents']!) {
+      if (row is! Map || row['id'] is! String ||
+          !metadataDocumentIds.add(row['id'] as String)) {
+        throw StateError('Backup contains an invalid or duplicate document metadata record.');
+      }
+      if (!documentIds.contains(row['id'])) {
+        throw StateError('Backup metadata references a document with no PDF.');
+      }
+    }
+    if (metadataDocumentIds.length != documentIds.length ||
+        !metadataDocumentIds.containsAll(documentIds)) {
+      throw StateError('Backup contains orphaned PDF entries or missing document records.');
+    }
+    return rawFiles.length;
+  }
+}
+).hasMatch(id) || !fileIds.add(id)) {
         throw StateError('Backup contains a missing or duplicate document reference.');
       }
       if (entryName != 'pdfs/$id.pdf' || expectedDigest is! String ||
