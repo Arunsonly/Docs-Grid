@@ -369,6 +369,16 @@ class DocumentToolsService {
     ));
     final encoder = ZipFileEncoder();
     var encoderOpened = false;
+    Future<void> addStoredFile(File file, String archiveName) async {
+      final input = InputFileStream(file.path);
+      try {
+        final entry = ArchiveFile.stream(archiveName, input)
+          ..compression = CompressionType.none;
+        encoder.addArchiveFile(entry);
+      } finally {
+        await input.close();
+      }
+    }
     try {
       encoder.create(output.path);
       encoderOpened = true;
@@ -380,7 +390,7 @@ class DocumentToolsService {
         (manifest['tables'] as Map<String, int>)[table] = rows.length;
         final metadataFile = File(p.join(staging.path, '$table.json'));
         await metadataFile.writeAsString(jsonEncode(rows), encoding: utf8, flush: true);
-        await encoder.addFile(metadataFile, '$table.json');
+        await addStoredFile(metadataFile, '$table.json');
       }
 
       final docs = await db.query('documents',
@@ -414,8 +424,9 @@ class DocumentToolsService {
           }
           // Never place imported database IDs in archive paths.
           final entry = 'pdfs/${_uuid.v4()}.pdf';
-          // PDFs are already compressed; store them without a second CPU-heavy deflate pass.
-          await encoder.addFile(file, entry, ZipFileEncoder.store);
+          // Stream already-compressed PDF bytes directly into the ZIP without
+          // allocating a second full-size buffer or recompressing the payload.
+          await addStoredFile(file, entry);
           (manifest['files'] as List).add({
             'documentId': row['id'], 'entry': entry, 'sha256': digest,
             'originalName': row['name'],
@@ -431,7 +442,7 @@ class DocumentToolsService {
 
       final manifestFile = File(p.join(staging.path, 'manifest.json'));
       await manifestFile.writeAsString(jsonEncode(manifest), encoding: utf8, flush: true);
-      await encoder.addFile(manifestFile, 'manifest.json');
+      await addStoredFile(manifestFile, 'manifest.json');
       await encoder.close();
       encoderOpened = false;
       return output;
