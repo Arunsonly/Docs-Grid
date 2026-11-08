@@ -15,8 +15,7 @@ class ReminderNotifications {
     if (_ready) return;
     tzdata.initializeTimeZones();
     final deviceTimeZone = await FlutterTimezone.getLocalTimezone();
-    // Some Android builds report the legacy IANA alias Asia/Calcutta.
-    // The bundled timezone database exposes Asia/Kolkata as the canonical ID.
+    // Android vendors may still report legacy IANA aliases.
     final reportedId = deviceTimeZone.identifier;
     final canonicalId = switch (reportedId) {
       'Asia/Calcutta' => 'Asia/Kolkata',
@@ -27,8 +26,8 @@ class ReminderNotifications {
     try {
       tz.setLocalLocation(tz.getLocation(canonicalId));
     } on Exception {
-      // Scheduling should remain available even if a vendor returns an
-      // unknown timezone alias; UTC is safer than crashing the reminder UI.
+      // Fall back to the device's UTC offset instead of crashing the
+      // reminder screen when a vendor returns an unknown timezone alias.
       tz.setLocalLocation(tz.UTC);
     }
     const settings = InitializationSettings(
@@ -78,13 +77,21 @@ class ReminderNotifications {
       tz.TZDateTime.from(at, tz.local),
       const NotificationDetails(
         android: AndroidNotificationDetails(
-          'docsgrid_reminders',
+          // Versioned channel ID: Android does not allow changing sound
+          // behaviour on an already-created notification channel.
+          'docsgrid_reminders_v2',
           'Document reminders',
-          channelDescription: 'Local reminders for your documents',
-          importance: Importance.high,
+          channelDescription: 'Audible local reminders for your documents',
+          importance: Importance.max,
           priority: Priority.high,
+          playSound: true,
+          enableVibration: true,
         ),
-        iOS: DarwinNotificationDetails(),
+        iOS: DarwinNotificationDetails(
+          presentAlert: true,
+          presentBadge: true,
+          presentSound: true,
+        ),
       ),
       androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
       matchDateTimeComponents: match,
