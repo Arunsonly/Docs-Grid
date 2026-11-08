@@ -458,7 +458,6 @@ class DocumentRepository {
     final picked = await FilePicker.pickFiles(
       type: FileType.custom,
       allowedExtensions: ['pdf'],
-      withReadStream: true,
     );
     if (picked.isEmpty) return;
     final pickedFile = picked.single;
@@ -472,12 +471,9 @@ class DocumentRepository {
       } else {
         final temp = await getTemporaryDirectory();
         stagedSource = File(p.join(temp.path, 'relink_${_uuid.v4()}.pdf'));
-        final stream = pickedFile.readStream;
-        if (stream != null) {
-          await stream.pipe(stagedSource.openWrite());
-        } else {
-          await stagedSource.writeAsBytes(await pickedFile.readAsBytes(), flush: true);
-        }
+        // file_picker 13.x exposes provider bytes rather than a read stream
+        // when no local path is available. Stage them immediately in cache.
+        await stagedSource.writeAsBytes(await pickedFile.readAsBytes(), flush: true);
         source = stagedSource;
       }
       if (!await source.exists()) throw StateError('The selected PDF is no longer available.');
@@ -722,19 +718,11 @@ class DocumentRepository {
             throw StateError('The selected PDF is no longer accessible.');
           }
         } else {
-          // Some cloud and document providers expose a stream rather than a
-          // filesystem path. Stage that stream in cache so large PDFs are not
-          // loaded into the Dart heap as one Uint8List.
+          // file_picker 13.x provides bytes for providers without a local path.
+          // Stage them in cache immediately and remove the staged copy below.
           final temp = await getTemporaryDirectory();
           stagedSource = File(p.join(temp.path, 'import_${_uuid.v4()}.pdf'));
-          final readStream = picked.readStream;
-          if (readStream != null) {
-            await readStream.pipe(stagedSource.openWrite());
-          } else {
-            // Last-resort compatibility for providers that expose neither a
-            // path nor a stream. This is intentionally the only in-memory path.
-            await stagedSource.writeAsBytes(await picked.readAsBytes(), flush: true);
-          }
+          await stagedSource.writeAsBytes(await picked.readAsBytes(), flush: true);
           sourceFile = stagedSource;
         }
 
