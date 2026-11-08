@@ -3,6 +3,8 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:open_filex/open_filex.dart';
+import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
 
 import '../data/document_repository.dart';
 import '../../../core/storage/storage_location_service.dart';
@@ -108,6 +110,51 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     }
   }
 
+  Future<void> _importStoragePdf({
+    required BuildContext dialogContext,
+    required String fileUri,
+    required String fileName,
+    required String targetFolderUri,
+  }) async {
+    Navigator.of(dialogContext).pop();
+    File? stagedFile;
+    try {
+      final temp = await getTemporaryDirectory();
+      stagedFile = File(p.join(
+        temp.path,
+        'docsgrid_storage_import_${DateTime.now().microsecondsSinceEpoch}.pdf',
+      ));
+      await StorageLocationService.instance.copyPdfToPath(
+        sourceUri: fileUri,
+        destinationPath: stagedFile.path,
+      );
+      final summary = await _repository.importScannedPdf(
+        stagedFile,
+        displayName: fileName,
+        targetFolderUri: targetFolderUri,
+        sourceType: 'storage_browser',
+      );
+      await _load();
+      if (summary.added > 0) {
+        _message('Imported $fileName successfully.');
+      } else if (summary.duplicates > 0) {
+        _message('$fileName is already in DocsGrid. No duplicate was imported.');
+      } else {
+        _message('Could not import $fileName.');
+      }
+    } catch (error) {
+      _message('Could not import $fileName: $error');
+    } finally {
+      if (stagedFile != null) {
+        try {
+          if (await stagedFile.exists()) await stagedFile.delete();
+        } catch (_) {
+          // A temporary copy is never allowed to affect the source document.
+        }
+      }
+    }
+  }
+
   Future<void> _showStorageDirectory(String uri, String name) async {
     List<Map<String, Object?>> entries;
     try {
@@ -142,7 +189,12 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                       trailing: isDirectory ? const Icon(Icons.chevron_right) : const Icon(Icons.more_vert),
                       onTap: isDirectory
                           ? () => _showStorageDirectory(entry['uri'] as String, fileName)
-                          : () => _message('Selected storage PDF: $fileName. Import and duplicate review will be enabled in the next storage-browser step.'),
+                          : () => _importStoragePdf(
+                              dialogContext: context,
+                              fileUri: entry['uri'] as String,
+                              fileName: fileName,
+                              targetFolderUri: uri,
+                            ),
                     );
                   },
                 ),
