@@ -972,6 +972,14 @@ class DocumentRepository {
       newStorageUri = newFile.path;
     }
 
+    String? relativePath;
+    if (!isShared) {
+      final appDocuments = await getApplicationDocumentsDirectory();
+      final libraryRoot = p.join(appDocuments.path, 'DocsGrid', 'PDFs');
+      if (p.isWithin(libraryRoot, newStorageUri)) {
+        relativePath = p.relative(newStorageUri, from: libraryRoot);
+      }
+    }
     final db = await _database.database;
     try {
       await db.transaction((txn) async {
@@ -981,7 +989,7 @@ class DocumentRepository {
           {
             'name': safeBase,
             'storage_uri': newStorageUri,
-            'relative_path': null,
+            'relative_path': relativePath,
             'updated_at': now,
           },
           where: 'id = ? AND deleted_at IS NULL',
