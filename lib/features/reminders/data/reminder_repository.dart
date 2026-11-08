@@ -58,12 +58,15 @@ class ReminderRepository {
   /// Safe to call at startup and whenever the app returns to the foreground.
   Future<void> rescheduleEnabled() async {
     final db = await _database.database;
-    final rows = await db.query(
-      'reminders',
-      where: 'enabled = 1 AND status NOT IN (?, ?)',
-      whereArgs: ['completed', 'cancelled'],
-      orderBy: 'remind_at_utc ASC',
-    );
+    final rows = await db.rawQuery('''
+      SELECT r.*
+      FROM reminders r
+      LEFT JOIN documents d ON d.id = r.document_id
+      WHERE r.enabled = 1
+        AND r.status NOT IN (?, ?)
+        AND (r.document_id IS NULL OR d.deleted_at IS NULL)
+      ORDER BY r.remind_at_utc ASC
+    ''', ['completed', 'cancelled']);
     await ReminderNotifications.instance.reconcile(rows);
   }
 
