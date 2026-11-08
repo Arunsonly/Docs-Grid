@@ -106,18 +106,14 @@ class FolderRepository {
     for (final row in unresolved.reversed) {
       if (parentUri == null) return null;
       final name = row['name'] as String;
-      String childUri;
-      try {
-        childUri = await StorageLocationService.instance.findChildUri(
-          parentUri: parentUri,
-          name: name,
-        );
-      } catch (_) {
-        childUri = await StorageLocationService.instance.createDirectory(
-          parentUri: parentUri,
-          name: name,
-        );
-      }
+      final existingUri = await StorageLocationService.instance.findChildUriIfExists(
+        parentUri: parentUri,
+        name: name,
+      );
+      final childUri = existingUri ?? await StorageLocationService.instance.createDirectory(
+        parentUri: parentUri,
+        name: name,
+      );
       await db.update(
         'folders',
         {
