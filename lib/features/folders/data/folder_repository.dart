@@ -205,31 +205,44 @@ class FolderRepository {
     try {
       if (renamedUri != null) {
       Future<void> collectDescendants(String parentId, String parentUri) async {
-        final childFolders = await db.query(
-          'folders',
-          columns: ['id', 'name'],
-          where: 'parent_id = ? AND deleted_at IS NULL',
-          whereArgs: [parentId],
-        );
-        for (final child in childFolders) {
-          final childId = child['id'] as String;
-          final childName = child['name'] as String;
-          final childUri = await storage.findChildUri(parentUri: parentUri, name: childName);
-          folderUriUpdates[childId] = childUri;
-          await collectDescendants(childId, childUri);
-        }
-        final docs = await db.query(
-          'documents',
-          columns: ['id', 'name'],
-          where: 'folder_id = ?',
-          whereArgs: [parentId],
-        );
-        for (final doc in docs) {
-          final documentName = '${doc['name'] as String}.pdf';
-          documentUriUpdates[doc['id'] as String] = await storage.findChildUri(
-            parentUri: parentUri,
-            name: documentName,
+        final pending = <({String id, String uri})>[
+          (id: parentId, uri: parentUri),
+        ];
+        final visited = <String>{};
+        while (pending.isNotEmpty) {
+          final current = pending.removeLast();
+          if (!visited.add(current.id)) {
+            throw StateError('Folder hierarchy contains a cycle.');
+          }
+          final childFolders = await db.query(
+            'folders',
+            columns: ['id', 'name'],
+            where: 'parent_id = ? AND deleted_at IS NULL',
+            whereArgs: [current.id],
           );
+          for (final child in childFolders) {
+            final childId = child['id'] as String;
+            final childName = child['name'] as String;
+            final childUri = await storage.findChildUri(
+              parentUri: current.uri,
+              name: childName,
+            );
+            folderUriUpdates[childId] = childUri;
+            pending.add((id: childId, uri: childUri));
+          }
+          final docs = await db.query(
+            'documents',
+            columns: ['id', 'name'],
+            where: 'folder_id = ?',
+            whereArgs: [current.id],
+          );
+          for (final doc in docs) {
+            final documentName = '${doc['name'] as String}.pdf';
+            documentUriUpdates[doc['id'] as String] = await storage.findChildUri(
+              parentUri: current.uri,
+              name: documentName,
+            );
+          }
         }
       }
 
