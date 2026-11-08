@@ -7,8 +7,6 @@ import 'package:path/path.dart' as p;
 
 import '../../core/database/app_database.dart';
 import '../documents/data/document_repository.dart';
-import '../categories/data/category_repository.dart';
-import '../reminders/data/reminder_repository.dart';
 import '../folders/data/folder_repository.dart';
 import 'document_tools_service.dart';
 import '../../core/storage/storage_location_service.dart';
@@ -24,7 +22,6 @@ class DocumentToolsScreen extends StatefulWidget {
 
 class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
   final _tools = DocumentToolsService();
-  final _categories = CategoryRepository();
   final _search = TextEditingController();
   List<Map<String, Object?>> _results = [];
   bool _busy = false;
