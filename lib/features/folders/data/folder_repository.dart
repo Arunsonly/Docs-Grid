@@ -27,7 +27,7 @@ class FolderRepository {
       throw ArgumentError('Folder name cannot be . or ..');
     }
     if (cleaned.contains('/') || cleaned.contains('\\\\')) {
-      throw ArgumentError('Folder name cannot contain / or \\\\.');
+      throw ArgumentError('Folder name cannot contain path separators.');
     }
     return cleaned;
   }
@@ -148,8 +148,8 @@ class FolderRepository {
     if (cleaned == '.' || cleaned == '..') {
       throw ArgumentError('Folder name cannot be . or ..');
     }
-    if (cleaned.contains('/') || cleaned.contains('\\')) {
-      throw ArgumentError('Folder name cannot contain / or \\.');
+    if (cleaned.contains('/') || cleaned.contains('\\\\')) {
+      throw ArgumentError('Folder name cannot contain path separators.');
     }
     final db = await _database.database;
     final storage = StorageLocationService.instance;
@@ -191,8 +191,8 @@ class FolderRepository {
   Future<void> rename(String id, String name) async {
     final cleaned = name.trim();
     if (cleaned.isEmpty) throw ArgumentError('Folder name cannot be empty.');
-    if (cleaned.contains('/') || cleaned.contains('\\')) {
-      throw ArgumentError('Folder name cannot contain / or \\.');
+    if (cleaned.contains('/') || cleaned.contains('\\\\')) {
+      throw ArgumentError('Folder name cannot contain path separators.');
     }
     final db = await _database.database;
     final rows = await db.query(
