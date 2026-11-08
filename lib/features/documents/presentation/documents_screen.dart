@@ -10,6 +10,7 @@ import '../../categories/data/category_repository.dart';
 import '../../folders/data/folder_repository.dart';
 import '../../tools/document_tools_service.dart';
 import '../../tools/document_tools_screen.dart';
+import '../../reminders/data/reminder_repository.dart';
 
 class DocumentsScreen extends StatefulWidget {
   const DocumentsScreen({super.key, this.favoritesOnly = false, this.recentOnly = false});
