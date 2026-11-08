@@ -643,15 +643,19 @@ class DocumentToolsService {
       final oldId = row['id'] as String;
       final sameName = existingCategories.where((v) =>
           (v['name'] as String).toLowerCase() == (row['name'] as String).toLowerCase());
+      final idTaken = existingCategories.any((v) => v['id'] == oldId);
       categoryIdMap[oldId] = sameName.isNotEmpty
           ? sameName.first['id'] as String
-          : oldId;
+          : (idTaken ? _uuid.v4() : oldId);
     }
     for (final row in rowsByTable['tags']!) {
       final oldId = row['id'] as String;
       final sameName = existingTags.where((v) =>
           (v['name'] as String).toLowerCase() == (row['name'] as String).toLowerCase());
-      tagIdMap[oldId] = sameName.isNotEmpty ? sameName.first['id'] as String : oldId;
+      final idTaken = existingTags.any((v) => v['id'] == oldId);
+      tagIdMap[oldId] = sameName.isNotEmpty
+          ? sameName.first['id'] as String
+          : (idTaken ? _uuid.v4() : oldId);
     }
     for (final row in rowsByTable['documents']!) {
       final oldId = row['id'] as String;
