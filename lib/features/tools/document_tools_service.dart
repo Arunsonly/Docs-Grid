@@ -35,16 +35,51 @@ class DocumentToolsService {
   static const _uuid = Uuid();
   static final Set<String> _indexingDocumentIds = <String>{};
 
-  Future<List<Map<String, Object?>>> findExactDuplicates() async {
+  /// Finds exact file duplicates and OCR-text duplicates locally.
+  /// OCR groups require a sufficiently long extracted text to avoid false positives.
+  Future<List<Map<String, Object?>>> findDuplicateGroups() async {
     final db = await _database.database;
-    return db.rawQuery('''
-      SELECT sha256, COUNT(*) AS copies, GROUP_CONCAT(id) AS document_ids,
+    final exact = await db.rawQuery('''
+      SELECT sha256 AS group_key, 'SHA-256' AS duplicate_type,
+             COUNT(*) AS copies, GROUP_CONCAT(id) AS document_ids,
              GROUP_CONCAT(name, ' | ') AS names
       FROM documents
       WHERE deleted_at IS NULL AND sha256 IS NOT NULL AND sha256 <> ''
       GROUP BY sha256 HAVING COUNT(*) > 1
-      ORDER BY copies DESC
     ''');
+    final indexed = await db.rawQuery('''
+      SELECT d.id, d.name, i.extracted_text
+      FROM documents d
+      JOIN document_text_index i ON i.document_id = d.id
+      WHERE d.deleted_at IS NULL AND i.extracted_text IS NOT NULL
+    ''');
+    final textGroups = <String, List<Map<String, Object?>>>{};
+    for (final row in indexed) {
+      final raw = row['extracted_text']?.toString() ?? '';
+      final normalized = raw
+          .toLowerCase()
+          .replaceAll(RegExp(r'--- page \\d+ ---'), ' ')
+          .replaceAll(RegExp(r'[^\\p{L}\\p{N}]+', unicode: true), ' ')
+          .trim()
+          .replaceAll(RegExp(r'\\s+'), ' ');
+      if (normalized.length < 80) continue;
+      final key = sha256.convert(utf8.encode(normalized)).toString();
+      textGroups.putIfAbsent(key, () => []).add(row);
+    }
+    final ocr = <Map<String, Object?>>[];
+    for (final entry in textGroups.entries) {
+      if (entry.value.length < 2) continue;
+      ocr.add({
+        'group_key': entry.key,
+        'duplicate_type': 'OCR text',
+        'copies': entry.value.length,
+        'document_ids': entry.value.map((row) => row['id']).join(','),
+        'names': entry.value.map((row) => row['name']).join(' | '),
+      });
+    }
+    final groups = <Map<String, Object?>>[...exact, ...ocr];
+    groups.sort((a, b) => (b['copies'] as int).compareTo(a['copies'] as int));
+    return groups;
   }
 
   Future<void> keepOneDuplicate(String sha, String keepId) async {
