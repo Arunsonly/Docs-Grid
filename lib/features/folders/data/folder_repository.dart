@@ -1,3 +1,7 @@
+import 'dart:io';
+
+import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:uuid/uuid.dart';
 
@@ -227,47 +231,138 @@ class FolderRepository {
     if (siblingMatches.isNotEmpty) {
       throw StateError('A folder with this name already exists here.');
     }
-    final oldUri = rows.first['storage_uri_or_relative_path'] as String?;
+
     final storage = StorageLocationService.instance;
+    var oldUri = rows.first['storage_uri_or_relative_path'] as String?;
+    final selectedRoot = await storage.selectedFolder();
+    if (oldUri == null && selectedRoot != null) {
+      oldUri = await ensurePhysicalStorageUri(id);
+    }
     final renamedUri = oldUri == null
         ? null
         : await storage.renamePdf(uri: oldUri, name: cleaned);
 
     final folderUriUpdates = <String, String>{};
     final documentUriUpdates = <String, String>{};
+    final documentRelativePathUpdates = <String, String?>{};
+    Directory? oldPrivateDirectory;
+    Directory? newPrivateDirectory;
+    var privateDirectoryMoved = false;
+
     try {
       if (renamedUri != null) {
-      Future<void> collectDescendants(String parentId, String parentUri) async {
-        final childFolders = await db.query(
-          'folders',
-          columns: ['id', 'name'],
-          where: 'parent_id = ? AND deleted_at IS NULL',
-          whereArgs: [parentId],
-        );
-        for (final child in childFolders) {
-          final childId = child['id'] as String;
-          final childName = child['name'] as String;
-          final childUri = await storage.findChildUri(parentUri: parentUri, name: childName);
-          folderUriUpdates[childId] = childUri;
-          await collectDescendants(childId, childUri);
+        final visited = <String>{id};
+        Future<void> collectDescendants(String parentFolderId, String parentUri) async {
+          final childFolders = await db.query(
+            'folders',
+            columns: ['id', 'name'],
+            where: 'parent_id = ? AND deleted_at IS NULL',
+            whereArgs: [parentFolderId],
+          );
+          for (final child in childFolders) {
+            final childId = child['id'] as String;
+            if (!visited.add(childId)) {
+              throw StateError('Folder hierarchy contains a cycle.');
+            }
+            final childUri = await storage.findChildUri(
+              parentUri: parentUri,
+              name: child['name'] as String,
+            );
+            folderUriUpdates[childId] = childUri;
+            await collectDescendants(childId, childUri);
+          }
+          final docs = await db.query(
+            'documents',
+            columns: ['id', 'name'],
+            where: 'folder_id = ?',
+            whereArgs: [parentFolderId],
+          );
+          for (final doc in docs) {
+            final documentName = '${doc['name'] as String}.pdf';
+            documentUriUpdates[doc['id'] as String] = await storage.findChildUri(
+              parentUri: parentUri,
+              name: documentName,
+            );
+            documentRelativePathUpdates[doc['id'] as String] = null;
+          }
         }
-        final docs = await db.query(
-          'documents',
-          columns: ['id', 'name'],
-          where: 'folder_id = ?',
-          whereArgs: [parentId],
+        await collectDescendants(id, renamedUri);
+      } else {
+        // In app-private mode the folder's files live under DocsGrid/PDFs.
+        // Rename that directory and repair every descendant document path;
+        // changing only the database name would orphan the folder contents.
+        final appDocuments = await getApplicationDocumentsDirectory();
+        final libraryRoot = p.join(appDocuments.path, 'DocsGrid', 'PDFs');
+        final segments = <String>[];
+        final visited = <String>{};
+        String? currentId = id;
+        while (currentId != null) {
+          if (!visited.add(currentId)) {
+            throw StateError('Folder hierarchy contains a cycle.');
+          }
+          final ancestorRows = await db.query(
+            'folders',
+            columns: ['name', 'parent_id'],
+            where: 'id = ?',
+            whereArgs: [currentId],
+            limit: 1,
+          );
+          if (ancestorRows.isEmpty) throw StateError('Folder parent no longer exists.');
+          segments.add(ancestorRows.first['name'] as String);
+          currentId = ancestorRows.first['parent_id'] as String?;
+        }
+        final oldPath = p.joinAll([libraryRoot, ...segments.reversed]);
+        oldPrivateDirectory = Directory(oldPath);
+        newPrivateDirectory = Directory(p.join(oldPrivateDirectory.parent.path, cleaned));
+
+        final descendantIds = <String>{id};
+        Future<void> collectPrivateDescendants(String parentFolderId) async {
+          final children = await db.query(
+            'folders',
+            columns: ['id'],
+            where: 'parent_id = ?',
+            whereArgs: [parentFolderId],
+          );
+          for (final child in children) {
+            final childId = child['id'] as String;
+            if (!descendantIds.add(childId)) {
+              throw StateError('Folder hierarchy contains a cycle.');
+            }
+            await collectPrivateDescendants(childId);
+          }
+        }
+        await collectPrivateDescendants(id);
+
+        final placeholders = List.filled(descendantIds.length, '?').join(',');
+        final docs = await db.rawQuery(
+          'SELECT id, storage_uri FROM documents WHERE folder_id IN ($placeholders)',
+          descendantIds.toList(),
         );
         for (final doc in docs) {
-          final documentName = '${doc['name'] as String}.pdf';
-          documentUriUpdates[doc['id'] as String] = await storage.findChildUri(
-            parentUri: parentUri,
-            name: documentName,
+          final uri = doc['storage_uri'] as String?;
+          if (uri == null || uri.startsWith('content://') || uri.startsWith('file://') ||
+              !p.isWithin(oldPrivateDirectory.path, uri)) {
+            continue;
+          }
+          final newPath = p.join(
+            newPrivateDirectory.path,
+            p.relative(uri, from: oldPrivateDirectory.path),
           );
+          final documentId = doc['id'] as String;
+          documentUriUpdates[documentId] = newPath;
+          documentRelativePathUpdates[documentId] = p.relative(newPath, from: libraryRoot);
+        }
+
+        final oldExists = await oldPrivateDirectory.exists();
+        final newExists = await newPrivateDirectory.exists();
+        if (oldExists && newExists) {
+          throw StateError('A private folder with this name already exists.');
+        }
+        if (oldExists) {
+          await oldPrivateDirectory.rename(newPrivateDirectory.path);
+          privateDirectoryMoved = true;
         }
       }
-
-      await collectDescendants(id, renamedUri);
-    }
 
       await db.transaction((txn) async {
         final now = DateTime.now().toUtc().toIso8601String();
@@ -293,18 +388,24 @@ class FolderRepository {
         for (final entry in documentUriUpdates.entries) {
           await txn.update(
             'documents',
-            {'storage_uri': entry.value, 'updated_at': now},
+            {
+              'storage_uri': entry.value,
+              'relative_path': documentRelativePathUpdates[entry.key],
+              'updated_at': now,
+            },
             where: 'id = ?',
             whereArgs: [entry.key],
           );
         }
       });
     } catch (_) {
-      if (renamedUri != null) {
+      if (privateDirectoryMoved && oldPrivateDirectory != null && newPrivateDirectory != null) {
+        try { await newPrivateDirectory.rename(oldPrivateDirectory.path); } catch (_) {}
+      } else if (renamedUri != null && oldName.isNotEmpty) {
         try {
           await storage.renamePdf(uri: renamedUri, name: oldName);
         } catch (_) {
-          // Keep the failure visible; the old database references remain intact.
+          // Preserve the original database references if provider rollback fails.
         }
       }
       rethrow;
