@@ -99,7 +99,7 @@ class ReminderRepository {
     if (!remindAt.isAfter(DateTime.now())) {
       throw ArgumentError('Reminder date and time must be in the future.');
     }
-    if (recurrenceRule != null && !const {'daily', 'weekly'}.contains(recurrenceRule)) {
+    if (recurrenceRule != null && !const {'daily', 'weekly', 'monthly'}.contains(recurrenceRule)) {
       throw ArgumentError('Unsupported reminder recurrence.');
     }
     await _ensureDocumentIsActive(documentId);
@@ -149,7 +149,7 @@ class ReminderRepository {
     if (!remindAt.isAfter(DateTime.now())) {
       throw ArgumentError('Reminder date and time must be in the future.');
     }
-    if (recurrenceRule != null && !const {'daily', 'weekly'}.contains(recurrenceRule)) {
+    if (recurrenceRule != null && !const {'daily', 'weekly', 'monthly'}.contains(recurrenceRule)) {
       throw ArgumentError('Unsupported reminder recurrence.');
     }
     final db = await _database.database;
