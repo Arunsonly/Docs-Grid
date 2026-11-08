@@ -61,20 +61,46 @@ class DocumentToolsService {
 
   Future<int> keepOneDuplicate(String sha, String keepId) async {
     final db = await _database.database;
+    final candidates = await db.query(
+      'documents',
+      columns: ['id', 'storage_uri', 'sha256'],
+      where: 'sha256 = ? AND deleted_at IS NULL',
+      whereArgs: [sha],
+    );
+    if (candidates.length < 2 || !candidates.any((row) => row['id'] == keepId)) {
+      throw StateError('Duplicate group changed. Refresh the list and try again.');
+    }
+
+    // Re-hash every current file before moving anything. A PDF edited outside
+    // DocsGrid must not be trashed merely because its old indexed hash matches.
+    for (final candidate in candidates) {
+      final uri = candidate['storage_uri'] as String?;
+      if (uri == null || uri.isEmpty) {
+        throw StateError('A duplicate copy has no storage location; no copies were moved.');
+      }
+      final actualDigest = uri.startsWith('content://') || uri.startsWith('file://')
+          ? await StorageLocationService.instance.sha256Pdf(uri)
+          : await _hashLocalFile(File(uri));
+      if (actualDigest != sha) {
+        throw StateError('A duplicate copy has changed since indexing. Refresh duplicate detection; no copies were moved.');
+      }
+    }
+
     return db.transaction((txn) async {
-      final matches = await txn.query(
+      final current = await txn.query(
         'documents',
         columns: ['id'],
         where: 'sha256 = ? AND deleted_at IS NULL',
         whereArgs: [sha],
       );
-      if (matches.length < 2 || !matches.any((row) => row['id'] == keepId)) {
-        throw StateError('Duplicate group changed. Refresh the list and try again.');
+      final expectedIds = candidates.map((row) => row['id'] as String).toSet();
+      final currentIds = current.map((row) => row['id'] as String).toSet();
+      if (currentIds.length != expectedIds.length || !currentIds.containsAll(expectedIds)) {
+        throw StateError('Duplicate group changed during review. No copies were moved.');
       }
       final now = DateTime.now().toUtc().toIso8601String();
       var moved = 0;
-      for (final row in matches) {
-        final id = row['id'] as String;
+      for (final id in expectedIds) {
         if (id == keepId) continue;
         final changed = await txn.update(
           'documents',
@@ -93,11 +119,18 @@ class DocumentToolsService {
           moved++;
         }
       }
-      if (moved != matches.length - 1) {
+      if (moved != expectedIds.length - 1) {
         throw StateError('Duplicate group changed during review. No copies were moved.');
       }
       return moved;
     });
+  }
+
+  Future<String> _hashLocalFile(File file) async {
+    if (!await file.exists()) {
+      throw StateError('A duplicate copy is missing; no copies were moved.');
+    }
+    return (await sha256.bind(file.openRead()).first).toString();
   }
 
   Future<int> indexPdfText(String documentId, String path) async {
