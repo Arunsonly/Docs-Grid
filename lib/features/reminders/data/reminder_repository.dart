@@ -123,7 +123,8 @@ class ReminderRepository {
     });
     await ReminderNotifications.instance.requestPermission();
     await ReminderNotifications.instance.schedule(
-      id: id, title: cleanTitle, body: cleanNote, at: remindAt, recurrence: recurrenceRule,
+      id: id, title: cleanTitle, body: cleanNote, at: remindAt,
+      recurrence: recurrenceRule, documentId: documentId,
     );
   }
 
@@ -166,7 +167,8 @@ class ReminderRepository {
     }, where: 'id = ?', whereArgs: [id]);
     await ReminderNotifications.instance.cancel(id);
     await ReminderNotifications.instance.schedule(
-      id: id, title: cleanTitle, body: cleanNote, at: remindAt, recurrence: recurrenceRule,
+      id: id, title: cleanTitle, body: cleanNote, at: remindAt,
+      recurrence: recurrenceRule, documentId: existing.first['document_id'] as String?,
     );
   }
 
@@ -185,6 +187,7 @@ class ReminderRepository {
     }, where: 'id = ?', whereArgs: [reminder.id]);
     await ReminderNotifications.instance.schedule(
       id: reminder.id, title: reminder.title, body: reminder.note, at: when,
+      documentId: reminder.documentId,
     );
   }
 
@@ -208,6 +211,7 @@ class ReminderRepository {
       await ReminderNotifications.instance.schedule(
         id: reminder.id, title: reminder.title, body: reminder.note,
         at: reminder.remindAt, recurrence: reminder.recurrenceRule,
+        documentId: reminder.documentId,
       );
     } else {
       await ReminderNotifications.instance.cancel(reminder.id);
