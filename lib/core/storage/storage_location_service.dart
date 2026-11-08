@@ -143,4 +143,41 @@ class StorageLocationService {
   Future<void> openPdf(String uri) async {
     await _channel.invokeMethod<bool>('openPdf', {'uri': uri});
   }
+
+  /// Writes a generic UTF-8 metadata file through the platform's granted
+  /// folder handle. This intentionally does not use PDF-only storage APIs.
+  Future<String> writeTextFile({
+    required String parentUri,
+    required String name,
+    required String contents,
+  }) async {
+    final result = await _channel.invokeMethod<String>('writeTextFile', {
+      'parentUri': parentUri,
+      'name': name,
+      'contents': contents,
+    });
+    if (result == null) throw StateError('The platform did not return the metadata file location.');
+    return result;
+  }
+
+  Future<String> readTextFile(String uri) async {
+    final result = await _channel.invokeMethod<String>('readTextFile', {'uri': uri});
+    if (result == null) throw StateError('The platform did not return metadata contents.');
+    return result;
+  }
+
+  /// Enumerates only immediate children. Returned URIs remain opaque platform
+  /// handles; callers must never convert them into filesystem paths.
+  Future<List<Map<String, Object?>>> listDirectory(String uri) async {
+    final result = await _channel.invokeListMethod<dynamic>('listDirectory', {'uri': uri});
+    if (result == null) throw StateError('The platform could not list the selected folder.');
+    return result.map((entry) {
+      if (entry is! Map) throw StateError('The platform returned an invalid directory entry.');
+      final item = Map<String, Object?>.from(entry);
+      if (item['name'] is! String || item['uri'] is! String || item['isDirectory'] is! bool) {
+        throw StateError('The platform returned an incomplete directory entry.');
+      }
+      return item;
+    }).toList(growable: false);
+  }
 }
