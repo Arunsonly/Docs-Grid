@@ -339,13 +339,18 @@ class DocumentToolsService {
     final restoredPaths = <String, String>{};
     final folderRows = rowsByTable['folders']!;
     final folderPaths = <String, String>{};
+    final visitingFolderIds = <String>{};
     String folderPath(String id) {
       final known = folderPaths[id];
       if (known != null) return known;
+      if (!visitingFolderIds.add(id)) {
+        throw StateError('Backup folder hierarchy contains a cycle.');
+      }
       final row = folderRows.firstWhere((r) => r['id'] == id);
       final parent = row['parent_id'] as String?;
       final base = parent == null ? restoreRoot.path : folderPath(parent);
       final path = p.join(base, 'folder_${safeRestorePathToken(id)}');
+      visitingFolderIds.remove(id);
       folderPaths[id] = path;
       return path;
     }
@@ -361,7 +366,6 @@ class DocumentToolsService {
         final folderId = document['folder_id'] as String?;
         final destinationDir = folderId == null ? restoreRoot : Directory(folderPath(folderId));
         await destinationDir.create(recursive: true);
-        final safeName = p.basename((item['originalName'] as String?) ?? 'document.pdf');
         final safeDocumentToken = safeRestorePathToken(id);
         final destination = File(p.join(destinationDir.path, 'document_${safeDocumentToken}.pdf'));
         final entry = decoded.findFile(item['entry'] as String)!;
