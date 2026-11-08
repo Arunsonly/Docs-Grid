@@ -63,43 +63,51 @@ class FolderRepository {
     final selectedRoot = await StorageLocationService.instance.selectedFolder();
     if (selectedRoot == null) return null;
 
+    final resolving = <String>{};
     Future<String?> ensure(String id) async {
-      final rows = await db.query(
-        'folders',
-        columns: ['name', 'parent_id', 'storage_uri_or_relative_path'],
-        where: 'id = ? AND deleted_at IS NULL',
-        whereArgs: [id],
-        limit: 1,
-      );
-      if (rows.isEmpty) throw StateError('Folder no longer exists.');
-      final row = rows.first;
-      final currentUri = row['storage_uri_or_relative_path'] as String?;
-      if (currentUri != null) return currentUri;
-      final parentId = row['parent_id'] as String?;
-      final parentUri = parentId == null ? selectedRoot['uri'] : await ensure(parentId);
-      if (parentUri == null) return null;
-      String childUri;
-      try {
-        childUri = await StorageLocationService.instance.findChildUri(
-          parentUri: parentUri,
-          name: row['name'] as String,
-        );
-      } catch (_) {
-        childUri = await StorageLocationService.instance.createDirectory(
-          parentUri: parentUri,
-          name: row['name'] as String,
-        );
+      if (!resolving.add(id)) {
+        throw StateError('Folder hierarchy contains a cycle.');
       }
-      await db.update(
-        'folders',
-        {
-          'storage_uri_or_relative_path': childUri,
-          'updated_at': DateTime.now().toUtc().toIso8601String(),
-        },
-        where: 'id = ? AND deleted_at IS NULL',
-        whereArgs: [id],
-      );
-      return childUri;
+      try {
+        final rows = await db.query(
+          'folders',
+          columns: ['name', 'parent_id', 'storage_uri_or_relative_path'],
+          where: 'id = ? AND deleted_at IS NULL',
+          whereArgs: [id],
+          limit: 1,
+        );
+        if (rows.isEmpty) throw StateError('Folder no longer exists.');
+        final row = rows.first;
+        final currentUri = row['storage_uri_or_relative_path'] as String?;
+        if (currentUri != null) return currentUri;
+        final parentId = row['parent_id'] as String?;
+        final parentUri = parentId == null ? selectedRoot['uri'] : await ensure(parentId);
+        if (parentUri == null) return null;
+        String childUri;
+        try {
+          childUri = await StorageLocationService.instance.findChildUri(
+            parentUri: parentUri,
+            name: row['name'] as String,
+          );
+        } catch (_) {
+          childUri = await StorageLocationService.instance.createDirectory(
+            parentUri: parentUri,
+            name: row['name'] as String,
+          );
+        }
+        await db.update(
+          'folders',
+          {
+            'storage_uri_or_relative_path': childUri,
+            'updated_at': DateTime.now().toUtc().toIso8601String(),
+          },
+          where: 'id = ? AND deleted_at IS NULL',
+          whereArgs: [id],
+        );
+        return childUri;
+      } finally {
+        resolving.remove(id);
+      }
     }
 
     return ensure(folderId);
