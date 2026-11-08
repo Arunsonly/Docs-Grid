@@ -224,6 +224,7 @@ jobs:
         run: flutter analyze
       - name: Widget and unit tests
         run: flutter test
+      # Generate checksums from the exact resolved build graph; never disable verification.
       - name: Bootstrap and verify Android dependency checksums
         run: |
           rm -f android/gradle/verification-metadata.xml
