@@ -85,7 +85,7 @@ class ReminderNotifications {
         android: AndroidNotificationDetails(
           // Versioned channel ID: Android does not allow changing sound
           // behaviour on an already-created notification channel.
-          'docsgrid_reminders_v2',
+          'docsgrid_reminders_v3',
           'Document reminders',
           channelDescription: 'Audible local reminders for your documents',
           importance: Importance.max,
