@@ -271,13 +271,20 @@ class DocumentToolsService {
       'version': 1,
       'createdAt': DateTime.now().toUtc().toIso8601String(),
       'tables': <String, int>{},
+      'metadataFiles': <Map<String, Object?>>[],
       'files': <Map<String, Object?>>[],
     };
     for (final table in tables) {
       final rows = await db.query(table);
+      final metadataBytes = Uint8List.fromList(utf8.encode(jsonEncode(rows)));
       (manifest['tables'] as Map<String, int>)[table] = rows.length;
-      archive.addFile(ArchiveFile('$table.json', utf8.encode(jsonEncode(rows)).length,
-        Uint8List.fromList(utf8.encode(jsonEncode(rows)))));
+      archive.addFile(ArchiveFile('$table.json', metadataBytes.length, metadataBytes));
+      (manifest['metadataFiles'] as List<Map<String, Object?>>).add({
+        'entry': '$table.json',
+        'sizeBytes': metadataBytes.length,
+        'sha256': sha256.convert(metadataBytes).toString(),
+        'recordCount': rows.length,
+      });
     }
     final docs = await db.query('documents',
       columns: ['id', 'name', 'storage_uri', 'sha256']);
@@ -913,6 +920,82 @@ class DocumentToolsService {
     final manifest = jsonDecode(utf8.decode(manifestFile.content as List<int>)) as Map<String, dynamic>;
     if (manifest['format'] != 'DocsGridBackup' || manifest['version'] != 1) {
       throw StateError('Unsupported backup format or version.');
+    }
+
+    final metadataFiles = manifest['metadataFiles'];
+    if (metadataFiles != null) {
+      if (metadataFiles is! List) throw StateError('Backup metadata manifest is invalid.');
+      final seenMetadata = <String>{};
+      for (final raw in metadataFiles) {
+        if (raw is! Map || raw['entry'] is! String ||
+            raw['sizeBytes'] is! int || raw['sha256'] is! String ||
+            raw['recordCount'] is! int) {
+          throw StateError('Backup contains an invalid metadata manifest record.');
+        }
+        final entryName = raw['entry'] as String;
+        if (!RegExp(r'^[a-z_]+\\.json
+    final rawDocuments = jsonDecode(utf8.decode(documentsFile.content as List<int>));
+    if (rawDocuments is! List) throw StateError('Backup document metadata is invalid.');
+    final documentIds = <String>{};
+    for (final raw in rawDocuments) {
+      if (raw is! Map || raw['id'] is! String || (raw['id'] as String).isEmpty ||
+          !documentIds.add(raw['id'] as String)) {
+        throw StateError('Backup contains invalid or duplicate document IDs.');
+      }
+    }
+
+    final files = manifest['files'];
+    if (files is! List) throw StateError('Backup PDF manifest is invalid.');
+    final seenDocumentIds = <String>{};
+    final seenEntries = <String>{};
+    for (final raw in files) {
+      if (raw is! Map || raw['documentId'] is! String ||
+          raw['entry'] is! String || raw['sha256'] is! String) {
+        throw StateError('Backup contains an invalid PDF manifest record.');
+      }
+      final documentId = raw['documentId'] as String;
+      final entryName = raw['entry'] as String;
+      final expectedEntryName = 'pdfs/$documentId.pdf';
+      if (!documentIds.contains(documentId) ||
+          entryName != expectedEntryName ||
+          !seenDocumentIds.add(documentId) ||
+          !seenEntries.add(entryName) ||
+          !RegExp(r'^[a-fA-F0-9]{64}
+}
+).hasMatch(raw['sha256'] as String)) {
+        throw StateError('Backup contains an unsafe or inconsistent PDF entry.');
+      }
+      final entry = decoded.findFile(entryName);
+      if (entry == null) throw StateError('Backup is incomplete: missing PDF entry.');
+      final bytes = entry.content as List<int>;
+      if (bytes.length < 5 || String.fromCharCodes(bytes.take(5)) != '%PDF-') {
+        throw StateError('Backup contains a file that is not a valid PDF.');
+      }
+      final digest = sha256.convert(bytes).toString();
+      if (digest != raw['sha256']) throw StateError('Backup integrity check failed.');
+    }
+    if (seenDocumentIds.length != documentIds.length) {
+      throw StateError('Backup is incomplete: one or more document PDFs are missing.');
+    }
+    return files.length;
+  }
+}
+).hasMatch(entryName) ||
+            !seenMetadata.add(entryName)) {
+          throw StateError('Backup contains an unsafe or duplicate metadata entry.');
+        }
+        final entry = decoded.findFile(entryName);
+        if (entry == null) throw StateError('Backup is incomplete: missing $entryName.');
+        final bytes = entry.content as List<int>;
+        if (bytes.length != raw['sizeBytes'] ||
+            sha256.convert(bytes).toString() != raw['sha256']) {
+          throw StateError('Backup metadata integrity check failed for $entryName.');
+        }
+        final rows = jsonDecode(utf8.decode(bytes));
+        if (rows is! List || rows.length != raw['recordCount']) {
+          throw StateError('Backup metadata record count mismatch for $entryName.');
+        }
+      }
     }
 
     final documentsFile = decoded.findFile('documents.json');
