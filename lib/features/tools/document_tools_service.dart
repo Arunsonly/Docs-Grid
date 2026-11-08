@@ -407,7 +407,8 @@ class DocumentToolsService {
           }
           // Never place imported database IDs in archive paths.
           final entry = 'pdfs/${_uuid.v4()}.pdf';
-          await encoder.addFile(file, entry);
+          // PDFs are already compressed; store them without a second CPU-heavy deflate pass.
+          await encoder.addFile(file, entry, ZipFileEncoder.store);
           (manifest['files'] as List).add({
             'documentId': row['id'], 'entry': entry, 'sha256': digest,
             'originalName': row['name'],
