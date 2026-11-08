@@ -893,8 +893,13 @@ class DocumentRepository {
       limit: 1,
     );
     if (rows.isEmpty) return;
-    final metadata = jsonDecode((rows.first['metadata_json'] as String?) ?? '{}')
-        as Map<String, dynamic>;
+    Map<String, dynamic> metadata;
+    try {
+      final decoded = jsonDecode((rows.first['metadata_json'] as String?) ?? '{}');
+      metadata = decoded is Map<String, dynamic> ? decoded : <String, dynamic>{};
+    } catch (_) {
+      metadata = <String, dynamic>{};
+    }
     metadata['favorite'] = favorite;
     await db.update(
       'documents',
