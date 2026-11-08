@@ -653,8 +653,8 @@ class DocumentToolsService {
       databaseCommitted = true;
       for (final row in rowsByTable['reminders']!) {
         if ((row['enabled'] as int? ?? 0) != 1 || row['status'] == 'completed') continue;
-        final at = DateTime.parse(row['remind_at_utc'] as String).toLocal();
         try {
+          final at = DateTime.parse(row['remind_at_utc'] as String).toLocal();
           await ReminderNotifications.instance.schedule(
             id: row['id'] as String,
             title: row['title'] as String,
@@ -663,7 +663,7 @@ class DocumentToolsService {
             recurrence: row['recurrence_rule'] as String?,
           );
         } catch (_) {
-          // Imported records remain valid even if the OS declines a notification.
+          // Imported records remain valid even if dates or OS scheduling fail.
         }
       }
       return restoredPaths.length;
