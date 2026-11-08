@@ -150,19 +150,49 @@ class CategoryRepository {
   Future<void> setDocumentTags(String documentId, List<String> tagIds) async {
     final db = await _database.database;
     await db.transaction((txn) async {
+      final documents = await txn.query(
+        'documents',
+        columns: ['id'],
+        where: 'id = ? AND deleted_at IS NULL',
+        whereArgs: [documentId],
+        limit: 1,
+      );
+      if (documents.isEmpty) throw StateError('Document no longer exists.');
       await txn.delete('document_tags', where: 'document_id = ?', whereArgs: [documentId]);
       for (final tagId in tagIds.toSet()) {
-        await txn.insert('document_tags', {'document_id': documentId, 'tag_id': tagId},
-            conflictAlgorithm: ConflictAlgorithm.ignore);
+        await txn.insert(
+          'document_tags',
+          {'document_id': documentId, 'tag_id': tagId},
+          conflictAlgorithm: ConflictAlgorithm.ignore,
+        );
       }
     });
   }
 
   Future<void> setDocumentCategory(String documentId, String? categoryId) async {
     final db = await _database.database;
-    await db.update('documents', {'category_id': categoryId,
-      'updated_at': DateTime.now().toUtc().toIso8601String()},
-      where: 'id = ? AND deleted_at IS NULL', whereArgs: [documentId]);
+    await db.transaction((txn) async {
+      if (categoryId != null) {
+        final categories = await txn.query(
+          'categories',
+          columns: ['id'],
+          where: 'id = ?',
+          whereArgs: [categoryId],
+          limit: 1,
+        );
+        if (categories.isEmpty) throw StateError('Category no longer exists.');
+      }
+      final changed = await txn.update(
+        'documents',
+        {
+          'category_id': categoryId,
+          'updated_at': DateTime.now().toUtc().toIso8601String(),
+        },
+        where: 'id = ? AND deleted_at IS NULL',
+        whereArgs: [documentId],
+      );
+      if (changed == 0) throw StateError('Document no longer exists.');
+    });
   }
 
   @visibleForTesting
