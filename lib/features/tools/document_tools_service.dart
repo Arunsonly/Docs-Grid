@@ -415,7 +415,8 @@ class DocumentToolsService {
           throw StateError('Backup references a missing parent folder.');
         }
         final base = parent == null ? restoreRoot.path : folderPath(parent);
-        // Never use untrusted archive IDs as filesystem path components.\n        final path = p.join(base, 'folder_${_uuid.v4()}');
+        // Never use untrusted archive IDs as filesystem path components.
+        final path = p.join(base, 'folder_${_uuid.v4()}');
         folderPaths[id] = path;
         return path;
       } finally {
@@ -435,7 +436,8 @@ class DocumentToolsService {
         final destinationDir = folderId == null ? restoreRoot : Directory(folderPath(folderId));
         await destinationDir.create(recursive: true);
         final safeName = p.basename((item['originalName'] as String?) ?? 'document.pdf');
-        // IDs come from the archive; use a generated filename to prevent path traversal.\n        final destination = File(p.join(destinationDir.path, '${_uuid.v4()}_$safeName'));
+        // IDs come from the archive; use a generated filename to prevent path traversal.
+        final destination = File(p.join(destinationDir.path, '${_uuid.v4()}_$safeName'));
         final entry = decoded.findFile(item['entry'] as String)!;
         final bytes = entry.content as List<int>;
         final digest = sha256.convert(bytes).toString();
