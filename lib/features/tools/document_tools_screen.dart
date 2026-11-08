@@ -134,6 +134,13 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
     if (mounted) setState(() => _message = 'Offline backup saved successfully: ${target.path}');
   });
 
+  Future<void> _createRecoverySnapshot() => _run(() async {
+    final name = await _tools.createPortableMetadataSnapshot();
+    if (mounted) {
+      setState(() => _message = 'Recovery snapshot saved in DocsGrid/System/Database/$name. Tags, reminders, folders, settings and indexes are included.');
+    }
+  });
+
   Future<void> _verifyBackup() => _run(() async {
     final picked = await FilePicker.pickFiles(type: FileType.custom, allowedExtensions: ['zip']);
     if (picked.isEmpty || picked.single.path == null) return;
@@ -289,6 +296,12 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
         ])),
       ],
       if (widget.section == 'backup') Card(child: Column(children: [
+        ListTile(leading: const Icon(Icons.folder_copy_outlined),
+          title: const Text('Save recovery snapshot to DocsGrid folder'),
+          subtitle: const Text('Saves tags, reminders, folders, settings and metadata beside your library.'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: _busy ? null : _createRecoverySnapshot),
+        const Divider(height: 1),
         ListTile(leading: const Icon(Icons.backup_outlined),
           title: const Text('Create offline backup'),
           trailing: const Icon(Icons.chevron_right),
