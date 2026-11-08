@@ -502,12 +502,14 @@ class DocumentToolsService {
         final at = DateTime.parse(row['remind_at_utc'] as String).toLocal();
         try {
           await ReminderNotifications.instance.schedule(
-            id: row['id'] as String,
+            id: reminderIdMap[row['id']]!,
             title: row['title'] as String,
             body: row['note'] as String?,
             at: at,
             recurrence: row['recurrence_rule'] as String?,
-            documentId: row['document_id'] as String?,
+            documentId: row['document_id'] == null
+                ? null
+                : documentIdMap[row['document_id']],
           );
         } catch (_) {
           // Imported records remain valid even if the OS declines a notification.
@@ -1068,7 +1070,9 @@ class DocumentToolsService {
           body: row['note'] as String?,
           at: DateTime.parse(row['remind_at_utc'] as String).toLocal(),
           recurrence: row['recurrence_rule'] as String?,
-          documentId: row['document_id'] as String?,
+          documentId: row['document_id'] == null
+              ? null
+              : documentIdMap[row['document_id']],
         );
       } catch (_) {
         // The reminder record is restored even if the OS blocks notifications.
