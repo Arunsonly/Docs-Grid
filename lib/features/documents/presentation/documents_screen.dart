@@ -121,6 +121,20 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     await _load();
   }
 
+  Future<void> _bulkShare() async {
+    final selected = _documents.where((d) => _selectedIds.contains(d.id)).toList();
+    if (selected.isEmpty) return;
+    try {
+      await _tools.shareManyStoredPdfs(
+        selected.map((d) => d.storagePath).toList(),
+        selected.map((d) => '${d.name}.pdf').toList(),
+      );
+    } catch (error) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not share selected PDFs: $error')));
+    } finally {
+      if (mounted) setState(_selectedIds.clear);
+    }
+  }
   Future<void> _bulkMove() async {
     final selected = _documents.where((d) => _selectedIds.contains(d.id)).toList();
     if (selected.isEmpty) return;
@@ -500,6 +514,8 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
               child: Row(children: [
                 IconButton(tooltip: 'Clear selection', onPressed: () => setState(_selectedIds.clear), icon: const Icon(Icons.close)),
                 Expanded(child: Text('${_selectedIds.length} selected', style: const TextStyle(fontWeight: FontWeight.w700))),
+                IconButton(tooltip: 'Share selected', onPressed: _bulkShare, icon: const Icon(Icons.share_outlined)),
+                IconButton(tooltip: 'Select all', onPressed: () => setState(() => _selectedIds.addAll(_documents.map((d) => d.id))), icon: const Icon(Icons.select_all)),
                 IconButton(tooltip: 'Move selected', onPressed: _bulkMove, icon: const Icon(Icons.drive_file_move_outline)),
                 IconButton(tooltip: 'Move selected to Recycle Bin', onPressed: _bulkTrash, icon: const Icon(Icons.delete_outline)),
               ]),
