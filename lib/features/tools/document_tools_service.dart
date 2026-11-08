@@ -616,7 +616,7 @@ class DocumentToolsService {
         final requestedName = p.basename((item['originalName'] as String?) ?? 'document.pdf')
             .replaceAll(RegExp(r'[<>:"|?*\x00-\x1F]'), '_')
             .replaceAll('/', '_')
-            .replaceAll('\', '_')
+            .replaceAll('\\', '_')
             .trim();
         final safeName = requestedName.isEmpty
             ? 'document.pdf'
@@ -884,7 +884,7 @@ class DocumentToolsService {
     for (final row in folderRows) {
       final name = row['name'];
       if (name is! String || name.trim().isEmpty ||
-          name.contains('/') || name.contains('\') ||
+          name.contains('/') || name.contains('\\') ||
           name.contains('\u0000')) {
         throw StateError('Snapshot contains an invalid folder name.');
       }
@@ -947,7 +947,7 @@ class DocumentToolsService {
         final parentId = row['parent_id'] as String?;
         final rawName = row['name'] as String;
         if (rawName.trim().isEmpty || rawName.contains('/') ||
-            rawName.contains('\') || rawName.contains('\u0000')) {
+            rawName.contains('\\') || rawName.contains('\u0000')) {
           throw StateError('Snapshot contains an invalid folder name.');
         }
         final siblings = await storage.listDirectory(parentUri);
@@ -1284,7 +1284,7 @@ class DocumentToolsService {
             !seenDocuments.add(documentId) ||
             !seenEntries.add(entryName) ||
             !entryName.startsWith('pdfs/') ||
-            entryName.contains('\') ||
+            entryName.contains('\\') ||
             entryName.split('/').any((part) => part.isEmpty || part == '.' || part == '..')) {
           throw StateError('Backup contains an unsafe or duplicate PDF entry.');
         }
