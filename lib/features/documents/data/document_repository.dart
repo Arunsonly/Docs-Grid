@@ -648,6 +648,7 @@ class DocumentRepository {
 
   Future<ImportSummary> importPdfs({
     Future<ImportDecision?> Function(String suggestedName, String? suggestedCategoryId, List<ImportCategoryOption> categories)? review,
+    String? targetFolderId,
   }) async {
     final pickedFiles = await FilePicker.pickFiles(
       type: FileType.custom,
@@ -659,12 +660,12 @@ class DocumentRepository {
 
     final storage = StorageLocationService.instance;
     final selectedFolder = await storage.selectedFolder();
-    Directory? library;
-    if (selectedFolder == null) {
-      final base = await getApplicationDocumentsDirectory();
-      library = Directory(p.join(base.path, 'DocsGrid', 'PDFs'));
-      await library.create(recursive: true);
-    }
+    final destinationFolderUri = selectedFolder == null
+        ? null
+        : targetFolderId == null
+            ? selectedFolder['uri']
+            : await FolderRepository().ensurePhysicalStorageUri(targetFolderId);
+    final library = selectedFolder == null ? await _privateFolderFor(targetFolderId) : null;
     final db = await _database.database;
     var added = 0;
     var duplicates = 0;
@@ -725,15 +726,15 @@ class DocumentRepository {
             : null;
         late final String storedName;
         late final String? relativePath;
-        if (selectedFolder != null) {
+        if (destinationFolderUri != null) {
           createdUri = sourceFile != null
               ? await storage.copyPdf(
                   sourceUri: Uri.file(sourceFile.path).toString(),
-                  parentUri: selectedFolder['uri']!,
+                  parentUri: destinationFolderUri,
                   name: safeName,
                 )
               : await storage.savePdf(
-                  treeUri: selectedFolder['uri']!,
+                  treeUri: destinationFolderUri,
                   name: safeName,
                   bytes: fallbackBytes!,
                 );
@@ -773,6 +774,7 @@ class DocumentRepository {
             'size_bytes': sizeBytes,
             'sha256': digest,
             'category_id': selectedCategoryId,
+            'folder_id': targetFolderId,
             'extracted_text_status': 'pending',
             'created_at': now,
             'updated_at': now,
