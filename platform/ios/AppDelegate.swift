@@ -99,7 +99,7 @@ import CryptoKit
                     guard !FileManager.default.fileExists(atPath: destination.path) else {
                         throw storageError("The destination file already exists.")
                     }
-                    let temporary = parent.appendingPathComponent(".docsgrid-copy-\\(UUID().uuidString).tmp")
+                    let temporary = parent.appendingPathComponent(".docsgrid-copy-\(UUID().uuidString).tmp")
                     defer { try? FileManager.default.removeItem(at: temporary) }
                     FileManager.default.createFile(atPath: temporary.path, contents: nil)
                     let input = try FileHandle(forReadingFrom: source)
