@@ -18,6 +18,19 @@ class FolderRepository {
   final AppDatabase _database;
   static const _uuid = Uuid();
 
+  static String validateFolderName(String name) {
+    final cleaned = name.trim();
+    if (cleaned.isEmpty) throw ArgumentError('Folder name cannot be empty.');
+    if (cleaned == '.' || cleaned == '..') {
+      throw ArgumentError('Folder name cannot be . or ..');
+    }
+    if (cleaned.contains('/') || cleaned.contains('\\') ||
+        cleaned.contains(String.fromCharCode(0))) {
+      throw ArgumentError('Folder name contains an invalid character.');
+    }
+    return cleaned;
+  }
+
   Future<List<Folder>> childrenOf(String? parentId) async {
     final db = await _database.database;
     final rows = await db.query(
@@ -93,14 +106,7 @@ class FolderRepository {
   }
 
   Future<Folder> create({required String name, String? parentId}) async {
-    final cleaned = name.trim();
-    if (cleaned.isEmpty) throw ArgumentError('Folder name cannot be empty.');
-    if (cleaned == '.' || cleaned == '..') {
-      throw ArgumentError('Folder name cannot be . or ..');
-    }
-    if (cleaned.contains('/') || cleaned.contains('\\') || cleaned.contains(String.fromCharCode(0))) {
-      throw ArgumentError('Folder name contains an invalid character.');
-    }
+    final cleaned = validateFolderName(name);
     final db = await _database.database;
     final siblingMatches = await db.query(
       'folders',
@@ -182,14 +188,7 @@ class FolderRepository {
   }
 
   Future<void> rename(String id, String name) async {
-    final cleaned = name.trim();
-    if (cleaned.isEmpty) throw ArgumentError('Folder name cannot be empty.');
-    if (cleaned == '.' || cleaned == '..') {
-      throw ArgumentError('Folder name cannot be . or ..');
-    }
-    if (cleaned.contains('/') || cleaned.contains('\\') || cleaned.contains(String.fromCharCode(0))) {
-      throw ArgumentError('Folder name contains an invalid character.');
-    }
+    final cleaned = validateFolderName(name);
     final db = await _database.database;
     final rows = await db.query(
       'folders',
