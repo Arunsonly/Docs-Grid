@@ -86,9 +86,10 @@ jobs:
               dependency = "implementation 'com.google.mlkit:text-recognition-devanagari:16.0.1'"
           if dependency not in s:
               match = re.search(r'dependencies\s*\{', s)
-              if not match:
-                  raise SystemExit('Could not locate Android dependencies block')
-              s = s[:match.end()] + '\n    ' + dependency + s[match.end():]
+              if match:
+                  s = s[:match.end()] + '\n    ' + dependency + s[match.end():]
+              else:
+                  s += '\ndependencies {\n    ' + dependency + '\n}\n'
           gradle.write_text(s)
           print(f'Bundled Devanagari OCR model in {gradle}')
           PY
