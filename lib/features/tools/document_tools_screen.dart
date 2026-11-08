@@ -231,18 +231,29 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
   }
 
   Future<void> _searchText() async {
-    final rows = await _tools.searchText(_search.text);
-    if (mounted) setState(() { _results = rows; _hasSearched = true; });
+    try {
+      final rows = await _tools.searchText(_search.text);
+      if (mounted) setState(() { _results = rows; _hasSearched = true; _message = null; });
+    } catch (error) {
+      if (mounted) setState(() => _message = 'Text search failed: $error');
+    }
   }
 
   Future<void> _indexDocuments() => _run(() async {
     final db = await AppDatabase.instance.database;
-    final rows = await db.query('documents', columns: ['id', 'name', 'storage_uri'],
+    final rows = await db.query('documents',
+      columns: ['id', 'name', 'storage_uri', 'extracted_text_status'],
       where: 'deleted_at IS NULL');
     var done = 0;
     var noText = 0;
     var skipped = 0;
+    var alreadyIndexed = 0;
     for (final row in rows) {
+      if (row['extracted_text_status'] == 'indexed' ||
+          row['extracted_text_status'] == 'empty') {
+        alreadyIndexed++;
+        continue;
+      }
       final uri = row['storage_uri'] as String?;
       if (uri == null || uri.isEmpty) {
         skipped++;
@@ -261,7 +272,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
     }
     if (mounted) {
       setState(() => _message =
-        'OCR indexing finished: $done searchable, $noText had no readable text, $skipped failed. '
+        'OCR indexing finished: $done searchable, $noText had no readable text, $alreadyIndexed already indexed, $skipped failed. '
         'Scanned/image-only PDFs may need clearer pages or a supported OCR language.');
     }
   });
