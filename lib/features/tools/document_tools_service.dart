@@ -229,22 +229,31 @@ class DocumentToolsService {
 
 
   Future<void> shareStoredPdf(String storageUri, String displayName) async {
-    String path;
-    if (storageUri.startsWith('content://')) {
-      final temp = await getTemporaryDirectory();
-      final safeName = p.basename(displayName).replaceAll(RegExp(r'[^A-Za-z0-9._ -]'), '_');
-      final target = File(p.join(temp.path, 'share_${DateTime.now().microsecondsSinceEpoch}_$safeName'));
-      await StorageLocationService.instance.copyPdfToPath(
-        sourceUri: storageUri,
-        destinationPath: target.path,
-      );
-      path = target.path;
-    } else {
-      path = storageUri.startsWith('file://') ? Uri.parse(storageUri).toFilePath() : storageUri;
+    File? stagedProviderFile;
+    try {
+      String path;
+      if (storageUri.startsWith('content://')) {
+        final temp = await getTemporaryDirectory();
+        final safeName = p.basename(displayName).replaceAll(RegExp(r'[^A-Za-z0-9._ -]'), '_');
+        stagedProviderFile = File(p.join(temp.path, 'share_${_uuid.v4()}_$safeName'));
+        await StorageLocationService.instance.copyPdfToPath(
+          sourceUri: storageUri,
+          destinationPath: stagedProviderFile.path,
+        );
+        path = stagedProviderFile.path;
+      } else {
+        path = storageUri.startsWith('file://') ? Uri.parse(storageUri).toFilePath() : storageUri;
+      }
+      final file = File(path);
+      if (!await file.exists()) throw StateError('PDF is no longer available to share.');
+      await SharePlus.instance.share(ShareParams(files: [XFile(path)], text: displayName));
+    } finally {
+      // Provider PDFs are copied into cache because share_plus needs a local
+      // path. Remove only that temporary copy after the native share sheet ends.
+      if (stagedProviderFile != null && await stagedProviderFile.exists()) {
+        await stagedProviderFile.delete();
+      }
     }
-    final file = File(path);
-    if (!await file.exists()) throw StateError('PDF is no longer available to share.');
-    await SharePlus.instance.share(ShareParams(files: [XFile(path)], text: displayName));
   }
 
   /// Shares several stored PDFs in one native share sheet.
@@ -979,6 +988,22 @@ class DocumentToolsService {
   Future<int> validateBackup(File zipFile) async {
     if (!await zipFile.exists()) throw StateError('Backup file not found.');
     final decoded = ZipDecoder().decodeBytes(await zipFile.readAsBytes());
+    // ZIP readers may accept duplicate names and silently return one of them.
+    // Reject ambiguous or path-like entries before interpreting any metadata.
+    final archiveNames = <String>{};
+    for (final entry in decoded.files) {
+      final name = entry.name;
+      final segments = name.split('/');
+      if (!entry.isFile ||
+          name.isEmpty ||
+          name.startsWith('/') ||
+          name.contains(r'\\') ||
+          name.codeUnits.any((unit) => unit < 32 || unit == 127) ||
+          segments.any((segment) => segment == '.' || segment == '..') ||
+          !archiveNames.add(name)) {
+        throw StateError('Backup contains an unsafe, duplicate, or unsupported ZIP entry.');
+      }
+    }
     final manifestFile = decoded.findFile('manifest.json');
     if (manifestFile == null || !manifestFile.isFile) {
       throw StateError('This is not a DocsGrid backup.');
@@ -1117,6 +1142,17 @@ class DocumentToolsService {
     if (metadataDocumentIds.length != documentIds.length ||
         !metadataDocumentIds.containsAll(documentIds)) {
       throw StateError('Backup contains orphaned PDF entries or missing document records.');
+    }
+    final expectedEntries = <String>{
+      'manifest.json',
+      for (final table in tableNames)
+        if (table != 'document_text_index' || archiveNames.contains('$table.json'))
+          '$table.json',
+      for (final raw in rawFiles) (raw as Map<String, dynamic>)['entry'] as String,
+    };
+    if (archiveNames.length != expectedEntries.length ||
+        !archiveNames.containsAll(expectedEntries)) {
+      throw StateError('Backup contains unexpected or unreferenced ZIP entries.');
     }
     return rawFiles.length;
   }
