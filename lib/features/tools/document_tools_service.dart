@@ -523,6 +523,9 @@ class DocumentToolsService {
     final manifest = backup.manifest;
     final rowsByTable = backup.rowsByTable;
     final folderRows = rowsByTable['folders']!;
+    final folderRowsById = <String, Map<String, Object?>>{
+      for (final row in folderRows) row['id'] as String: row,
+    };
     // A ZIP is untrusted input. Validate parent links before creating any
     // directories, and never use imported IDs as filesystem path segments.
     BackupFolderGraphValidator.validate(folderRows);
@@ -543,7 +546,8 @@ class DocumentToolsService {
       String? current = id;
       while (current != null && !folderPaths.containsKey(current)) {
         unresolved.add(current);
-        final row = folderRows.firstWhere((r) => r['id'] == current);
+        final row = folderRowsById[current];
+        if (row == null) throw StateError('Backup contains an unknown folder reference.');
         current = row['parent_id'] as String?;
       }
       var base = current == null ? restoreRoot.path : folderPaths[current]!;
