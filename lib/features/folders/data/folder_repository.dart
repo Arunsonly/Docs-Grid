@@ -98,10 +98,20 @@ class FolderRepository {
     if (cleaned == '.' || cleaned == '..') {
       throw ArgumentError('Folder name cannot be . or ..');
     }
-    if (cleaned.contains('/') || cleaned.contains('\\')) {
-      throw ArgumentError('Folder name cannot contain / or \\.');
+    if (cleaned.contains('/') || cleaned.contains('\\') || cleaned.contains(String.fromCharCode(0))) {
+      throw ArgumentError('Folder name contains an invalid character.');
     }
     final db = await _database.database;
+    final siblingMatches = await db.query(
+      'folders',
+      columns: ['id'],
+      where: 'parent_id IS ? AND name = ? COLLATE NOCASE AND deleted_at IS NULL',
+      whereArgs: [parentId, cleaned],
+      limit: 1,
+    );
+    if (siblingMatches.isNotEmpty) {
+      throw StateError('A folder with this name already exists here.');
+    }
     final storage = StorageLocationService.instance;
     final selectedRoot = await storage.selectedFolder();
     Future<String?> ensurePhysicalFolder(String folderId) async {
@@ -177,13 +187,13 @@ class FolderRepository {
     if (cleaned == '.' || cleaned == '..') {
       throw ArgumentError('Folder name cannot be . or ..');
     }
-    if (cleaned.contains('/') || cleaned.contains('\\')) {
-      throw ArgumentError('Folder name cannot contain / or \\.');
+    if (cleaned.contains('/') || cleaned.contains('\\') || cleaned.contains(String.fromCharCode(0))) {
+      throw ArgumentError('Folder name contains an invalid character.');
     }
     final db = await _database.database;
     final rows = await db.query(
       'folders',
-      columns: ['name', 'storage_uri_or_relative_path'],
+      columns: ['name', 'parent_id', 'storage_uri_or_relative_path'],
       where: 'id = ? AND deleted_at IS NULL',
       whereArgs: [id],
       limit: 1,
@@ -191,6 +201,17 @@ class FolderRepository {
     if (rows.isEmpty) throw StateError('Folder no longer exists.');
     final oldName = rows.first['name'] as String;
     if (oldName == cleaned) return;
+    final parentId = rows.first['parent_id'] as String?;
+    final siblingMatches = await db.query(
+      'folders',
+      columns: ['id'],
+      where: 'parent_id IS ? AND name = ? COLLATE NOCASE AND deleted_at IS NULL AND id != ?',
+      whereArgs: [parentId, cleaned, id],
+      limit: 1,
+    );
+    if (siblingMatches.isNotEmpty) {
+      throw StateError('A folder with this name already exists here.');
+    }
     final oldUri = rows.first['storage_uri_or_relative_path'] as String?;
     final storage = StorageLocationService.instance;
     final renamedUri = oldUri == null
