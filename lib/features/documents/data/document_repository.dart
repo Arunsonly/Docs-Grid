@@ -1054,6 +1054,16 @@ class DocumentRepository {
 
   Future<void> permanentlyDelete(DocumentRecord document) async {
     final db = await _database.database;
+    final trashed = await db.query(
+      'documents',
+      columns: ['id'],
+      where: 'id = ? AND deleted_at IS NOT NULL',
+      whereArgs: [document.id],
+      limit: 1,
+    );
+    if (trashed.isEmpty) {
+      throw StateError('Only documents in the Recycle Bin can be permanently deleted.');
+    }
     final reminderRows = await db.query(
       'reminders',
       columns: ['id'],
