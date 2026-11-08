@@ -691,7 +691,6 @@ class DocumentRepository {
     final pickedFiles = await FilePicker.pickFiles(
       type: FileType.custom,
       allowedExtensions: ['pdf'],
-      withReadStream: true,
     );
     if (pickedFiles.isEmpty) {
       return const ImportSummary(added: 0, duplicates: 0, failed: 0);
