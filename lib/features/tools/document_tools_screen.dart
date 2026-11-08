@@ -7,6 +7,8 @@ import 'package:path/path.dart' as p;
 
 import '../../core/database/app_database.dart';
 import '../documents/data/document_repository.dart';
+import '../categories/data/category_repository.dart';
+import '../reminders/data/reminder_repository.dart';
 import '../folders/data/folder_repository.dart';
 import 'document_tools_service.dart';
 import '../../core/storage/storage_location_service.dart';
@@ -22,6 +24,7 @@ class DocumentToolsScreen extends StatefulWidget {
 
 class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
   final _tools = DocumentToolsService();
+  final _categories = CategoryRepository();
   final _search = TextEditingController();
   List<Map<String, Object?>> _results = [];
   bool _busy = false;
@@ -117,60 +120,66 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
 
   Future<void> _backup() => _run(() async {
     final archive = await _tools.createBackup();
-    if (!mounted) return;
-    final directory = await FilePicker.getDirectoryPath(
-      dialogTitle: 'Choose where to save DocsGrid backup',
+    final stamp = DateTime.now().toIso8601String().replaceAll(':', '-').split('.').first;
+    final bytes = await archive.readAsBytes();
+    final saved = await FilePicker.saveFile(
+      dialogTitle: 'Save DocsGrid backup',
+      fileName: 'DocsGrid_Backup_$stamp.zip',
+      mimeType: 'application/zip',
+      bytes: bytes,
     );
-    if (directory == null || directory.isEmpty) {
-      if (mounted) setState(() => _message = 'Backup was created temporarily. Choose a folder to save a permanent copy.');
+    if (saved == null) {
+      if (mounted) setState(() => _message = 'Backup export cancelled. Your documents were not changed.');
       return;
     }
-    final stamp = DateTime.now().toIso8601String().replaceAll(':', '-').split('.').first;
-    final target = File(p.join(directory, 'DocsGrid_Backup_$stamp.zip'));
-    await archive.copy(target.path);
-    if (mounted) setState(() => _message = 'Offline backup saved successfully: ${target.path}');
+    if (mounted) setState(() => _message = 'Backup created successfully. Keep the ZIP file somewhere safe; choose it under Restore backup on a new installation.');
   });
-
-  Future<void> _createRecoverySnapshot() => _run(() async {
-    final name = await _tools.createPortableMetadataSnapshot();
-    if (mounted) {
-      setState(() => _message = 'Recovery snapshot saved in DocsGrid/System/Database/$name. Tags, reminders, folders, settings and indexes are included.');
-    }
-  });
-
-  Future<void> _verifyRecoverySnapshot() => _run(() async {
-    final name = await _tools.verifyLatestPortableMetadataSnapshot();
-    if (!mounted) return;
-    setState(() => _message = name == null
-      ? 'No portable recovery snapshot found. Create one first.'
-      : 'Recovery snapshot verified successfully: $name');
-  });
-
-  Future<void> _verifyBackup() => _run(() async {
-    final picked = await FilePicker.pickFiles(type: FileType.custom, allowedExtensions: ['zip']);
-    if (picked.isEmpty || picked.single.path == null) return;
-    final count = await _tools.validateBackup(File(picked.single.path!));
-    if (mounted) setState(() => _message = 'Backup integrity verified. $count PDF file(s) found.');
-  });
-
 
   Future<void> _restoreBackup() => _run(() async {
+    final source = await showModalBottomSheet<String>(
+      context: context, showDragHandle: true,
+      builder: (ctx) => SafeArea(child: Column(mainAxisSize: MainAxisSize.min, children: [
+        const ListTile(title: Text('Choose restore source')),
+        ListTile(leading: const Icon(Icons.archive_outlined), title: const Text('Backup ZIP file'),
+          subtitle: const Text('From this phone, SD card, USB or cloud storage.'),
+          onTap: () => Navigator.pop(ctx, 'zip')),
+        ListTile(leading: const Icon(Icons.folder_open_outlined), title: const Text('Existing DocsGrid folder'),
+          subtitle: const Text('Recover from a DocsGrid folder copied from another phone.'),
+          onTap: () => Navigator.pop(ctx, 'folder')),
+      ])),
+    );
+    if (source == 'folder') {
+      await _restorePortableSnapshot();
+      return;
+    }
+    if (source != 'zip') return;
     final picked = await FilePicker.pickFiles(type: FileType.custom, allowedExtensions: ['zip']);
-    if (picked.isEmpty || picked.single.path == null) return;
-    final file = File(picked.single.path!);
-    final count = await _tools.validateBackup(file);
-    if (!mounted) return;
-    final confirmed = await showDialog<bool>(context: context, builder: (context) => AlertDialog(
-      title: const Text('Restore backup?'),
-      content: Text('The archive contains $count PDF file(s). DocsGrid will add the restored folders and documents without overwriting existing records. ID conflicts stop the restore.'),
-      actions: [
-        TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
-        FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Restore')),
-      ],
-    ));
-    if (confirmed != true) return;
-    final restored = await _tools.restoreBackup(file);
-    if (mounted) setState(() => _message = 'Restore completed: $restored PDF file(s) restored and verified.');
+    if (picked.isEmpty) return;
+    final platformFile = picked.single;
+    final temporaryCopy = platformFile.path == null;
+    final file = temporaryCopy
+        ? File(p.join(Directory.systemTemp.path, 'DocsGrid_restore_${DateTime.now().microsecondsSinceEpoch}.zip'))
+        : File(platformFile.path!);
+    try {
+      if (temporaryCopy) {
+        await file.writeAsBytes(await platformFile.readAsBytes(), flush: true);
+      }
+      final count = await _tools.validateBackup(file);
+      if (!mounted) return;
+      final confirmed = await showDialog<bool>(context: context, builder: (context) => AlertDialog(
+        title: const Text('Restore backup?'),
+        content: Text('The archive contains $count PDF file(s). Existing records will be kept; the backup will be added without overwriting your current files.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Restore')),
+        ],
+      ));
+      if (confirmed != true) return;
+      final restored = await _tools.restoreBackup(file);
+      if (mounted) setState(() => _message = 'Restore completed: $restored PDF file(s) restored and verified.');
+    } finally {
+      if (temporaryCopy && await file.exists()) await file.delete();
+    }
   });
 
   Future<void> _restorePortableSnapshot() => _run(() async {
@@ -255,6 +264,111 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
   });
 
 
+  Future<void> _duplicateRename(DocumentRecord document) async {
+    final controller = TextEditingController(text: document.name);
+    final name = await showDialog<String>(context: context, builder: (ctx) => AlertDialog(
+      title: const Text('Rename PDF'),
+      content: TextField(controller: controller, autofocus: true, decoration: const InputDecoration(labelText: 'File name', suffixText: '.pdf')),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+        FilledButton(onPressed: () => Navigator.pop(ctx, controller.text), child: const Text('Save')),
+      ],
+    ));
+    await WidgetsBinding.instance.endOfFrame;
+    controller.dispose();
+    if (name == null) return;
+    await DocumentRepository().rename(document, name);
+  }
+
+  Future<void> _duplicateMove(DocumentRecord document) async {
+    final folders = await FolderRepository().allFoldersWithPaths();
+    if (!mounted) return;
+    final destination = await showModalBottomSheet<String>(
+      context: context, showDragHandle: true,
+      builder: (ctx) => SafeArea(child: ListView(shrinkWrap: true, children: [
+        const ListTile(title: Text('Move PDF to folder')),
+        ListTile(leading: const Icon(Icons.home_outlined), title: const Text('My Documents (root)'), onTap: () => Navigator.pop(ctx, '')),
+        for (final folder in folders)
+          ListTile(leading: const Icon(Icons.folder_outlined), title: Text(folder.path), onTap: () => Navigator.pop(ctx, folder.folder.id)),
+      ])),
+    );
+    if (destination == null) return;
+    await DocumentRepository().moveToFolder(document, destination.isEmpty ? null : destination);
+  }
+
+  Future<void> _duplicateCategory(DocumentRecord document) async {
+    final categories = await _categories.listCategories();
+    if (!mounted) return;
+    final selected = await showDialog<String?>(context: context, builder: (ctx) => SimpleDialog(
+      title: const Text('Set category'),
+      children: [
+        SimpleDialogOption(onPressed: () => Navigator.pop(ctx, ''), child: const Text('Uncategorised')),
+        for (final category in categories)
+          SimpleDialogOption(onPressed: () => Navigator.pop(ctx, category.id), child: Text(category.name)),
+      ],
+    ));
+    if (selected == null) return;
+    await _categories.setDocumentCategory(document.id, selected.isEmpty ? null : selected);
+  }
+
+  Future<void> _duplicateTags(DocumentRecord document) async {
+    final tags = await _categories.listTags();
+    final current = await _categories.tagsForDocument(document.id);
+    if (!mounted) return;
+    final selected = current.map((tag) => tag.id).toSet();
+    final result = await showDialog<Set<String>>(context: context, builder: (ctx) => StatefulBuilder(
+      builder: (ctx, refresh) => AlertDialog(
+        title: const Text('Edit tags'),
+        content: SizedBox(width: 360, child: tags.isEmpty
+          ? const Text('Create tags in Category & Tag settings first.')
+          : Column(mainAxisSize: MainAxisSize.min, children: [
+              for (final tag in tags)
+                CheckboxListTile(dense: true, contentPadding: EdgeInsets.zero, value: selected.contains(tag.id),
+                  title: Text(tag.name), onChanged: (value) => refresh(() {
+                    if (value == true) { selected.add(tag.id); } else { selected.remove(tag.id); }
+                  })),
+            ])),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, selected), child: const Text('Save tags')),
+        ],
+      ),
+    ));
+    if (result != null) await _categories.setDocumentTags(document.id, result.toList());
+  }
+
+  Future<void> _duplicateReminder(DocumentRecord document) async {
+    final title = TextEditingController(text: 'Reminder - ${document.name}');
+    final note = TextEditingController();
+    var selected = DateTime.now().add(const Duration(days: 1));
+    final saved = await showDialog<bool>(context: context, builder: (ctx) => StatefulBuilder(
+      builder: (ctx, refresh) => AlertDialog(
+        scrollable: true, title: const Text('Add to reminder'),
+        content: Column(mainAxisSize: MainAxisSize.min, children: [
+          TextField(controller: title, decoration: const InputDecoration(labelText: 'Reminder title')),
+          TextField(controller: note, maxLines: 2, decoration: const InputDecoration(labelText: 'Note (optional)')),
+          ListTile(contentPadding: EdgeInsets.zero, title: const Text('Date & time'),
+            subtitle: Text('${selected.day.toString().padLeft(2, '0')}/${selected.month.toString().padLeft(2, '0')}/${selected.year} · ${selected.hour.toString().padLeft(2, '0')}:${selected.minute.toString().padLeft(2, '0')}'),
+            onTap: () async {
+              final date = await showDatePicker(context: ctx, initialDate: selected, firstDate: DateTime.now(), lastDate: DateTime.now().add(const Duration(days: 3650)));
+              if (date == null || !ctx.mounted) return;
+              final time = await showTimePicker(context: ctx, initialTime: TimeOfDay.fromDateTime(selected));
+              if (time != null) refresh(() => selected = DateTime(date.year, date.month, date.day, time.hour, time.minute));
+            }),
+        ]),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          FilledButton(onPressed: () { if (title.text.trim().isNotEmpty && selected.isAfter(DateTime.now())) Navigator.pop(ctx, true); }, child: const Text('Save')),
+        ],
+      ),
+    ));
+    await WidgetsBinding.instance.endOfFrame;
+    final reminderTitle = title.text.trim();
+    final reminderNote = note.text.trim();
+    title.dispose(); note.dispose();
+    if (saved == true) await ReminderRepository().create(title: reminderTitle, note: reminderNote, remindAt: selected, documentId: document.id);
+  }
+
   Future<void> _reviewDuplicateGroup(String sha) async {
     final db = await AppDatabase.instance.database;
     final rows = await db.query('documents',
@@ -262,50 +376,106 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
       orderBy: 'created_at ASC');
     final docs = rows.map(DocumentRecord.fromMap).toList();
     if (docs.length < 2 || !mounted) return;
-    String keepId = docs.first.id;
-    final remove = await showDialog<bool>(context: context, builder: (dialogContext) => StatefulBuilder(
+    final selected = <String>{};
+    await showDialog<void>(context: context, builder: (dialogContext) => StatefulBuilder(
       builder: (context, refresh) => AlertDialog(
-        title: const Text('Review duplicate PDFs'),
-        content: SizedBox(width: 440, child: ListView(shrinkWrap: true, children: [
-          const Text('Choose the copy to keep. All other copies will be moved to Recycle Bin, not permanently deleted.'),
+        title: const Text('Duplicate PDFs'),
+        content: SizedBox(width: 440, height: 380, child: Column(children: [
+          const Text('Open each file to compare it. Select copies you want to move to Recycle Bin.'),
           const SizedBox(height: 8),
-          RadioGroup<String>(
-            groupValue: keepId,
-            onChanged: (value) { if (value != null) refresh(() => keepId = value); },
-            child: Column(children: [
-              for (final doc in docs)
-                RadioListTile<String>(
-                  value: doc.id,
-                  title: Text('${doc.name}.pdf'),
-                  subtitle: Text('${doc.sizeBytes} bytes · ${doc.storagePath}'),
+          Expanded(child: ListView.separated(
+            itemCount: docs.length,
+            separatorBuilder: (_, _) => const Divider(height: 1),
+            itemBuilder: (context, index) {
+              final doc = docs[index];
+              return ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: Checkbox(value: selected.contains(doc.id), onChanged: (value) => refresh(() {
+                  if (value == true) { selected.add(doc.id); } else { selected.remove(doc.id); }
+                })),
+                title: Text('${doc.name}.pdf', maxLines: 1, overflow: TextOverflow.ellipsis),
+                subtitle: Text(_formatSize(doc.sizeBytes)),
+                onTap: () async {
+                  final uri = doc.storagePath;
+                  if (uri.startsWith('content://') || uri.startsWith('file://')) {
+                    await StorageLocationService.instance.openPdf(uri);
+                  } else {
+                    await OpenFilex.open(uri);
+                  }
+                },
+                trailing: PopupMenuButton<String>(
+                  onSelected: (action) async {
+                    if (action == 'open') {
+                      final uri = doc.storagePath;
+                      if (uri.startsWith('content://') || uri.startsWith('file://')) {
+                        await StorageLocationService.instance.openPdf(uri);
+                      } else { await OpenFilex.open(uri); }
+                    } else if (action == 'share') {
+                      await _tools.shareStoredPdf(doc.storagePath, '${doc.name}.pdf');
+                    } else if (action == 'favorite') {
+                      await DocumentRepository().setFavorite(doc, !doc.isFavorite);
+                    } else if (action == 'category') {
+                      await _duplicateCategory(doc);
+                    } else if (action == 'tags') {
+                      await _duplicateTags(doc);
+                    } else if (action == 'rename') {
+                      await _duplicateRename(doc);
+                    } else if (action == 'move') {
+                      await _duplicateMove(doc);
+                    } else if (action == 'reminder') {
+                      await _duplicateReminder(doc);
+                    } else if (action == 'trash') {
+                      await DocumentRepository().moveToTrash(doc);
+                      refresh(() => selected.remove(doc.id));
+                    }
+                  },
+                  itemBuilder: (_) => [
+                    const PopupMenuItem(value: 'open', child: Text('Open PDF')),
+                    const PopupMenuItem(value: 'share', child: Text('Share PDF')),
+                    PopupMenuItem(value: 'favorite', child: Text(doc.isFavorite ? 'Remove from Star' : 'Add to Star')),
+                    const PopupMenuItem(value: 'category', child: Text('Set category')),
+                    const PopupMenuItem(value: 'tags', child: Text('Edit tags')),
+                    const PopupMenuItem(value: 'rename', child: Text('Rename')),
+                    const PopupMenuItem(value: 'move', child: Text('Move to folder')),
+                    const PopupMenuItem(value: 'reminder', child: Text('Add to reminder')),
+                    const PopupMenuItem(value: 'trash', child: Text('Move to Recycle Bin')),
+                  ],
                 ),
-            ]),
-          ),
+              );
+            },
+          )),
         ])),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')),
-          FilledButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Keep selected copy')),
+          TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Close')),
+          FilledButton.tonal(
+            onPressed: selected.isEmpty ? null : () async {
+              final targets = docs.where((d) => selected.contains(d.id)).toList();
+              for (final doc in targets) { await DocumentRepository().moveToTrash(doc); }
+              if (dialogContext.mounted) Navigator.pop(dialogContext);
+              if (mounted) setState(() => _message = 'Moved ${targets.length} duplicate PDF(s) to Recycle Bin.');
+            },
+            child: Text('Delete selected (${selected.length})'),
+          ),
         ],
       ),
     ));
-    if (remove != true) return;
-    for (final doc in docs) {
-      if (doc.id != keepId) await DocumentRepository().moveToTrash(doc);
-    }
-    if (mounted) {
-      setState(() => _message = 'Duplicate review complete. Kept 1 copy and moved ${docs.length - 1} copy/copies to Recycle Bin.');
-    }
+  }
+
+  String _formatSize(int bytes) {
+    if (bytes < 1024) return '$bytes B';
+    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
   }
 
   Future<void> _showDuplicates() async {
     final groups = await _tools.findExactDuplicates();
     if (!mounted) return;
     await showDialog<void>(context: context, builder: (context) => AlertDialog(
-      title: const Text('Exact duplicate PDFs'),
+      title: const Text('Duplicate review'),
       content: SizedBox(width: 420, child: groups.isEmpty
-        ? const Text('No exact SHA-256 duplicates found.')
+        ? const Text('No duplicate PDF found.')
         : ListView(shrinkWrap: true, children: groups.map((g) => ListTile(
-            title: Text('${g['copies']} identical copies'),
+            title: Text('${g['copies']} matching PDF files'),
             subtitle: Text((g['names'] ?? '').toString()),
             trailing: const Icon(Icons.chevron_right),
             onTap: () {
@@ -343,8 +513,11 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
             if (_results.isNotEmpty) ...[
               const SizedBox(height: 8),
               ..._results.map((r) => ListTile(dense: true,
+                leading: const Icon(Icons.picture_as_pdf_outlined),
                 title: Text((r['name'] ?? '').toString()),
-                subtitle: Text('Open PDF · Text match at character ${r['match_position']}'), onTap: () => _openSearchResult(r))),
+                subtitle: Text('Open matching PDF · Text match at character ${r['match_position']}'),
+                trailing: IconButton(tooltip: 'Open PDF', icon: const Icon(Icons.open_in_new), onPressed: () => _openSearchResult(r)),
+                onTap: () => _openSearchResult(r))),
             ],
           ])),
           const Divider(height: 1),
@@ -354,46 +527,14 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
             onTap: _busy ? null : _showDuplicates),
         ])),
       ],
-      if (widget.section == 'backup') Card(child: Column(children: [
-        ListTile(leading: const Icon(Icons.folder_copy_outlined),
-          title: const Text('Save recovery snapshot to DocsGrid folder'),
-          subtitle: const Text('Saves tags, reminders, folders, settings and metadata beside your library.'),
-          trailing: const Icon(Icons.chevron_right),
-          onTap: _busy ? null : _createRecoverySnapshot),
+      if (widget.section == 'backup' || widget.section == 'restore' || widget.section == 'backup_restore') Card(child: Column(children: [
+        ListTile(leading: const Icon(Icons.backup_outlined), title: const Text('Create backup'),
+          subtitle: const Text('Save PDFs, folders, reminders, tags and settings into one ZIP file.'),
+          trailing: const Icon(Icons.chevron_right), onTap: _busy ? null : _backup),
         const Divider(height: 1),
-        ListTile(leading: const Icon(Icons.verified_user_outlined),
-          title: const Text('Verify latest recovery snapshot'),
-          subtitle: const Text('Checks metadata files, hashes and record counts.'),
-          trailing: const Icon(Icons.chevron_right),
-          onTap: _busy ? null : _verifyRecoverySnapshot),
-        const Divider(height: 1),
-        ListTile(leading: const Icon(Icons.backup_outlined),
-          title: const Text('Create offline backup'),
-          trailing: const Icon(Icons.chevron_right),
-          onTap: _busy ? null : _backup),
-      ])),
-      if (widget.section == 'restore') Card(child: Column(children: [
-        ListTile(leading: const Icon(Icons.settings_backup_restore_outlined),
-          title: const Text('Restore backup'),
-          trailing: const Icon(Icons.chevron_right),
-          onTap: _busy ? null : _restoreBackup),
-        const Divider(height: 1),
-        ListTile(leading: const Icon(Icons.verified_outlined),
-          title: const Text('Verify backup ZIP'),
-          trailing: const Icon(Icons.chevron_right),
-          onTap: _busy ? null : _verifyBackup),
-        const Divider(height: 1),
-        ListTile(leading: const Icon(Icons.folder_special_outlined),
-          title: const Text('Verify DocsGrid folder snapshot'),
-          subtitle: const Text('Checks the latest portable metadata snapshot before recovery work.'),
-          trailing: const Icon(Icons.chevron_right),
-          onTap: _busy ? null : _verifyRecoverySnapshot),
-        const Divider(height: 1),
-        ListTile(leading: const Icon(Icons.restore_page_outlined),
-          title: const Text('Restore from existing DocsGrid folder'),
-          subtitle: const Text('Select the old storage location to recover tags, reminders, folders, history and PDFs.'),
-          trailing: const Icon(Icons.chevron_right),
-          onTap: _busy ? null : _restorePortableSnapshot),
+        ListTile(leading: const Icon(Icons.settings_backup_restore_outlined), title: const Text('Restore backup'),
+          subtitle: const Text('Choose a DocsGrid backup ZIP from this phone or another storage location.'),
+          trailing: const Icon(Icons.chevron_right), onTap: _busy ? null : _restoreBackup),
       ])),
     ],
   );

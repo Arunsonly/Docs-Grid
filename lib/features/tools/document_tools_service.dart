@@ -147,10 +147,46 @@ class DocumentToolsService {
     bool useCamera = false,
   }) async {
     final picker = ImagePicker();
-    final selected = useCamera
+    var selected = useCamera
         ? _singleImage(await picker.pickImage(source: ImageSource.camera, imageQuality: 95))
         : await picker.pickMultiImage(imageQuality: 95);
-    if (selected.isEmpty) return null;
+    if (!context.mounted || selected.isEmpty) return null;
+    if (selected.length > 1) {
+      final ordered = List<XFile>.from(selected);
+      final confirmedOrder = await showDialog<List<XFile>>(
+        context: context,
+        builder: (dialogContext) => StatefulBuilder(
+          builder: (dialogContext, refresh) => AlertDialog(
+            title: const Text('Arrange page order'),
+            content: SizedBox(
+              width: 360,
+              height: 320,
+              child: ReorderableListView.builder(
+                itemCount: ordered.length,
+                onReorderItem: (oldIndex, newIndex) {
+                  refresh(() {
+                    final item = ordered.removeAt(oldIndex);
+                    ordered.insert(newIndex, item);
+                  });
+                },
+                itemBuilder: (context, index) => ListTile(
+                  key: ValueKey(ordered[index].path),
+                  leading: CircleAvatar(child: Text('${index + 1}')),
+                  title: Text(ordered[index].name, maxLines: 1, overflow: TextOverflow.ellipsis),
+                  trailing: ReorderableDragStartListener(index: index, child: const Icon(Icons.drag_handle)),
+                ),
+              ),
+            ),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Cancel')),
+              FilledButton(onPressed: () => Navigator.pop(dialogContext, List<XFile>.from(ordered)), child: const Text('Continue')),
+            ],
+          ),
+        ),
+      );
+      if (!context.mounted || confirmedOrder == null) return null;
+      selected = confirmedOrder;
+    }
 
     final pdf = pw.Document();
     for (final image in selected) {

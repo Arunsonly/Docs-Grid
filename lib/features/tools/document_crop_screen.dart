@@ -2,6 +2,7 @@ import 'dart:typed_data';
 
 import 'package:crop_your_image/crop_your_image.dart';
 import 'package:flutter/material.dart';
+import 'package:image/image.dart' as img;
 
 class DocumentCropScreen extends StatefulWidget {
   const DocumentCropScreen({super.key, required this.imageBytes});
@@ -13,9 +14,35 @@ class DocumentCropScreen extends StatefulWidget {
 }
 
 class _DocumentCropScreenState extends State<DocumentCropScreen> {
-  final CropController _controller = CropController();
+  CropController _controller = CropController();
+  late Uint8List _workingImage;
+  int _imageVersion = 0;
   bool _cropping = false;
   bool _completed = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _workingImage = widget.imageBytes;
+  }
+
+  void _replaceImage(Uint8List bytes) {
+    setState(() { _workingImage = bytes; _controller = CropController(); _imageVersion++; });
+  }
+
+  void _rotate() {
+    final decoded = img.decodeImage(_workingImage);
+    if (decoded == null) return;
+    _replaceImage(Uint8List.fromList(img.encodePng(img.copyRotate(decoded, angle: 90))));
+  }
+
+  void _applyFilter(String value) {
+    if (value == 'original') { _replaceImage(widget.imageBytes); return; }
+    final decoded = img.decodeImage(widget.imageBytes);
+    if (decoded == null) return;
+    final enhanced = img.adjustColor(decoded, contrast: 1.12, brightness: 1.04, saturation: 1.04);
+    _replaceImage(Uint8List.fromList(img.encodePng(enhanced)));
+  }
 
   void _finish(CropResult result) {
     if (!mounted || _completed) return;
@@ -61,7 +88,8 @@ class _DocumentCropScreenState extends State<DocumentCropScreen> {
             ),
             Expanded(
               child: Crop(
-                image: widget.imageBytes,
+                key: ValueKey(_imageVersion),
+                image: _workingImage,
                 controller: _controller,
                 interactive: true,
                 fixCropRect: false,
@@ -73,30 +101,17 @@ class _DocumentCropScreenState extends State<DocumentCropScreen> {
               ),
             ),
             Padding(
-              padding: const EdgeInsets.all(16),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: OutlinedButton(
-                      onPressed: _cropping ? null : () => Navigator.of(context).pop(),
-                      child: const Text('Retake / Cancel'),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: FilledButton.icon(
-                      onPressed: _cropping ? null : () {
-                        setState(() => _cropping = true);
-                        _controller.crop();
-                      },
-                      icon: _cropping
-                          ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
-                          : const Icon(Icons.crop),
-                      label: Text(_cropping ? 'Cropping…' : 'Apply crop'),
-                    ),
-                  ),
-                ],
-              ),
+              padding: const EdgeInsets.fromLTRB(8, 8, 8, 12),
+              child: Row(mainAxisAlignment: MainAxisAlignment.spaceEvenly, children: [
+                TextButton.icon(onPressed: _cropping ? null : () => Navigator.of(context).pop(), icon: const Icon(Icons.refresh), label: const Text('Retake')),
+                FilledButton.icon(onPressed: _cropping ? null : () { setState(() => _cropping = true); _controller.crop(); },
+                  icon: _cropping ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.crop),
+                  label: Text(_cropping ? 'Cropping…' : 'Crop')),
+                IconButton(tooltip: 'Rotate', onPressed: _cropping ? null : _rotate, icon: const Icon(Icons.rotate_right)),
+                PopupMenuButton<String>(enabled: !_cropping, tooltip: 'Filter', onSelected: _applyFilter,
+                  itemBuilder: (_) => const [PopupMenuItem(value: 'original', child: Text('Original Color')), PopupMenuItem(value: 'auto', child: Text('Auto Color'))],
+                  child: const Padding(padding: EdgeInsets.all(6), child: Column(mainAxisSize: MainAxisSize.min, children: [Icon(Icons.tune), Text('Filter', style: TextStyle(fontSize: 11))]))),
+              ]),
             ),
           ],
         ),

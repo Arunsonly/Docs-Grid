@@ -6,6 +6,8 @@ import 'package:open_filex/open_filex.dart';
 import '../../documents/data/document_repository.dart';
 import '../../tools/document_tools_service.dart';
 import '../../../core/storage/storage_location_service.dart';
+import '../../reminders/data/reminder_repository.dart';
+import '../../categories/data/category_repository.dart';
 
 import '../data/folder_repository.dart';
 import '../domain/folder.dart';
@@ -20,6 +22,7 @@ class FoldersScreen extends StatefulWidget {
 class _FoldersScreenState extends State<FoldersScreen> {
   final FolderRepository _repository = FolderRepository();
   final DocumentRepository _documents = DocumentRepository();
+  final CategoryRepository _categories = CategoryRepository();
   final List<Folder> _ancestors = [];
   String? _currentFolderId;
   String _currentTitle = 'Folders';
@@ -167,6 +170,144 @@ class _FoldersScreenState extends State<FoldersScreen> {
     }
   }
 
+  Future<void> _moveSelected(List<DocumentRecord> all) async {
+    final selected = all.where((d) => _selectedDocumentIds.contains(d.id)).toList();
+    if (selected.isEmpty) return;
+    final folders = await _repository.allFoldersWithPaths();
+    if (!mounted) return;
+    final destination = await showModalBottomSheet<String>(
+      context: context, showDragHandle: true,
+      builder: (ctx) => SafeArea(child: ListView(shrinkWrap: true, children: [
+        const ListTile(title: Text('Move selected PDFs to')),
+        ListTile(leading: const Icon(Icons.home_outlined), title: const Text('My Documents (root)'), onTap: () => Navigator.pop(ctx, '')),
+        for (final folder in folders)
+          ListTile(leading: const Icon(Icons.folder_outlined), title: Text(folder.path), onTap: () => Navigator.pop(ctx, folder.folder.id)),
+      ])),
+    );
+    if (destination == null) return;
+    final result = await _documents.moveManyToFolder(selected, destination.isEmpty ? null : destination);
+    if (!mounted) return;
+    setState(_selectedDocumentIds.clear);
+    await _refresh();
+    final failures = result['failures'] as List<String>;
+    _message('Moved ${result['moved']} PDF(s). ${failures.length} failed.');
+  }
+
+  Future<void> _addReminder(DocumentRecord document) async {
+    final title = TextEditingController(text: 'Reminder - ${document.name}');
+    final note = TextEditingController();
+    var selected = DateTime.now().add(const Duration(days: 1));
+    final saved = await showDialog<bool>(context: context, builder: (ctx) => StatefulBuilder(
+      builder: (ctx, refresh) => AlertDialog(
+        scrollable: true, title: const Text('Add to reminder'),
+        content: Column(mainAxisSize: MainAxisSize.min, children: [
+          TextField(controller: title, decoration: const InputDecoration(labelText: 'Reminder title')),
+          TextField(controller: note, maxLines: 2, decoration: const InputDecoration(labelText: 'Note (optional)')),
+          ListTile(contentPadding: EdgeInsets.zero, title: const Text('Date & time'),
+            subtitle: Text('${selected.day.toString().padLeft(2, '0')}/${selected.month.toString().padLeft(2, '0')}/${selected.year} · ${selected.hour.toString().padLeft(2, '0')}:${selected.minute.toString().padLeft(2, '0')}'),
+            onTap: () async {
+              final date = await showDatePicker(context: ctx, initialDate: selected, firstDate: DateTime.now(), lastDate: DateTime.now().add(const Duration(days: 3650)));
+              if (date == null || !ctx.mounted) return;
+              final time = await showTimePicker(context: ctx, initialTime: TimeOfDay.fromDateTime(selected));
+              if (time != null) refresh(() => selected = DateTime(date.year, date.month, date.day, time.hour, time.minute));
+            }),
+        ]),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          FilledButton(onPressed: () { if (title.text.trim().isNotEmpty && selected.isAfter(DateTime.now())) Navigator.pop(ctx, true); }, child: const Text('Save')),
+        ],
+      ),
+    ));
+    await WidgetsBinding.instance.endOfFrame;
+    final reminderTitle = title.text.trim();
+    final reminderNote = note.text.trim();
+    title.dispose(); note.dispose();
+    if (saved != true) return;
+    await ReminderRepository().create(title: reminderTitle, note: reminderNote, remindAt: selected, documentId: document.id);
+    if (mounted) _message('Reminder saved for this PDF.');
+  }
+
+  Future<void> _chooseCategory(DocumentRecord document) async {
+    final categories = await _categories.listCategories();
+    if (!mounted) return;
+    final selected = await showDialog<String?>(
+      context: context,
+      builder: (ctx) => SimpleDialog(
+        title: const Text('Set category'),
+        children: [
+          SimpleDialogOption(onPressed: () => Navigator.pop(ctx, ''), child: const Text('Uncategorised')),
+          for (final category in categories)
+            SimpleDialogOption(onPressed: () => Navigator.pop(ctx, category.id), child: Text(category.name)),
+        ],
+      ),
+    );
+    if (selected == null) return;
+    await _categories.setDocumentCategory(document.id, selected.isEmpty ? null : selected);
+    await _refresh();
+  }
+
+  Future<void> _editTags(DocumentRecord document) async {
+    final tags = await _categories.listTags();
+    final current = await _categories.tagsForDocument(document.id);
+    if (!mounted) return;
+    final selected = current.map((tag) => tag.id).toSet();
+    final result = await showDialog<Set<String>>(context: context, builder: (ctx) => StatefulBuilder(
+      builder: (ctx, refresh) => AlertDialog(
+        title: const Text('Edit tags'),
+        content: SizedBox(width: 360, child: tags.isEmpty
+          ? const Text('Create tags in Category & Tag settings first.')
+          : Column(mainAxisSize: MainAxisSize.min, children: [
+              for (final tag in tags)
+                CheckboxListTile(dense: true, contentPadding: EdgeInsets.zero, value: selected.contains(tag.id),
+                  title: Text(tag.name), onChanged: (value) => refresh(() {
+                    if (value == true) { selected.add(tag.id); } else { selected.remove(tag.id); }
+                  })),
+            ])),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, selected), child: const Text('Save tags')),
+        ],
+      ),
+    ));
+    if (result == null) return;
+    await _categories.setDocumentTags(document.id, result.toList());
+    await _refresh();
+  }
+
+  Future<void> _renamePdf(DocumentRecord document) async {
+    final controller = TextEditingController(text: document.name);
+    final value = await showDialog<String>(context: context, builder: (ctx) => AlertDialog(
+      title: const Text('Rename PDF'),
+      content: TextField(controller: controller, autofocus: true, decoration: const InputDecoration(labelText: 'File name', suffixText: '.pdf')),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+        FilledButton(onPressed: () => Navigator.pop(ctx, controller.text), child: const Text('Save')),
+      ],
+    ));
+    await WidgetsBinding.instance.endOfFrame;
+    controller.dispose();
+    if (value == null) return;
+    await _documents.rename(document, value);
+    await _refresh();
+  }
+
+  Future<void> _moveOne(DocumentRecord document) async {
+    final folders = await _repository.allFoldersWithPaths();
+    if (!mounted) return;
+    final destination = await showModalBottomSheet<String>(
+      context: context, showDragHandle: true,
+      builder: (ctx) => SafeArea(child: ListView(shrinkWrap: true, children: [
+        const ListTile(title: Text('Move PDF to folder')),
+        ListTile(leading: const Icon(Icons.home_outlined), title: const Text('My Documents (root)'), onTap: () => Navigator.pop(ctx, '')),
+        for (final folder in folders)
+          ListTile(leading: const Icon(Icons.folder_outlined), title: Text(folder.path), onTap: () => Navigator.pop(ctx, folder.folder.id)),
+      ])),
+    );
+    if (destination == null) return;
+    await _documents.moveToFolder(document, destination.isEmpty ? null : destination);
+    await _refresh();
+  }
+
   void _message(String message) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
@@ -200,6 +341,7 @@ class _FoldersScreenState extends State<FoldersScreen> {
                     if (selected.isEmpty) return;
                     await DocumentToolsService().shareManyStoredPdfs(selected.map((d) => d.storagePath).toList(), selected.map((d) => '${d.name}.pdf').toList());
                   }, icon: const Icon(Icons.share_outlined)),
+                  IconButton(tooltip: 'Move selected to folder', onPressed: () => _moveSelected(all), icon: const Icon(Icons.drive_file_move_outlined)),
                   IconButton(tooltip: 'Move selected to Recycle Bin', onPressed: () async {
                     final selected = all.where((d) => _selectedDocumentIds.contains(d.id)).toList();
                     if (selected.isEmpty) return;
@@ -373,18 +515,33 @@ class _FoldersScreenState extends State<FoldersScreen> {
                                     await OpenFilex.open(document.storagePath);
                                   }
                                 },
-                                trailing: IconButton(
-                                  tooltip: 'Share PDF',
-                                  icon: const Icon(Icons.share_outlined),
-                                  onPressed: () async {
+                                trailing: PopupMenuButton<String>(
+                                  tooltip: 'PDF actions',
+                                  onSelected: (action) async {
                                     try {
-                                      await DocumentToolsService().shareStoredPdf(
-                                        document.storagePath, '${document.name}.pdf',
-                                      );
+                                      if (action == 'share') await DocumentToolsService().shareStoredPdf(document.storagePath, '${document.name}.pdf');
+                                      if (action == 'favorite') await _documents.setFavorite(document, !document.isFavorite);
+                                      if (action == 'category') await _chooseCategory(document);
+                                      if (action == 'tags') await _editTags(document);
+                                      if (action == 'rename') await _renamePdf(document);
+                                      if (action == 'move') await _moveOne(document);
+                                      if (action == 'reminder') await _addReminder(document);
+                                      if (action == 'trash') await _documents.moveToTrash(document);
+                                      if (mounted) await _refresh();
                                     } catch (error) {
-                                      if (mounted) _message('Could not share PDF: $error');
+                                      if (mounted) _message('Action failed: $error');
                                     }
                                   },
+                                  itemBuilder: (_) => [
+                                    const PopupMenuItem(value: 'share', child: Text('Share PDF')),
+                                    PopupMenuItem(value: 'favorite', child: Text(document.isFavorite ? 'Remove from Star' : 'Add to Star')),
+                                    const PopupMenuItem(value: 'category', child: Text('Set category')),
+                                    const PopupMenuItem(value: 'tags', child: Text('Edit tags')),
+                                    const PopupMenuItem(value: 'rename', child: Text('Rename')),
+                                    const PopupMenuItem(value: 'move', child: Text('Move to folder')),
+                                    const PopupMenuItem(value: 'reminder', child: Text('Add to reminder')),
+                                    const PopupMenuItem(value: 'trash', child: Text('Move to Recycle Bin')),
+                                  ],
                                 ),
                               ),
                             ),
