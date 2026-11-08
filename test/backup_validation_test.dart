@@ -109,6 +109,20 @@ void main() {
     await expectLater(DocumentToolsService().validateBackup(file), throwsStateError);
   });
 
+  test('rejects PDF bytes that disagree with document metadata', () async {
+    final file = await writeArchive(documents: const [
+      {'id': 'doc-1', 'name': 'Policy', 'sha256': '0000000000000000000000000000000000000000000000000000000000000000', 'size_bytes': 8},
+    ]);
+    await expectLater(DocumentToolsService().validateBackup(file), throwsStateError);
+  });
+
+  test('rejects PDF size that disagrees with document metadata', () async {
+    final file = await writeArchive(documents: const [
+      {'id': 'doc-1', 'name': 'Policy', 'size_bytes': 99},
+    ]);
+    await expectLater(DocumentToolsService().validateBackup(file), throwsStateError);
+  });
+
   test('rejects duplicate document IDs in metadata', () async {
     final file = await writeArchive(documents: const [
       {'id': 'doc-1', 'name': 'Policy'},
