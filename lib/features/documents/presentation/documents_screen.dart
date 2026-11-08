@@ -9,6 +9,7 @@ import '../../../core/storage/storage_location_service.dart';
 import '../../categories/data/category_repository.dart';
 import '../../folders/data/folder_repository.dart';
 import '../../tools/document_tools_service.dart';
+import '../../tools/document_tools_screen.dart';
 import '../../reminders/data/reminder_repository.dart';
 
 class DocumentsScreen extends StatefulWidget {
@@ -144,6 +145,11 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     );
     nameController.dispose();
     return result;
+  }
+
+  void _message(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
   }
 
   Future<void> _browsePhoneStorage() async {
@@ -795,7 +801,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                     if (action == 'duplicates') {
                       Navigator.of(context).push(
                         MaterialPageRoute(
-                          builder: (_) => const DocumentToolsScreen(section: 'tools'),
+                          builder: (_) => const DocumentToolsScreen(section: 'tools', quickAction: 'duplicates'),
                         ),
                       );
                     }
