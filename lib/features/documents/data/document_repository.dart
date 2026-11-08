@@ -565,16 +565,14 @@ class DocumentRepository {
           });
         });
       } catch (_) {
-        if (createdUri != null) {
-          try {
-            if (createdUri.startsWith('content://') || createdUri.startsWith('file://')) {
-              await storage.deletePdf(createdUri);
-            } else {
-              final file = File(createdUri);
-              if (await file.exists()) await file.delete();
-            }
-          } catch (_) {}
-        }
+        try {
+          if (createdUri.startsWith('content://') || createdUri.startsWith('file://')) {
+            await storage.deletePdf(createdUri);
+          } else {
+            final file = File(createdUri);
+            if (await file.exists()) await file.delete();
+          }
+        } catch (_) {}
         rethrow;
       }
     } finally {
