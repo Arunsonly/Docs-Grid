@@ -46,6 +46,10 @@ class ReminderNotifications {
     await initialize();
     final android = _plugin.resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>();
     final androidGranted = await android?.requestNotificationsPermission() ?? true;
+    if (android != null) {
+      final exactAllowed = await android.canScheduleExactNotifications() ?? false;
+      if (!exactAllowed) await android.requestExactAlarmsPermission();
+    }
     final ios = _plugin.resolvePlatformSpecificImplementation<IOSFlutterLocalNotificationsPlugin>();
     final iosGranted = await ios?.requestPermissions(alert: true, badge: true, sound: true) ?? true;
     return androidGranted && iosGranted;
@@ -70,6 +74,8 @@ class ReminderNotifications {
         : recurrence == 'weekly'
             ? DateTimeComponents.dayOfWeekAndTime
             : null;
+    final android = _plugin.resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>();
+    final exactAllowed = await android?.canScheduleExactNotifications() ?? false;
     await _plugin.zonedSchedule(
       _id(id),
       title,
@@ -93,7 +99,7 @@ class ReminderNotifications {
           presentSound: true,
         ),
       ),
-      androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
+      androidScheduleMode: exactAllowed ? AndroidScheduleMode.exactAllowWhileIdle : AndroidScheduleMode.inexactAllowWhileIdle,
       matchDateTimeComponents: match,
     );
   }
