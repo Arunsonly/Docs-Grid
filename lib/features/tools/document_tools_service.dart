@@ -497,7 +497,7 @@ class DocumentToolsService {
       final record = Map<String, dynamic>.from(raw);
       final filename = record['path'];
       if (filename is! String || filename.isEmpty ||
-          filename.contains('/') || filename.contains('\\\\')) {
+          filename.contains('/') || filename.contains('\\')) {
         throw StateError('Recovery snapshot contains an unsafe metadata path.');
       }
       final uri = await _findChildUri(snapshotUri, filename);
@@ -517,7 +517,13 @@ class DocumentToolsService {
 
   Future<String> _findChildUri(String parentUri, String name) async {
     final children = await StorageLocationService.instance.listDirectory(parentUri);
-    final match = children.where((entry) => entry['name'] == name).firstOrNull;
+    Map<String, Object?>? match;
+    for (final entry in children) {
+      if (entry['name'] == name) {
+        match = entry;
+        break;
+      }
+    }
     if (match == null || match['isDirectory'] == true) {
       throw StateError('Recovery snapshot is missing $name.');
     }
