@@ -19,7 +19,22 @@ import CryptoKit
         if let controller = window?.rootViewController as? FlutterViewController {
             let channel = FlutterMethodChannel(name: channelName, binaryMessenger: controller.binaryMessenger)
             channel.setMethodCallHandler { [weak self] call, result in
-                self?.handle(call, result: result)
+                guard let self = self else {
+                    result(FlutterError(code: "UNAVAILABLE", message: "DocsGrid storage is unavailable.", details: nil))
+                    return
+                }
+                // Folder picking and document preview are UIKit operations and
+                // stay on the main thread. All file/provider work runs on a
+                // background queue; Flutter replies are marshalled back to main.
+                if call.method == "chooseFolder" || call.method == "openPdf" {
+                    self.handle(call, result: result)
+                } else {
+                    DispatchQueue.global(qos: .userInitiated).async {
+                        self.handle(call) { value in
+                            DispatchQueue.main.async { result(value) }
+                        }
+                    }
+                }
             }
         }
         return super.application(application, didFinishLaunchingWithOptions: launchOptions)
