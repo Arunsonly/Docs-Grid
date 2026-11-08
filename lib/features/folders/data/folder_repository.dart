@@ -74,6 +74,7 @@ class FolderRepository {
       );
       if (rows.isEmpty) throw StateError('Folder no longer exists.');
       final row = rows.first;
+      final folderName = validateFolderName(row['name'] as String);
       final currentUri = row['storage_uri_or_relative_path'] as String?;
       if (currentUri != null) return currentUri;
       final parentId = row['parent_id'] as String?;
@@ -83,7 +84,7 @@ class FolderRepository {
       try {
         childUri = await StorageLocationService.instance.findChildUri(
           parentUri: parentUri,
-          name: row['name'] as String,
+          name: folderName,
         );
       } catch (_) {
         childUri = await StorageLocationService.instance.createDirectory(
@@ -121,6 +122,7 @@ class FolderRepository {
       );
       if (rows.isEmpty) throw StateError('Parent folder no longer exists.');
       final row = rows.first;
+      final folderName = validateFolderName(row['name'] as String);
       final existingUri = row['storage_uri_or_relative_path'] as String?;
       if (existingUri != null) return existingUri;
       final ancestorId = row['parent_id'] as String?;
@@ -130,7 +132,7 @@ class FolderRepository {
       if (ancestorUri == null) return null;
       final createdUri = await storage.createDirectory(
         parentUri: ancestorUri,
-        name: row['name'] as String,
+        name: folderName,
       );
       await db.update(
         'folders',
