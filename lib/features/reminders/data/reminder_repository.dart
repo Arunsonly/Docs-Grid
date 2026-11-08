@@ -14,6 +14,7 @@ class ReminderRecord {
     required this.documentId,
     required this.documentName,
     required this.recurrenceRule,
+    this.snoozedUntil,
   });
 
   final String id;
@@ -25,6 +26,7 @@ class ReminderRecord {
   final String? documentId;
   final String? documentName;
   final String? recurrenceRule;
+  final DateTime? snoozedUntil;
 
   factory ReminderRecord.fromMap(Map<String, Object?> row) => ReminderRecord(
     id: row['id'] as String,
@@ -36,6 +38,9 @@ class ReminderRecord {
     documentId: row['document_id'] as String?,
     documentName: row['document_name'] as String?,
     recurrenceRule: row['recurrence_rule'] as String?,
+    snoozedUntil: row['snoozed_until'] == null
+        ? null
+        : DateTime.parse(row['snoozed_until'] as String).toLocal(),
   );
 }
 
@@ -102,6 +107,7 @@ class ReminderRepository {
       'remind_at_utc': when,
       'next_fire_at_utc': when,
       'recurrence_rule': recurrenceRule,
+      'snoozed_until': null,
       'status': 'scheduled',
       'completed_at': null,
       'updated_at': DateTime.now().toUtc().toIso8601String(),
@@ -116,14 +122,14 @@ class ReminderRepository {
     final when = DateTime.now().add(duration);
     final db = await _database.database;
     await db.update('reminders', {
-      'remind_at_utc': when.toUtc().toIso8601String(),
+      // Keep the original recurrence anchor; snooze is a separate one-off.
       'next_fire_at_utc': when.toUtc().toIso8601String(),
       'status': 'scheduled',
       'enabled': 1,
       'snoozed_until': when.toUtc().toIso8601String(),
       'updated_at': DateTime.now().toUtc().toIso8601String(),
     }, where: 'id = ?', whereArgs: [reminder.id]);
-    await ReminderNotifications.instance.schedule(
+    await ReminderNotifications.instance.scheduleSnooze(
       id: reminder.id, title: reminder.title, body: reminder.note, at: when,
     );
   }
@@ -147,6 +153,12 @@ class ReminderRepository {
         id: reminder.id, title: reminder.title, body: reminder.note,
         at: reminder.remindAt, recurrence: reminder.recurrenceRule,
       );
+      final snoozedUntil = reminder.snoozedUntil;
+      if (snoozedUntil != null && snoozedUntil.isAfter(DateTime.now())) {
+        await ReminderNotifications.instance.scheduleSnooze(
+          id: reminder.id, title: reminder.title, body: reminder.note, at: snoozedUntil,
+        );
+      }
     } else {
       await ReminderNotifications.instance.cancel(reminder.id);
     }
