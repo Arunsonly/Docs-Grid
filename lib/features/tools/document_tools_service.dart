@@ -870,6 +870,9 @@ class DocumentToolsService {
       return uri;
     }
     final reminderIdMap = <String, String>{};
+    // Needed after the preflight/transaction block to attach notification
+    // payloads to the remapped document IDs.
+    final documentIdMap = <String, String>{};
     var addedDocuments = 0;
     var linkedDocuments = 0;
     var missingPdfs = 0;
@@ -892,7 +895,6 @@ class DocumentToolsService {
 
     final categoryIdMap = <String, String>{};
     final tagIdMap = <String, String>{};
-    final documentIdMap = <String, String>{};
     final historyIdMap = <String, String>{};
     for (final row in rowsByTable['categories']!) {
       final oldId = row['id'] as String;
