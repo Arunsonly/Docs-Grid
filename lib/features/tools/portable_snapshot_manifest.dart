@@ -107,7 +107,7 @@ class PortableSnapshotManifest {
           byId.containsKey(id)) {
         throw const FormatException('Snapshot contains an invalid or duplicate folder ID.');
       }
-      if (name is! String || name.trim().isEmpty ||
+      if (name is! String || name.trim().isEmpty || name != name.trim() ||
           name.trim() == '.' || name.trim() == '..' ||
           name.contains('/') || name.contains(r'\') ||
           name.contains('\u0000') || name.length > 255 ||
