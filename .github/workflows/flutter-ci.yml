@@ -137,7 +137,7 @@ jobs:
               marker = 'dependencies {'
               if marker not in source:
                   raise SystemExit('Could not find Android dependencies block')
-              source = source.replace(marker, marker + '\\n    ' + dependency, 1)
+              source = source.replace(marker, marker + '\n    ' + dependency, 1)
               gradle.write_text(source)
           print('Bundled Android Devanagari OCR model')
           PY
