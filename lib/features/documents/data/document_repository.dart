@@ -203,13 +203,17 @@ class DocumentRepository {
       }
       copiedToNewLocation = newStorageUri != sourceUri;
       if (copiedToNewLocation) {
-        final sourceDigest = sourceIsShared
-            ? await storage.sha256Pdf(sourceUri)
-            : (await sha256.bind(File(sourceUri).openRead()).first).toString();
-        final copiedDigest = await storage.sha256Pdf(newStorageUri);
-        if (copiedDigest != sourceDigest) {
+        try {
+          final sourceDigest = sourceIsShared
+              ? await storage.sha256Pdf(sourceUri)
+              : (await sha256.bind(File(sourceUri).openRead()).first).toString();
+          final copiedDigest = await storage.sha256Pdf(newStorageUri);
+          if (copiedDigest != sourceDigest) {
+            throw StateError('PDF copy failed SHA-256 verification; the original file was kept.');
+          }
+        } catch (_) {
           try { await storage.deletePdf(newStorageUri); } catch (_) {}
-          throw StateError('PDF copy failed SHA-256 verification; the original file was kept.');
+          rethrow;
         }
       }
     } else {
@@ -412,12 +416,16 @@ class DocumentRepository {
         createdDestination = true;
       }
 
-      final destinationDigest = await storage.sha256Pdf(destinationUri);
-      if (destinationDigest != sourceDigest) {
+      try {
+        final destinationDigest = await storage.sha256Pdf(destinationUri);
+        if (destinationDigest != sourceDigest) {
+          throw StateError('Migration copy for "$name" failed SHA-256 verification. The original was kept.');
+        }
+      } catch (_) {
         if (createdDestination) {
           try { await storage.deletePdf(destinationUri); } catch (_) {}
         }
-        throw StateError('Migration copy for "$name" failed SHA-256 verification. The original was kept.');
+        rethrow;
       }
 
       try {
@@ -648,10 +656,14 @@ class DocumentRepository {
         parentUri: destinationUri,
         name: safeName,
       );
-      final copiedDigest = await storage.sha256Pdf(uri);
-      if (copiedDigest != digest) {
+      try {
+        final copiedDigest = await storage.sha256Pdf(uri);
+        if (copiedDigest != digest) {
+          throw StateError('Scanned PDF failed SHA-256 verification in selected storage.');
+        }
+      } catch (_) {
         try { await storage.deletePdf(uri); } catch (_) {}
-        throw StateError('Scanned PDF failed SHA-256 verification in selected storage.');
+        rethrow;
       }
     } else {
       // Keep scanner imports in the same nested private-folder layout used by
