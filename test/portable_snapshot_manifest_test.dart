@@ -98,6 +98,16 @@ void main() {
       }
     });
 
+    test('rejects folder names with leading or trailing whitespace', () {
+      final rows = [
+        {'id': 'root', 'name': ' Insurance ', 'parent_id': null},
+      ];
+      expect(
+        () => PortableSnapshotManifest.validateFolderRows(rows),
+        throwsFormatException,
+      );
+    });
+
     test('rejects duplicate IDs and missing parents', () {
       final duplicate = [
         {'id': 'same', 'name': 'First', 'parent_id': null},
