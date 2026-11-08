@@ -21,6 +21,29 @@ import CryptoKit
             channel.setMethodCallHandler { [weak self] call, result in
                 self?.handle(call, result: result)
             }
+            let notificationChannel = FlutterMethodChannel(
+                name: "docsgrid/notifications",
+                binaryMessenger: controller.binaryMessenger
+            )
+            notificationChannel.setMethodCallHandler { call, result in
+                guard call.method == "openSettings" else {
+                    result(FlutterMethodNotImplemented)
+                    return
+                }
+                guard let settingsURL = URL(string: UIApplication.openSettingsURLString) else {
+                    result(FlutterError(code: "SETTINGS_ERROR", message: "Notification settings URL is unavailable.", details: nil))
+                    return
+                }
+                DispatchQueue.main.async {
+                    UIApplication.shared.open(settingsURL, options: [:]) { opened in
+                        if opened {
+                            result(true)
+                        } else {
+                            result(FlutterError(code: "SETTINGS_ERROR", message: "Could not open iOS app settings.", details: nil))
+                        }
+                    }
+                }
+            }
         }
         return super.application(application, didFinishLaunchingWithOptions: launchOptions)
     }
