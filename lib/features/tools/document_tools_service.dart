@@ -59,17 +59,45 @@ class DocumentToolsService {
     ''');
   }
 
-  Future<void> keepOneDuplicate(String sha, String keepId) async {
+  Future<int> keepOneDuplicate(String sha, String keepId) async {
     final db = await _database.database;
-    final matches = await db.query('documents',
-      columns: ['id'], where: 'sha256 = ? AND deleted_at IS NULL',
-      whereArgs: [sha]);
-    if (matches.length < 2 || !matches.any((r) => r['id'] == keepId)) {
-      throw StateError('Duplicate group changed. Refresh the list and try again.');
-    }
-    // Deliberately do not delete files. User must review each duplicate and
-    // use the normal Recycle Bin flow so original files remain recoverable.
-    throw StateError('Use Recycle Bin to remove reviewed copies individually. No file was deleted.');
+    return db.transaction((txn) async {
+      final matches = await txn.query(
+        'documents',
+        columns: ['id'],
+        where: 'sha256 = ? AND deleted_at IS NULL',
+        whereArgs: [sha],
+      );
+      if (matches.length < 2 || !matches.any((row) => row['id'] == keepId)) {
+        throw StateError('Duplicate group changed. Refresh the list and try again.');
+      }
+      final now = DateTime.now().toUtc().toIso8601String();
+      var moved = 0;
+      for (final row in matches) {
+        final id = row['id'] as String;
+        if (id == keepId) continue;
+        final changed = await txn.update(
+          'documents',
+          {'deleted_at': now, 'updated_at': now},
+          where: 'id = ? AND sha256 = ? AND deleted_at IS NULL',
+          whereArgs: [id, sha],
+        );
+        if (changed == 1) {
+          await txn.insert('history', {
+            'id': _uuid.v4(),
+            'document_id': id,
+            'action': 'moved_to_recycle_bin',
+            'details_json': jsonEncode({'duplicateReview': true, 'keptDocumentId': keepId}),
+            'created_at': now,
+          });
+          moved++;
+        }
+      }
+      if (moved != matches.length - 1) {
+        throw StateError('Duplicate group changed during review. No copies were moved.');
+      }
+      return moved;
+    });
   }
 
   Future<int> indexPdfText(String documentId, String path) async {
