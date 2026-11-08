@@ -57,7 +57,13 @@ import CryptoKit
                     "documentsUri": documents.absoluteString
                 ])
             case "getSelectedFolder":
-                result(try selectedFolder())
+                guard let selected = try selectedFolder(), let root = URL(string: selected["uri"] ?? "") else {
+                    result(nil)
+                    return
+                }
+                let docsGrid = try ensureDirectory(parent: root, name: "DocsGrid")
+                let folders = try ensureDirectory(parent: docsGrid, name: "Folders")
+                result(["uri": folders.absoluteString, "name": "DocsGrid/Folders"])
             case "checkStorageAccess":
                 result(checkStorageAccess())
             case "savePdf":
@@ -242,9 +248,7 @@ import CryptoKit
             }
             UserDefaults.standard.set(bookmarks, forKey: bookmarkListKey)
         }
-        let docsGrid = try ensureDirectory(parent: root, name: "DocsGrid")
-        let folders = try ensureDirectory(parent: docsGrid, name: "Folders")
-        return ["uri": folders.absoluteString, "name": "DocsGrid/Folders"]
+        return ["uri": root.absoluteString, "name": root.lastPathComponent]
     }
 
     private func uniqueURL(parent: URL, requestedName: String) -> URL {
