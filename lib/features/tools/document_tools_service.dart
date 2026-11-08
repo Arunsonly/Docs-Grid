@@ -41,7 +41,7 @@ class DocumentToolsService {
   static String normalizeDuplicateText(String raw) => raw
       .toLowerCase()
       .replaceAll(RegExp(r'--- page \d+ ---'), ' ')
-      .replaceAll(RegExp(r'[^\p{L}\p{N}]+', unicode: true), ' ')
+      .replaceAll(RegExp(r'[^\p{L}\p{M}\p{N}]+', unicode: true), ' ')
       .trim()
       .replaceAll(RegExp(r'\s+'), ' ');
 
