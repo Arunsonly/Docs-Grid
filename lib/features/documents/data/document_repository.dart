@@ -737,6 +737,12 @@ class DocumentRepository {
                   name: safeName,
                   bytes: fallbackBytes!,
                 );
+          final copiedDigest = await storage.sha256Pdf(createdUri);
+          if (copiedDigest != digest) {
+            try { await storage.deletePdf(createdUri); } catch (_) {}
+            createdUri = null;
+            throw StateError('Imported PDF failed SHA-256 verification in selected storage.');
+          }
           storedName = p.basenameWithoutExtension(safeName);
           relativePath = null;
         } else {
