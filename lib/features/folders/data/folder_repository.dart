@@ -190,13 +190,35 @@ class FolderRepository {
       updatedAt: DateTime.parse(now),
     );
     try {
-      await db.insert('folders', {
-        'id': folder.id,
-        'name': folder.name,
-        'parent_id': folder.parentId,
-        'storage_uri_or_relative_path': physicalUri,
-        'created_at': now,
-        'updated_at': now,
+      await db.transaction((txn) async {
+        if (parentId != null) {
+          final parents = await txn.query(
+            'folders',
+            columns: ['id'],
+            where: 'id = ? AND deleted_at IS NULL',
+            whereArgs: [parentId],
+            limit: 1,
+          );
+          if (parents.isEmpty) throw StateError('Parent folder no longer exists.');
+        }
+        final duplicates = await txn.query(
+          'folders',
+          columns: ['id'],
+          where: 'parent_id IS ? AND name = ? COLLATE NOCASE AND deleted_at IS NULL',
+          whereArgs: [parentId, cleaned],
+          limit: 1,
+        );
+        if (duplicates.isNotEmpty) {
+          throw StateError('A folder with this name already exists here.');
+        }
+        await txn.insert('folders', {
+          'id': folder.id,
+          'name': folder.name,
+          'parent_id': folder.parentId,
+          'storage_uri_or_relative_path': physicalUri,
+          'created_at': now,
+          'updated_at': now,
+        });
       });
     } catch (_) {
       if (physicalUri != null) {
@@ -365,6 +387,16 @@ class FolderRepository {
       }
 
       await db.transaction((txn) async {
+        final duplicate = await txn.query(
+          'folders',
+          columns: ['id'],
+          where: 'parent_id IS ? AND name = ? COLLATE NOCASE AND deleted_at IS NULL AND id != ?',
+          whereArgs: [parentId, cleaned, id],
+          limit: 1,
+        );
+        if (duplicate.isNotEmpty) {
+          throw StateError('A folder with this name already exists here.');
+        }
         final now = DateTime.now().toUtc().toIso8601String();
         final count = await txn.update(
           'folders',
