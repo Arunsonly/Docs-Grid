@@ -1157,13 +1157,10 @@ class DocumentToolsService {
       }
       final declaredCount = declaredTables[table];
       if (declaredCount is! int) {
-        throw StateError('Backup manifest has an invalid count for $table.');
+        throw StateError('Backup manifest has an invalid or missing count for $table.');
       }
-      if (declaredCount != null && declaredCount != rows.length) {
+      if (declaredCount != rows.length) {
         throw StateError('Backup metadata count mismatch for $table.');
-      }
-      if (declaredCount == null && table != 'document_text_index') {
-        throw StateError('Backup manifest is missing the $table count.');
       }
       rowsByTable[table] = rows;
     }
