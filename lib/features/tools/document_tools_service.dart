@@ -1072,10 +1072,14 @@ class DocumentToolsService {
     if (declaredTables is! Map<String, dynamic>) {
       throw StateError('Backup manifest is missing table counts.');
     }
+    if (declaredTables.keys.any((key) => !tableNames.contains(key))) {
+      throw StateError('Backup manifest contains an unsupported metadata table.');
+    }
     final rowsByTable = <String, List<dynamic>>{};
     for (final table in tableNames) {
       final archiveEntry = decoded.findFile('$table.json');
-      if (archiveEntry == null && table == 'document_text_index') {
+      if (archiveEntry == null && table == 'document_text_index' &&
+          declaredTables[table] == null) {
         rowsByTable[table] = <dynamic>[];
         continue;
       }
@@ -1087,6 +1091,9 @@ class DocumentToolsService {
         throw StateError('Backup contains invalid $table metadata.');
       }
       final declaredCount = declaredTables[table];
+      if (declaredCount is! int && !(table == 'document_text_index' && declaredCount == null)) {
+        throw StateError('Backup manifest has an invalid count for $table.');
+      }
       if (declaredCount != null && declaredCount != rows.length) {
         throw StateError('Backup metadata count mismatch for $table.');
       }
