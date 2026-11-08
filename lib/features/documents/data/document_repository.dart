@@ -202,6 +202,16 @@ class DocumentRepository {
         );
       }
       copiedToNewLocation = newStorageUri != sourceUri;
+      if (copiedToNewLocation) {
+        final sourceDigest = sourceIsShared
+            ? await storage.sha256Pdf(sourceUri)
+            : (await sha256.bind(File(sourceUri).openRead()).first).toString();
+        final copiedDigest = await storage.sha256Pdf(newStorageUri);
+        if (copiedDigest != sourceDigest) {
+          try { await storage.deletePdf(newStorageUri); } catch (_) {}
+          throw StateError('PDF copy failed SHA-256 verification; the original file was kept.');
+        }
+      }
     } else {
       // With no external folder selected, preserve the same folder hierarchy
       // inside the app-private PDF library rather than changing metadata only.
@@ -400,6 +410,14 @@ class DocumentRepository {
           name: safePdfName,
         );
         createdDestination = true;
+      }
+
+      final destinationDigest = await storage.sha256Pdf(destinationUri);
+      if (destinationDigest != sourceDigest) {
+        if (createdDestination) {
+          try { await storage.deletePdf(destinationUri); } catch (_) {}
+        }
+        throw StateError('Migration copy for "$name" failed SHA-256 verification. The original was kept.');
       }
 
       try {
@@ -630,6 +648,11 @@ class DocumentRepository {
         parentUri: destinationUri,
         name: safeName,
       );
+      final copiedDigest = await storage.sha256Pdf(uri);
+      if (copiedDigest != digest) {
+        try { await storage.deletePdf(uri); } catch (_) {}
+        throw StateError('Scanned PDF failed SHA-256 verification in selected storage.');
+      }
     } else {
       // Keep scanner imports in the same nested private-folder layout used by
       // ordinary imports; metadata folder_id and the on-disk path must agree.
