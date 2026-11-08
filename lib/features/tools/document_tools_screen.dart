@@ -7,6 +7,7 @@ import 'package:path/path.dart' as p;
 
 import '../../core/database/app_database.dart';
 import '../documents/data/document_repository.dart';
+import '../../folders/data/folder_repository.dart';
 import 'document_tools_service.dart';
 import '../../core/storage/storage_location_service.dart';
 
@@ -78,39 +79,34 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
     nameController.dispose();
     if (!mounted) return;
 
+    final folders = await FolderRepository().allFoldersWithPaths();
+    if (!mounted) return;
     final destination = await showModalBottomSheet<String>(
       context: context,
       showDragHandle: true,
       builder: (sheetContext) => SafeArea(
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          const ListTile(title: Text('Where should this PDF be saved?')),
+        child: ListView(shrinkWrap: true, children: [
+          const ListTile(title: Text('Choose DocsGrid folder')),
           ListTile(
-            leading: const Icon(Icons.folder_special_outlined),
-            title: const Text('DocsGrid library'),
-            subtitle: const Text('Save in My Documents using the current library location.'),
-            onTap: () => Navigator.pop(sheetContext, 'library'),
+            leading: const Icon(Icons.home_outlined),
+            title: const Text('My Documents (root)'),
+            onTap: () => Navigator.pop(sheetContext, ''),
           ),
-          ListTile(
-            leading: const Icon(Icons.folder_open_outlined),
-            title: const Text('Choose a storage folder'),
-            subtitle: const Text('Select a folder in Internal storage or another available location.'),
-            onTap: () => Navigator.pop(sheetContext, 'choose'),
-          ),
+          for (final option in folders)
+            ListTile(
+              leading: const Icon(Icons.folder_outlined),
+              title: Text(option.path),
+              onTap: () => Navigator.pop(sheetContext, option.folder.id),
+            ),
         ]),
       ),
     );
     if (!mounted || destination == null) return;
-    String? targetUri;
-    if (destination == 'choose') {
-      final folder = await StorageLocationService.instance.chooseFolder();
-      if (folder == null) return;
-      targetUri = folder['uri'];
-    }
 
     final imported = await DocumentRepository().importScannedPdf(
       file,
       displayName: chosenName == null || chosenName.isEmpty ? null : chosenName,
-      targetFolderUri: targetUri,
+      targetFolderId: destination.isEmpty ? null : destination,
     );
     if (mounted) {
       setState(() => _message = imported.added == 1
