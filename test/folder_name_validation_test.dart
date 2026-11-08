@@ -13,6 +13,12 @@ void main() {
       expect(() => FolderRepository.validateFolderName('..'), throwsArgumentError);
     });
 
+    test('rejects control characters and names over 255 characters', () {
+      expect(() => FolderRepository.validateFolderName('Policy\nFolder'), throwsArgumentError);
+      expect(() => FolderRepository.validateFolderName('Policy\u0000Folder'), throwsArgumentError);
+      expect(() => FolderRepository.validateFolderName('A' * 256), throwsArgumentError);
+    });
+
     test('rejects path separators', () {
       expect(() => FolderRepository.validateFolderName('parent/child'), throwsArgumentError);
       expect(() => FolderRepository.validateFolderName(r'parent\child'), throwsArgumentError);
