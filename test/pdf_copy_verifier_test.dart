@@ -9,7 +9,7 @@ void main() {
       await PdfCopyVerifier.verifyOrDeleteOnFailure(
         expectedSha256: 'same-digest',
         readDestinationSha256: () async => 'same-digest',
-        deleteDestination: () async => deleted = true,
+        deleteDestination: () async { deleted = true; },
       );
 
       expect(deleted, isFalse);
