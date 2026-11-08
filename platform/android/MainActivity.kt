@@ -10,12 +10,14 @@ import android.os.Handler
 import android.os.Looper
 import android.provider.DocumentsContract
 import java.security.MessageDigest
+import java.io.FileNotFoundException
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import java.util.concurrent.Executors
 
 class MainActivity : FlutterActivity() {
+    private class ChildNotFoundException(message: String) : FileNotFoundException(message)
     private val channelName = "docsgrid/storage"
     private val requestChooseFolder = 4817
     private var pendingFolderResult: MethodChannel.Result? = null
@@ -154,6 +156,8 @@ class MainActivity : FlutterActivity() {
                         }
                         else -> response.notImplemented()
                     }
+                } catch (error: ChildNotFoundException) {
+                    response.error("NOT_FOUND", error.message ?: "The selected item was not found.", null)
                 } catch (error: Exception) {
                     response.error("STORAGE_ERROR", error.message ?: "Storage operation failed.", null)
                 }
@@ -268,7 +272,7 @@ class MainActivity : FlutterActivity() {
     private fun ensureDirectory(parentUri: Uri, name: String): Uri {
         return try {
             findChildUri(parentUri, name)
-        } catch (_: Exception) {
+        } catch (_: ChildNotFoundException) {
             createDirectory(parentUri, name)
         }
     }
@@ -284,11 +288,12 @@ class MainActivity : FlutterActivity() {
         val parent = resolveParentUri(parentUri)
         val parentId = DocumentsContract.getDocumentId(parent)
         val children = DocumentsContract.buildChildDocumentsUriUsingTree(parentUri, parentId)
-        contentResolver.query(
+        val cursor = contentResolver.query(
             children,
             arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID, DocumentsContract.Document.COLUMN_DISPLAY_NAME),
             null, null, null
-        )?.use { cursor ->
+        ) ?: throw IllegalStateException("The storage provider could not search this folder.")
+        cursor.use {
             val idIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
             val nameIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
             while (cursor.moveToNext()) {
@@ -297,7 +302,7 @@ class MainActivity : FlutterActivity() {
                 }
             }
         }
-        throw IllegalStateException("Could not find '$name' inside the selected folder.")
+        throw ChildNotFoundException("Could not find '$name' inside the selected folder.")
     }
 
     private fun listDirectory(directoryUri: Uri): List<Map<String, Any>> {
@@ -339,7 +344,7 @@ class MainActivity : FlutterActivity() {
             "Invalid metadata filename."
         }
         val parent = resolveParentUri(parentUri)
-        val existing = try { findChildUri(parentUri, name) } catch (_: Exception) { null }
+        val existing = try { findChildUri(parentUri, name) } catch (_: ChildNotFoundException) { null }
         val tempName = ".$name.tmp-${java.util.UUID.randomUUID()}"
         val temp = DocumentsContract.createDocument(
             contentResolver, parent, "application/json", tempName
