@@ -985,9 +985,8 @@ class DocumentToolsService {
         throw StateError('Backup contains a missing or duplicate document reference.');
       }
       if (entryName != 'pdfs/$id.pdf' || expectedDigest is! String ||
-          !RegExp(r'^[a-fA-F0-9]{64}
-}
-).hasMatch(expectedDigest)) {
+          expectedDigest.length != 64 ||
+          int.tryParse(expectedDigest, radix: 16) == null) {
         throw StateError('Backup contains an invalid PDF entry reference.');
       }
       final entry = decoded.findFile(entryName as String);
