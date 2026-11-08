@@ -155,6 +155,23 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
 
 
   Future<void> _restoreBackup() => _run(() async {
+    final source = await showModalBottomSheet<String>(
+      context: context, showDragHandle: true,
+      builder: (ctx) => SafeArea(child: Column(mainAxisSize: MainAxisSize.min, children: [
+        const ListTile(title: Text('Choose restore source')),
+        ListTile(leading: const Icon(Icons.archive_outlined), title: const Text('Backup ZIP file'),
+          subtitle: const Text('From this phone, SD card, USB or cloud storage.'),
+          onTap: () => Navigator.pop(ctx, 'zip')),
+        ListTile(leading: const Icon(Icons.folder_open_outlined), title: const Text('Existing DocsGrid folder'),
+          subtitle: const Text('Recover from a DocsGrid folder copied from another phone.'),
+          onTap: () => Navigator.pop(ctx, 'folder')),
+      ])),
+    );
+    if (source == 'folder') {
+      await _restorePortableSnapshot();
+      return;
+    }
+    if (source != 'zip') return;
     final picked = await FilePicker.pickFiles(type: FileType.custom, allowedExtensions: ['zip']);
     if (picked.isEmpty || picked.single.path == null) return;
     final file = File(picked.single.path!);
@@ -162,7 +179,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
     if (!mounted) return;
     final confirmed = await showDialog<bool>(context: context, builder: (context) => AlertDialog(
       title: const Text('Restore backup?'),
-      content: Text('The archive contains $count PDF file(s). DocsGrid will add the restored folders and documents without overwriting existing records. ID conflicts stop the restore.'),
+      content: Text('The archive contains $count PDF file(s). Existing records will be kept; the backup will be added without overwriting your current files.'),
       actions: [
         TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
         FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Restore')),
