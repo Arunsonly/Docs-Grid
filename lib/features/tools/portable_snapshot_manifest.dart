@@ -159,7 +159,8 @@ class PortableSnapshotManifest {
       final result = <String>{};
       for (final row in tables[table] ?? const []) {
         final value = row['id'];
-        if (value is! String || value.trim().isEmpty || !result.add(value)) {
+        if (value is! String || value.trim().isEmpty || value != value.trim() ||
+            !result.add(value)) {
           throw FormatException('Snapshot contains an invalid or duplicate $table ID.');
         }
       }
