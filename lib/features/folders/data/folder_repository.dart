@@ -236,7 +236,9 @@ class FolderRepository {
 
     try {
       if (renamedUri != null) {
-        Future<void> collectDescendants(String parentId, String parentUri) async {
+        final pendingFolders = <(String, String)>[(id, renamedUri)];
+        while (pendingFolders.isNotEmpty) {
+          final (parentId, parentUri) = pendingFolders.removeLast();
           if (!traversedFolders.add(parentId)) {
             throw StateError('Folder hierarchy contains a cycle.');
           }
@@ -254,7 +256,7 @@ class FolderRepository {
               name: childName,
             );
             folderUriUpdates[childId] = childUri;
-            await collectDescendants(childId, childUri);
+            pendingFolders.add((childId, childUri));
           }
           final docs = await db.query(
             'documents',
@@ -270,8 +272,6 @@ class FolderRepository {
             );
           }
         }
-
-        await collectDescendants(id, renamedUri);
       } else {
         // App-private folders have no provider URI. Rename the actual private
         // directory and update every descendant document reference atomically.
@@ -322,11 +322,11 @@ class FolderRepository {
           await newDirectory.parent.create(recursive: true);
           renamedPrivateDirectory = await oldDirectory.rename(newDirectory.path);
 
-          Future<void> collectPrivateDocuments(
-            String folderId,
-            Set<String> visited,
-          ) async {
-            if (!visited.add(folderId)) {
+          final pendingPrivateFolders = <String>[id];
+          final visitedPrivateFolders = <String>{};
+          while (pendingPrivateFolders.isNotEmpty) {
+            final folderId = pendingPrivateFolders.removeLast();
+            if (!visitedPrivateFolders.add(folderId)) {
               throw StateError('Folder hierarchy contains a cycle.');
             }
             final documents = await db.query(
@@ -355,12 +355,8 @@ class FolderRepository {
               where: 'parent_id = ? AND deleted_at IS NULL',
               whereArgs: [folderId],
             );
-            for (final child in children) {
-              await collectPrivateDocuments(child['id'] as String, visited);
-            }
+            pendingPrivateFolders.addAll(children.map((child) => child['id'] as String));
           }
-
-          await collectPrivateDocuments(id, <String>{});
         }
       }
 
