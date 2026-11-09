@@ -651,19 +651,30 @@ class DocumentToolsService {
   }
 
   Future<File> createBackup({void Function(int, int)? onProgress}) async {
+    final portableLocations = Platform.isAndroid
+        ? await StorageLocationService.instance.portableDataLocations()
+        : const <String, String>{};
     final db = await _database.database;
     final tables = ['folders', 'documents', 'categories', 'tags',
       'document_tags', 'reminders', 'history', 'settings', 'document_text_index'];
     final manifest = <String, Object?>{
       'format': 'DocsGridBackup',
       'version': 1,
+      'backupType': 'full',
       'createdAt': DateTime.now().toUtc().toIso8601String(),
       'tables': <String, int>{},
       'files': <Map<String, Object?>>[],
     };
 
     final directory = await getApplicationDocumentsDirectory();
-    final backups = Directory(p.join(directory.path, 'DocsGrid', 'Backups'));
+    // Android portable backups must survive app uninstall. Keep the live DB
+    // private, but publish completed archives under Android/media/com.docsgrid.
+    final portableBackupsUri = portableLocations['backupsUri'];
+    final backups = Directory(
+      portableBackupsUri != null && portableBackupsUri.startsWith('file://')
+          ? Uri.parse(portableBackupsUri).toFilePath()
+          : p.join(directory.path, 'DocsGrid', 'Backups'),
+    );
     await backups.create(recursive: true);
     final temp = await getTemporaryDirectory();
     final staging = await temp.createTemp('docsgrid_backup_');
