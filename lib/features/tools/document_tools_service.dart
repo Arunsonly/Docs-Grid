@@ -1087,11 +1087,15 @@ class DocumentToolsService {
           stagedPdfPaths: includeDocuments ? backup.stagedPdfPaths : const <String, String>{},
           stagingDirectory: backup.stagingDirectory,
         );
-        return await _restoreValidatedBackup(selectiveBackup);
+        return await _restoreValidatedBackup(
+          selectiveBackup,
+          restoreMode: BackupRestoreMode.selective.name,
+        );
       }
       return await _restoreValidatedBackup(
         backup,
         replaceExisting: mode == BackupRestoreMode.fullReplacement,
+        restoreMode: mode.name,
       );
     } finally {
       await backup.dispose();
@@ -1101,6 +1105,7 @@ class DocumentToolsService {
   Future<int> _restoreValidatedBackup(
     _ValidatedBackup backup, {
     bool replaceExisting = false,
+    String restoreMode = 'merge',
   }) async {
     final manifest = backup.manifest;
     final rowsByTable = backup.rowsByTable;
@@ -1456,6 +1461,36 @@ class DocumentToolsService {
         } catch (_) {
           // Imported records remain valid even if dates or OS scheduling fail.
         }
+      }
+      try {
+        final locations = await StorageLocationService.instance.portableDataLocations();
+        final recoveryUri = locations['recoveryUri'];
+        if (recoveryUri != null) {
+          final report = <String, Object?>{
+            'format': 'DocsGridRestoreReport',
+            'version': 1,
+            'status': 'completed',
+            'mode': restoreMode,
+            'backupId': manifest['backupId'],
+            'backupCreatedAt': manifest['createdAt'],
+            'completedAtUtc': DateTime.now().toUtc().toIso8601String(),
+            'pdfPayloadsRestored': restoredPaths.length,
+            'documentsInArchive': rowsByTable['documents']!.length,
+            'foldersInArchive': rowsByTable['folders']!.length,
+            'categoriesInArchive': rowsByTable['categories']!.length,
+            'tagsInArchive': rowsByTable['tags']!.length,
+            'remindersImported': restoredReminderRows.length,
+            'historyImported': rowsByTable['history']!.length,
+            'settingsImported': rowsByTable['settings']!.length,
+          };
+          await StorageLocationService.instance.writeTextFile(
+            parentUri: recoveryUri,
+            name: 'restore_${DateTime.now().toUtc().millisecondsSinceEpoch}_${_uuid.v4()}.json',
+            contents: jsonEncode(report),
+          );
+        }
+      } catch (_) {
+        // A report write failure must not roll back an already committed restore.
       }
       return restoredPaths.length;
     } catch (_) {
