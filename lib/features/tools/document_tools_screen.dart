@@ -12,17 +12,21 @@ import 'document_tools_service.dart';
 import '../../core/storage/storage_location_service.dart';
 
 class DocumentToolsScreen extends StatefulWidget {
-  const DocumentToolsScreen({super.key, this.quickAction, this.section = 'tools'});
+  const DocumentToolsScreen({super.key, this.quickAction, this.section = 'tools', this.service});
   final String? quickAction;
   final String section;
+  @visibleForTesting
+  final DocumentToolsService? service;
 
   @override
   State<DocumentToolsScreen> createState() => _DocumentToolsScreenState();
 }
 
 class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
-  final _tools = DocumentToolsService();
+  late final DocumentToolsService _tools;
   final _search = TextEditingController();
+  bool _searching = false;
+  int _searchGeneration = 0;
   List<Map<String, Object?>> _results = [];
   bool _busy = false;
   String? _message;
@@ -31,6 +35,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
   @override
   void initState() {
     super.initState();
+    _tools = widget.service ?? DocumentToolsService();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       switch (widget.quickAction) {
@@ -229,11 +234,34 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
   }
 
   Future<void> _searchText() async {
+    final query = _search.text.trim();
+    if (_searching || query.isEmpty) return;
+    final generation = ++_searchGeneration;
+    setState(() {
+      _searching = true;
+      _message = null;
+    });
     try {
-      final rows = await _tools.searchText(_search.text);
-      if (mounted) setState(() { _results = rows; _hasSearched = true; _message = null; });
-    } catch (error) {
-      if (mounted) setState(() => _message = 'Text search failed: $error');
+      final rows = await _tools.searchText(query);
+      if (!mounted || generation != _searchGeneration) return;
+      setState(() {
+        _results = rows;
+        _hasSearched = true;
+        _message = null;
+      });
+    } catch (error, stackTrace) {
+      // Keep the full diagnostic in logcat/Flutter logs. The visible message
+      // remains concise; swallowing this stack made native/plugin failures
+      // impossible to distinguish from widget lifecycle failures.
+      debugPrint('DocsGrid OCR search failed for query "$query": $error');
+      debugPrintStack(stackTrace: stackTrace);
+      if (mounted && generation == _searchGeneration) {
+        setState(() => _message = 'Text search failed. Please retry; diagnostic details were recorded.');
+      }
+    } finally {
+      if (mounted && generation == _searchGeneration) {
+        setState(() => _searching = false);
+      }
     }
   }
 
@@ -383,7 +411,12 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
   }
 
   @override
-  void dispose() { _search.dispose(); super.dispose(); }
+  void dispose() {
+    // Invalidate pending search completions before the route is deactivated.
+    _searchGeneration++;
+    _search.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) => ListView(
@@ -403,7 +436,12 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
           Padding(padding: const EdgeInsets.fromLTRB(16, 0, 16, 16), child: Column(children: [
             TextField(controller: _search, decoration: InputDecoration(
               labelText: 'Search text inside indexed PDFs',
-              suffixIcon: IconButton(onPressed: _searchText, icon: const Icon(Icons.search))),
+              suffixIcon: IconButton(
+                key: const ValueKey('ocr-search-button'),
+                onPressed: _searching ? null : _searchText,
+                icon: _searching
+                    ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                    : const Icon(Icons.search))),
               onSubmitted: (_) => _searchText()),
             const SizedBox(height: 6),
             const Align(
