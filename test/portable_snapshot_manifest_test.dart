@@ -206,6 +206,26 @@ void main() {
       );
     });
 
+    test('rejects blank and whitespace-padded IDs across related tables', () {
+      for (final table in ['documents', 'categories', 'tags', 'reminders', 'history']) {
+        final blank = validRows();
+        blank[table]!.first['id'] = '   ';
+        expect(
+          () => PortableSnapshotManifest.validateRelations(blank),
+          throwsFormatException,
+          reason: '$table IDs must not be blank',
+        );
+
+        final padded = validRows();
+        padded[table]!.first['id'] = ' ' + (padded[table]!.first['id'] as String);
+        expect(
+          () => PortableSnapshotManifest.validateRelations(padded),
+          throwsFormatException,
+          reason: '$table IDs must not contain surrounding whitespace',
+        );
+      }
+    });
+
     test('rejects duplicate IDs, relations, indexes and setting keys', () {
       final duplicateDocument = validRows();
       duplicateDocument['documents']!.add(Map<String, Object?>.from(
