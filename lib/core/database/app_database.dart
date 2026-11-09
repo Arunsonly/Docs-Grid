@@ -141,14 +141,14 @@ class AppDatabase {
             applied_at TEXT NOT NULL
           )
         ''');
-        if (oldVersion < 2) {
+        if (oldVersion < 2 && newVersion >= 2) {
           await _createV2Tables(db);
           await db.insert('schema_migrations', {
             'version': 2,
             'applied_at': DateTime.now().toUtc().toIso8601String(),
           });
         }
-        if (oldVersion < 3) {
+        if (oldVersion < 3 && newVersion >= 3) {
           await _createV3Tables(db);
           await db.insert('schema_migrations', {
             'version': 3,
