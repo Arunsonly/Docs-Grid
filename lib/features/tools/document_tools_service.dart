@@ -1111,6 +1111,39 @@ class DocumentToolsService {
     final documentsById = <String, Map<String, Object?>>{
       for (final row in rowsByTable['documents']!) row['id'] as String: row,
     };
+    final db = await _database.database;
+    final existingFolders = replaceExisting
+        ? <Map<String, Object?>>[]
+        : await db.query('folders', columns: ['id']);
+    final existingFolderIds = existingFolders.map((row) => row['id'] as String).toSet();
+    final folderIdMap = <String, String>{
+      for (final row in folderRows)
+        row['id'] as String: existingFolderIds.contains(row['id'])
+            ? _uuid.v4()
+            : row['id'] as String,
+    };
+    final existingDocuments = replaceExisting
+        ? <Map<String, Object?>>[]
+        : await db.query('documents', columns: ['id', 'sha256']);
+    final existingDocumentIds = existingDocuments.map((row) => row['id'] as String).toSet();
+    final existingDocumentIdsByHash = <String, String>{
+      for (final row in existingDocuments)
+        if (row['sha256'] is String && (row['sha256'] as String).isNotEmpty)
+          row['sha256'] as String: row['id'] as String,
+    };
+    final documentIdMap = <String, String>{};
+    final duplicateDocumentIds = <String>{};
+    for (final row in rowsByTable['documents']!) {
+      final oldId = row['id'] as String;
+      final digest = row['sha256'] as String?;
+      final duplicateId = digest == null ? null : existingDocumentIdsByHash[digest];
+      if (duplicateId != null) {
+        documentIdMap[oldId] = duplicateId;
+        duplicateDocumentIds.add(oldId);
+      } else {
+        documentIdMap[oldId] = existingDocumentIds.contains(oldId) ? _uuid.v4() : oldId;
+      }
+    }
     // A ZIP is untrusted input. Validate parent links before creating any
     // directories, and never use imported IDs as filesystem path segments.
     BackupFolderGraphValidator.validate(folderRows);
@@ -1175,6 +1208,7 @@ class DocumentToolsService {
       }
       for (final item in fileRows) {
         final id = item['documentId'] as String;
+        if (duplicateDocumentIds.contains(id)) continue;
         final document = documentsById[id];
         if (document == null) throw StateError('Backup contains an unknown document reference.');
         final folderId = document['folder_id'] as String?;
@@ -1202,7 +1236,7 @@ class DocumentToolsService {
         restoredPaths[id] = destination.path;
       }
 
-      final db = await _database.database;
+      final restoredReminderRows = <Map<String, Object?>>[];
       await db.transaction((txn) async {
         if (replaceExisting) {
           // Dependent rows are removed before parents. SQLite rolls the
@@ -1232,8 +1266,12 @@ class DocumentToolsService {
         }
 
         for (final row in folderRows) {
+          final oldId = row['id'] as String;
           final copy = Map<String, Object?>.from(row);
-          copy['storage_uri_or_relative_path'] = folderPath(row['id'] as String);
+          copy['id'] = folderIdMap[oldId];
+          final oldParentId = row['parent_id'] as String?;
+          copy['parent_id'] = oldParentId == null ? null : folderIdMap[oldParentId];
+          copy['storage_uri_or_relative_path'] = folderPath(oldId);
           queueInsert('folders', copy);
           if (pending >= 500) await flushBatch();
         }
@@ -1277,33 +1315,85 @@ class DocumentToolsService {
           if (pending >= 500) await flushBatch();
         }
         for (final row in rowsByTable['documents']!) {
+          final oldId = row['id'] as String;
+          if (duplicateDocumentIds.contains(oldId)) continue;
           final copy = Map<String, Object?>.from(row);
+          copy['id'] = documentIdMap[oldId];
+          final oldFolderId = row['folder_id'] as String?;
+          copy['folder_id'] = oldFolderId == null ? null : folderIdMap[oldFolderId];
           final oldCategoryId = row['category_id'] as String?;
           copy['category_id'] = oldCategoryId == null ? null : categoryIdMap[oldCategoryId];
-          final restored = restoredPaths[row['id']];
+          final restored = restoredPaths[oldId];
           final isDatabaseOnly = manifest['backupType'] == 'database';
           if (restored == null && !isDatabaseOnly) {
             throw StateError('Backup is missing PDF bytes for "${row['name']}".');
           }
           // Database-only restores recover document metadata and relationships
           // while marking unavailable PDF payloads for explicit relinking.
-          copy['storage_uri'] = restored ?? 'missing://${row['id']}';
+          copy['storage_uri'] = restored ?? 'missing://$oldId';
           copy['relative_path'] = null;
           queueInsert('documents', copy);
           if (pending >= 500) await flushBatch();
         }
         for (final row in rowsByTable['document_tags']!) {
           final oldTagId = row['tag_id'] as String;
+          final oldDocumentId = row['document_id'] as String;
           final mappedTagId = tagIdMap[oldTagId];
-          if (mappedTagId == null) throw StateError('Backup contains an unknown tag reference.');
-          queueInsert('document_tags', {...row, 'tag_id': mappedTagId});
+          final mappedDocumentId = documentIdMap[oldDocumentId];
+          if (mappedTagId == null || mappedDocumentId == null) {
+            throw StateError('Backup contains an unknown document or tag reference.');
+          }
+          queueInsert('document_tags', {
+            ...row,
+            'document_id': mappedDocumentId,
+            'tag_id': mappedTagId,
+          }, conflictAlgorithm: ConflictAlgorithm.ignore);
           if (pending >= 500) await flushBatch();
         }
-        for (final table in ['reminders', 'history', 'document_text_index']) {
-          for (final row in rowsByTable[table]!) {
-            queueInsert(table, row);
-            if (pending >= 500) await flushBatch();
-          }
+        final existingReminderIds = replaceExisting
+            ? <String>{}
+            : (await txn.query('reminders', columns: ['id']))
+                .map((row) => row['id'] as String).toSet();
+        final existingHistoryIds = replaceExisting
+            ? <String>{}
+            : (await txn.query('history', columns: ['id']))
+                .map((row) => row['id'] as String).toSet();
+        final existingIndexIds = replaceExisting
+            ? <String>{}
+            : (await txn.query('document_text_index', columns: ['document_id']))
+                .map((row) => row['document_id'] as String).toSet();
+        for (final row in rowsByTable['reminders']!) {
+          final copy = Map<String, Object?>.from(row);
+          final oldId = row['id'] as String;
+          copy['id'] = existingReminderIds.contains(oldId) ? _uuid.v4() : oldId;
+          final oldDocumentId = row['document_id'] as String?;
+          copy['document_id'] = oldDocumentId == null ? null : documentIdMap[oldDocumentId];
+          queueInsert('reminders', copy);
+          restoredReminderRows.add(copy);
+          existingReminderIds.add(copy['id'] as String);
+          if (pending >= 500) await flushBatch();
+        }
+        for (final row in rowsByTable['history']!) {
+          final copy = Map<String, Object?>.from(row);
+          final oldId = row['id'] as String;
+          copy['id'] = existingHistoryIds.contains(oldId) ? _uuid.v4() : oldId;
+          final oldDocumentId = row['document_id'] as String?;
+          copy['document_id'] = oldDocumentId == null ? null : documentIdMap[oldDocumentId];
+          queueInsert('history', copy);
+          existingHistoryIds.add(copy['id'] as String);
+          if (pending >= 500) await flushBatch();
+        }
+        for (final row in rowsByTable['document_text_index']!) {
+          final oldDocumentId = row['document_id'] as String;
+          if (duplicateDocumentIds.contains(oldDocumentId)) continue;
+          final mappedDocumentId = documentIdMap[oldDocumentId];
+          if (mappedDocumentId == null) continue;
+          queueInsert('document_text_index', {
+            ...row,
+            'document_id': mappedDocumentId,
+          }, conflictAlgorithm: ConflictAlgorithm.ignore);
+          existingIndexIds.add(mappedDocumentId);
+          if (pending >= 500) await flushBatch();
         }
         // Preferences are additive: never overwrite settings already configured
         // on this device when importing a backup from another installation.
@@ -1314,7 +1404,7 @@ class DocumentToolsService {
         await flushBatch();
       });
       databaseCommitted = true;
-      for (final row in rowsByTable['reminders']!) {
+      for (final row in restoredReminderRows) {
         if ((row['enabled'] as int? ?? 0) != 1 || row['status'] == 'completed') continue;
         try {
           final at = DateTime.parse(row['remind_at_utc'] as String).toLocal();
