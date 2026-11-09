@@ -10,8 +10,8 @@ import '../../core/database/app_database.dart';
 import '../documents/data/document_repository.dart';
 import '../folders/data/folder_repository.dart';
 import 'document_tools_service.dart';
-import '../../core/storage/storage_location_service.dart';
 import '../../core/storage/byte_stream_file.dart';
+import '../../core/storage/storage_location_service.dart';
 
 class DocumentToolsScreen extends StatefulWidget {
   const DocumentToolsScreen({super.key, this.quickAction, this.section = 'tools', this.service});
@@ -168,7 +168,12 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
     final temporaryCopy = platformFile.path == null || platformFile.path!.isEmpty;
     final temporaryDirectory = temporaryCopy ? await getTemporaryDirectory() : null;
     final file = temporaryCopy
-        ? File(p.join(temporaryDirectory!.path, 'DocsGrid_restore_${DateTime.now().microsecondsSinceEpoch}.zip'))
+        ? File(
+            p.join(
+              temporaryDirectory!.path,
+              'DocsGrid_restore_${DateTime.now().microsecondsSinceEpoch}.zip',
+            ),
+          )
         : File(platformFile.path!);
     try {
       if (temporaryCopy) {
@@ -204,7 +209,10 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
         },
       );
       if (restored != null && mounted) {
-        setState(() => _message = 'Restore completed: $restored PDF file(s) restored and verified.');
+        setState(
+          () => _message =
+              'Restore completed: $restored PDF file(s) restored and verified.',
+        );
       }
     } finally {
       if (temporaryCopy && await file.exists()) await file.delete();
