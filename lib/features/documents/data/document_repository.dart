@@ -998,7 +998,7 @@ class DocumentRepository {
 
         final suggestedName = p.basenameWithoutExtension(picked.name);
         final suggestedCategoryId = _suggestCategoryId(picked.name, categoryOptions);
-        final decision = review == null
+        final decision = review == null || pickedFiles.files.length != 1
             ? ImportDecision(name: suggestedName, categoryId: suggestedCategoryId)
             : await review(suggestedName, suggestedCategoryId, categoryOptions);
         if (decision == null) {
