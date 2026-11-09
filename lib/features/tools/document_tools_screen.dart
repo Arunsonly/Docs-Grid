@@ -160,10 +160,12 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
       return;
     }
     if (source != 'zip') return;
-    final picked = await FilePicker.pickFiles(type: FileType.custom, allowedExtensions: ['zip']);
-    if (picked.isEmpty) return;
-    final platformFile = picked.single;
-    final temporaryCopy = platformFile.path == null;
+    final platformFile = await FilePicker.pickFile(
+      type: FileType.custom,
+      allowedExtensions: ['zip'],
+    );
+    if (platformFile == null) return;
+    final temporaryCopy = platformFile.path == null || platformFile.path!.isEmpty;
     final temporaryDirectory = temporaryCopy ? await getTemporaryDirectory() : null;
     final file = temporaryCopy
         ? File(p.join(temporaryDirectory!.path, 'DocsGrid_restore_${DateTime.now().microsecondsSinceEpoch}.zip'))
