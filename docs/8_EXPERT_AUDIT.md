@@ -112,6 +112,14 @@ Status: **Eight expert review lenses have been inspected. Source remediation and
 - Corrected storage migration to fail closed on provider lookup errors and to stop on destination PDF name collisions with different content.
 - Latest source commits require one fresh, uncancelled Android/iOS CI run; cancelled or stale runs are not counted as verification.
 
+### EXP-11 — Migration helper applied schema objects beyond the requested target version
+**Severity: Medium — database compatibility**
+
+- Evidence: `upgradeForTesting` previously gated v2/v3 migrations only on `oldVersion`. A v1-to-v2 upgrade therefore also created v3 OCR/index objects even though the requested target schema was v2.
+- **Remediation committed:** each migration step is now gated by both the source and target versions (`oldVersion < N && newVersion >= N`).
+- **Regression test added:** a v1-to-v2 upgrade must create v2 tables but must not create the v3 OCR table or v3 indexes.
+- Status: source and regression test committed; current-head Android/iOS CI verification pending.
+
 ## Deferred validation (tracked in later project tasks)
 
 1. Database migration fixtures and repository-level concurrency/provider race tests are required for Task 2 sign-off; deeper migration/data-retention validation continues in Task 4.
