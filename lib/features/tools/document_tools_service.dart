@@ -680,6 +680,8 @@ class DocumentToolsService {
       'format': 'DocsGridBackup',
       'version': 1,
       'backupType': includePdfs ? 'full' : 'database',
+      'backupId': _uuid.v4(),
+      'app': 'DocsGrid',
       'createdAt': DateTime.now().toUtc().toIso8601String(),
       'tables': <String, int>{},
       'metadataFiles': <Map<String, Object?>>[],
@@ -731,115 +733,119 @@ class DocumentToolsService {
         'settings': 'key',
         'document_text_index': 'document_id',
       };
-      for (final table in tables) {
-        final metadataFile = File(p.join(staging.path, '$table.json'));
-        final outputFile = await metadataFile.open(mode: FileMode.write);
-        var offset = 0;
-        var rowCount = 0;
-        try {
-          await outputFile.writeString('[');
-          while (true) {
-            final rows = await db.query(
-              table,
-              limit: 500,
-              offset: offset,
-              orderBy: orderBy[table],
-            );
-            if (rows.isEmpty) break;
-            for (final row in rows) {
-              final portableRow = Map<String, Object?>.from(row);
-              if (table == 'documents') {
-                // Never export phone-specific absolute paths as backup
-                // references. Full archives map PDFs through manifest entries;
-                // database-only archives explicitly mark them as missing.
-                portableRow['storage_uri'] = includePdfs
-                    ? 'backup-pdf://${row['id']}'
-                    : 'missing://${row['id']}';
-                portableRow['relative_path'] = null;
-              }
-              if (rowCount > 0) await outputFile.writeString(',');
-              await outputFile.writeString(jsonEncode(portableRow), encoding: utf8);
-              rowCount++;
-            }
-            offset += rows.length;
-          }
-          await outputFile.writeString(']');
-          await outputFile.flush();
-        } finally {
-          await outputFile.close();
-        }
-        (manifest['tables'] as Map<String, int>)[table] = rowCount;
-        final metadataDigest = (await sha256.bind(metadataFile.openRead()).first).toString();
-        (manifest['metadataFiles'] as List).add({
-          'entry': '$table.json',
-          'sizeBytes': await metadataFile.length(),
-          'sha256': metadataDigest,
-        });
-        await addStoredFile(metadataFile, '$table.json');
-      }
-
-      if (includePdfs) {
-        final totalDocs = Sqflite.firstIntValue(
-          await db.rawQuery('SELECT COUNT(*) FROM documents'),
-        ) ?? 0;
-        var completed = 0;
-        var documentOffset = 0;
-        while (true) {
-          final docs = await db.query(
-            'documents',
-            columns: ['id', 'name', 'storage_uri', 'sha256'],
-            limit: 250,
-            offset: documentOffset,
-            orderBy: 'id',
-          );
-          if (docs.isEmpty) break;
-          for (final row in docs) {
-          final uri = row['storage_uri'] as String?;
-          if (uri == null || uri.isEmpty) {
-            throw StateError('Backup cannot be complete: "${row['name']}" has no storage reference.');
-          }
-          File? stagedProviderFile;
-          final File file;
-          if (uri.startsWith('content://')) {
-            stagedProviderFile = File(p.join(staging.path, 'source_${_uuid.v4()}.pdf'));
-            await StorageLocationService.instance.copyPdfToPath(
-              sourceUri: uri,
-              destinationPath: stagedProviderFile.path,
-            );
-            file = stagedProviderFile;
-          } else {
-            file = File(uri.startsWith('file://') ? Uri.parse(uri).toFilePath() : uri);
-          }
+      // Hold a read transaction across metadata and PDF enumeration so
+      // the archive represents one consistent database state.
+      await db.transaction((txn) async {
+        for (final table in tables) {
+          final metadataFile = File(p.join(staging.path, '$table.json'));
+          final outputFile = await metadataFile.open(mode: FileMode.write);
+          var offset = 0;
+          var rowCount = 0;
           try {
-            if (!await file.exists()) {
-              throw StateError('Backup cannot be complete: "${row['name']}" is unavailable. Repair storage access and retry.');
+            await outputFile.writeString('[');
+            while (true) {
+              final rows = await txn.query(
+                table,
+                limit: 500,
+                offset: offset,
+                orderBy: orderBy[table],
+              );
+              if (rows.isEmpty) break;
+              for (final row in rows) {
+                final portableRow = Map<String, Object?>.from(row);
+                if (table == 'documents') {
+                  // Never export phone-specific absolute paths as backup
+                  // references. Full archives map PDFs through manifest entries;
+                  // database-only archives explicitly mark them as missing.
+                  portableRow['storage_uri'] = includePdfs
+                      ? 'backup-pdf://${row['id']}'
+                      : 'missing://${row['id']}';
+                  portableRow['relative_path'] = null;
+                }
+                if (rowCount > 0) await outputFile.writeString(',');
+                await outputFile.writeString(jsonEncode(portableRow), encoding: utf8);
+                rowCount++;
+              }
+              offset += rows.length;
             }
-            final digest = (await sha256.bind(file.openRead()).first).toString();
-            final expected = row['sha256'] as String?;
-            if (expected != null && expected.isNotEmpty && digest != expected) {
-              throw StateError('Backup stopped: "${row['name']}" failed SHA-256 verification.');
-            }
-            // Never place imported database IDs in archive paths.
-            final entry = 'pdfs/${_uuid.v4()}.pdf';
-            // Stream already-compressed PDF bytes directly into the ZIP without
-            // allocating a second full-size buffer or recompressing the payload.
-            await addStoredFile(file, entry);
-            (manifest['files'] as List).add({
-              'documentId': row['id'], 'entry': entry, 'sha256': digest,
-              'originalName': row['name'],
-            });
+            await outputFile.writeString(']');
+            await outputFile.flush();
           } finally {
-            if (stagedProviderFile != null && await stagedProviderFile.exists()) {
-              await stagedProviderFile.delete();
-            }
+            await outputFile.close();
           }
-            completed++;
-            onProgress?.call(completed, totalDocs);
-          }
-          documentOffset += docs.length;
+          (manifest['tables'] as Map<String, int>)[table] = rowCount;
+          final metadataDigest = (await sha256.bind(metadataFile.openRead()).first).toString();
+          (manifest['metadataFiles'] as List).add({
+            'entry': '$table.json',
+            'sizeBytes': await metadataFile.length(),
+            'sha256': metadataDigest,
+          });
+          await addStoredFile(metadataFile, '$table.json');
         }
-      }
-
+  
+        if (includePdfs) {
+          final totalDocs = Sqflite.firstIntValue(
+            await txn.rawQuery('SELECT COUNT(*) FROM documents'),
+          ) ?? 0;
+          var completed = 0;
+          var documentOffset = 0;
+          while (true) {
+            final docs = await txn.query(
+              'documents',
+              columns: ['id', 'name', 'storage_uri', 'sha256'],
+              limit: 250,
+              offset: documentOffset,
+              orderBy: 'id',
+            );
+            if (docs.isEmpty) break;
+            for (final row in docs) {
+            final uri = row['storage_uri'] as String?;
+            if (uri == null || uri.isEmpty) {
+              throw StateError('Backup cannot be complete: "${row['name']}" has no storage reference.');
+            }
+            File? stagedProviderFile;
+            final File file;
+            if (uri.startsWith('content://')) {
+              stagedProviderFile = File(p.join(staging.path, 'source_${_uuid.v4()}.pdf'));
+              await StorageLocationService.instance.copyPdfToPath(
+                sourceUri: uri,
+                destinationPath: stagedProviderFile.path,
+              );
+              file = stagedProviderFile;
+            } else {
+              file = File(uri.startsWith('file://') ? Uri.parse(uri).toFilePath() : uri);
+            }
+            try {
+              if (!await file.exists()) {
+                throw StateError('Backup cannot be complete: "${row['name']}" is unavailable. Repair storage access and retry.');
+              }
+              final digest = (await sha256.bind(file.openRead()).first).toString();
+              final expected = row['sha256'] as String?;
+              if (expected != null && expected.isNotEmpty && digest != expected) {
+                throw StateError('Backup stopped: "${row['name']}" failed SHA-256 verification.');
+              }
+              // Never place imported database IDs in archive paths.
+              final entry = 'pdfs/${_uuid.v4()}.pdf';
+              // Stream already-compressed PDF bytes directly into the ZIP without
+              // allocating a second full-size buffer or recompressing the payload.
+              await addStoredFile(file, entry);
+              (manifest['files'] as List).add({
+                'documentId': row['id'], 'entry': entry, 'sha256': digest,
+                'originalName': row['name'],
+              });
+            } finally {
+              if (stagedProviderFile != null && await stagedProviderFile.exists()) {
+                await stagedProviderFile.delete();
+              }
+            }
+              completed++;
+              onProgress?.call(completed, totalDocs);
+            }
+            documentOffset += docs.length;
+          }
+        }
+  
+      });
       final manifestFile = File(p.join(staging.path, 'manifest.json'));
       await manifestFile.writeAsString(jsonEncode(manifest), encoding: utf8, flush: true);
       await addStoredFile(manifestFile, 'manifest.json');
