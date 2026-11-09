@@ -20,14 +20,15 @@ class _ConcurrentFolderDatabase implements Database {
       final completer = Completer<void>();
       final previous = _tail;
       _tail = completer.future;
-      return () async {
+      return Future<Null>(() async {
         await previous;
         try {
-          return await callback(_ConcurrentFolderTransaction(folders));
+          await callback(_ConcurrentFolderTransaction(folders));
+          return null;
         } finally {
           completer.complete();
         }
-      }();
+      });
     }
     return super.noSuchMethod(invocation);
   }
