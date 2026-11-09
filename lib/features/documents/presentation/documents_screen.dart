@@ -1016,12 +1016,16 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
         label: '${document.name}.pdf, ${_size(document.sizeBytes)}, ${document.isFavorite ? 'starred' : 'not starred'}',
         child: ListTile(
         key: ValueKey(document.id),
-        onLongPress: () => _toggleSelected(document),
         onTap: () => _selectedIds.isNotEmpty ? _toggleSelected(document) : _open(document),
         leading: _selectedIds.isNotEmpty
             ? Checkbox(value: selected, onChanged: (_) => _toggleSelected(document))
             : const CircleAvatar(child: Icon(Icons.picture_as_pdf_outlined)),
-        title: Text('${document.name}.pdf', maxLines: 1, overflow: TextOverflow.ellipsis),
+        title: Tooltip(
+          message: '${document.name}.pdf',
+          triggerMode: TooltipTriggerMode.longPress,
+          waitDuration: const Duration(milliseconds: 450),
+          child: Text('${document.name}.pdf', maxLines: 1, overflow: TextOverflow.ellipsis),
+        ),
         subtitle: Text([
           _size(document.sizeBytes),
           document.categoryName ?? 'Uncategorised',
