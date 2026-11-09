@@ -136,6 +136,23 @@ class MainActivity : FlutterActivity() {
                             }
                             "consumeSharedPdfs" -> result.success(consumeSharedPdfs(incomingShareIntent))
                             "checkStorageAccess" -> result.success(checkStorageAccess())
+                            "hasAllFilesAccess" -> result.success(
+                                android.os.Build.VERSION.SDK_INT < 30 ||
+                                    android.os.Environment.isExternalStorageManager()
+                            )
+                            "requestAllFilesAccess" -> {
+                                if (android.os.Build.VERSION.SDK_INT < 30 ||
+                                    android.os.Environment.isExternalStorageManager()) {
+                                    result.success(true)
+                                } else {
+                                    val settingsIntent = Intent(
+                                        android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                                        Uri.parse("package:$packageName")
+                                    )
+                                    startActivity(settingsIntent)
+                                    result.success(false)
+                                }
+                            }
                             "savePdf" -> {
                                 val tree = Uri.parse(call.argument<String>("treeUri")!!)
                                 val name = call.argument<String>("name")!!
