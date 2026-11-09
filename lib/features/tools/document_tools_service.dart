@@ -1415,13 +1415,34 @@ class DocumentToolsService {
   Future<Map<String, Object?>?> _findLatestVerifiedPortableSnapshot() async {
     final storage = StorageLocationService.instance;
     final locations = await storage.portableDataLocations();
-    final children = await storage.listDirectory(locations['databaseUri']!);
-    final snapshots = children
-        .where((entry) => entry['isDirectory'] == true &&
+    final databaseUris = <String>[locations['databaseUri']!];
+    final legacyUri = locations['legacyRootUri'];
+    if (legacyUri != null && legacyUri.startsWith('file://')) {
+      final legacyRoot = Uri.parse(legacyUri).toFilePath();
+      for (final path in [
+        p.join(legacyRoot, 'Database'),
+        p.join(legacyRoot, 'System', 'Database'),
+      ]) {
+        final directory = Directory(path);
+        if (await directory.exists()) {
+          databaseUris.add(Uri.directory(directory.path).toString());
+        }
+      }
+    }
+    final snapshots = <Map<String, Object?>>[];
+    for (final databaseUri in databaseUris.toSet()) {
+      try {
+        final children = await storage.listDirectory(databaseUri);
+        snapshots.addAll(children.where((entry) =>
+            entry['isDirectory'] == true &&
             entry['name'] is String &&
-            (entry['name'] as String).startsWith('snapshot_'))
-        .toList()
-      ..sort((a, b) => (b['name'] as String).compareTo(a['name'] as String));
+            (entry['name'] as String).startsWith('snapshot_')));
+      } catch (_) {
+        // One missing legacy location must not hide valid snapshots elsewhere.
+      }
+    }
+    snapshots.sort((a, b) =>
+        (b['name'] as String).compareTo(a['name'] as String));
 
     for (final snapshot in snapshots) {
       try {
