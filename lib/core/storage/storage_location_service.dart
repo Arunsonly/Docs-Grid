@@ -252,8 +252,8 @@ class StorageLocationService {
   }
 
 
-  /// Lists every directory (including empty folders) and PDF below the
-  /// explicitly granted SAF root. Provider URIs remain opaque handles.
+  /// Lists PDFs and only folders that contain PDFs somewhere below them,
+  /// within the explicitly granted SAF root. Empty folder branches are omitted.
   Future<List<Map<String, Object?>>> listStorageTreeRecursively(
     String rootUri, {
     int maxEntries = 50000,
@@ -264,6 +264,7 @@ class StorageLocationService {
     ];
     final visited = <String>{};
     final entries = <Map<String, Object?>>[];
+    final foldersWithPdfs = <String>{};
     var visitedEntries = 0;
     while (pending.isNotEmpty) {
       final current = pending.removeLast();
@@ -281,19 +282,33 @@ class StorageLocationService {
         final uri = child['uri'] as String;
         if (child['isDirectory'] == true) {
           final path = current.path.isEmpty ? name : '${current.path}/$name';
-          entries.add(<String, Object?>{
-            'name': name, 'uri': uri, 'folderPath': current.path,
-            'path': path, 'isDirectory': true,
-          });
           pending.add((uri: uri, path: path, depth: current.depth + 1));
         } else if (name.toLowerCase().endsWith('.pdf')) {
           entries.add(<String, Object?>{
             'name': name, 'uri': uri, 'folderPath': current.path,
             'isDirectory': false,
           });
+          var ancestor = current.path;
+          while (ancestor.isNotEmpty) {
+            foldersWithPdfs.add(ancestor);
+            final separator = ancestor.lastIndexOf('/');
+            ancestor = separator < 0 ? '' : ancestor.substring(0, separator);
+          }
         }
       }
     }
+    // Keep only folders on a path to at least one PDF. Root-level PDFs remain
+    // visible without creating a synthetic empty-folder row.
+    entries.addAll(foldersWithPdfs.map((path) {
+      final segments = path.split('/');
+      return <String, Object?>{
+        'name': segments.last,
+        'uri': '',
+        'folderPath': segments.length == 1 ? '' : segments.sublist(0, segments.length - 1).join('/'),
+        'path': path,
+        'isDirectory': true,
+      };
+    }));
     entries.sort((a, b) {
       final path = (a['folderPath'] as String).compareTo(b['folderPath'] as String);
       if (path != 0) return path;

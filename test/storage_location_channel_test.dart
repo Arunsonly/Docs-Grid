@@ -126,18 +126,14 @@ void main() {
   });
 
 
-  test('recursive storage browser includes empty folders and nested PDFs', () async {
+  test('recursive storage browser hides empty folders and keeps PDF-bearing ancestors', () async {
     final tree = <String, List<Map<String, Object?>>{
       'content://tree/root': [
-        {'name': 'Empty', 'uri': 'content://tree/empty', 'isDirectory': true},
         {'name': 'Insurance', 'uri': 'content://tree/insurance', 'isDirectory': true},
       ],
-      'content://tree/empty': [],
       'content://tree/insurance': [
         {'name': 'Policy.pdf', 'uri': 'content://doc/policy', 'isDirectory': false},
-        {'name': 'Archive', 'uri': 'content://tree/archive', 'isDirectory': true},
       ],
-      'content://tree/archive': [],
     };
     messenger.setMockMethodCallHandler(channel, (call) async {
       expect(call.method, 'listDirectory');
@@ -147,7 +143,7 @@ void main() {
         .listStorageTreeRecursively('content://tree/root');
     expect(entries.where((entry) => entry['isDirectory'] == true)
         .map((entry) => entry['path']).toSet(),
-        {'Empty', 'Insurance', 'Insurance/Archive'});
+        {'Insurance'});
     expect(entries.where((entry) => entry['isDirectory'] == false).single['uri'],
         'content://doc/policy');
   });
