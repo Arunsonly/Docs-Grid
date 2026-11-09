@@ -56,7 +56,6 @@ jobs:
           }
           gradle.beforeProject { project ->
             addKotlinMirror(project.buildscript.repositories)
-            addKotlinMirror(project.repositories)
           }
           GRADLE
       - name: Route Gradle distribution through the official direct download host
@@ -74,7 +73,8 @@ jobs:
               raise SystemExit('Gradle distributionUrl is missing')
           url = match.group(1).replace(r'\:', ':')
           filename = url.rsplit('/', 1)[-1]
-          if not re.fullmatch(r'gradle-[0-9][A-Za-z0-9.+-]*-(?:all|bin)\.zip', filename):
+          if (not filename.startswith('gradle-') or not filename.endswith('.zip') or
+                  '/' in filename or '\\' in filename):
               raise SystemExit('Unexpected Gradle distribution filename: ' + filename)
           direct_url = r'https\://downloads.gradle.org/distributions/' + filename
           content = content[:match.start(1)] + direct_url + content[match.end(1):]
