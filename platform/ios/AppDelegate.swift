@@ -285,6 +285,14 @@ import CryptoKit
         }
     }
 
+    private func validateLeafName(_ name: String) throws {
+        guard !name.isEmpty, name != ".", name != "..",
+              !name.contains("/"), !name.contains("\\"),
+              !name.contains("\0") else {
+            throw storageError("Invalid file or folder name.")
+        }
+    }
+
     private func stringArg(_ args: [String: Any], _ key: String) throws -> String {
         guard let value = args[key] as? String, !value.isEmpty else {
             throw storageError("Missing required value: \(key)")
@@ -319,22 +327,44 @@ import CryptoKit
         return values
     }
 
-    private func resolvedBookmarks() -> [URL] {
-        bookmarkDataList().compactMap { data in
-            var stale = false
-            return try? URL(resolvingBookmarkData: data, options: [], relativeTo: nil, bookmarkDataIsStale: &stale)
-        }
-    }
-
     private func withAllBookmarkAccess<T>(_ work: () throws -> T) throws -> T {
-        let roots = resolvedBookmarks()
+        let stored = bookmarkDataList()
         var started: [URL] = []
-        for root in roots {
-            if root.startAccessingSecurityScopedResource() {
-                started.append(root)
+        var refreshedBookmarks: [Data] = []
+        for data in stored {
+            var stale = false
+            let root: URL
+            do {
+                root = try URL(
+                    resolvingBookmarkData: data,
+                    options: [],
+                    relativeTo: nil,
+                    bookmarkDataIsStale: &stale
+                )
+            } catch {
+                throw storageError("A saved Files bookmark is invalid. Re-select the affected folder; existing files are preserved.")
+            }
+            let accessed = root.startAccessingSecurityScopedResource()
+            guard accessed || isInsideAppContainer(root) else {
+                throw storageError("A saved Files permission has been revoked. Re-select the folder before accessing its files.")
+            }
+            if accessed { started.append(root) }
+            if stale {
+                refreshedBookmarks.append(
+                    try root.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
+                )
+            } else {
+                refreshedBookmarks.append(data)
             }
         }
         defer { started.forEach { $0.stopAccessingSecurityScopedResource() } }
+        if refreshedBookmarks != stored {
+            UserDefaults.standard.set(refreshedBookmarks, forKey: bookmarkListKey)
+            if let current = UserDefaults.standard.data(forKey: currentBookmarkKey),
+               let index = stored.firstIndex(of: current) {
+                UserDefaults.standard.set(refreshedBookmarks[index], forKey: currentBookmarkKey)
+            }
+        }
         return try work()
     }
 
@@ -406,7 +436,8 @@ import CryptoKit
     }
 
     private func savePdf(parent: URL, name: String, data: Data) throws -> URL {
-        try withAllBookmarkAccess {
+        try validateLeafName(name)
+        return try withAllBookmarkAccess {
             let target = uniqueURL(parent: parent, requestedName: name)
             try data.write(to: target, options: .atomic)
             let saved = try Data(contentsOf: target)
@@ -434,7 +465,8 @@ import CryptoKit
     }
 
     private func createDirectory(parent: URL, name: String) throws -> URL {
-        try withAllBookmarkAccess {
+        try validateLeafName(name)
+        return try withAllBookmarkAccess {
             let target = parent.appendingPathComponent(name, isDirectory: true)
             guard !FileManager.default.fileExists(atPath: target.path) else {
                 throw storageError("A folder or file with this name already exists in the selected storage location.")
@@ -445,7 +477,8 @@ import CryptoKit
     }
 
     private func copyPdf(source: URL, parent: URL, name: String) throws -> URL {
-        try withAllBookmarkAccess {
+        try validateLeafName(name)
+        return try withAllBookmarkAccess {
             let target = uniqueURL(parent: parent, requestedName: name)
             try FileManager.default.copyItem(at: source, to: target)
             let originalHash = try sha256Pdf(url: source)
@@ -553,7 +586,8 @@ import CryptoKit
     }
 
     private func renameItem(url: URL, name: String) throws -> URL {
-        try withAllBookmarkAccess {
+        try validateLeafName(name)
+        return try withAllBookmarkAccess {
             let target = url.deletingLastPathComponent().appendingPathComponent(name)
             if target != url && FileManager.default.fileExists(atPath: target.path) {
                 throw storageError("A file or folder with this name already exists.")
@@ -589,6 +623,9 @@ import CryptoKit
         do {
             let accessed = url.startAccessingSecurityScopedResource()
             defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+            guard accessed || isInsideAppContainer(url) else {
+                throw storageError("Files did not grant access to the selected folder.")
+            }
             let data = try url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
             var bookmarks = bookmarkDataList()
             if !bookmarks.contains(data) { bookmarks.append(data) }

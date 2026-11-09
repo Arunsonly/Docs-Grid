@@ -374,7 +374,15 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    private fun validateLeafName(name: String) {
+        require(name.isNotBlank() && name != "." && name != ".." &&
+            '/' !in name && '\\' !in name && '\u0000' !in name) {
+            "Invalid file or folder name."
+        }
+    }
+
     private fun createDirectory(parentUri: Uri, name: String): Uri {
+        validateLeafName(name)
         try {
             findChildUri(parentUri, name)
             throw IllegalStateException("A folder with this name already exists in the selected storage location.")
@@ -516,6 +524,7 @@ class MainActivity : FlutterActivity() {
     // Copy and verify without deleting the source. Dart updates SQLite first,
     // then explicitly deletes the source after the metadata transaction commits.
     private fun copyPdf(source: Uri, parentUri: Uri, name: String): Uri {
+        validateLeafName(name)
         val parent = resolveParentUri(parentUri)
         val parentId = DocumentsContract.getDocumentId(parent)
         val children = DocumentsContract.buildChildDocumentsUriUsingTree(parentUri, parentId)
@@ -556,6 +565,7 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun createPdf(treeUri: Uri, requestedName: String, bytes: ByteArray): Uri {
+        validateLeafName(requestedName)
         val parent = resolveParentUri(treeUri)
         val parentId = DocumentsContract.getDocumentId(parent)
         val children = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, parentId)
