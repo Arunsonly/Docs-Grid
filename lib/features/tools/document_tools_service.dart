@@ -1299,7 +1299,15 @@ class DocumentToolsService {
     }
 
     final pdfUris = <String, String>{};
-    final pending = <String>[locations['libraryUri']!];
+    // Portable snapshots keep folder metadata under Folders/ but the actual
+    // PDF payloads are stored under Documents/. Search both trees so a
+    // recovery import can relink the original PDFs instead of restoring only
+    // empty metadata records.
+    final pending = <String>[
+      locations['libraryUri']!,
+      if (locations['documentsUri'] != null)
+        locations['documentsUri']!,
+    ];
     final visited = <String>{};
     while (pending.isNotEmpty) {
       final directoryUri = pending.removeLast();
