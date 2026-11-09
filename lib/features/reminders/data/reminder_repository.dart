@@ -255,11 +255,7 @@ class ReminderRepository {
     }, where: 'id = ?', whereArgs: [reminder.id]);
     try {
       if (enabled) {
-        await ReminderNotifications.instance.schedule(
-          id: reminder.id, title: reminder.title, body: reminder.note,
-          at: reminder.remindAt, recurrence: reminder.recurrenceRule,
-          documentId: reminder.documentId,
-        );
+        await rescheduleEnabled();
       } else {
         await ReminderNotifications.instance.cancel(reminder.id);
       }
