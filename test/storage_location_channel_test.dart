@@ -85,4 +85,92 @@ void main() {
     expect(entries.single['isDirectory'], isFalse);
     expect(entries.single['sizeBytes'], 1024);
   });
+
+  test('createDirectory forwards parent and name and returns opaque URI', () async {
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      expect(call.method, 'createDirectory');
+      expect(call.arguments, {'parentUri': 'content://tree/root', 'name': 'Invoices'});
+      return 'content://document/folder-7';
+    });
+
+    expect(
+      await StorageLocationService.instance.createDirectory(
+        parentUri: 'content://tree/root',
+        name: 'Invoices',
+      ),
+      'content://document/folder-7',
+    );
+  });
+
+  test('savePdf rejects a null native result', () async {
+    messenger.setMockMethodCallHandler(channel, (_) async => null);
+
+    await expectLater(
+      StorageLocationService.instance.savePdf(
+        treeUri: 'content://tree/root',
+        name: 'empty.pdf',
+        bytes: Uint8List(0),
+      ),
+      throwsStateError,
+    );
+  });
+
+  test('listDirectory rejects a non-map native entry', () async {
+    messenger.setMockMethodCallHandler(channel, (_) async => ['not-an-entry']);
+
+    await expectLater(
+      StorageLocationService.instance.listDirectory('content://tree/root'),
+      throwsStateError,
+    );
+  });
+
+  test('storage access check preserves revoked status from native layer', () async {
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      expect(call.method, 'checkStorageAccess');
+      return {
+        'status': 'revoked',
+        'message': 'Permission was removed',
+        'name': 'Documents',
+      };
+    });
+
+    expect(
+      await StorageLocationService.instance.checkStorageAccess(),
+      {
+        'status': 'revoked',
+        'message': 'Permission was removed',
+        'name': 'Documents',
+      },
+    );
+  });
+
+  test('storage access check fails closed for null native response', () async {
+    messenger.setMockMethodCallHandler(channel, (_) async => null);
+
+    expect(
+      await StorageLocationService.instance.checkStorageAccess(),
+      {
+        'status': 'unknown',
+        'message': 'Storage access could not be verified.',
+      },
+    );
+  });
+
+  test('native permission errors are propagated instead of treated as missing data', () async {
+    messenger.setMockMethodCallHandler(channel, (_) async {
+      throw PlatformException(code: 'PERMISSION_DENIED');
+    });
+
+    await expectLater(
+      StorageLocationService.instance.readPdf('content://document/private'),
+      throwsA(
+        isA<PlatformException>().having(
+          (error) => error.code,
+          'code',
+          'PERMISSION_DENIED',
+        ),
+      ),
+    );
+  });
+
 }
