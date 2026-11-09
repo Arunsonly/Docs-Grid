@@ -1486,13 +1486,16 @@ class DocumentToolsService {
         }
         final documentId = raw['documentId'] as String;
         final entryName = raw['entry'] as String;
-        if (!documentIds.contains(documentId) ||
-            !seenDocuments.add(documentId) ||
-            !seenEntries.add(entryName) ||
-            !entryName.startsWith('pdfs/') ||
+        if (!documentIds.contains(documentId)) {
+          throw StateError('Backup contains orphaned PDF entries that reference missing document metadata.');
+        }
+        if (!seenDocuments.add(documentId) || !seenEntries.add(entryName)) {
+          throw StateError('Backup contains duplicate PDF entries.');
+        }
+        if (!entryName.startsWith('pdfs/') ||
             entryName.contains('\\') ||
             entryName.split('/').any((part) => part.isEmpty || part == '.' || part == '..')) {
-          throw StateError('Backup contains an unsafe or duplicate PDF entry.');
+          throw StateError('Backup contains an unsafe PDF entry path.');
         }
         final entry = decoded.findFile(entryName);
         if (entry == null || !entry.isFile || entry.isSymbolicLink) {
@@ -1509,7 +1512,7 @@ class DocumentToolsService {
           <int>[], (bytes, chunk) => bytes..addAll(chunk),
         );
         if (!String.fromCharCodes(header).contains('%PDF-')) {
-          throw StateError('Backup contains a file that is not a PDF.');
+          throw StateError('Backup contains a file that is not a valid PDF.');
         }
         final digest = (await sha256.bind(stagedFile.openRead()).first).toString();
         if (digest != (raw['sha256'] as String).toLowerCase()) {
