@@ -12,6 +12,7 @@ import '../../categories/data/category_repository.dart';
 import '../../folders/data/folder_repository.dart';
 import '../../tools/document_tools_service.dart';
 import '../../tools/document_tools_screen.dart' show DocumentToolsScreen;
+import 'document_pdf_viewer_screen.dart';
 import '../../reminders/data/reminder_repository.dart';
 
 class DocumentsScreen extends StatefulWidget {
@@ -474,37 +475,70 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   }
 
   Future<void> _open(DocumentRecord document) async {
-    final isSafUri = document.storagePath.startsWith('content://') || document.storagePath.startsWith('file://');
-    if (!isSafUri) {
-      final file = File(document.storagePath);
-      if (!await file.exists()) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('PDF file is missing from local storage.')),
+    final isProviderUri = document.storagePath.startsWith('content://') ||
+        document.storagePath.startsWith('file://');
+    File? stagedProviderFile;
+    String? viewerPath;
+    try {
+      if (isProviderUri) {
+        // Stage provider-backed content with native streaming I/O; never read
+        // the entire PDF into Dart memory before the viewer starts.
+        final temp = await getTemporaryDirectory();
+        stagedProviderFile = File(p.join(
+          temp.path,
+          'docsgrid_view_${DateTime.now().microsecondsSinceEpoch}.pdf',
+        ));
+        await StorageLocationService.instance.copyPdfToPath(
+          sourceUri: document.storagePath,
+          destinationPath: stagedProviderFile.path,
         );
-        return;
+        viewerPath = stagedProviderFile.path;
+      } else {
+        final localFile = File(document.storagePath);
+        if (!await localFile.exists()) {
+          if (mounted) _message('PDF file is missing from local storage.');
+          return;
+        }
+        viewerPath = localFile.path;
       }
-    }
-    await _repository.markOpened(document);
-    if (isSafUri) {
-      try {
-        await StorageLocationService.instance.openPdf(document.storagePath);
-      } catch (error) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Could not open PDF: $error')),
-          );
+      await _repository.markOpened(document);
+      if (!mounted || viewerPath == null) return;
+      await Navigator.of(context).push<void>(
+        MaterialPageRoute(
+          builder: (_) => DocumentPdfViewerScreen(
+            filePath: viewerPath!,
+            title: '${document.name}.pdf',
+          ),
+        ),
+      );
+      await _patchDocument(document.id);
+    } catch (error) {
+      if (mounted) {
+        _message('Could not open PDF in the fast viewer: $error');
+        // Keep an OS-viewer fallback for files that a native PDF renderer
+        // cannot decode (for example, unsupported encryption).
+        if (isProviderUri) {
+          try {
+            await StorageLocationService.instance.openPdf(document.storagePath);
+          } catch (fallbackError) {
+            _message('External PDF viewer also failed: $fallbackError');
+          }
+        } else {
+          final result = await OpenFilex.open(document.storagePath);
+          if (mounted && result.type != ResultType.done) {
+            _message(result.message.isEmpty ? 'No PDF viewer is available.' : result.message);
+          }
         }
       }
-    } else {
-      final result = await OpenFilex.open(document.storagePath);
-      if (mounted && result.type != ResultType.done) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(result.message.isEmpty ? 'No PDF viewer is available.' : result.message)),
-        );
+    } finally {
+      if (stagedProviderFile != null) {
+        try {
+          if (await stagedProviderFile.exists()) await stagedProviderFile.delete();
+        } catch (_) {
+          // Do not let cache cleanup mask the viewer outcome.
+        }
       }
     }
-    await _patchDocument(document.id);
   }
 
 
