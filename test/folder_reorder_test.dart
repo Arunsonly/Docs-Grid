@@ -13,13 +13,13 @@ class _OrderDatabase implements Database {
   ];
 
   @override
-  dynamic noSuchMethod(Invocation invocation) {
-    if (invocation.memberName == #transaction) {
-      final callback = invocation.positionalArguments.first as Function;
-      return Future<Object?>(() => callback(_OrderTransaction(rows)));
-    }
-    return super.noSuchMethod(invocation);
-  }
+  Future<T> transaction<T>(
+    Future<T> Function(Transaction txn) action, {
+    bool? exclusive,
+  }) => action(_OrderTransaction(rows));
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
 class _OrderTransaction implements Transaction {
