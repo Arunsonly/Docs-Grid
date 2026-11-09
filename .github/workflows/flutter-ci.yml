@@ -53,9 +53,7 @@ jobs:
           }
           gradle.beforeSettings { settings ->
             addKotlinMirror(settings.pluginManagement.repositories)
-          }
-          gradle.beforeProject { project ->
-            addKotlinMirror(project.buildscript.repositories)
+            addKotlinMirror(settings.dependencyResolutionManagement.repositories)
           }
           GRADLE
       - name: Route Gradle distribution through the official direct download host
