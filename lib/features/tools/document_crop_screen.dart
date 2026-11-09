@@ -20,10 +20,9 @@ Uint8List transformDocumentImageForTesting(Map<String, Object> args) {
       output = img.copyRotate(oriented, angle: 90);
       break;
     case 'auto':
-      // Fast document enhancement: grayscale, normalize paper tone and lift
-      // ink contrast. Original pixels remain available through Reset.
-      final gray = img.grayscale(oriented);
-      output = img.adjustColor(gray, contrast: 1.20, brightness: 1.03, saturation: 1.05);
+      // Fast colour-preserving document enhancement. Keep the original
+      // available through Reset; avoid the slow multi-pass filter pipeline.
+      output = img.adjustColor(oriented, contrast: 1.20, brightness: 1.03, saturation: 1.05);
       break;
     case 'perspective':
       final points = (args['points'] as List).cast<num>();
