@@ -217,7 +217,7 @@ void main() {
         );
 
         final padded = validRows();
-        padded[table]!.first['id'] = ' ' + (padded[table]!.first['id'] as String);
+        padded[table]!.first['id'] = ' ${padded[table]!.first['id']}';
         expect(
           () => PortableSnapshotManifest.validateRelations(padded),
           throwsFormatException,
