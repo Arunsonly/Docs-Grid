@@ -61,6 +61,15 @@ class _HistoryScreenState extends State<HistoryScreen> {
       case 'moved_to_recycle_bin': return 'Moved to Recycle Bin';
       case 'renamed': return 'PDF renamed';
       case 'permanently_deleted': return 'PDF permanently deleted';
+      case 'category_created': return 'Category created';
+      case 'category_renamed': return 'Category renamed';
+      case 'category_deleted': return 'Category deleted';
+      case 'category_changed': return 'PDF category changed';
+      case 'tag_created': return 'Tag created';
+      case 'tag_renamed': return 'Tag renamed';
+      case 'tag_deleted': return 'Tag deleted';
+      case 'tags_changed': return 'PDF tags changed';
+      case 'storage_migrated': return 'PDF storage migrated';
       default: return record.action.replaceAll('_', ' ');
     }
   }
@@ -75,6 +84,15 @@ class _HistoryScreenState extends State<HistoryScreen> {
       case 'moved_to_recycle_bin':
       case 'permanently_deleted': return Icons.delete_outline;
       case 'renamed': return Icons.drive_file_rename_outline;
+      case 'category_created':
+      case 'category_renamed':
+      case 'category_deleted':
+      case 'category_changed':
+      case 'tag_created':
+      case 'tag_renamed':
+      case 'tag_deleted':
+      case 'tags_changed': return Icons.label_outline;
+      case 'storage_migrated': return Icons.drive_file_move_outline;
       default: return Icons.history;
     }
   }
@@ -133,7 +151,8 @@ class _HistoryScreenState extends State<HistoryScreen> {
                   leading: CircleAvatar(child: Icon(_icon(record.action))),
                   title: Text(_label(record)),
                   subtitle: Text([
-                    record.documentName ?? (record.details['name'] as String? ?? 'Document'),
+                    record.documentName ??
+                        (record.details['name'] is String ? record.details['name'] as String : 'Document'),
                     dateLabel,
                   ].join('\n')),
                   isThreeLine: true,
