@@ -59,6 +59,20 @@ class StorageLocationService {
     };
   }
 
+  Future<bool> hasAllFilesAccess() async {
+    if (!Platform.isAndroid) return false;
+    return await _channel.invokeMethod<bool>('hasAllFilesAccess') ?? false;
+  }
+
+  /// Opens Android's special app-specific all-files access settings page.
+  /// The user must explicitly enable the switch and return to DocsGrid.
+  Future<bool> requestAllFilesAccess() async {
+    if (!Platform.isAndroid) {
+      throw UnsupportedError('All-files access is available only on Android.');
+    }
+    return await _channel.invokeMethod<bool>('requestAllFilesAccess') ?? false;
+  }
+
   Future<Map<String, String>?> selectedFolder() async {
     if (!Platform.isAndroid && !Platform.isIOS) return null;
     final value = await _channel.invokeMapMethod<String, dynamic>('getSelectedFolder');
