@@ -135,6 +135,106 @@ void main() {
     });
   });
 
+  group('portable snapshot relational integrity', () {
+    Map<String, List<Map<String, Object?>>> validRows() => {
+      'folders': [{'id': 'folder-1', 'name': 'Policies', 'parent_id': null}],
+      'categories': [{'id': 'category-1', 'name': 'Insurance'}],
+      'tags': [{'id': 'tag-1', 'name': 'Motor'}],
+      'documents': [{
+        'id': 'document-1',
+        'folder_id': 'folder-1',
+        'category_id': 'category-1',
+      }],
+      'document_tags': [{'document_id': 'document-1', 'tag_id': 'tag-1'}],
+      'reminders': [{'id': 'reminder-1', 'document_id': 'document-1'}],
+      'history': [{'id': 'history-1', 'document_id': 'document-1'}],
+      'document_text_index': [{'document_id': 'document-1'}],
+      'settings': [{'key': 'sort_order'}],
+    };
+
+    test('accepts valid foreign-key relationships', () {
+      expect(
+        () => PortableSnapshotManifest.validateRelations(validRows()),
+        returnsNormally,
+      );
+    });
+
+    test('rejects documents with missing folder or category', () {
+      final missingFolder = validRows();
+      missingFolder['documents']!.first['folder_id'] = 'missing';
+      expect(
+        () => PortableSnapshotManifest.validateRelations(missingFolder),
+        throwsFormatException,
+      );
+
+      final missingCategory = validRows();
+      missingCategory['documents']!.first['category_id'] = 'missing';
+      expect(
+        () => PortableSnapshotManifest.validateRelations(missingCategory),
+        throwsFormatException,
+      );
+    });
+
+    test('rejects orphaned tags, reminders, history and OCR rows', () {
+      for (final table in ['document_tags', 'reminders', 'history', 'document_text_index']) {
+        final rows = validRows();
+        if (table == 'document_tags') {
+          rows[table]!.first['document_id'] = 'missing';
+        } else {
+          rows[table]!.first['document_id'] = 'missing';
+        }
+        expect(
+          () => PortableSnapshotManifest.validateRelations(rows),
+          throwsFormatException,
+          reason: '$table must not reference a missing document',
+        );
+      }
+
+      final missingTag = validRows();
+      missingTag['document_tags']!.first['tag_id'] = 'missing';
+      expect(
+        () => PortableSnapshotManifest.validateRelations(missingTag),
+        throwsFormatException,
+      );
+    });
+
+    test('rejects duplicate IDs, relations, indexes and setting keys', () {
+      final duplicateDocument = validRows();
+      duplicateDocument['documents']!.add(Map<String, Object?>.from(
+        duplicateDocument['documents']!.first,
+      ));
+      expect(
+        () => PortableSnapshotManifest.validateRelations(duplicateDocument),
+        throwsFormatException,
+      );
+
+      final duplicateRelation = validRows();
+      duplicateRelation['document_tags']!.add(
+        Map<String, Object?>.from(duplicateRelation['document_tags']!.first),
+      );
+      expect(
+        () => PortableSnapshotManifest.validateRelations(duplicateRelation),
+        throwsFormatException,
+      );
+
+      final duplicateIndex = validRows();
+      duplicateIndex['document_text_index']!.add(
+        Map<String, Object?>.from(duplicateIndex['document_text_index']!.first),
+      );
+      expect(
+        () => PortableSnapshotManifest.validateRelations(duplicateIndex),
+        throwsFormatException,
+      );
+
+      final duplicateSetting = validRows();
+      duplicateSetting['settings']!.add({'key': 'sort_order'});
+      expect(
+        () => PortableSnapshotManifest.validateRelations(duplicateSetting),
+        throwsFormatException,
+      );
+    });
+  });
+
   test('rejects a table count that differs from its metadata file record count', () {
     final value = validManifest();
     (value['files'] as List).first['recordCount'] = 9;
