@@ -33,6 +33,7 @@ Future<File> _makeBackup(
   List<int>? pdfBytes,
   String? shaOverride,
   bool includeFileRecord = true,
+  bool databaseOnly = false,
 }) async {
   final bytes = pdfBytes ?? utf8.encode('%PDF-1.7\nDocsGrid test PDF');
   final archive = Archive();
