@@ -179,7 +179,7 @@ class DocumentRepository {
     if (favoritesOnly) where.add('d.is_favorite = 1');
     final normalizedQuery = query.trim();
     if (normalizedQuery.isNotEmpty) {
-      where.add("d.name LIKE ? ESCAPE '\\\\'");
+      where.add("d.name LIKE ? ESCAPE '\\'");
       args.add('%${escapeLikeWildcards(normalizedQuery)}%');
     }
     if (cursor != null) {

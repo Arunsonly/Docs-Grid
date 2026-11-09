@@ -71,6 +71,7 @@ void main() {
           await db.insert('documents', {
             'id': 'doc-1', 'name': 'policy.pdf', 'created_at': '2024-01-01',
             'updated_at': '2024-01-01', 'folder_id': 'folder-1',
+            'metadata_json': '{"favorite":true}',
           });
           await db.insert('reminders', {
             'id': 'reminder-1', 'document_id': 'doc-1', 'title': 'Renew policy',
@@ -136,6 +137,33 @@ void main() {
       expect(await v3.rawQuery("SELECT name FROM sqlite_master WHERE type='table' AND name='document_text_index'"), hasLength(1));
       expect(await v3.query('categories', where: 'name = ?', whereArgs: ['Insurance']), hasLength(1));
       await v3.close();
+    });
+
+    test('v3 to v4 adds indexed favorite flag and preserves legacy favorite metadata', () async {
+      final v1 = await createV1Fixture('v3_to_v4');
+      final path = v1.path;
+      await v1.close();
+
+      final v3 = await migrateTo(path, 3);
+      expect(await v3.getVersion(), 3);
+      await v3.close();
+
+      final v4 = await migrateTo(path, 4);
+      expect(await v4.getVersion(), 4);
+      final document = (await v4.query('documents', where: 'id = ?', whereArgs: ['doc-1'])).single;
+      expect(document['is_favorite'], 1);
+      final indexes = await v4.rawQuery(
+        "SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'idx_documents_active_%'",
+      );
+      expect(indexes.map((row) => row['name']), containsAll([
+        'idx_documents_active_recent',
+        'idx_documents_active_favorite_recent',
+        'idx_documents_active_folder_name',
+        'idx_documents_active_category',
+      ]));
+      expect((await v4.query('schema_migrations', orderBy: 'version')).map((row) => row['version']), [1, 2, 3, 4]);
+      expect(await v4.rawQuery('PRAGMA foreign_key_check'), isEmpty);
+      await v4.close();
     });
 
     test('refuses downgrade and leaves the v2 database and records intact', () async {
