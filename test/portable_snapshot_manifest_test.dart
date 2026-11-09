@@ -94,6 +94,14 @@ void main() {
       );
       expect(
         () => PortableSnapshotManifest.validateFolderRows([
+          {'id': '<root>', 'name': 'Parent', 'parent_id': null},
+          {'id': 'root-child', 'name': 'Same name', 'parent_id': '<root>'},
+          {'id': 'root-sibling', 'name': 'Same name', 'parent_id': null},
+        ]),
+        returnsNormally,
+      );
+      expect(
+        () => PortableSnapshotManifest.validateFolderRows([
           {'id': 'root-a', 'name': 'A', 'parent_id': null},
           {'id': 'root-b', 'name': 'B', 'parent_id': null},
           {'id': 'child-a', 'name': 'Policy', 'parent_id': 'root-a'},
