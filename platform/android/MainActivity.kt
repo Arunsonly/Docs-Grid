@@ -164,14 +164,13 @@ class MainActivity : FlutterActivity() {
                             "getSelectedFolder" -> {
                                 val prefs = getSharedPreferences("docsgrid_storage", MODE_PRIVATE)
                                 val uri = prefs.getString("folders_uri", null) ?: prefs.getString("my_files_uri", null)
-                                val selected = uri ?: if (
-                                    android.os.Build.VERSION.SDK_INT < 30 ||
+                                val hasAllFiles = android.os.Build.VERSION.SDK_INT < 30 ||
                                     android.os.Environment.isExternalStorageManager()
-                                ) {
+                                val selected = if (hasAllFiles) {
                                     Uri.fromFile(android.os.Environment.getExternalStorageDirectory()).toString()
-                                } else null
+                                } else uri
                                 result.success(selected?.let {
-                                    mapOf("uri" to it, "name" to if (uri == null) "Internal storage" else "DocsGrid/Folders")
+                                    mapOf("uri" to it, "name" to if (hasAllFiles) "Internal storage" else "DocsGrid/Folders")
                                 })
                             }
                             "consumeSharedPdfs" -> result.success(consumeSharedPdfs(incomingShareIntent))
