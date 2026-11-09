@@ -25,6 +25,7 @@ class DocumentRecord {
     this.categoryName,
     this.tagNames = const [],
     this.folderId,
+    this.lastOpenedAt,
   });
 
   final String id;
@@ -37,6 +38,7 @@ class DocumentRecord {
   final String? categoryName;
   final List<String> tagNames;
   final String? folderId;
+  final DateTime? lastOpenedAt;
 
   factory DocumentRecord.fromMap(Map<String, Object?> row) {
     Map<String, dynamic> metadata = <String, dynamic>{};
@@ -65,6 +67,9 @@ class DocumentRecord {
           ? const []
           : (row['tag_names'] as String).split(', '),
       folderId: row['folder_id'] as String?,
+      lastOpenedAt: row['last_opened_at'] is String
+          ? DateTime.tryParse(row['last_opened_at'] as String)
+          : null,
     );
   }
 }

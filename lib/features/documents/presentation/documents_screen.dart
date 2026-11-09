@@ -155,6 +155,35 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     }
   }
 
+  Future<void> _patchDocument(String id, {bool removeIfMissing = true}) async {
+    final updated = await _repository.getById(id);
+    if (!mounted) return;
+    setState(() {
+      final index = _documents.indexWhere((item) => item.id == id);
+      if (updated == null) {
+        if (removeIfMissing && index >= 0) _documents.removeAt(index);
+        return;
+      }
+      if (index >= 0) {
+        _documents[index] = updated;
+      } else if (_search.text.trim().isEmpty ||
+          updated.name.toLowerCase().contains(_search.text.trim().toLowerCase())) {
+        _documents.add(updated);
+      }
+      _documents.sort((a, b) {
+        final aOpened = a.lastOpenedAt;
+        final bOpened = b.lastOpenedAt;
+        if (aOpened != null && bOpened == null) return -1;
+        if (aOpened == null && bOpened != null) return 1;
+        final recent = (bOpened ?? DateTime.fromMillisecondsSinceEpoch(0))
+            .compareTo(aOpened ?? DateTime.fromMillisecondsSinceEpoch(0));
+        if (recent != 0) return recent;
+        final byName = a.name.toLowerCase().compareTo(b.name.toLowerCase());
+        return byName != 0 ? byName : a.id.compareTo(b.id);
+      });
+    });
+  }
+
   Future<void> _refreshDashboardSummary() async {
     if (widget.favoritesOnly || widget.recentOnly) return;
     final summary = await _repository.dashboardSummary();
@@ -385,7 +414,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
         );
       }
     }
-    await _load();
+    await _patchDocument(document.id);
   }
 
 
@@ -440,7 +469,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     if (value == null) return;
     try {
       await _repository.rename(document, value);
-      await _load();
+      await _patchDocument(document.id);
     } catch (error) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$error')));
     }
@@ -617,7 +646,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
       document.id,
       selected.isEmpty ? null : selected,
     );
-    await _load();
+    await _patchDocument(document.id);
   }
 
   Future<void> _editTags(DocumentRecord document) async {
@@ -685,7 +714,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     );
     if (result == null) return;
     await _categoryRepository.setDocumentTags(document.id, result.toList());
-    await _load();
+    await _patchDocument(document.id);
   }
 
   Future<void> _moveToFolder(DocumentRecord document) async {
@@ -723,7 +752,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     );
     if (selected == null) return;
     await _repository.moveToFolder(document, selected.isEmpty ? null : selected);
-    await _load();
+    await _patchDocument(document.id);
   }
 
   Future<void> _trash(DocumentRecord document) async {
@@ -826,7 +855,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                       ),
                       suffixIcon: _search.text.isEmpty
                           ? null
-                          : IconButton(onPressed: _search.clear, icon: const Icon(Icons.close)),
+                          : IconButton(tooltip: 'Clear search', onPressed: _search.clear, icon: const Icon(Icons.close)),
                       border: OutlineInputBorder(borderRadius: BorderRadius.circular(16)),
                     ),
                   ),
@@ -967,7 +996,9 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     final selected = _selectedIds.contains(document.id);
     return Card(
       elevation: 0,
-      child: ListTile(
+      child: Semantics(
+        label: '${document.name}.pdf, ${_size(document.sizeBytes)}, ${document.isFavorite ? 'starred' : 'not starred'}',
+        child: ListTile(
         key: ValueKey(document.id),
         onLongPress: () => _toggleSelected(document),
         onTap: () => _selectedIds.isNotEmpty ? _toggleSelected(document) : _open(document),
@@ -982,6 +1013,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
           (document.storagePath.startsWith('content://') || document.storagePath.startsWith('file://') || document.storagePath.isNotEmpty) ? 'On this device' : 'File missing',
         ].join(' · ')),
         trailing: PopupMenuButton<String>(
+          tooltip: 'Actions for ${document.name}',
           onSelected: (value) async {
             if (value == 'favorite') {
               final nextFavorite = !document.isFavorite;
@@ -1005,6 +1037,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                       categoryName: current.categoryName,
                       tagNames: current.tagNames,
                       folderId: current.folderId,
+                      lastOpenedAt: current.lastOpenedAt,
                     );
                   }
                 }

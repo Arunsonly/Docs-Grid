@@ -30,6 +30,11 @@ void main() {
               is_favorite INTEGER NOT NULL DEFAULT 0
             )
           ''');
+          await db.execute('CREATE TABLE document_summary_state (id INTEGER PRIMARY KEY, revision INTEGER NOT NULL)');
+          await db.insert('document_summary_state', {'id': 1, 'revision': 0});
+          await db.execute('CREATE TRIGGER documents_summary_after_insert AFTER INSERT ON documents BEGIN UPDATE document_summary_state SET revision = revision + 1 WHERE id = 1; END');
+          await db.execute('CREATE TRIGGER documents_summary_after_update AFTER UPDATE ON documents BEGIN UPDATE document_summary_state SET revision = revision + 1 WHERE id = 1; END');
+          await db.execute('CREATE TRIGGER documents_summary_after_delete AFTER DELETE ON documents BEGIN UPDATE document_summary_state SET revision = revision + 1 WHERE id = 1; END');
           await db.execute('CREATE TABLE categories (id TEXT PRIMARY KEY, name TEXT NOT NULL)');
           await db.execute('CREATE TABLE tags (id TEXT PRIMARY KEY, name TEXT NOT NULL)');
           await db.execute('CREATE TABLE document_tags (document_id TEXT, tag_id TEXT)');
