@@ -201,12 +201,87 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   }
 
   Future<void> _browsePhoneStorage() async {
+    final storage = StorageLocationService.instance;
     try {
-      final selected = await StorageLocationService.instance.chooseFolder();
+      // Reuse the persisted SAF / Files grant. Ask only on first use or after
+      // the user repairs a revoked permission.
+      final selected = await storage.selectedFolder() ?? await storage.chooseFolder();
       if (!mounted || selected == null) return;
-      await _showStorageDirectory(selected['uri']!, selected['name']!);
+      _message('Finding PDFs in ${selected['name']}…');
+      final files = await storage.listPdfFilesRecursively(selected['uri']!);
+      if (!mounted) return;
+      await _showRecursiveStoragePdfs(selected['name']!, files);
     } catch (error) {
-      if (mounted) _message('Could not access phone storage: $error');
+      if (mounted) _message('Could not index the selected folder. Check its storage permission and try again: $error');
+    }
+  }
+
+  Future<void> _showRecursiveStoragePdfs(
+    String rootName,
+    List<Map<String, Object?>> files,
+  ) async {
+    if (!mounted) return;
+    final grouped = <String, List<Map<String, Object?>>>{};
+    for (final file in files) {
+      grouped.putIfAbsent(file['folderPath'] as String, () => []).add(file);
+    }
+    final folders = grouped.keys.toList()..sort();
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text('PDFs in $rootName'),
+        content: SizedBox(
+          width: double.maxFinite,
+          height: 520,
+          child: files.isEmpty
+              ? const Center(child: Text('No PDFs found in the selected folder or its subfolders.'))
+              : ListView.builder(
+                  itemCount: folders.length,
+                  itemBuilder: (context, index) {
+                    final folderPath = folders[index];
+                    final entries = grouped[folderPath]!;
+                    final title = folderPath.isEmpty ? '$rootName (root)' : folderPath;
+                    return ExpansionTile(
+                      key: PageStorageKey('storage-pdf-folder:$folderPath'),
+                      leading: const Icon(Icons.folder_outlined),
+                      title: Text(title, maxLines: 2, overflow: TextOverflow.ellipsis),
+                      subtitle: Text('${entries.length} PDF${entries.length == 1 ? '' : 's'}'),
+                      initiallyExpanded: folderPath.isEmpty,
+                      children: [
+                        for (final entry in entries)
+                          ListTile(
+                            dense: true,
+                            leading: const Icon(Icons.picture_as_pdf_outlined),
+                            title: Text(entry['name'] as String,
+                                maxLines: 1, overflow: TextOverflow.ellipsis),
+                            onTap: () {
+                              Navigator.pop(dialogContext);
+                              _openExternalStoragePdf(
+                                entry['uri'] as String,
+                                entry['name'] as String,
+                              );
+                            },
+                          ),
+                      ],
+                    );
+                  },
+                ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _openExternalStoragePdf(String uri, String name) async {
+    try {
+      await StorageLocationService.instance.openPdf(uri);
+    } catch (error) {
+      if (mounted) _message('Could not open $name: $error');
     }
   }
 
