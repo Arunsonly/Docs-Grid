@@ -2,8 +2,8 @@
 
 Repository: `Arunsonly/Docs-Grid`  
 Review branch: `audit/10-core-functions`  
-Baseline: completed 10 Core Functions Audit  
-Status: **Eight engineering review lenses inspected; remediation committed for the high-risk source findings. **Source-audit sign-off: COMPLETE.** Full Android/iOS CI run 42508391092 passed on the committed source and resolved lockfile (56 tests, Android Debug APK, iOS unsigned build). A supplementary run 42509056268 is checking the stricter `--enforce-lockfile` workflow mode; it does not contain further source-code changes. Real-device/provider and measured-performance checks remain deferred to their later platform/performance tasks.**
+Baseline: Task 1 — 10 Core Functions Audit completed  
+Status: **Eight expert review lenses have been inspected. Source remediation and regression coverage are still in progress; Task 2 is NOT signed off.** The earlier CI run 42508391092 passed for its then-current commit, but it does not validate the latest remediation commits. A fresh Android/iOS CI run against the current branch head is required before counting these latest changes as verified. Real-device/provider, notification delivery and measured-performance checks remain deferred to their respective later tasks.
 
 ## Review lenses
 
@@ -109,4 +109,4 @@ Status: **Eight engineering review lenses inspected; remediation committed for t
 
 ## Sign-off rule
 
-This audit signs off the eight source-review lenses and their hosted automated regression gates. Platform/provider integration, migration fixtures, notification delivery and measured physical-device performance are explicitly not signed off here; they are tracked in the later numbered tasks. Hosted CI does not certify those device-only behaviours.
+Task 2 sign-off is withheld until the outstanding migration fixtures, concurrency/provider regression suites, notification failure-injection coverage, full import/move/restore flows, and a fresh passing Android/iOS CI run are completed. Physical SAF/Files provider behaviour, actual OS notification delivery and measured device performance remain explicit later-task checks; hosted CI alone does not certify them.
