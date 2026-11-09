@@ -59,6 +59,13 @@ void main() {
       throwsFormatException);
   });
 
+  test('rejects a table count that differs from its metadata file record count', () {
+    final value = validManifest();
+    (value['files'] as List).first['recordCount'] = 9;
+    expect(() => PortableSnapshotManifest.parse(jsonEncode(value)),
+      throwsFormatException);
+  });
+
   test('rejects a table without its matching JSON file', () {
     final value = validManifest();
     (value['files'] as List).removeLast();
