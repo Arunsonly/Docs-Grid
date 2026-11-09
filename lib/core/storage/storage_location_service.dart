@@ -206,6 +206,7 @@ class StorageLocationService {
     String rootUri, {
     int maxEntries = 50000,
     int maxDepth = 64,
+    bool includeEmptyFolders = false,
   }) async {
     final pending = <({String uri, String path, int depth})>[
       (uri: rootUri, path: '', depth: 0),
@@ -265,6 +266,7 @@ class StorageLocationService {
     final visited = <String>{};
     final entries = <Map<String, Object?>>[];
     final foldersWithPdfs = <String>{};
+    final allFolders = <String>{};
     var visitedEntries = 0;
     while (pending.isNotEmpty) {
       final current = pending.removeLast();
@@ -282,6 +284,7 @@ class StorageLocationService {
         final uri = child['uri'] as String;
         if (child['isDirectory'] == true) {
           final path = current.path.isEmpty ? name : '${current.path}/$name';
+          allFolders.add(path);
           pending.add((uri: uri, path: path, depth: current.depth + 1));
         } else if (name.toLowerCase().endsWith('.pdf')) {
           entries.add(<String, Object?>{
@@ -299,7 +302,8 @@ class StorageLocationService {
     }
     // Keep only folders on a path to at least one PDF. Root-level PDFs remain
     // visible without creating a synthetic empty-folder row.
-    entries.addAll(foldersWithPdfs.map((path) {
+    final visibleFolders = includeEmptyFolders ? allFolders : foldersWithPdfs;
+    entries.addAll(visibleFolders.map((path) {
       final segments = path.split('/');
       return <String, Object?>{
         'name': segments.last,

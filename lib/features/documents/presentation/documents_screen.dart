@@ -221,7 +221,9 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
       final selected = await storage.selectedFolder() ?? await storage.chooseFolder();
       if (!mounted || selected == null) return;
       _message('Finding PDFs in ${selected['name']}…');
-      final files = await storage.listStorageTreeRecursively(selected['uri']!);
+      final files = await storage.listStorageTreeRecursively(
+        selected['uri']!, includeEmptyFolders: true,
+      );
       if (!mounted) return;
       await _showRecursiveStoragePdfs(selected['name']!, files);
     } catch (error) {
