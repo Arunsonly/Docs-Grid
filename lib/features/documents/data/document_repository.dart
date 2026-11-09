@@ -515,12 +515,15 @@ class DocumentRepository {
     final rootUri = Platform.isAndroid
         ? portableLocations['documentsUri']
         : selected?['uri'];
-    if (rootUri == null) {
+    final folderRootUri = Platform.isAndroid
+        ? portableLocations['libraryUri']
+        : selected?['uri'];
+    if (rootUri == null || folderRootUri == null) {
       throw StateError('Choose a storage folder before starting migration.');
     }
     final db = await _database.database;
     final folderUris = <String, String>{};
-    final pendingFolders = <(String?, String)>[(null, rootUri)];
+    final pendingFolders = <(String?, String)>[(null, folderRootUri)];
     final visitedFolderIds = <String>{};
 
     // Walk the hierarchy iteratively so deeply nested user folders cannot
