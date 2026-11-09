@@ -16,7 +16,9 @@ void main() {
     if (await temp.exists()) await temp.delete(recursive: true);
   });
 
-  test('stages a large multi-chunk provider stream without changing bytes', () async {
+  test(
+    'stages a large multi-chunk provider stream without changing bytes',
+    () async {
     const chunkSize = 64 * 1024;
     const chunkCount = 384; // 24 MiB; deliberately larger than a small PDF.
     final chunks = List<Uint8List>.generate(chunkCount, (index) {
@@ -26,14 +28,20 @@ void main() {
       }
       return chunk;
     }, growable: false);
-    final expected = (await sha256.bind(Stream<List<int>>.fromIterable(chunks)).first).toString();
+    final expected =
+        (await sha256.bind(Stream<List<int>>.fromIterable(chunks)).first)
+            .toString();
     final target = File('${temp.path}/large-provider.pdf');
 
     await writeByteStreamToFile(Stream<List<int>>.fromIterable(chunks), target);
 
     expect(await target.length(), chunkSize * chunkCount);
-    expect((await sha256.bind(target.openRead()).first).toString(), expected);
-  });
+    expect(
+      (await sha256.bind(target.openRead()).first).toString(),
+      expected,
+    );
+    },
+  );
 
   test('removes a partial staging file when provider stream fails', () async {
     final target = File('${temp.path}/interrupted-provider.pdf');
