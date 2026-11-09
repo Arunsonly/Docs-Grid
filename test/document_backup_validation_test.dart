@@ -34,6 +34,7 @@ Future<File> _makeBackup(
   String? shaOverride,
   bool includeFileRecord = true,
   bool databaseOnly = false,
+  bool corruptMetadataChecksum = false,
 }) async {
   final bytes = pdfBytes ?? utf8.encode('%PDF-1.7\nDocsGrid test PDF');
   final archive = Archive();
@@ -44,7 +45,9 @@ Future<File> _makeBackup(
     metadataFiles.add({
       'entry': '${table.key}.json',
       'sizeBytes': json.length,
-      'sha256': sha256.convert(json).toString(),
+      'sha256': corruptMetadataChecksum
+          ? List.filled(64, '0').join()
+          : sha256.convert(json).toString(),
     });
   }
   if (!databaseOnly) {
@@ -110,6 +113,11 @@ void main() {
       expect(restored, isNull);
     },
   );
+
+  test('rejects metadata JSON whose manifest checksum does not match', () async {
+    final file = await _makeBackup(temp, corruptMetadataChecksum: true);
+    await expectLater(service.validateBackup(file), throwsA(isA<StateError>()));
+  });
 
   test('accepts database-only backup with document metadata and no PDF payload', () async {
     final file = await _makeBackup(temp, databaseOnly: true);
