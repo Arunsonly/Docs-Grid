@@ -320,10 +320,9 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
         },
       );
       if (restored != null && mounted) {
-        setState(
-          () => _message =
-              'Restore completed: $restored PDF file(s) restored and verified.',
-        );
+        setState(() => _message = restored == 0
+            ? 'Restore completed. No PDF payloads were included; recovered document records may need PDF relinking.'
+            : 'Restore completed: $restored PDF payload(s) restored and verified.');
       }
     } finally {
       if (temporaryCopy && await file.exists()) await file.delete();
@@ -378,8 +377,9 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
         },
       );
       if (restored != null && mounted) {
-        setState(() => _message =
-            'Portable recovery completed: $restored PDF(s) restored from a verified backup.');
+        setState(() => _message = restored == 0
+            ? 'Portable recovery completed. The archive had no PDF payloads; document records may need PDF relinking.'
+            : 'Portable recovery completed: $restored PDF(s) restored from a verified backup.');
       }
     } catch (error) {
       if (!mounted) rethrow;
