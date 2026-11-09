@@ -437,7 +437,7 @@ import CryptoKit
 
     private func savePdf(parent: URL, name: String, data: Data) throws -> URL {
         try validateLeafName(name)
-        try withAllBookmarkAccess {
+        return try withAllBookmarkAccess {
             let target = uniqueURL(parent: parent, requestedName: name)
             try data.write(to: target, options: .atomic)
             let saved = try Data(contentsOf: target)
@@ -466,7 +466,7 @@ import CryptoKit
 
     private func createDirectory(parent: URL, name: String) throws -> URL {
         try validateLeafName(name)
-        try withAllBookmarkAccess {
+        return try withAllBookmarkAccess {
             let target = parent.appendingPathComponent(name, isDirectory: true)
             guard !FileManager.default.fileExists(atPath: target.path) else {
                 throw storageError("A folder or file with this name already exists in the selected storage location.")
@@ -477,7 +477,8 @@ import CryptoKit
     }
 
     private func copyPdf(source: URL, parent: URL, name: String) throws -> URL {
-        try withAllBookmarkAccess {
+        try validateLeafName(name)
+        return try withAllBookmarkAccess {
             let target = uniqueURL(parent: parent, requestedName: name)
             try FileManager.default.copyItem(at: source, to: target)
             let originalHash = try sha256Pdf(url: source)
@@ -586,7 +587,7 @@ import CryptoKit
 
     private func renameItem(url: URL, name: String) throws -> URL {
         try validateLeafName(name)
-        try withAllBookmarkAccess {
+        return try withAllBookmarkAccess {
             let target = url.deletingLastPathComponent().appendingPathComponent(name)
             if target != url && FileManager.default.fileExists(atPath: target.path) {
                 throw storageError("A file or folder with this name already exists.")
