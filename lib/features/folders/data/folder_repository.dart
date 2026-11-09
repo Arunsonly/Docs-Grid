@@ -70,18 +70,22 @@ class FolderRepository {
   Future<List<FolderOption>> allFoldersWithPaths() async {
     final result = <FolderOption>[];
     final visited = <String>{};
-    Future<void> visit(String? parentId, String prefix) async {
-      final children = await childrenOf(parentId);
-      for (final folder in children) {
-        if (!visited.add(folder.id)) {
-          throw StateError('Folder hierarchy contains a cycle or duplicate reference.');
-        }
-        final path = prefix.isEmpty ? folder.name : '$prefix / ${folder.name}';
-        result.add(FolderOption(folder: folder, path: path));
-        await visit(folder.id, path);
+    final stack = <({Folder folder, String path})>[];
+    final roots = await childrenOf(null);
+    for (final folder in roots.reversed) {
+      stack.add((folder: folder, path: folder.name));
+    }
+    while (stack.isNotEmpty) {
+      final entry = stack.removeLast();
+      if (!visited.add(entry.folder.id)) {
+        throw StateError('Folder hierarchy contains a cycle or duplicate reference.');
+      }
+      result.add(FolderOption(folder: entry.folder, path: entry.path));
+      final children = await childrenOf(entry.folder.id);
+      for (final child in children.reversed) {
+        stack.add((folder: child, path: '${entry.path} / ${child.name}'));
       }
     }
-    await visit(null, '');
     return result;
   }
 
@@ -90,101 +94,90 @@ class FolderRepository {
   Future<String?> ensurePhysicalStorageUri(String folderId) async {
     final db = await _database.database;
     final selectedRoot = await StorageLocationService.instance.selectedFolder();
-    if (selectedRoot == null) return null;
-    final resolving = <String>{};
 
-    Future<String?> ensure(String id) async {
-      if (!resolving.add(id)) {
-        throw StateError('Folder hierarchy contains a cycle.');
-      }
+    final chain = <({String id, String name, String? parentId, String? uri})>[];
+    final visited = <String>{};
+    String? currentId = folderId;
+    while (currentId != null) {
+      if (!visited.add(currentId)) throw StateError('Folder hierarchy contains a cycle.');
       final rows = await db.query(
         'folders',
         columns: ['name', 'parent_id', 'storage_uri_or_relative_path'],
         where: 'id = ? AND deleted_at IS NULL',
-        whereArgs: [id],
+        whereArgs: [currentId],
         limit: 1,
       );
       if (rows.isEmpty) throw StateError('Folder no longer exists.');
       final row = rows.first;
-      final folderName = validateFolderName(row['name'] as String);
-      final currentUri = row['storage_uri_or_relative_path'] as String?;
-      if (currentUri != null) return currentUri;
-      final parentId = row['parent_id'] as String?;
-      final parentUri = parentId == null ? selectedRoot['uri'] : await ensure(parentId);
-      if (parentUri == null) return null;
-      String childUri;
-      try {
-        childUri = await StorageLocationService.instance.findChildUri(
-          parentUri: parentUri,
-          name: folderName,
-        );
-      } catch (_) {
-        childUri = await StorageLocationService.instance.createDirectory(
-          parentUri: parentUri,
-          name: folderName,
-        );
-      }
-      await db.update(
-        'folders',
-        {
-          'storage_uri_or_relative_path': childUri,
-          'updated_at': DateTime.now().toUtc().toIso8601String(),
-        },
-        where: 'id = ? AND deleted_at IS NULL',
-        whereArgs: [id],
-      );
-      return childUri;
+      chain.add((
+        id: currentId,
+        name: validateFolderName(row['name'] as String),
+        parentId: row['parent_id'] as String?,
+        uri: row['storage_uri_or_relative_path'] as String?,
+      ));
+      currentId = row['parent_id'] as String?;
     }
 
-    return ensure(folderId);
+    String? parentUri = selectedRoot?['uri'];
+    for (final folder in chain.reversed) {
+      var childUri = folder.uri;
+      if (childUri == null && parentUri != null) {
+        try {
+          childUri = await StorageLocationService.instance.findChildUri(
+            parentUri: parentUri,
+            name: folder.name,
+          );
+        } catch (error) {
+          if (!StorageLocationService.isNotFoundError(error)) rethrow;
+          childUri = await StorageLocationService.instance.createDirectory(
+            parentUri: parentUri,
+            name: folder.name,
+          );
+        }
+        await db.update(
+          'folders',
+          {
+            'storage_uri_or_relative_path': childUri,
+            'updated_at': DateTime.now().toUtc().toIso8601String(),
+          },
+          where: 'id = ? AND deleted_at IS NULL',
+          whereArgs: [folder.id],
+        );
+      }
+      if (childUri == null) return null;
+      parentUri = childUri;
+    }
+    return parentUri;
   }
 
   Future<Folder> create({required String name, String? parentId}) async {
     final cleaned = validateFolderName(name);
     final db = await _database.database;
     final storage = StorageLocationService.instance;
-    final selectedRoot = await storage.selectedFolder();
-    final resolvingParents = <String>{};
-    Future<String?> ensurePhysicalFolder(String folderId) async {
-      if (!resolvingParents.add(folderId)) {
-        throw StateError('Parent folder hierarchy contains a cycle.');
-      }
-      final rows = await db.query(
-        'folders',
-        columns: ['name', 'parent_id', 'storage_uri_or_relative_path'],
-        where: 'id = ? AND deleted_at IS NULL',
-        whereArgs: [folderId],
-        limit: 1,
+    if (parentId != null) {
+      final parent = await db.query(
+        'folders', columns: ['id'],
+        where: 'id = ? AND deleted_at IS NULL', whereArgs: [parentId], limit: 1,
       );
-      if (rows.isEmpty) throw StateError('Parent folder no longer exists.');
-      final row = rows.first;
-      final folderName = validateFolderName(row['name'] as String);
-      final existingUri = row['storage_uri_or_relative_path'] as String?;
-      if (existingUri != null) return existingUri;
-      final ancestorId = row['parent_id'] as String?;
-      final ancestorUri = ancestorId == null
-          ? (selectedRoot == null ? null : selectedRoot['uri'])
-          : await ensurePhysicalFolder(ancestorId);
-      if (ancestorUri == null) return null;
-      final createdUri = await storage.createDirectory(
-        parentUri: ancestorUri,
-        name: folderName,
-      );
-      await db.update(
-        'folders',
-        {
-          'storage_uri_or_relative_path': createdUri,
-          'updated_at': DateTime.now().toUtc().toIso8601String(),
-        },
-        where: 'id = ? AND deleted_at IS NULL',
-        whereArgs: [folderId],
-      );
-      return createdUri;
+      if (parent.isEmpty) throw StateError('Parent folder no longer exists.');
     }
-
-    final parentStorageUri = parentId == null
-        ? (selectedRoot == null ? null : selectedRoot['uri'])
-        : await ensurePhysicalFolder(parentId);
+    final existingBeforeCreate = await db.query(
+      'folders',
+      columns: ['id'],
+      where: 'parent_id IS ? AND name = ? COLLATE NOCASE AND deleted_at IS NULL',
+      whereArgs: [parentId, cleaned],
+      limit: 1,
+    );
+    if (existingBeforeCreate.isNotEmpty) {
+      throw StateError('A folder with this name already exists here.');
+    }
+    final selectedRoot = await storage.selectedFolder();
+    final String? selectedRootUri = selectedRoot == null
+        ? null
+        : selectedRoot['uri'];
+    final String? parentStorageUri = parentId == null
+        ? selectedRootUri
+        : await ensurePhysicalStorageUri(parentId);
     String? physicalUri;
     if (parentStorageUri != null) {
       physicalUri = await storage.createDirectory(parentUri: parentStorageUri, name: cleaned);
@@ -200,9 +193,13 @@ class FolderRepository {
     );
     try {
       await db.transaction((txn) async {
-        // Check sibling names inside the same write transaction as the insert.
-        // This closes the race where two callers both pass an earlier
-        // non-transactional check and create case-insensitive duplicates.
+        if (parentId != null) {
+          final parent = await txn.query(
+            'folders', columns: ['id'],
+            where: 'id = ? AND deleted_at IS NULL', whereArgs: [parentId], limit: 1,
+          );
+          if (parent.isEmpty) throw StateError('Parent folder no longer exists.');
+        }
         final duplicates = await txn.query(
           'folders',
           columns: ['id'],
@@ -236,7 +233,7 @@ class FolderRepository {
     final db = await _database.database;
     final rows = await db.query(
       'folders',
-      columns: ['name', 'storage_uri_or_relative_path'],
+      columns: ['name', 'parent_id', 'storage_uri_or_relative_path'],
       where: 'id = ? AND deleted_at IS NULL',
       whereArgs: [id],
       limit: 1,
@@ -259,7 +256,9 @@ class FolderRepository {
 
     try {
       if (renamedUri != null) {
-        Future<void> collectDescendants(String parentId, String parentUri) async {
+        final pendingFolders = <(String, String)>[(id, renamedUri)];
+        while (pendingFolders.isNotEmpty) {
+          final (parentId, parentUri) = pendingFolders.removeLast();
           if (!traversedFolders.add(parentId)) {
             throw StateError('Folder hierarchy contains a cycle.');
           }
@@ -277,7 +276,7 @@ class FolderRepository {
               name: childName,
             );
             folderUriUpdates[childId] = childUri;
-            await collectDescendants(childId, childUri);
+            pendingFolders.add((childId, childUri));
           }
           final docs = await db.query(
             'documents',
@@ -293,8 +292,6 @@ class FolderRepository {
             );
           }
         }
-
-        await collectDescendants(id, renamedUri);
       } else {
         // App-private folders have no provider URI. Rename the actual private
         // directory and update every descendant document reference atomically.
@@ -345,11 +342,11 @@ class FolderRepository {
           await newDirectory.parent.create(recursive: true);
           renamedPrivateDirectory = await oldDirectory.rename(newDirectory.path);
 
-          Future<void> collectPrivateDocuments(
-            String folderId,
-            Set<String> visited,
-          ) async {
-            if (!visited.add(folderId)) {
+          final pendingPrivateFolders = <String>[id];
+          final visitedPrivateFolders = <String>{};
+          while (pendingPrivateFolders.isNotEmpty) {
+            final folderId = pendingPrivateFolders.removeLast();
+            if (!visitedPrivateFolders.add(folderId)) {
               throw StateError('Folder hierarchy contains a cycle.');
             }
             final documents = await db.query(
@@ -378,16 +375,22 @@ class FolderRepository {
               where: 'parent_id = ? AND deleted_at IS NULL',
               whereArgs: [folderId],
             );
-            for (final child in children) {
-              await collectPrivateDocuments(child['id'] as String, visited);
-            }
+            pendingPrivateFolders.addAll(children.map((child) => child['id'] as String));
           }
-
-          await collectPrivateDocuments(id, <String>{});
         }
       }
 
       await db.transaction((txn) async {
+        final siblings = await txn.query(
+          'folders',
+          columns: ['id'],
+          where: 'parent_id IS ? AND name = ? COLLATE NOCASE AND deleted_at IS NULL AND id != ?',
+          whereArgs: [rows.first['parent_id'], cleaned, id],
+          limit: 1,
+        );
+        if (siblings.isNotEmpty) {
+          throw StateError('A folder with this name already exists here.');
+        }
         final now = DateTime.now().toUtc().toIso8601String();
         final count = await txn.update(
           'folders',
@@ -477,6 +480,20 @@ class FolderRepository {
     }
     final now = DateTime.now().toUtc().toIso8601String();
     await db.transaction((txn) async {
+      final current = await txn.query(
+        'folders', columns: ['id'],
+        where: 'id = ? AND deleted_at IS NULL', whereArgs: [id], limit: 1,
+      );
+      if (current.isEmpty) throw StateError('Folder no longer exists.');
+      final childFoldersNow = Sqflite.firstIntValue(await txn.rawQuery(
+        'SELECT COUNT(*) FROM folders WHERE parent_id = ? AND deleted_at IS NULL', [id],
+      )) ?? 0;
+      final documentsNow = Sqflite.firstIntValue(await txn.rawQuery(
+        'SELECT COUNT(*) FROM documents WHERE folder_id = ?', [id],
+      )) ?? 0;
+      if (childFoldersNow > 0 || documentsNow > 0) {
+        throw StateError('Folder is no longer empty. Move its contents before deleting it.');
+      }
       final count = await txn.update(
         'folders',
         {'deleted_at': now, 'updated_at': now},

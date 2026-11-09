@@ -120,6 +120,8 @@ class ReminderNotifications {
   }
 
   int _id(String id) => stableNotificationId(id);
+  static int stableSnoozeNotificationId(String id) => stableNotificationId('$id:snooze');
+  int _snoozeId(String id) => stableSnoozeNotificationId(id);
 
   /// Computes the next wall-clock occurrence without changing the stored
   /// original date. This keeps daily/weekly reminders alive after their first
@@ -189,6 +191,10 @@ class ReminderNotifications {
           ) != null) {
         activeIds.add(_id(row['id'] as String));
       }
+      final snoozedUntil = row['snoozed_until'] as String?;
+      if (snoozedUntil != null && DateTime.parse(snoozedUntil).isAfter(DateTime.now())) {
+        activeIds.add(_snoozeId(row['id'] as String));
+      }
     }
     final pending = await _plugin.pendingNotificationRequests();
     for (final request in pending) {
@@ -210,6 +216,21 @@ class ReminderNotifications {
           recurrence: row['recurrence_rule'] as String?,
           documentId: row['document_id'] as String?,
         );
+        final snoozedUntil = row['snoozed_until'] as String?;
+        if (snoozedUntil != null) {
+          final snoozeAt = DateTime.parse(snoozedUntil).toLocal();
+          if (snoozeAt.isAfter(DateTime.now())) {
+            await scheduleSnooze(
+              id: row['id'] as String,
+              title: row['title'] as String,
+              body: row['note'] as String?,
+              at: snoozeAt,
+              documentId: row['document_id'] as String?,
+            );
+          } else {
+            await _plugin.cancel(_snoozeId(row['id'] as String));
+          }
+        }
       } catch (_) {
         // Keep the database reminder even if the OS refuses this schedule.
       }
@@ -272,8 +293,47 @@ class ReminderNotifications {
     );
   }
 
+  Future<void> scheduleSnooze({
+    required String id,
+    required String title,
+    String? body,
+    required DateTime at,
+    String? documentId,
+  }) async {
+    await initialize();
+    if (!at.isAfter(DateTime.now())) {
+      await _plugin.cancel(_snoozeId(id));
+      return;
+    }
+    await _plugin.zonedSchedule(
+      _snoozeId(id),
+      title,
+      body,
+      tz.TZDateTime.from(at, tz.local),
+      const NotificationDetails(
+        android: AndroidNotificationDetails(
+          'docsgrid_reminders_v3',
+          'Document reminders',
+          channelDescription: 'Audible local reminders for your documents',
+          importance: Importance.max,
+          priority: Priority.high,
+          playSound: true,
+          enableVibration: true,
+        ),
+        iOS: DarwinNotificationDetails(
+          presentAlert: true,
+          presentBadge: true,
+          presentSound: true,
+        ),
+      ),
+      androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
+      payload: documentId,
+    );
+  }
+
   Future<void> cancel(String id) async {
     await initialize();
     await _plugin.cancel(_id(id));
+    await _plugin.cancel(_snoozeId(id));
   }
 }

@@ -25,11 +25,16 @@ class ActivityRecord {
     } catch (_) {
       details = <String, dynamic>{};
     }
+    final rawCreatedAt = row['created_at'];
+    final parsedCreatedAt = rawCreatedAt is String
+        ? DateTime.tryParse(rawCreatedAt)
+        : null;
+    final rawDocumentName = row['document_name'];
     return ActivityRecord(
       id: row['id'] as String,
-      action: row['action'] as String,
-      documentName: row['document_name'] as String?,
-      createdAt: DateTime.parse(row['created_at'] as String).toLocal(),
+      action: row['action'] is String ? row['action'] as String : 'unknown',
+      documentName: rawDocumentName is String ? rawDocumentName : null,
+      createdAt: (parsedCreatedAt ?? DateTime.fromMillisecondsSinceEpoch(0)).toLocal(),
       details: details,
     );
   }

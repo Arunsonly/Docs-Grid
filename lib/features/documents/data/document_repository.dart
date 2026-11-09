@@ -39,14 +39,16 @@ class DocumentRecord {
   final String? folderId;
 
   factory DocumentRecord.fromMap(Map<String, Object?> row) {
-    Map<String, dynamic> metadata;
+    Map<String, dynamic> metadata = <String, dynamic>{};
     try {
-      final decoded = jsonDecode((row['metadata_json'] as String?) ?? '{}');
-      metadata = decoded is Map<String, dynamic> ? decoded : <String, dynamic>{};
-    } on FormatException {
+      final rawMetadata = row['metadata_json'];
+      final decoded = rawMetadata is String && rawMetadata.isNotEmpty
+          ? jsonDecode(rawMetadata)
+          : <String, dynamic>{};
+      if (decoded is Map<String, dynamic>) metadata = decoded;
+    } catch (_) {
       // Damaged optional metadata must not make an otherwise valid PDF
       // unreadable. Non-critical flags safely fall back to their defaults.
-      metadata = <String, dynamic>{};
     }
     return DocumentRecord(
       id: row['id'] as String,
@@ -84,6 +86,8 @@ class ImportCategoryOption {
   final String id;
   final String name;
 }
+
+class _DuplicatePdfException implements Exception {}
 
 String escapeLikeWildcards(String value) {
   return value
@@ -275,6 +279,14 @@ class DocumentRepository {
 
     try {
       await db.transaction((txn) async {
+        if (folderId != null) {
+          final activeFolder = await txn.query(
+            'folders', columns: ['id'],
+            where: 'id = ? AND deleted_at IS NULL',
+            whereArgs: [folderId], limit: 1,
+          );
+          if (activeFolder.isEmpty) throw StateError('Destination folder no longer exists.');
+        }
         final count = await txn.update(
           'documents',
           {
@@ -366,7 +378,8 @@ class DocumentRepository {
         String childUri;
         try {
           childUri = await storage.findChildUri(parentUri: parentUri, name: name);
-        } catch (_) {
+        } catch (error) {
+          if (!StorageLocationService.isNotFoundError(error)) rethrow;
           childUri = await storage.createDirectory(parentUri: parentUri, name: name);
         }
         folderUris[id] = childUri;
@@ -420,11 +433,13 @@ class DocumentRepository {
           parentUri: parentUri,
           name: safePdfName,
         );
-        if (await storage.sha256Pdf(existingUri) == sourceDigest) {
-          destinationUri = existingUri;
+        final existingDigest = await storage.sha256Pdf(existingUri);
+        if (existingDigest != sourceDigest) {
+          throw StateError('A different PDF already exists at the migration destination. The original was kept.');
         }
-      } catch (_) {
-        // No verified matching file in the destination; create a new copy below.
+        destinationUri = existingUri;
+      } catch (error) {
+        if (!StorageLocationService.isNotFoundError(error)) rethrow;
       }
 
       if (destinationUri == null) {
@@ -707,6 +722,14 @@ class DocumentRepository {
     final now = DateTime.now().toUtc().toIso8601String();
     try {
       await db.transaction((txn) async {
+        final existingNow = await txn.query('documents', columns: ['id'],
+          where: 'sha256 = ? AND deleted_at IS NULL', whereArgs: [digest], limit: 1);
+        if (existingNow.isNotEmpty) throw _DuplicatePdfException();
+        if (targetFolderId != null) {
+          final activeFolder = await txn.query('folders', columns: ['id'],
+            where: 'id = ? AND deleted_at IS NULL', whereArgs: [targetFolderId], limit: 1);
+          if (activeFolder.isEmpty) throw StateError('Destination folder no longer exists.');
+        }
         await txn.insert('documents', {
           'id': id,
           'name': p.basenameWithoutExtension(safeName),
@@ -725,7 +748,7 @@ class DocumentRepository {
         });
         await _recordHistory(txn, id, sourceType == 'share' ? 'imported_from_share' : 'scanned', {'name': safeName, 'folder_id': targetFolderId});
       });
-    } catch (_) {
+    } catch (error) {
       try {
         if (uri.startsWith('content://') || uri.startsWith('file://')) {
           await storage.deletePdf(uri);
@@ -734,6 +757,9 @@ class DocumentRepository {
           if (await file.exists()) await file.delete();
         }
       } catch (_) {}
+      if (error is _DuplicatePdfException) {
+        return const ImportSummary(added: 0, duplicates: 1, failed: 0);
+      }
       rethrow;
     }
     return const ImportSummary(added: 1, duplicates: 0, failed: 0);
@@ -853,6 +879,19 @@ class DocumentRepository {
         final now = DateTime.now().toUtc().toIso8601String();
         final documentId = _uuid.v4();
         await db.transaction((txn) async {
+          final existingNow = await txn.query('documents', columns: ['id'],
+            where: 'sha256 = ? AND deleted_at IS NULL', whereArgs: [digest], limit: 1);
+          if (existingNow.isNotEmpty) throw _DuplicatePdfException();
+          if (targetFolderId != null) {
+            final activeFolder = await txn.query('folders', columns: ['id'],
+              where: 'id = ? AND deleted_at IS NULL', whereArgs: [targetFolderId], limit: 1);
+            if (activeFolder.isEmpty) throw StateError('Destination folder no longer exists.');
+          }
+          if (selectedCategoryId != null) {
+            final activeCategory = await txn.query('categories', columns: ['id'],
+              where: 'id = ?', whereArgs: [selectedCategoryId], limit: 1);
+            if (activeCategory.isEmpty) throw StateError('Selected category no longer exists.');
+          }
           await txn.insert('documents', {
             'id': documentId,
             'name': storedName,
@@ -873,7 +912,7 @@ class DocumentRepository {
           await _recordHistory(txn, documentId, 'imported', {'name': storedName});
         });
         added++;
-      } catch (_) {
+      } catch (error) {
         if (createdUri != null) {
           try {
             if (createdUri.startsWith('content://') || createdUri.startsWith('file://')) {
@@ -884,7 +923,11 @@ class DocumentRepository {
             }
           } catch (_) {}
         }
-        failed++;
+        if (error is _DuplicatePdfException) {
+          duplicates++;
+        } else {
+          failed++;
+        }
       } finally {
         if (stagedSource != null) {
           try {
@@ -920,7 +963,10 @@ class DocumentRepository {
     var cleaned = p.basename(name).replaceAll(RegExp(r'[<>:"/\\|?*]'), '_').trim();
     if (cleaned.isEmpty) cleaned = 'Document.pdf';
     if (!cleaned.toLowerCase().endsWith('.pdf')) cleaned = '$cleaned.pdf';
-    return cleaned;
+    final stem = p.basenameWithoutExtension(cleaned);
+    final boundedStem = String.fromCharCodes(stem.runes.take(120));
+    final safeStem = boundedStem.isEmpty ? 'Document' : boundedStem;
+    return '$safeStem.pdf';
   }
 
   Future<File> _uniqueFile(Directory directory, String name) async {
@@ -999,8 +1045,13 @@ class DocumentRepository {
         limit: 1,
       );
       if (rows.isEmpty) return;
-      final metadata = jsonDecode((rows.first['metadata_json'] as String?) ?? '{}')
-          as Map<String, dynamic>;
+      Map<String, dynamic> metadata = <String, dynamic>{};
+      try {
+        final decoded = jsonDecode((rows.first['metadata_json'] as String?) ?? '{}');
+        if (decoded is Map<String, dynamic>) metadata = decoded;
+      } catch (_) {
+        // A damaged optional metadata blob must not block a basic favorite toggle.
+      }
       metadata['favorite'] = favorite;
       final count = await txn.update(
         'documents',
@@ -1091,9 +1142,10 @@ class DocumentRepository {
   Future<void> rename(DocumentRecord document, String newName) async {
     final cleaned = newName.trim();
     if (cleaned.isEmpty) throw ArgumentError('Name cannot be empty.');
-    final safeBase = p.basenameWithoutExtension(cleaned)
+    final rawBase = p.basenameWithoutExtension(cleaned)
         .replaceAll(RegExp(r'[<>:"/\\|?*]'), '_')
         .trim();
+    final safeBase = String.fromCharCodes(rawBase.runes.take(120));
     if (safeBase.isEmpty) throw ArgumentError('Name is not valid.');
     final safeName = '$safeBase.pdf';
     if (safeBase == document.name) return;

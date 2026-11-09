@@ -6,13 +6,21 @@ import android.provider.OpenableColumns
 import android.database.Cursor
 import android.net.Uri
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.provider.DocumentsContract
 import java.security.MessageDigest
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
+import io.flutter.plugin.common.MethodCall
+import java.util.concurrent.Executors
+
+private class MissingStorageChildException(message: String) : IllegalStateException(message)
 
 class MainActivity : FlutterActivity() {
+    private val storageExecutor = Executors.newSingleThreadExecutor()
+    private val mainHandler = Handler(Looper.getMainLooper())
     private val channelName = "docsgrid/storage"
     private val requestChooseFolder = 4817
     private var pendingFolderResult: MethodChannel.Result? = null
@@ -44,148 +52,201 @@ class MainActivity : FlutterActivity() {
             }
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName)
             .setMethodCallHandler { call, result ->
-                try {
-                    when (call.method) {
-                        "chooseFolder" -> {
-                            if (pendingFolderResult != null) {
-                                result.error("BUSY", "Folder picker is already open.", null)
-                            } else {
-                                pendingFolderResult = result
-                                val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)
-                                intent.addFlags(
-                                    Intent.FLAG_GRANT_READ_URI_PERMISSION or
-                                        Intent.FLAG_GRANT_WRITE_URI_PERMISSION or
-                                        Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
-                                )
-                                startActivityForResult(intent, requestChooseFolder)
-                            }
-                        }
-                        "getPortableDataLocations" -> {
-                            val prefs = getSharedPreferences("docsgrid_storage", MODE_PRIVATE)
-                            val database = prefs.getString("database_uri", null)
-                                ?: throw IllegalStateException("DocsGrid Database folder is not configured. Re-select the library folder.")
-                            val recovery = prefs.getString("recovery_uri", null)
-                                ?: throw IllegalStateException("DocsGrid Recovery folder is not configured. Re-select the library folder.")
-                            val library = prefs.getString("folders_uri", null)
-                                ?: prefs.getString("my_files_uri", null)
-                                ?: throw IllegalStateException("DocsGrid Folders location is not configured. Re-select the library folder.")
-                            val documents = prefs.getString("documents_uri", null)
-                                ?: throw IllegalStateException("DocsGrid Documents location is not configured. Re-select the library folder.")
-                            result.success(mapOf("databaseUri" to database, "recoveryUri" to recovery, "libraryUri" to library, "documentsUri" to documents))
-                        }
-                        "getSelectedFolder" -> {
-                            val prefs = getSharedPreferences("docsgrid_storage", MODE_PRIVATE)
-                            val uri = prefs.getString("folders_uri", null) ?: prefs.getString("my_files_uri", null)
-                            result.success(uri?.let { mapOf("uri" to it, "name" to "DocsGrid/Folders") })
-                        }
-                        "consumeSharedPdfs" -> result.success(consumeSharedPdfs())
-                        "checkStorageAccess" -> result.success(checkStorageAccess())
-                        "savePdf" -> {
-                            val tree = Uri.parse(call.argument<String>("treeUri")!!)
-                            val name = call.argument<String>("name")!!
-                            val bytes = call.argument<ByteArray>("bytes")!!
-                            result.success(createPdf(tree, name, bytes).toString())
-                        }
-                        "createDirectory" -> {
-                            val parent = Uri.parse(call.argument<String>("parentUri")!!)
-                            val name = call.argument<String>("name")!!
-                            result.success(createDirectory(parent, name).toString())
-                        }
-                        "copyPdf" -> {
-                            val source = Uri.parse(call.argument<String>("sourceUri")!!)
-                            val parent = Uri.parse(call.argument<String>("parentUri")!!)
-                            val name = call.argument<String>("name")!!
-                            result.success(copyPdf(source, parent, name).toString())
-                        }
-                        "copyPdfToPath" -> {
-                            val source = Uri.parse(call.argument<String>("sourceUri")!!)
-                            val destinationPath = call.argument<String>("destinationPath")!!
-                            val destination = java.io.File(destinationPath)
-                            val parent = destination.parentFile
-                                ?: throw IllegalArgumentException("Destination folder is invalid.")
-                            if (!parent.exists() && !parent.mkdirs()) {
-                                throw IllegalStateException("Could not create the destination folder.")
-                            }
-                            if (destination.exists()) {
-                                throw IllegalStateException("The destination file already exists.")
-                            }
-                            val temporary = java.io.File(parent, ".docsgrid-copy-${java.util.UUID.randomUUID()}.tmp")
-                            try {
-                                val sourceDigest = digest(source)
-                                contentResolver.openInputStream(source)?.use { input ->
-                                    temporary.outputStream().buffered().use { output ->
-                                        input.copyTo(output, 64 * 1024)
-                                        output.flush()
-                                    }
-                                } ?: throw IllegalStateException("Could not read the source PDF.")
-                                if (!sourceDigest.contentEquals(digest(Uri.fromFile(temporary)))) {
-                                    throw IllegalStateException("The temporary PDF copy failed SHA-256 verification.")
-                                }
-                                if (destination.exists() || !temporary.renameTo(destination)) {
-                                    throw IllegalStateException("Could not safely publish the copied PDF.")
-                                }
-                            } finally {
-                                if (temporary.exists()) temporary.delete()
-                            }
-                            result.success(true)
-                        }
-                        "sha256Pdf" -> {
-                            val uri = Uri.parse(call.argument<String>("uri")!!)
-                            result.success(digest(uri).joinToString("") { "%02x".format(it) })
-                        }
-                        "writeTextFile" -> {
-                            val parent = Uri.parse(call.argument<String>("parentUri")!!)
-                            val name = call.argument<String>("name")!!
-                            val contents = call.argument<String>("contents")!!
-                            result.success(writeTextFile(parent, name, contents).toString())
-                        }
-                        "readTextFile" -> {
-                            val uri = Uri.parse(call.argument<String>("uri")!!)
-                            val bytes = contentResolver.openInputStream(uri)?.use { it.readBytes() }
-                                ?: throw IllegalStateException("Could not read metadata file.")
-                            result.success(String(bytes, Charsets.UTF_8))
-                        }
-                        "listDirectory" -> {
-                            val uri = Uri.parse(call.argument<String>("uri")!!)
-                            result.success(listDirectory(uri))
-                        }
-                        "readPdf" -> {
-                            val uri = Uri.parse(call.argument<String>("uri")!!)
-                            val bytes = contentResolver.openInputStream(uri)?.use { it.readBytes() }
-                                ?: throw IllegalStateException("Could not read the selected PDF.")
-                            result.success(bytes)
-                        }
-                        "findChildUri" -> {
-                            val parent = Uri.parse(call.argument<String>("parentUri")!!)
-                            val name = call.argument<String>("name")!!
-                            result.success(findChildUri(parent, name).toString())
-                        }
-                        "renamePdf" -> {
-                            val uri = Uri.parse(call.argument<String>("uri")!!)
-                            val name = call.argument<String>("name")!!
-                            val renamed = DocumentsContract.renameDocument(contentResolver, uri, name)
-                                ?: throw IllegalStateException("Android could not rename this PDF.")
-                            result.success(renamed.toString())
-                        }
-                        "deletePdf" -> {
-                            val uri = Uri.parse(call.argument<String>("uri")!!)
-                            result.success(DocumentsContract.deleteDocument(contentResolver, uri))
-                        }
-                        "openPdf" -> {
-                            val uri = Uri.parse(call.argument<String>("uri")!!)
-                            val intent = Intent(Intent.ACTION_VIEW).apply {
-                                setDataAndType(uri, "application/pdf")
-                                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                            }
-                            startActivity(Intent.createChooser(intent, "Open PDF"))
-                            result.success(true)
-                        }
-                        else -> result.notImplemented()
+                val mainThreadOnly = call.method == "chooseFolder" || call.method == "openPdf"
+                if (mainThreadOnly) {
+                    handleStorageCall(call, result)
+                } else if (call.method == "consumeSharedPdfs") {
+                    // Capture and clear the Activity intent on the main thread,
+                    // then copy provider data on the storage worker.
+                    val incomingIntent = intent
+                    setIntent(Intent())
+                    storageExecutor.execute {
+                        handleStorageCall(call, onMainThreadResult(result), incomingIntent)
                     }
-                } catch (error: Exception) {
-                    result.error("STORAGE_ERROR", error.message ?: "Storage operation failed.", null)
+                } else {
+                    storageExecutor.execute {
+                        handleStorageCall(call, onMainThreadResult(result))
+                    }
                 }
             }
+    }
+
+    private fun onMainThreadResult(result: MethodChannel.Result): MethodChannel.Result =
+        object : MethodChannel.Result {
+            override fun success(value: Any?) { mainHandler.post { result.success(value) } }
+            override fun error(errorCode: String, errorMessage: String?, errorDetails: Any?) {
+                mainHandler.post { result.error(errorCode, errorMessage, errorDetails) }
+            }
+            override fun notImplemented() { mainHandler.post { result.notImplemented() } }
+        }
+
+    private fun handleStorageCall(
+        call: MethodCall,
+        result: MethodChannel.Result,
+        incomingShareIntent: Intent? = null,
+    ) {
+                    try {
+                        when (call.method) {
+                            "chooseFolder" -> {
+                                if (pendingFolderResult != null) {
+                                    result.error("BUSY", "Folder picker is already open.", null)
+                                } else {
+                                    pendingFolderResult = result
+                                    val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)
+                                    intent.addFlags(
+                                        Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                                            Intent.FLAG_GRANT_WRITE_URI_PERMISSION or
+                                            Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
+                                    )
+                                    startActivityForResult(intent, requestChooseFolder)
+                                }
+                            }
+                            "getPortableDataLocations" -> {
+                                val prefs = getSharedPreferences("docsgrid_storage", MODE_PRIVATE)
+                                val database = prefs.getString("database_uri", null)
+                                    ?: throw IllegalStateException("DocsGrid Database folder is not configured. Re-select the library folder.")
+                                val recovery = prefs.getString("recovery_uri", null)
+                                    ?: throw IllegalStateException("DocsGrid Recovery folder is not configured. Re-select the library folder.")
+                                val library = prefs.getString("folders_uri", null)
+                                    ?: prefs.getString("my_files_uri", null)
+                                    ?: throw IllegalStateException("DocsGrid Folders location is not configured. Re-select the library folder.")
+                                val documents = prefs.getString("documents_uri", null)
+                                    ?: throw IllegalStateException("DocsGrid Documents location is not configured. Re-select the library folder.")
+                                result.success(mapOf("databaseUri" to database, "recoveryUri" to recovery, "libraryUri" to library, "documentsUri" to documents))
+                            }
+                            "getSelectedFolder" -> {
+                                val prefs = getSharedPreferences("docsgrid_storage", MODE_PRIVATE)
+                                val uri = prefs.getString("folders_uri", null) ?: prefs.getString("my_files_uri", null)
+                                result.success(uri?.let { mapOf("uri" to it, "name" to "DocsGrid/Folders") })
+                            }
+                            "consumeSharedPdfs" -> result.success(consumeSharedPdfs(incomingShareIntent))
+                            "checkStorageAccess" -> result.success(checkStorageAccess())
+                            "savePdf" -> {
+                                val tree = Uri.parse(call.argument<String>("treeUri")!!)
+                                val name = call.argument<String>("name")!!
+                                val bytes = call.argument<ByteArray>("bytes")!!
+                                result.success(createPdf(tree, name, bytes).toString())
+                            }
+                            "createDirectory" -> {
+                                val parent = Uri.parse(call.argument<String>("parentUri")!!)
+                                val name = call.argument<String>("name")!!
+                                result.success(createDirectory(parent, name).toString())
+                            }
+                            "copyPdf" -> {
+                                val source = Uri.parse(call.argument<String>("sourceUri")!!)
+                                val parent = Uri.parse(call.argument<String>("parentUri")!!)
+                                val name = call.argument<String>("name")!!
+                                result.success(copyPdf(source, parent, name).toString())
+                            }
+                            "copyPdfToPath" -> {
+                                val source = Uri.parse(call.argument<String>("sourceUri")!!)
+                                val destinationPath = call.argument<String>("destinationPath")!!
+                                val destination = java.io.File(destinationPath)
+                                val parent = destination.parentFile
+                                    ?: throw IllegalArgumentException("Destination folder is invalid.")
+                                if (!parent.exists() && !parent.mkdirs()) {
+                                    throw IllegalStateException("Could not create the destination folder.")
+                                }
+                                if (destination.exists()) {
+                                    throw IllegalStateException("The destination file already exists.")
+                                }
+                                val temporary = java.io.File(parent, ".docsgrid-copy-${java.util.UUID.randomUUID()}.tmp")
+                                try {
+                                    val sourceDigest = digest(source)
+                                    contentResolver.openInputStream(source)?.use { input ->
+                                        temporary.outputStream().buffered().use { output ->
+                                            input.copyTo(output, 64 * 1024)
+                                            output.flush()
+                                        }
+                                    } ?: throw IllegalStateException("Could not read the source PDF.")
+                                    if (!sourceDigest.contentEquals(digest(Uri.fromFile(temporary)))) {
+                                        throw IllegalStateException("The temporary PDF copy failed SHA-256 verification.")
+                                    }
+                                    if (destination.exists() || !temporary.renameTo(destination)) {
+                                        throw IllegalStateException("Could not safely publish the copied PDF.")
+                                    }
+                                } finally {
+                                    if (temporary.exists()) temporary.delete()
+                                }
+                                result.success(true)
+                            }
+                            "sha256Pdf" -> {
+                                val uri = Uri.parse(call.argument<String>("uri")!!)
+                                result.success(digest(uri).joinToString("") { "%02x".format(it) })
+                            }
+                            "writeTextFile" -> {
+                                val parent = Uri.parse(call.argument<String>("parentUri")!!)
+                                val name = call.argument<String>("name")!!
+                                val contents = call.argument<String>("contents")!!
+                                result.success(writeTextFile(parent, name, contents).toString())
+                            }
+                            "readTextFile" -> {
+                                val uri = Uri.parse(call.argument<String>("uri")!!)
+                                val bytes = contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                                    ?: throw IllegalStateException("Could not read metadata file.")
+                                result.success(String(bytes, Charsets.UTF_8))
+                            }
+                            "listDirectory" -> {
+                                val uri = Uri.parse(call.argument<String>("uri")!!)
+                                result.success(listDirectory(uri))
+                            }
+                            "readPdf" -> {
+                                val uri = Uri.parse(call.argument<String>("uri")!!)
+                                val bytes = contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                                    ?: throw IllegalStateException("Could not read the selected PDF.")
+                                result.success(bytes)
+                            }
+                            "findChildUri" -> {
+                                val parent = Uri.parse(call.argument<String>("parentUri")!!)
+                                val name = call.argument<String>("name")!!
+                                result.success(findChildUri(parent, name).toString())
+                            }
+                            "renamePdf" -> {
+                                val uri = Uri.parse(call.argument<String>("uri")!!)
+                                val name = call.argument<String>("name")!!
+                                val renamed = DocumentsContract.renameDocument(contentResolver, uri, name)
+                                    ?: throw IllegalStateException("Android could not rename this PDF.")
+                                result.success(renamed.toString())
+                            }
+                            "deletePdf" -> {
+                                val uri = Uri.parse(call.argument<String>("uri")!!)
+                                val documentUri = resolveParentUri(uri)
+                            val metadata = contentResolver.query(
+                                documentUri, arrayOf(DocumentsContract.Document.COLUMN_MIME_TYPE),
+                                null, null, null
+                            ) ?: throw IllegalStateException("Could not inspect the selected storage item.")
+                            val mime = metadata.use { if (it.moveToFirst()) it.getString(0) else null }
+                            if (mime == DocumentsContract.Document.MIME_TYPE_DIR) {
+                                val documentId = DocumentsContract.getDocumentId(documentUri)
+                                val children = DocumentsContract.buildChildDocumentsUriUsingTree(uri, documentId)
+                                val cursor = contentResolver.query(
+                                    children, arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID),
+                                    null, null, null
+                                ) ?: throw IllegalStateException("Could not verify whether the folder is empty.")
+                                cursor.use {
+                                    if (it.moveToFirst()) {
+                                        throw IllegalStateException("Folder contains files or subfolders and cannot be deleted.")
+                                    }
+                                }
+                            }
+                            result.success(DocumentsContract.deleteDocument(contentResolver, uri))
+                            }
+                            "openPdf" -> {
+                                val uri = Uri.parse(call.argument<String>("uri")!!)
+                                val intent = Intent(Intent.ACTION_VIEW).apply {
+                                    setDataAndType(uri, "application/pdf")
+                                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                }
+                                startActivity(Intent.createChooser(intent, "Open PDF"))
+                                result.success(true)
+                            }
+                            else -> result.notImplemented()
+                        }
+                    } catch (error: MissingStorageChildException) {
+                        result.error("NOT_FOUND", error.message ?: "The requested child does not exist.", null)
+                    } catch (error: Exception) {
+                        result.error("STORAGE_ERROR", error.message ?: "Storage operation failed.", null)
+                    }
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -193,8 +254,13 @@ class MainActivity : FlutterActivity() {
         setIntent(intent)
     }
 
-    private fun consumeSharedPdfs(): List<Map<String, String>> {
-        val incoming = intent ?: return emptyList()
+    override fun onDestroy() {
+        storageExecutor.shutdown()
+        super.onDestroy()
+    }
+
+    private fun consumeSharedPdfs(incomingIntent: Intent? = intent): List<Map<String, String>> {
+        val incoming = incomingIntent ?: return emptyList()
         val uris = linkedSetOf<Uri>()
         if (incoming.action == Intent.ACTION_SEND) {
             val single = if (android.os.Build.VERSION.SDK_INT >= 33) {
@@ -242,7 +308,6 @@ class MainActivity : FlutterActivity() {
                 else target.delete()
             } catch (_: Exception) { }
         }
-        setIntent(Intent())
         return output
     }
 
@@ -291,12 +356,18 @@ class MainActivity : FlutterActivity() {
     private fun ensureDirectory(parentUri: Uri, name: String): Uri {
         return try {
             findChildUri(parentUri, name)
-        } catch (_: Exception) {
+        } catch (_: MissingStorageChildException) {
             createDirectory(parentUri, name)
         }
     }
 
     private fun createDirectory(parentUri: Uri, name: String): Uri {
+        try {
+            findChildUri(parentUri, name)
+            throw IllegalStateException("A folder with this name already exists in the selected storage location.")
+        } catch (_: MissingStorageChildException) {
+            // Only an explicit missing-child result permits creation.
+        }
         return DocumentsContract.createDocument(
             contentResolver, resolveParentUri(parentUri),
             DocumentsContract.Document.MIME_TYPE_DIR, name
@@ -307,20 +378,24 @@ class MainActivity : FlutterActivity() {
         val parent = resolveParentUri(parentUri)
         val parentId = DocumentsContract.getDocumentId(parent)
         val children = DocumentsContract.buildChildDocumentsUriUsingTree(parentUri, parentId)
-        contentResolver.query(
+        val cursor = contentResolver.query(
             children,
             arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID, DocumentsContract.Document.COLUMN_DISPLAY_NAME),
             null, null, null
-        )?.use { cursor ->
-            val idIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
-            val nameIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
-            while (cursor.moveToNext()) {
-                if (idIndex >= 0 && nameIndex >= 0 && cursor.getString(nameIndex) == name) {
-                    return DocumentsContract.buildDocumentUriUsingTree(parentUri, cursor.getString(idIndex))
+        ) ?: throw IllegalStateException("The storage provider could not list this folder.")
+        cursor.use {
+            val idIndex = it.getColumnIndex(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
+            val nameIndex = it.getColumnIndex(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+            if (idIndex < 0 || nameIndex < 0) {
+                throw IllegalStateException("The storage provider returned incomplete folder metadata.")
+            }
+            while (it.moveToNext()) {
+                if (it.getString(nameIndex) == name) {
+                    return DocumentsContract.buildDocumentUriUsingTree(parentUri, it.getString(idIndex))
                 }
             }
         }
-        throw IllegalStateException("Could not find '$name' inside the selected folder.")
+        throw MissingStorageChildException("Could not find '$name' inside the selected folder.")
     }
 
     private fun listDirectory(directoryUri: Uri): List<Map<String, Any>> {

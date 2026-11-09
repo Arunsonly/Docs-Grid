@@ -15,4 +15,18 @@ void main() {
     expect(record.documentName, 'Policy');
     expect(record.details, isEmpty);
   });
+  test('Activity record remains readable when timestamp and name metadata are malformed', () {
+    final record = ActivityRecord.fromMap({
+      'id': 'history-2',
+      'action': 'category_created',
+      'document_name': 42,
+      'created_at': 'not-a-date',
+      'details_json': '{"name":"Insurance"}',
+    });
+
+    expect(record.action, 'category_created');
+    expect(record.documentName, isNull);
+    expect(record.details['name'], 'Insurance');
+    expect(record.createdAt, DateTime.fromMillisecondsSinceEpoch(0).toLocal());
+  });
 }

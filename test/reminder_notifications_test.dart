@@ -2,6 +2,14 @@ import 'package:docs_grid/features/reminders/data/reminder_notifications.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('snooze IDs are stable and independent from recurring reminder IDs', () {
+    final reminderId = 'reminder-123';
+    final baseId = ReminderNotifications.stableNotificationId(reminderId);
+    final snoozeId = ReminderNotifications.stableSnoozeNotificationId(reminderId);
+    expect(snoozeId, isNot(baseId));
+    expect(snoozeId, ReminderNotifications.stableSnoozeNotificationId(reminderId));
+  });
+
   group('ReminderNotifications.nextScheduledOccurrence', () {
     test('keeps a future one-time reminder unchanged', () {
       final at = DateTime(2026, 12, 10, 9);

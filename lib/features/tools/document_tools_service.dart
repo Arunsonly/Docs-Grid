@@ -64,14 +64,7 @@ class DocumentToolsService {
   /// Finds exact file duplicates and OCR-text duplicates locally.
   Future<List<Map<String, Object?>>> findDuplicateGroups() async {
     final db = await _database.database;
-    final exact = await db.rawQuery('''
-      SELECT sha256 AS group_key, 'SHA-256' AS duplicate_type,
-             COUNT(*) AS copies, GROUP_CONCAT(id) AS document_ids,
-             GROUP_CONCAT(name, ' | ') AS names
-      FROM documents
-      WHERE deleted_at IS NULL AND sha256 IS NOT NULL AND sha256 <> ''
-      GROUP BY sha256 HAVING COUNT(*) > 1
-    ''');
+    final exact = await _verifiedExactDuplicateGroups();
     final indexed = await db.rawQuery('''
       SELECT d.id, d.name, i.extracted_text
       FROM documents d JOIN document_text_index i ON i.document_id = d.id
@@ -100,17 +93,51 @@ class DocumentToolsService {
     return groups;
   }
 
-  Future<List<Map<String, Object?>>> findExactDuplicates() async {
+  Future<List<Map<String, Object?>>> _verifiedExactDuplicateGroups() async {
     final db = await _database.database;
-    return db.rawQuery('''
-      SELECT sha256, COUNT(*) AS copies, GROUP_CONCAT(id) AS document_ids,
-             GROUP_CONCAT(name, ' | ') AS names
-      FROM documents
-      WHERE deleted_at IS NULL AND sha256 IS NOT NULL AND sha256 <> ''
-      GROUP BY sha256 HAVING COUNT(*) > 1
-      ORDER BY copies DESC
-    ''');
+    final documents = await db.query(
+      'documents',
+      columns: ['id', 'name', 'storage_uri', 'sha256'],
+      where: 'deleted_at IS NULL',
+      orderBy: 'created_at ASC',
+    );
+    final groups = <String, List<Map<String, Object?>>>{};
+    for (final document in documents) {
+      final uri = document['storage_uri'] as String?;
+      if (uri == null || uri.isEmpty) continue;
+      try {
+        final digest = uri.startsWith('content://') || uri.startsWith('file://')
+            ? await StorageLocationService.instance.sha256Pdf(uri)
+            : (await sha256.bind(File(uri).openRead()).first).toString();
+        if (digest != document['sha256']) {
+          await db.update(
+            'documents',
+            {'sha256': digest, 'updated_at': DateTime.now().toUtc().toIso8601String()},
+            where: 'id = ? AND deleted_at IS NULL',
+            whereArgs: [document['id']],
+          );
+        }
+        groups.putIfAbsent(digest, () => []).add(document);
+      } catch (_) {
+        // Missing or inaccessible PDFs are not treated as verified duplicates.
+      }
+    }
+    return groups.entries
+        .where((entry) => entry.value.length > 1)
+        .map((entry) => <String, Object?>{
+          'group_key': entry.key,
+          'duplicate_type': 'SHA-256',
+          'copies': entry.value.length,
+          'document_ids': entry.value.map((row) => row['id']).join(','),
+          'names': entry.value.map((row) => row['name']).join(' | '),
+          'sha256': entry.key,
+        })
+        .toList()
+      ..sort((a, b) => (b['copies'] as int).compareTo(a['copies'] as int));
   }
+
+  Future<List<Map<String, Object?>>> findExactDuplicates() async =>
+      _verifiedExactDuplicateGroups();
 
   Future<void> keepOneDuplicate(String sha, String keepId) async {
     final db = await _database.database;
@@ -272,20 +299,24 @@ class DocumentToolsService {
              instr(lower(i.extracted_text), lower(?)) AS match_position
       FROM document_text_index i
       JOIN documents d ON d.id = i.document_id
-      WHERE d.deleted_at IS NULL AND lower(i.extracted_text) LIKE lower(?)
+      WHERE d.deleted_at IS NULL
+        AND instr(lower(i.extracted_text), lower(?)) > 0
       ORDER BY match_position ASC, d.name COLLATE NOCASE
-    ''', [q, '%$q%']);
+    ''', [q, q]);
+    // sqflite may return immutable QueryRow instances. Copy each result before
+    // enriching it with the resolved OCR page number.
+    final results = rows.map((row) => Map<String, Object?>.from(row)).toList();
     // OCR stores an explicit page marker before every page. Resolve the page
     // containing the first match so search results are actionable, not just a
     // generic "text found" indication.
-    for (final row in rows) {
+    for (final row in results) {
       final text = row['extracted_text']?.toString() ?? '';
       final position = (row['match_position'] as int? ?? 1) - 1;
       final prefix = text.substring(0, position.clamp(0, text.length));
       final markers = RegExp(r'--- Page (\d+) ---').allMatches(prefix).toList();
       row['match_page'] = markers.isEmpty ? 1 : int.parse(markers.last.group(1)!);
     }
-    return rows;
+    return results;
   }
 
   Future<File?> scanToPdf({
@@ -739,23 +770,63 @@ class DocumentToolsService {
           queueInsert('folders', copy);
           if (pending >= 500) await flushBatch();
         }
+        // Additive restore maps categories/tags by case-insensitive name.
+        // Never silently ignore a conflicting ID and leave document references
+        // pointing at a different or missing category/tag.
+        final existingCategories = await txn.query('categories', columns: ['id', 'name']);
+        final existingTags = await txn.query('tags', columns: ['id', 'name']);
+        final categoryIdMap = <String, String>{};
+        final tagIdMap = <String, String>{};
+        final existingCategoryIds = existingCategories.map((row) => row['id'] as String).toSet();
+        final existingTagIds = existingTags.map((row) => row['id'] as String).toSet();
         for (final row in rowsByTable['categories']!) {
-          queueInsert('categories', row, conflictAlgorithm: ConflictAlgorithm.ignore);
+          final oldId = row['id'] as String;
+          final name = row['name'] as String;
+          final sameName = existingCategories.where((item) =>
+            (item['name'] as String).toLowerCase() == name.toLowerCase());
+          final mappedId = sameName.isNotEmpty
+              ? sameName.first['id'] as String
+              : (existingCategoryIds.contains(oldId) ? _uuid.v4() : oldId);
+          categoryIdMap[oldId] = mappedId;
+          if (!existingCategoryIds.contains(mappedId)) {
+            queueInsert('categories', {...row, 'id': mappedId});
+            existingCategoryIds.add(mappedId);
+          }
           if (pending >= 500) await flushBatch();
         }
         for (final row in rowsByTable['tags']!) {
-          queueInsert('tags', row);
+          final oldId = row['id'] as String;
+          final name = row['name'] as String;
+          final sameName = existingTags.where((item) =>
+            (item['name'] as String).toLowerCase() == name.toLowerCase());
+          final mappedId = sameName.isNotEmpty
+              ? sameName.first['id'] as String
+              : (existingTagIds.contains(oldId) ? _uuid.v4() : oldId);
+          tagIdMap[oldId] = mappedId;
+          if (!existingTagIds.contains(mappedId)) {
+            queueInsert('tags', {...row, 'id': mappedId});
+            existingTagIds.add(mappedId);
+          }
           if (pending >= 500) await flushBatch();
         }
         for (final row in rowsByTable['documents']!) {
           final copy = Map<String, Object?>.from(row);
+          final oldCategoryId = row['category_id'] as String?;
+          copy['category_id'] = oldCategoryId == null ? null : categoryIdMap[oldCategoryId];
           final restored = restoredPaths[row['id']];
           if (restored == null) throw StateError('Backup is missing PDF bytes for "${row['name']}".');
           copy['storage_uri'] = restored;
           queueInsert('documents', copy);
           if (pending >= 500) await flushBatch();
         }
-        for (final table in ['document_tags', 'reminders', 'history', 'document_text_index']) {
+        for (final row in rowsByTable['document_tags']!) {
+          final oldTagId = row['tag_id'] as String;
+          final mappedTagId = tagIdMap[oldTagId];
+          if (mappedTagId == null) throw StateError('Backup contains an unknown tag reference.');
+          queueInsert('document_tags', {...row, 'tag_id': mappedTagId});
+          if (pending >= 500) await flushBatch();
+        }
+        for (final table in ['reminders', 'history', 'document_text_index']) {
           for (final row in rowsByTable[table]!) {
             queueInsert(table, row);
             if (pending >= 500) await flushBatch();

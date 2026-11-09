@@ -86,19 +86,14 @@ class ReminderRepository {
           now: now,
           recurrence: recurrence,
         );
-        if (next != null && !next.isAtSameMomentAs(storedAt)) {
+        if (next != null) {
           final nextUtc = next.toUtc().toIso8601String();
           await db.update(
             'reminders',
-            {
-              'remind_at_utc': nextUtc,
-              'next_fire_at_utc': nextUtc,
-              'updated_at': DateTime.now().toUtc().toIso8601String(),
-            },
+            {'next_fire_at_utc': nextUtc, 'updated_at': DateTime.now().toUtc().toIso8601String()},
             where: 'id = ?',
             whereArgs: [row['id']],
           );
-          copy['remind_at_utc'] = nextUtc;
           copy['next_fire_at_utc'] = nextUtc;
         }
       }
@@ -205,6 +200,7 @@ class ReminderRepository {
       'next_fire_at_utc': when,
       'recurrence_rule': recurrenceRule,
       'status': 'scheduled',
+      'snoozed_until': null,
       'completed_at': null,
       'updated_at': DateTime.now().toUtc().toIso8601String(),
     }, where: 'id = ?', whereArgs: [id]);
@@ -225,7 +221,6 @@ class ReminderRepository {
     final when = DateTime.now().add(duration);
     final db = await _database.database;
     await db.update('reminders', {
-      'remind_at_utc': when.toUtc().toIso8601String(),
       'next_fire_at_utc': when.toUtc().toIso8601String(),
       'status': 'scheduled',
       'enabled': 1,
@@ -233,7 +228,7 @@ class ReminderRepository {
       'updated_at': DateTime.now().toUtc().toIso8601String(),
     }, where: 'id = ?', whereArgs: [reminder.id]);
     try {
-      await ReminderNotifications.instance.schedule(
+      await ReminderNotifications.instance.scheduleSnooze(
         id: reminder.id, title: reminder.title, body: reminder.note, at: when,
         documentId: reminder.documentId,
       );
@@ -260,11 +255,7 @@ class ReminderRepository {
     }, where: 'id = ?', whereArgs: [reminder.id]);
     try {
       if (enabled) {
-        await ReminderNotifications.instance.schedule(
-          id: reminder.id, title: reminder.title, body: reminder.note,
-          at: reminder.remindAt, recurrence: reminder.recurrenceRule,
-          documentId: reminder.documentId,
-        );
+        await rescheduleEnabled();
       } else {
         await ReminderNotifications.instance.cancel(reminder.id);
       }

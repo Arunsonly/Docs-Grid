@@ -26,10 +26,10 @@ jobs:
           java-version: '17'
       - uses: subosito/flutter-action@v2
         with:
-          channel: stable
+          flutter-version: '3.47.9'
           cache: true
       - name: Generate native platform scaffolding
-        run: flutter create --platforms=android,ios --org com.docsgrid .
+        run: flutter create --no-pub --platforms=android,ios --org com.docsgrid .
       - name: Configure verified Kotlin compiler mirror
         if: runner.os == 'Linux'
         run: |
@@ -269,10 +269,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: subosito/flutter-action@v2
         with:
-          channel: stable
+          flutter-version: '3.47.9'
           cache: true
       - name: Generate native platform scaffolding
-        run: flutter create --platforms=android,ios --org com.docsgrid .
+        run: flutter create --no-pub --platforms=android,ios --org com.docsgrid .
       - name: Configure iOS camera and photo usage descriptions
         run: |
           python3 - <<'PY'
@@ -306,8 +306,35 @@ jobs:
         run: cp platform/ios/AppDelegate.swift ios/Runner/AppDelegate.swift
       - name: Set iOS deployment target for on-device ML Kit
         run: |
-          sed -i '' -E 's/IPHONEOS_DEPLOYMENT_TARGET = [0-9.]+;/IPHONEOS_DEPLOYMENT_TARGET = 15.5;/g' ios/Runner.xcodeproj/project.pbxproj
-          sed -i '' -E "s/platform :ios, '[0-9.]+'/platform :ios, '15.5'/" ios/Podfile
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          project = Path('ios/Runner.xcodeproj/project.pbxproj')
+          if not project.exists():
+              raise SystemExit('Generated iOS Xcode project is missing')
+          content = project.read_text()
+          content, count = re.subn(
+              r'IPHONEOS_DEPLOYMENT_TARGET = [0-9.]+;',
+              'IPHONEOS_DEPLOYMENT_TARGET = 15.5;',
+              content,
+          )
+          if count == 0:
+              raise SystemExit('Could not set iOS deployment target in Xcode project')
+          project.write_text(content)
+          podfile = Path('ios/Podfile')
+          if podfile.exists():
+              content = podfile.read_text()
+              content, count = re.subn(
+                  r"platform :ios, '[0-9.]+'",
+                  "platform :ios, '15.5'",
+                  content,
+                  count=1,
+              )
+              if count:
+                  podfile.write_text(content)
+          else:
+              print('No CocoaPods Podfile generated; Flutter plugin tooling will manage iOS dependencies.')
+          PY
       - name: Install packages
         run: flutter pub get
       - name: Generate DocsGrid launcher icons
