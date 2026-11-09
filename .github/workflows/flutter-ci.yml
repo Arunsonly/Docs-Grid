@@ -26,7 +26,7 @@ jobs:
           java-version: '17'
       - uses: subosito/flutter-action@v2
         with:
-          channel: stable
+          flutter-version: '3.47.9'
           cache: true
       - name: Generate native platform scaffolding
         run: flutter create --platforms=android,ios --org com.docsgrid .
@@ -227,7 +227,7 @@ jobs:
           mkdir -p android/app/src/main/kotlin/com/docsgrid/docs_grid
           cp platform/android/MainActivity.kt android/app/src/main/kotlin/com/docsgrid/docs_grid/MainActivity.kt
       - name: Install packages
-        run: flutter pub get
+        run: flutter pub get --enforce-lockfile
       - name: Generate DocsGrid launcher icons
         run: |
           sudo apt-get update
