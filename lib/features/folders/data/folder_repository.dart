@@ -30,8 +30,11 @@ class FolderRepository {
       throw ArgumentError('Folder name cannot be . or ..');
     }
     if (cleaned.contains('/') || cleaned.contains('\\') ||
-        cleaned.contains(String.fromCharCode(0))) {
+        cleaned.runes.any((rune) => rune < 32 || rune == 127)) {
       throw ArgumentError('Folder name contains an invalid character.');
+    }
+    if (cleaned.length > 255) {
+      throw ArgumentError('Folder name cannot exceed 255 characters.');
     }
     return cleaned;
   }
