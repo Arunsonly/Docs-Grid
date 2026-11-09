@@ -769,23 +769,63 @@ class DocumentToolsService {
           queueInsert('folders', copy);
           if (pending >= 500) await flushBatch();
         }
+        // Additive restore maps categories/tags by case-insensitive name.
+        // Never silently ignore a conflicting ID and leave document references
+        // pointing at a different or missing category/tag.
+        final existingCategories = await txn.query('categories', columns: ['id', 'name']);
+        final existingTags = await txn.query('tags', columns: ['id', 'name']);
+        final categoryIdMap = <String, String>{};
+        final tagIdMap = <String, String>{};
+        final existingCategoryIds = existingCategories.map((row) => row['id'] as String).toSet();
+        final existingTagIds = existingTags.map((row) => row['id'] as String).toSet();
         for (final row in rowsByTable['categories']!) {
-          queueInsert('categories', row, conflictAlgorithm: ConflictAlgorithm.ignore);
+          final oldId = row['id'] as String;
+          final name = row['name'] as String;
+          final sameName = existingCategories.where((item) =>
+            (item['name'] as String).toLowerCase() == name.toLowerCase());
+          final mappedId = sameName.isNotEmpty
+              ? sameName.first['id'] as String
+              : (existingCategoryIds.contains(oldId) ? _uuid.v4() : oldId);
+          categoryIdMap[oldId] = mappedId;
+          if (!existingCategoryIds.contains(mappedId)) {
+            queueInsert('categories', {...row, 'id': mappedId});
+            existingCategoryIds.add(mappedId);
+          }
           if (pending >= 500) await flushBatch();
         }
         for (final row in rowsByTable['tags']!) {
-          queueInsert('tags', row);
+          final oldId = row['id'] as String;
+          final name = row['name'] as String;
+          final sameName = existingTags.where((item) =>
+            (item['name'] as String).toLowerCase() == name.toLowerCase());
+          final mappedId = sameName.isNotEmpty
+              ? sameName.first['id'] as String
+              : (existingTagIds.contains(oldId) ? _uuid.v4() : oldId);
+          tagIdMap[oldId] = mappedId;
+          if (!existingTagIds.contains(mappedId)) {
+            queueInsert('tags', {...row, 'id': mappedId});
+            existingTagIds.add(mappedId);
+          }
           if (pending >= 500) await flushBatch();
         }
         for (final row in rowsByTable['documents']!) {
           final copy = Map<String, Object?>.from(row);
+          final oldCategoryId = row['category_id'] as String?;
+          copy['category_id'] = oldCategoryId == null ? null : categoryIdMap[oldCategoryId];
           final restored = restoredPaths[row['id']];
           if (restored == null) throw StateError('Backup is missing PDF bytes for "${row['name']}".');
           copy['storage_uri'] = restored;
           queueInsert('documents', copy);
           if (pending >= 500) await flushBatch();
         }
-        for (final table in ['document_tags', 'reminders', 'history', 'document_text_index']) {
+        for (final row in rowsByTable['document_tags']!) {
+          final oldTagId = row['tag_id'] as String;
+          final mappedTagId = tagIdMap[oldTagId];
+          if (mappedTagId == null) throw StateError('Backup contains an unknown tag reference.');
+          queueInsert('document_tags', {...row, 'tag_id': mappedTagId});
+          if (pending >= 500) await flushBatch();
+        }
+        for (final table in ['reminders', 'history', 'document_text_index']) {
           for (final row in rowsByTable[table]!) {
             queueInsert(table, row);
             if (pending >= 500) await flushBatch();
