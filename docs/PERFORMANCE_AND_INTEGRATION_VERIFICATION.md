@@ -12,8 +12,10 @@
 
 ## Interpretation and limits
 
-These are deterministic host-side regression checks, not Android/iOS device
-benchmarks. SQLite in-memory performance on GitHub-hosted runners is not a proxy
+These are deterministic host-side SQLite regression checks, not Android/iOS device
+benchmarks. The library screen also now reads the document collection once per refresh
+instead of issuing a second full-library query for dashboard totals, and document
+tiles no longer synchronously probe the filesystem during widget build. SQLite in-memory performance on GitHub-hosted runners is not a proxy
 for physical storage, thermal throttling, low-memory devices, OCR model latency,
 or Android Storage Access Framework / iOS Files provider latency.
 
