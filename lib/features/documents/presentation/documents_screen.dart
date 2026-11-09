@@ -70,6 +70,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
 
   @override
   void dispose() {
+    _loadGeneration++;
     _searchDebounce?.cancel();
     _search.removeListener(_onSearchChanged);
     _scrollController.removeListener(_onScroll);
