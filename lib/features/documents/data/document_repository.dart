@@ -56,7 +56,9 @@ class DocumentRecord {
       storagePath: (row['storage_uri'] as String?) ?? '',
       sizeBytes: (row['size_bytes'] as int?) ?? 0,
       createdAt: DateTime.parse(row['created_at'] as String),
-      isFavorite: metadata['favorite'] == true,
+      isFavorite: row['is_favorite'] == null
+          ? metadata['favorite'] == true
+          : row['is_favorite'] == 1,
       categoryId: row['category_id'] as String?,
       categoryName: row['category_name'] as String?,
       tagNames: ((row['tag_names'] as String?) ?? '').isEmpty
@@ -65,6 +67,42 @@ class DocumentRecord {
       folderId: row['folder_id'] as String?,
     );
   }
+}
+
+class DocumentLibrarySummary {
+  const DocumentLibrarySummary({
+    required this.documentCount,
+    required this.favoriteCount,
+    required this.totalBytes,
+  });
+
+  final int documentCount;
+  final int favoriteCount;
+  final int totalBytes;
+}
+
+class DocumentPageCursor {
+  const DocumentPageCursor({
+    required this.lastOpenedAt,
+    required this.name,
+    required this.id,
+  });
+
+  final String lastOpenedAt;
+  final String name;
+  final String id;
+}
+
+class DocumentPage {
+  const DocumentPage({
+    required this.items,
+    required this.nextCursor,
+    required this.hasMore,
+  });
+
+  final List<DocumentRecord> items;
+  final DocumentPageCursor? nextCursor;
+  final bool hasMore;
 }
 
 class ImportSummary {
@@ -102,6 +140,96 @@ class DocumentRepository {
 
   final AppDatabase _database;
   static const _uuid = Uuid();
+
+  /// Returns compact dashboard metrics without materializing document rows.
+  Future<DocumentLibrarySummary> dashboardSummary() async {
+    final db = await _database.database;
+    final rows = await db.rawQuery('''
+      SELECT COUNT(*) AS document_count,
+             COALESCE(SUM(size_bytes), 0) AS total_bytes,
+             COALESCE(SUM(CASE WHEN is_favorite = 1 THEN 1 ELSE 0 END), 0) AS favorite_count
+      FROM documents
+      WHERE deleted_at IS NULL
+    ''');
+    final row = rows.single;
+    return DocumentLibrarySummary(
+      documentCount: (row['document_count'] as int?) ?? 0,
+      favoriteCount: (row['favorite_count'] as int?) ?? 0,
+      totalBytes: (row['total_bytes'] as int?) ?? 0,
+    );
+  }
+
+  /// Fetches a bounded keyset page in the same order as the library screen.
+  /// The cursor includes a unique id tie-breaker so equal names/timestamps
+  /// cannot cause a row to repeat or disappear between pages.
+  Future<DocumentPage> listPage({
+    String query = '',
+    bool favoritesOnly = false,
+    bool recentOnly = false,
+    int pageSize = 40,
+    DocumentPageCursor? cursor,
+  }) async {
+    if (pageSize < 1 || pageSize > 100) {
+      throw ArgumentError.value(pageSize, 'pageSize', 'Must be between 1 and 100.');
+    }
+    final db = await _database.database;
+    final where = <String>['d.deleted_at IS NULL'];
+    final args = <Object?>[];
+    if (recentOnly) where.add('d.last_opened_at IS NOT NULL');
+    if (favoritesOnly) where.add('d.is_favorite = 1');
+    final normalizedQuery = query.trim();
+    if (normalizedQuery.isNotEmpty) {
+      where.add("d.name LIKE ? ESCAPE '\\\\'");
+      args.add('%${escapeLikeWildcards(normalizedQuery)}%');
+    }
+    if (cursor != null) {
+      where.add('''
+        (
+          COALESCE(d.last_opened_at, '') < ?
+          OR (
+            COALESCE(d.last_opened_at, '') = ?
+            AND (
+              d.name COLLATE NOCASE > ?
+              OR (d.name COLLATE NOCASE = ? AND d.id > ?)
+            )
+          )
+        )
+      ''');
+      args.addAll([
+        cursor.lastOpenedAt,
+        cursor.lastOpenedAt,
+        cursor.name,
+        cursor.name,
+        cursor.id,
+      ]);
+    }
+    final rows = await db.rawQuery('''
+      SELECT d.*, c.name AS category_name,
+        (SELECT GROUP_CONCAT(t.name, ', ') FROM document_tags dt
+          INNER JOIN tags t ON t.id = dt.tag_id WHERE dt.document_id = d.id) AS tag_names
+      FROM documents d
+      LEFT JOIN categories c ON c.id = d.category_id
+      WHERE ${where.join(' AND ')}
+      ORDER BY COALESCE(d.last_opened_at, '') DESC,
+               d.name COLLATE NOCASE ASC, d.id ASC
+      LIMIT ?
+    ''', [...args, pageSize + 1]);
+    final hasMore = rows.length > pageSize;
+    final pageRows = hasMore ? rows.take(pageSize).toList() : rows;
+    final items = pageRows.map(DocumentRecord.fromMap).toList();
+    final last = pageRows.isEmpty ? null : pageRows.last;
+    return DocumentPage(
+      items: items,
+      hasMore: hasMore,
+      nextCursor: hasMore && last != null
+          ? DocumentPageCursor(
+              lastOpenedAt: (last['last_opened_at'] as String?) ?? '',
+              name: last['name'] as String,
+              id: last['id'] as String,
+            )
+          : null,
+    );
+  }
 
   Future<List<DocumentRecord>> list({String query = '', bool favoritesOnly = false, bool recentOnly = false}) async {
     final db = await _database.database;
@@ -1057,6 +1185,7 @@ class DocumentRepository {
         'documents',
         {
           'metadata_json': jsonEncode(metadata),
+          'is_favorite': favorite ? 1 : 0,
           'updated_at': DateTime.now().toUtc().toIso8601String(),
         },
         where: 'id = ? AND deleted_at IS NULL',

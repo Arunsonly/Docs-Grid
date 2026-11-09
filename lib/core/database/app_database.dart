@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
@@ -40,7 +42,7 @@ class AppDatabase {
     final dbPath = p.join(directory.path, 'docs_grid.db');
     return openDatabase(
       dbPath,
-      version: 3,
+      version: 4,
       onConfigure: (db) async => db.execute('PRAGMA foreign_keys = ON'),
       onCreate: (db, version) async {
         await db.execute('''
@@ -112,6 +114,7 @@ class AppDatabase {
         ''');
         await _createV2Tables(db);
         await _createV3Tables(db);
+        await _createV4PerformanceSchema(db);
         await db.insert('schema_migrations', {
           'version': 1,
           'applied_at': DateTime.now().toUtc().toIso8601String(),
@@ -122,6 +125,10 @@ class AppDatabase {
         });
         await db.insert('schema_migrations', {
           'version': 3,
+          'applied_at': DateTime.now().toUtc().toIso8601String(),
+        });
+        await db.insert('schema_migrations', {
+          'version': 4,
           'applied_at': DateTime.now().toUtc().toIso8601String(),
         });
       },
@@ -137,7 +144,7 @@ class AppDatabase {
   @visibleForTesting
   Future<void> upgradeForTesting(Database db, int oldVersion, int newVersion) async {
     if (newVersion <= oldVersion) return;
-    if (oldVersion < 1 || newVersion > 3) {
+    if (oldVersion < 1 || newVersion > 4) {
       throw StateError('Unsupported database migration: $oldVersion -> $newVersion');
     }
 
@@ -165,6 +172,61 @@ class AppDatabase {
       await db.insert('schema_migrations', {'version': 3, 'applied_at': applied},
           conflictAlgorithm: ConflictAlgorithm.ignore);
     }
+    if (oldVersion < 4 && newVersion >= 4) {
+      await _createV4PerformanceSchema(db);
+      await db.insert('schema_migrations', {'version': 4, 'applied_at': applied},
+          conflictAlgorithm: ConflictAlgorithm.ignore);
+    }
+  }
+
+  Future<void> _createV4PerformanceSchema(DatabaseExecutor db) async {
+    final columns = await db.rawQuery('PRAGMA table_info(documents)');
+    final hasFavorite = columns.any((column) => column['name'] == 'is_favorite');
+    if (!hasFavorite) {
+      await db.execute(
+        'ALTER TABLE documents ADD COLUMN is_favorite INTEGER NOT NULL DEFAULT 0',
+      );
+      // Backfill legacy JSON metadata in Dart: SQLite JSON1 is not available
+      // on every Android/iOS SQLite build supported by this application.
+      final rows = await db.query(
+        'documents',
+        columns: ['id', 'metadata_json'],
+        where: 'metadata_json IS NOT NULL AND metadata_json != ?',
+        whereArgs: [''],
+      );
+      final batch = db.batch();
+      for (final row in rows) {
+        var favorite = false;
+        try {
+          final decoded = jsonDecode(row['metadata_json'] as String);
+          favorite = decoded is Map && decoded['favorite'] == true;
+        } catch (_) {
+          // Invalid optional metadata defaults to not-favorite; document data
+          // itself remains untouched and readable.
+        }
+        if (favorite) {
+          batch.update(
+            'documents',
+            {'is_favorite': 1},
+            where: 'id = ?',
+            whereArgs: [row['id']],
+          );
+        }
+      }
+      await batch.commit(noResult: true);
+    }
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_documents_active_recent ON documents(deleted_at, last_opened_at DESC, name COLLATE NOCASE, id)',
+    );
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_documents_active_favorite_recent ON documents(deleted_at, is_favorite, last_opened_at DESC, name COLLATE NOCASE, id)',
+    );
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_documents_active_folder_name ON documents(deleted_at, folder_id, name COLLATE NOCASE, id)',
+    );
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_documents_active_category ON documents(deleted_at, category_id)',
+    );
   }
 
   Future<void> _createV3Tables(DatabaseExecutor db) async {
