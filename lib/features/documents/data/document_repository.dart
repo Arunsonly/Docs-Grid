@@ -10,6 +10,7 @@ import 'package:uuid/uuid.dart';
 
 import '../../../core/database/app_database.dart';
 import '../../../core/storage/storage_location_service.dart';
+import '../../../core/storage/byte_stream_file.dart';
 import '../../folders/data/folder_repository.dart';
 import '../../reminders/data/reminder_notifications.dart';
 
@@ -693,9 +694,10 @@ class DocumentRepository {
       } else {
         final temp = await getTemporaryDirectory();
         stagedSource = File(p.join(temp.path, 'relink_${_uuid.v4()}.pdf'));
-        // file_picker 13.x exposes provider bytes rather than a read stream
-        // when no local path is available. Stage them immediately in cache.
-        await stagedSource.writeAsBytes(await pickedFile.readAsBytes(), flush: true);
+        // Cloud/Files providers may not expose a filesystem path. Stream their
+        // bytes into cache so large PDFs do not require a second full-size
+        // Uint8List allocation in memory.
+        await writeByteStreamToFile(pickedFile.readAsByteStream(), stagedSource);
         source = stagedSource;
       }
       if (!await source.exists()) throw StateError('The selected PDF is no longer available.');
@@ -967,7 +969,8 @@ class DocumentRepository {
           // Stage them in cache immediately and remove the staged copy below.
           final temp = await getTemporaryDirectory();
           stagedSource = File(p.join(temp.path, 'import_${_uuid.v4()}.pdf'));
-          await stagedSource.writeAsBytes(await picked.readAsBytes(), flush: true);
+          // Keep provider-backed imports bounded in memory for large PDFs.
+          await writeByteStreamToFile(picked.readAsByteStream(), stagedSource);
           sourceFile = stagedSource;
         }
 
