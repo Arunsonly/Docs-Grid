@@ -271,6 +271,7 @@ class StorageLocationService {
     String rootUri, {
     int maxEntries = 50000,
     int maxDepth = 64,
+    bool includeEmptyFolders = false,
   }) async {
     final pending = <({String uri, String path, int depth})>[
       (uri: rootUri, path: '', depth: 0),

@@ -257,7 +257,7 @@ class DocumentToolsService {
           try {
             await image.writeAsBytes(rendered.bytes, flush: true);
             final input = InputImage.fromFilePath(image.path);
-            final latinResult = await recognizer!.processImage(input);
+            final latinResult = await recognizer.processImage(input);
             if (shouldCancel?.call() ?? false) throw const OcrIndexCancelled();
             final extracted = <String>[latinResult.text];
             if (devanagariRecognizer != null) {

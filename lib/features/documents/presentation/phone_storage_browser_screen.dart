@@ -20,11 +20,6 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
     return parent == _currentPath;
   }).toList()..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase())));
   List<Map<String, Object?>> get _files => _pdfs.where((e) => e['folderPath'] == _currentPath).toList(growable: false);
-  int _count(String path) => _pdfs.where((e) {
-    final folder = e['folderPath'] as String;
-    return folder == path || folder.startsWith('\${path}/');
-  }).length;
-
   @override
   Widget build(BuildContext context) {
     final folders = _folders;

@@ -745,8 +745,7 @@ class _FoldersScreenState extends State<FoldersScreen> {
                               physics: const NeverScrollableScrollPhysics(),
                               buildDefaultDragHandles: false,
                               itemCount: folders.length,
-                              onReorder: (oldIndex, newIndex) async {
-                                if (newIndex > oldIndex) newIndex -= 1;
+                              onReorderItem: (oldIndex, newIndex) async {
                                 final reordered = List<Folder>.of(folders);
                                 final moved = reordered.removeAt(oldIndex);
                                 reordered.insert(newIndex, moved);
