@@ -674,6 +674,8 @@ class DocumentToolsService {
         ? await StorageLocationService.instance.portableDataLocations()
         : const <String, String>{};
     final db = await _database.database;
+    final databaseSchemaVersion =
+        Sqflite.firstIntValue(await db.rawQuery('PRAGMA user_version')) ?? 3;
     final tables = ['folders', 'documents', 'categories', 'tags',
       'document_tags', 'reminders', 'history', 'settings', 'document_text_index'];
     final manifest = <String, Object?>{
@@ -682,6 +684,7 @@ class DocumentToolsService {
       'backupType': includePdfs ? 'full' : 'database',
       'backupId': _uuid.v4(),
       'app': 'DocsGrid',
+      'databaseSchemaVersion': databaseSchemaVersion,
       'createdAt': DateTime.now().toUtc().toIso8601String(),
       'tables': <String, int>{},
       'metadataFiles': <Map<String, Object?>>[],
@@ -2170,6 +2173,10 @@ class DocumentToolsService {
         throw StateError('Unsupported backup format or version.');
       }
       final manifest = manifestValue;
+      final schemaVersion = manifest['databaseSchemaVersion'];
+      if (schemaVersion is int && schemaVersion > 3) {
+        throw StateError('This backup was created by a newer DocsGrid database version. Update the app before restoring it.');
+      }
       final declaredTables = manifest['tables'];
       if (declaredTables is! Map<String, dynamic>) {
         throw StateError('Backup manifest is missing table counts.');
