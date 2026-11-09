@@ -319,22 +319,44 @@ import CryptoKit
         return values
     }
 
-    private func resolvedBookmarks() -> [URL] {
-        bookmarkDataList().compactMap { data in
-            var stale = false
-            return try? URL(resolvingBookmarkData: data, options: [], relativeTo: nil, bookmarkDataIsStale: &stale)
-        }
-    }
-
     private func withAllBookmarkAccess<T>(_ work: () throws -> T) throws -> T {
-        let roots = resolvedBookmarks()
+        let stored = bookmarkDataList()
         var started: [URL] = []
-        for root in roots {
-            if root.startAccessingSecurityScopedResource() {
-                started.append(root)
+        var refreshedBookmarks: [Data] = []
+        for data in stored {
+            var stale = false
+            let root: URL
+            do {
+                root = try URL(
+                    resolvingBookmarkData: data,
+                    options: [],
+                    relativeTo: nil,
+                    bookmarkDataIsStale: &stale
+                )
+            } catch {
+                throw storageError("A saved Files bookmark is invalid. Re-select the affected folder; existing files are preserved.")
+            }
+            let accessed = root.startAccessingSecurityScopedResource()
+            guard accessed || isInsideAppContainer(root) else {
+                throw storageError("A saved Files permission has been revoked. Re-select the folder before accessing its files.")
+            }
+            if accessed { started.append(root) }
+            if stale {
+                refreshedBookmarks.append(
+                    try root.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
+                )
+            } else {
+                refreshedBookmarks.append(data)
             }
         }
         defer { started.forEach { $0.stopAccessingSecurityScopedResource() } }
+        if refreshedBookmarks != stored {
+            UserDefaults.standard.set(refreshedBookmarks, forKey: bookmarkListKey)
+            if let current = UserDefaults.standard.data(forKey: currentBookmarkKey),
+               let index = stored.firstIndex(of: current) {
+                UserDefaults.standard.set(refreshedBookmarks[index], forKey: currentBookmarkKey)
+            }
+        }
         return try work()
     }
 
@@ -589,6 +611,9 @@ import CryptoKit
         do {
             let accessed = url.startAccessingSecurityScopedResource()
             defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+            guard accessed || isInsideAppContainer(url) else {
+                throw storageError("Files did not grant access to the selected folder.")
+            }
             let data = try url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
             var bookmarks = bookmarkDataList()
             if !bookmarks.contains(data) { bookmarks.append(data) }
