@@ -701,7 +701,11 @@ class DocumentToolsService {
           : p.join(directory.path, 'DocsGrid', 'Backups'),
     );
     await backups.create(recursive: true);
-    final temp = await getTemporaryDirectory();
+    final temporaryUri = portableLocations['tempUri'];
+    final temp = temporaryUri != null && temporaryUri.startsWith('file://')
+        ? Directory(Uri.parse(temporaryUri).toFilePath())
+        : await getTemporaryDirectory();
+    await temp.create(recursive: true);
     final staging = await temp.createTemp('docsgrid_backup_');
     final output = File(p.join(
       backups.path,
@@ -2267,7 +2271,15 @@ class DocumentToolsService {
 
       final rawFiles = manifest['files'];
       if (rawFiles is! List) throw StateError('Backup file manifest is invalid.');
-      staging = await Directory.systemTemp.createTemp('docsgrid_restore_');
+      final locations = Platform.isAndroid
+          ? await StorageLocationService.instance.portableDataLocations()
+          : const <String, String>{};
+      final temporaryUri = locations['tempUri'];
+      final temporaryDirectory = temporaryUri != null && temporaryUri.startsWith('file://')
+          ? Directory(Uri.parse(temporaryUri).toFilePath())
+          : Directory.systemTemp;
+      await temporaryDirectory.create(recursive: true);
+      staging = await temporaryDirectory.createTemp('docsgrid_restore_');
       final stagedPdfPaths = <String, String>{};
       final seenDocuments = <String>{};
       final seenEntries = <String>{};
