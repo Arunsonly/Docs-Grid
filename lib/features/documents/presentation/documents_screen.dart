@@ -155,6 +155,17 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     }
   }
 
+  Future<void> _refreshDashboardSummary() async {
+    if (widget.favoritesOnly || widget.recentOnly) return;
+    final summary = await _repository.dashboardSummary();
+    if (!mounted) return;
+    setState(() {
+      _totalStorageBytes = summary.totalBytes;
+      _totalDocumentCount = summary.documentCount;
+      _starredCount = summary.favoriteCount;
+    });
+  }
+
   void _message(String message) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
@@ -289,8 +300,11 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     if (confirmed != true) return;
     await _repository.moveManyToTrash(selected);
     if (!mounted) return;
-    setState(_selectedIds.clear);
-    await _load();
+    setState(() {
+      _selectedIds.clear();
+      _documents.removeWhere((document) => selected.any((item) => item.id == document.id));
+    });
+    await _refreshDashboardSummary();
   }
 
   Future<void> _bulkShare() async {
@@ -726,7 +740,12 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     );
     if (confirmed != true) return;
     await _repository.moveToTrash(document);
-    await _load();
+    if (!mounted) return;
+    setState(() {
+      _documents.removeWhere((item) => item.id == document.id);
+      _selectedIds.remove(document.id);
+    });
+    await _refreshDashboardSummary();
   }
 
   @override
