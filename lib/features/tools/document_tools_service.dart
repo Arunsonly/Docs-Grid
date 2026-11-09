@@ -1114,14 +1114,46 @@ class DocumentToolsService {
     final db = await _database.database;
     final existingFolders = replaceExisting
         ? <Map<String, Object?>>[]
-        : await db.query('folders', columns: ['id']);
+        : await db.query('folders', columns: ['id', 'name', 'parent_id'],
+            where: 'deleted_at IS NULL');
     final existingFolderIds = existingFolders.map((row) => row['id'] as String).toSet();
-    final folderIdMap = <String, String>{
-      for (final row in folderRows)
-        row['id'] as String: existingFolderIds.contains(row['id'])
-            ? _uuid.v4()
-            : row['id'] as String,
+    final existingFolderRowsById = <String, Map<String, Object?>>{
+      for (final row in existingFolders) row['id'] as String: row,
     };
+    final existingFolderIdsByPath = <String, String>{};
+    String existingFolderPath(String id, Set<String> visiting) {
+      if (!visiting.add(id)) throw StateError('Existing folder hierarchy contains a cycle.');
+      final row = existingFolderRowsById[id];
+      if (row == null) throw StateError('Existing folder hierarchy contains a missing parent.');
+      final parentId = row['parent_id'] as String?;
+      final name = row['name'] as String;
+      return parentId == null
+          ? name
+          : '${existingFolderPath(parentId, visiting)}/$name';
+    }
+    for (final row in existingFolders) {
+      final id = row['id'] as String;
+      existingFolderIdsByPath[existingFolderPath(id, <String>{})] = id;
+    }
+    final backupFolderPaths = <String, String>{};
+    String backupFolderPath(String id) {
+      final known = backupFolderPaths[id];
+      if (known != null) return known;
+      final row = folderRowsById[id];
+      if (row == null) throw StateError('Backup contains an unknown folder reference.');
+      final parentId = row['parent_id'] as String?;
+      final name = row['name'] as String;
+      final path = parentId == null ? name : '${backupFolderPath(parentId)}/$name';
+      backupFolderPaths[id] = path;
+      return path;
+    }
+    final folderIdMap = <String, String>{};
+    for (final row in folderRows) {
+      final oldId = row['id'] as String;
+      final samePathId = existingFolderIdsByPath[backupFolderPath(oldId)];
+      folderIdMap[oldId] = samePathId ??
+          (existingFolderIds.contains(oldId) ? _uuid.v4() : oldId);
+    }
     final existingDocuments = replaceExisting
         ? <Map<String, Object?>>[]
         : await db.query('documents', columns: ['id', 'sha256']);
