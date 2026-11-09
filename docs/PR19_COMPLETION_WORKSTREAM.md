@@ -14,7 +14,9 @@ This PR carries forward every unchecked PR 18 acceptance item and the seven comp
 - [x] Folder breadcrumb/title opens a bounded, scrollable recursive tree with expandable descendants and selected-folder feedback; Android Back is scoped within the SAF browser. Physical small-screen validation remains open.
 - [ ] OCR assertion root cause confirmed from full device stack and regression. Search/index lifecycle guards and route-disposal cancellation are present; the exact inherited-widget assertion cannot be attributed without the full Android stack trace.
 - [x] Android recovery folder selection validates an existing DocsGrid tree and requires Documents, Folders, Database, Recovery and at least one snapshot before updating storage preferences; it does not create missing folders. Snapshot manifests and file hashes are then validated before additive restore. Real provider restore still requires device verification.
-- [ ] Large PDF and provider-backed import tests; physical Android/iOS validation.
+- [x] Provider-backed pathless PDF imports, relinks and backup ZIP staging now use chunked byte streams instead of loading the full payload with readAsBytes; automated 24 MiB stream integrity and interrupted-stream cleanup tests added.
+- [ ] End-to-end large real-PDF imports through Android SAF/cloud providers and iOS Files/iCloud Drive, including peak-memory profiling and provider interruption.
+- [ ] Physical Android/iOS validation and real backup restore; see docs/DEVICE_VALIDATION_RUNBOOK.md.
 
 ## Newly prepared in this unpublished change-set
 
@@ -40,9 +42,14 @@ This PR carries forward every unchecked PR 18 acceptance item and the seven comp
 - [ ] Flutter analyze and full unit/widget tests on final PR head (not run yet for this unpublished change-set).
 - [ ] Android analyze/tests/debug APK CI on final PR head.
 - [ ] iOS analyze/tests/unsigned build CI on final PR head.
-- [ ] Large-PDF and 10k-library performance tests.
+- [x] 10k-library benchmark on the last PR head (8005f094) passed in Android and iOS hosted CI.
+- [ ] Real large-PDF import/memory tests on physical Android and iPhone; the 10k-document benchmark is not a substitute.
 - [ ] Physical Android: SAF grant/revoke, folder browser, camera/gallery, OCR and restore.
 - [ ] Physical iOS: Files bookmarks, scanner/gallery and restore.
 - [ ] Capture and correlate the complete Flutter stack for the Flutter inherited-widget disposal assertion; do not infer a root cause from the assertion line alone.
+
+## Follow-up validation work branch
+
+Large provider payload staging has been changed to stream into cache in `work/docsgrid-large-import-ocr-device-validation`; this work branch is intentionally separate from PR #19 so no CI is triggered before the user requests it. The 24 MiB stream integrity and interrupted-stream cleanup tests are prepared but have not yet been run. The latest PR #19 head `8005f094` has successful Android and iOS hosted CI, including APK upload and unsigned iOS build. Physical device gates remain open.
 
 Hosted CI is not a substitute for device verification. Do not merge until all feasible automated gates pass and remaining device-only checks are explicitly reported.
