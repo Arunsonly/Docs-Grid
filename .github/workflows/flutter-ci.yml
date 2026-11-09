@@ -336,7 +336,7 @@ jobs:
               print('No CocoaPods Podfile generated; Flutter plugin tooling will manage iOS dependencies.')
           PY
       - name: Install packages
-        run: flutter pub get --enforce-lockfile
+        run: flutter pub get
       - name: Generate DocsGrid launcher icons
         run: |
           brew install librsvg
