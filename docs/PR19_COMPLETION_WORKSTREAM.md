@@ -15,6 +15,8 @@ This PR carries forward every unchecked PR 18 acceptance item and the seven comp
 - [ ] OCR assertion root cause confirmed from full device stack and regression. Search/index lifecycle guards and route-disposal cancellation are present; the exact inherited-widget assertion cannot be attributed without the full Android stack trace.
 - [x] Android recovery folder selection validates an existing DocsGrid tree and requires Documents, Folders, Database, Recovery and at least one snapshot before updating storage preferences; it does not create missing folders. Snapshot manifests and file hashes are then validated before additive restore. Real provider restore still requires device verification.
 - [x] Provider-backed pathless PDF imports, relinks and backup ZIP staging now use chunked byte streams instead of loading the full payload with readAsBytes; automated 24 MiB stream integrity and interrupted-stream cleanup tests added.
+- [x] Relink and backup restore now use the single-file picker API, avoiding `.single` failures when the v13 picker defaults to multi-select; backup restore validates once and reuses the staged archive after confirmation instead of decoding it twice.
+- [x] Interrupted-stream regression fixture explicitly closes its stream after emitting the simulated provider error.
 - [ ] End-to-end large real-PDF imports through Android SAF/cloud providers and iOS Files/iCloud Drive, including peak-memory profiling and provider interruption.
 - [ ] Physical Android/iOS validation and real backup restore; see docs/DEVICE_VALIDATION_RUNBOOK.md.
 
