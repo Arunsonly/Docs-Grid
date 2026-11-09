@@ -58,6 +58,7 @@ class StorageLocationService {
       if (value['documentsUri'] is String)
         'documentsUri': value['documentsUri'] as String,
       if (value['rootUri'] is String) 'rootUri': value['rootUri'] as String,
+      if (value['legacyRootUri'] is String) 'legacyRootUri': value['legacyRootUri'] as String,
       if (value['sharedUri'] is String) 'sharedUri': value['sharedUri'] as String,
       if (value['backupsUri'] is String) 'backupsUri': value['backupsUri'] as String,
       if (value['tempUri'] is String) 'tempUri': value['tempUri'] as String,

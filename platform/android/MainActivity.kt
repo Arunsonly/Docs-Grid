@@ -123,10 +123,12 @@ class MainActivity : FlutterActivity() {
                                     !android.os.Environment.isExternalStorageManager()) {
                                     throw IllegalStateException("Allow Full internal storage access in DocsGrid Settings, then retry portable storage setup.")
                                 }
-                                val root = java.io.File(
+                                val mediaRoot = java.io.File(
                                     android.os.Environment.getExternalStorageDirectory(),
-                                    "Android/media/com.docsgrid"
+                                    "Android/media"
                                 )
+                                val legacyRoot = java.io.File(mediaRoot, "DocsGrid")
+                                val root = java.io.File(mediaRoot, "com.docsgrid")
                                 val myFiles = java.io.File(root, "My Files")
                                 val unfiled = java.io.File(myFiles, "Unfiled")
                                 val folders = java.io.File(myFiles, "Folders")
@@ -171,6 +173,7 @@ class MainActivity : FlutterActivity() {
                                     .apply()
                                 result.success(mapOf(
                                     "rootUri" to Uri.fromFile(root).toString(),
+                                    "legacyRootUri" to Uri.fromFile(legacyRoot).toString(),
                                     "databaseUri" to database,
                                     "recoveryUri" to recovery,
                                     "libraryUri" to library,
