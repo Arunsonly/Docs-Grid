@@ -383,49 +383,84 @@ class DocumentToolsService {
             title: const Text('Arrange page order'),
             content: SizedBox(
               width: 360,
-              height: 320,
-              child: ReorderableListView.builder(
-                itemCount: ordered.length,
-                onReorderItem: (oldIndex, newIndex) {
-                  refresh(() {
-                    final item = ordered.removeAt(oldIndex);
-                    ordered.insert(newIndex, item);
-                  });
-                },
-                itemBuilder: (context, index) => ListTile(
-                  key: ValueKey(ordered[index].path),
-                  leading: SizedBox(
-                    width: 48,
-                    height: 60,
-                    child: Stack(
-                      fit: StackFit.expand,
-                      children: [
-                        ClipRRect(
-                          borderRadius: BorderRadius.circular(6),
-                          child: Image.file(
-                            File(ordered[index].path),
-                            fit: BoxFit.cover,
-                            errorBuilder: (_, _, _) => const ColoredBox(
-                              color: Colors.black12,
-                              child: Icon(Icons.image_not_supported_outlined),
-                            ),
+              height: 190,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('Drag thumbnails to change page order.'),
+                  const SizedBox(height: 10),
+                  Expanded(
+                    child: ReorderableListView.builder(
+                      scrollDirection: Axis.horizontal,
+                      itemCount: ordered.length,
+                      onReorderItem: (oldIndex, newIndex) {
+                        refresh(() {
+                          final item = ordered.removeAt(oldIndex);
+                          ordered.insert(newIndex, item);
+                        });
+                      },
+                      itemBuilder: (context, index) => SizedBox(
+                        key: ValueKey(ordered[index].path),
+                        width: 112,
+                        child: Card(
+                          clipBehavior: Clip.antiAlias,
+                          child: Column(
+                            children: [
+                              Expanded(
+                                child: Stack(
+                                  fit: StackFit.expand,
+                                  children: [
+                                    Image.file(
+                                      File(ordered[index].path),
+                                      fit: BoxFit.cover,
+                                      errorBuilder: (_, _, _) => const ColoredBox(
+                                        color: Colors.black12,
+                                        child: Icon(Icons.image_not_supported_outlined),
+                                      ),
+                                    ),
+                                    Positioned(
+                                      left: 4,
+                                      top: 4,
+                                      child: CircleAvatar(
+                                        radius: 12,
+                                        child: Text('${index + 1}',
+                                            style: const TextStyle(fontSize: 11)),
+                                      ),
+                                    ),
+                                    const Positioned(
+                                      right: 4,
+                                      bottom: 4,
+                                      child: DecoratedBox(
+                                        decoration: BoxDecoration(
+                                          color: Color(0xAA000000),
+                                          shape: BoxShape.circle,
+                                        ),
+                                        child: Padding(
+                                          padding: EdgeInsets.all(5),
+                                          child: Icon(Icons.drag_indicator,
+                                              color: Colors.white, size: 18),
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              Padding(
+                                padding: const EdgeInsets.all(4),
+                                child: Text(
+                                  ordered[index].name,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(fontSize: 10),
+                                ),
+                              ),
+                            ],
                           ),
                         ),
-                        Align(
-                          alignment: Alignment.bottomLeft,
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
-                            color: Colors.black87,
-                            child: Text('${index + 1}',
-                              style: const TextStyle(color: Colors.white, fontSize: 11)),
-                          ),
-                        ),
-                      ],
+                      ),
                     ),
                   ),
-                  title: Text(ordered[index].name, maxLines: 1, overflow: TextOverflow.ellipsis),
-                  trailing: ReorderableDragStartListener(index: index, child: const Icon(Icons.drag_handle)),
-                ),
+                ],
               ),
             ),
             actions: [
