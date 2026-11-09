@@ -514,6 +514,37 @@ class _SettingsScreenState extends State<_SettingsScreen> {
     return ListView(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
       children: [
+        if (Platform.isAndroid)
+          FutureBuilder<bool>(
+            future: StorageLocationService.instance.hasAllFilesAccess(),
+            builder: (context, snapshot) {
+              final granted = snapshot.data == true;
+              return ListTile(
+                leading: Icon(
+                  granted ? Icons.folder_special : Icons.folder_off_outlined,
+                  color: granted ? Theme.of(context).colorScheme.primary : null,
+                ),
+                title: const Text('Full internal storage access'),
+                subtitle: Text(granted
+                    ? 'Allowed. DocsGrid can access shared internal storage.'
+                    : 'Required for personal-use full storage browsing and automatic recovery discovery.'),
+                trailing: granted
+                    ? const Icon(Icons.check_circle_outline)
+                    : const Icon(Icons.chevron_right),
+                onTap: () async {
+                  try {
+                    await StorageLocationService.instance.requestAllFilesAccess();
+                  } catch (error) {
+                    if (context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text('Could not open storage permission settings: $error')),
+                      );
+                    }
+                  }
+                },
+              );
+            },
+          ),
         SwitchListTile(
           secondary: const Icon(Icons.dark_mode_outlined),
           title: const Text('Dark appearance'),
