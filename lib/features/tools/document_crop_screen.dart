@@ -7,7 +7,8 @@ import 'package:image/image.dart' as img;
 
 /// CPU-heavy image work stays off the UI isolate. Four supplied points are
 /// source-image pixel coordinates in TL, TR, BL, BR order.
-Uint8List _transformDocumentImage(Map<String, Object> args) {
+@visibleForTesting
+Uint8List transformDocumentImageForTesting(Map<String, Object> args) {
   final bytes = args['bytes'] as Uint8List;
   final operation = args['operation'] as String;
   final decoded = img.decodeImage(bytes);
@@ -22,7 +23,7 @@ Uint8List _transformDocumentImage(Map<String, Object> args) {
       // Fast document enhancement: grayscale, normalize paper tone and lift
       // ink contrast. Original pixels remain available through Reset.
       final gray = img.grayscale(oriented);
-      output = img.adjustColor(gray, contrast: 1.28, brightness: 1.10);
+      output = img.adjustColor(gray, contrast: 1.20, brightness: 1.03, saturation: 1.05);
       break;
     case 'perspective':
       final points = (args['points'] as List).cast<num>();
@@ -34,11 +35,11 @@ Uint8List _transformDocumentImage(Map<String, Object> args) {
       final width = math.max(
         math.sqrt(math.pow(tr.x - tl.x, 2) + math.pow(tr.y - tl.y, 2)),
         math.sqrt(math.pow(br.x - bl.x, 2) + math.pow(br.y - bl.y, 2)),
-      ).round().clamp(64, oriented.width);
+      ).round().clamp(64, oriented.width).toInt();
       final height = math.max(
         math.sqrt(math.pow(bl.x - tl.x, 2) + math.pow(bl.y - tl.y, 2)),
         math.sqrt(math.pow(br.x - tr.x, 2) + math.pow(br.y - tr.y, 2)),
-      ).round().clamp(64, oriented.height);
+      ).round().clamp(64, oriented.height).toInt();
       output = img.copyRectify(
         oriented,
         topLeft: tl,
@@ -110,7 +111,7 @@ class _DocumentCropScreenState extends State<DocumentCropScreen> {
         'operation': operation,
         if (points != null) 'points': points,
       };
-      final bytes = await compute(_transformDocumentImage, args);
+      final bytes = await compute(transformDocumentImageForTesting, args);
       if (mounted) _replaceImage(bytes);
     } catch (error) {
       if (mounted) {
