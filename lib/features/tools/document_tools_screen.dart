@@ -291,8 +291,10 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
         } else {
           done++;
         }
-      } catch (_) {
+      } catch (error, stackTrace) {
         skipped++;
+        debugPrint('DocsGrid OCR indexing failed for document ${row['id']}: $error');
+        debugPrintStack(stackTrace: stackTrace);
       }
     }
     if (mounted) {
