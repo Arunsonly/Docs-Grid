@@ -66,7 +66,7 @@ Status: **Eight expert review lenses have been inspected. Source remediation and
 
 - Evidence: folder materialization and migration paths catch all errors from `findChildUri` and then call `createDirectory`.
 - Risk: permission revocation, provider outage, or query failure may be treated like “child does not exist”, causing duplicate folders or masking the real access failure.
-- **Remediation committed:** Android and iOS now return a distinct `NOT_FOUND` channel error for missing children; folder materialization creates a directory only for that explicit condition. Android metadata lookup no longer converts provider errors into 'not found'.
+- **Remediation committed:** Android and iOS return a distinct `NOT_FOUND` channel error for missing children; folder materialization creates a directory only for that explicit condition. Android metadata lookup no longer converts provider errors into 'not found'. The existing-library migration path was also corrected to create a missing folder only for `NOT_FOUND`, and it now aborts on a same-name destination PDF whose digest differs instead of silently creating a second copy.
 - Status: source fix committed; provider integration tests remain.
 
 ### EXP-09 — Deleting a database-empty folder could remove unmanaged external files
@@ -101,7 +101,18 @@ Status: **Eight expert review lenses have been inspected. Source remediation and
 - **Remediation committed:** a central-directory preflight rejects ZIP64/multi-disk, encrypted, duplicate/traversal names, excessive entry counts, per-entry/total expansion, oversized directories, and extreme compression ratios before the archive decoder runs.
 - Regression test added by mutating a ZIP central-directory size to exceed the per-entry limit. Streaming remains a future improvement.
 
-## Additional expert-audit execution (2026-11-09)\n\n- Added strict equality validation between each portable snapshot table count and its metadata file record count.\n- Added portable folder-graph validation before restore: duplicate IDs, missing parents, cycles, path separators, dot segments, control characters, and deep nesting are rejected. Parent-chain validation is iterative to avoid stack overflow on deeply nested libraries.\n- Added regression tests for the above conditions. The new commits are awaiting a fresh Android/iOS CI run; they are not counted as passed until that run completes.\n\n## Deferred validation (tracked in later project tasks)
+## Additional expert-audit execution (2026-11-09)
+
+- Added strict equality validation between each portable snapshot table count and its metadata file record count.
+- Added portable folder-graph validation before restore: duplicate IDs, missing parents, cycles, path separators, dot segments, control characters, case-insensitive sibling collisions, and deep nesting are rejected. Parent-chain validation is iterative to avoid stack overflow on deeply nested libraries.
+- Added cross-table referential-integrity validation for documents, folders, categories, tags, reminders, history, OCR indexes, and settings before scanning provider files or writing restored records.
+- Applied the same folder-graph and relational validation to ZIP backups before restore side effects.
+- Added regression tests for malformed folder graphs, deep nesting, missing references, duplicate relations, duplicate indexes, and setting-key collisions.
+- Tightened folder-name validation to reject control characters and names longer than 255 characters.
+- Corrected storage migration to fail closed on provider lookup errors and to stop on destination PDF name collisions with different content.
+- Latest source commits require one fresh, uncancelled Android/iOS CI run; cancelled or stale runs are not counted as verification.
+
+## Deferred validation (tracked in later project tasks)
 
 1. Database migration fixtures and repository-level concurrency/provider race tests are required for Task 2 sign-off; deeper migration/data-retention validation continues in Task 4.
 2. Physical Android SAF/Recovery and iOS Files/bookmark persistence checks remain for Tasks 5 and 6.
