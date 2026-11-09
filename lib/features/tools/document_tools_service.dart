@@ -114,15 +114,44 @@ class DocumentToolsService {
 
   Future<void> keepOneDuplicate(String sha, String keepId) async {
     final db = await _database.database;
-    final matches = await db.query('documents',
-      columns: ['id'], where: 'sha256 = ? AND deleted_at IS NULL',
-      whereArgs: [sha]);
-    if (matches.length < 2 || !matches.any((r) => r['id'] == keepId)) {
-      throw StateError('Duplicate group changed. Refresh the list and try again.');
-    }
-    // Deliberately do not delete files. User must review each duplicate and
-    // use the normal Recycle Bin flow so original files remain recoverable.
-    throw StateError('Use Recycle Bin to remove reviewed copies individually. No file was deleted.');
+    await db.transaction((txn) async {
+      final matches = await txn.query(
+        'documents',
+        columns: ['id', 'name'],
+        where: 'sha256 = ? AND deleted_at IS NULL',
+        whereArgs: [sha],
+      );
+      if (matches.length < 2 || !matches.any((row) => row['id'] == keepId)) {
+        throw StateError('Duplicate group changed. Refresh the list and try again.');
+      }
+      final now = DateTime.now().toUtc().toIso8601String();
+      for (final row in matches) {
+        final id = row['id'] as String;
+        if (id == keepId) continue;
+        final changed = await txn.update(
+          'documents',
+          {'deleted_at': now, 'updated_at': now},
+          where: 'id = ? AND deleted_at IS NULL',
+          whereArgs: [id],
+        );
+        if (changed > 0) {
+          await txn.insert('history', {
+            'id': _uuid.v4(),
+            'document_id': id,
+            'action': 'moved_to_recycle_bin',
+            'details_json': jsonEncode({'reason': 'duplicate_cleanup', 'kept_document_id': keepId}),
+            'created_at': now,
+          });
+        }
+      }
+    });
+    final activeReminders = await db.rawQuery('''
+      SELECT r.* FROM reminders r
+      LEFT JOIN documents d ON d.id = r.document_id
+      WHERE r.enabled = 1 AND r.status NOT IN (?, ?)
+        AND (r.document_id IS NULL OR d.deleted_at IS NULL)
+    ''', ['completed', 'cancelled']);
+    try { await ReminderNotifications.instance.reconcile(activeReminders); } catch (_) {}
   }
 
   Future<int> indexPdfText(String documentId, String path) async {
@@ -272,9 +301,10 @@ class DocumentToolsService {
              instr(lower(i.extracted_text), lower(?)) AS match_position
       FROM document_text_index i
       JOIN documents d ON d.id = i.document_id
-      WHERE d.deleted_at IS NULL AND lower(i.extracted_text) LIKE lower(?)
+      WHERE d.deleted_at IS NULL
+        AND instr(lower(i.extracted_text), lower(?)) > 0
       ORDER BY match_position ASC, d.name COLLATE NOCASE
-    ''', [q, '%$q%']);
+    ''', [q, q]);
     // OCR stores an explicit page marker before every page. Resolve the page
     // containing the first match so search results are actionable, not just a
     // generic "text found" indication.
