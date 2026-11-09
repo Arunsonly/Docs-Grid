@@ -234,7 +234,15 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
         targetFolderUri: targetFolderUri,
         sourceType: 'storage_browser',
       );
-      await _load();
+      if (summary.added > 0) {
+        final added = await _repository.listPage(query: fileName, pageSize: 10);
+        if (mounted) setState(() {
+          for (final item in added.items) {
+            if (!_documents.any((existing) => existing.id == item.id)) _documents.insert(0, item);
+          }
+        });
+        await _refreshDashboardSummary();
+      }
       if (summary.added > 0) {
         _message('Imported $fileName successfully.');
       } else if (summary.duplicates > 0) {
@@ -433,7 +441,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   Future<void> _relink(DocumentRecord document) async {
     try {
       await _repository.relinkDocument(document);
-      await _load();
+      await _patchDocument(document.id);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('PDF relinked and verified successfully.')),
@@ -997,6 +1005,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     return Card(
       elevation: 0,
       child: Semantics(
+        explicitChildNodes: true,
         label: '${document.name}.pdf, ${_size(document.sizeBytes)}, ${document.isFavorite ? 'starred' : 'not starred'}',
         child: ListTile(
         key: ValueKey(document.id),

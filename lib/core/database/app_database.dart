@@ -314,6 +314,13 @@ class AppDatabase {
         END
       ''');
     } catch (_) {
+      for (final trigger in [
+        'documents_name_fts_after_insert',
+        'documents_name_fts_after_update',
+        'documents_name_fts_after_delete',
+      ]) {
+        try { await db.execute('DROP TRIGGER IF EXISTS $trigger'); } catch (_) {}
+      }
       try { await db.execute('DROP TABLE IF EXISTS documents_name_fts'); } catch (_) {}
     }
   }
