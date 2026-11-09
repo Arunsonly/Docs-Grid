@@ -35,7 +35,10 @@ dev_dependencies:
     sdk: flutter
   flutter_lints: ^6.0.0
   flutter_launcher_icons: ^0.14.4
-  sqflite_common_ffi: ^2.4.5
+  # sqlite3 v3 build hooks currently fail checksum verification in CI; use the
+  # upstream-documented sqlite3 v2 compatibility pair for deterministic FFI tests.
+  sqflite_common_ffi: 2.3.7+1
+  sqlite3: 2.9.4
 
 flutter:
   uses-material-design: true
