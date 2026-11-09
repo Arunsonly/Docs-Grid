@@ -754,6 +754,11 @@ class DocumentToolsService {
       rowsByTable.putIfAbsent(required, () => <Map<String, Object?>>[]);
     }
 
+    // Reject broken foreign-key relationships before scanning provider files,
+    // creating folders, or writing any restored records.
+    PortableSnapshotManifest.validateFolderRows(rowsByTable['folders']!);
+    PortableSnapshotManifest.validateRelations(rowsByTable);
+
     final pdfUris = <String, String>{};
     final pending = <String>[locations['libraryUri']!];
     final visited = <String>{};
