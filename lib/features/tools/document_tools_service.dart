@@ -55,7 +55,18 @@ List<Map<String, Object?>> _groupOcrDuplicateRows(
 }
 
 /// Restore behavior for portable DocsGrid archives.
-enum BackupRestoreMode { merge, fullReplacement }
+enum BackupRestoreMode { merge, fullReplacement, selective }
+
+enum BackupRestoreSection {
+  documents,
+  folders,
+  categories,
+  tags,
+  reminders,
+  history,
+  settings,
+  ocrIndexes,
+}
 
 /// Local-only utilities for indexing, scanning, sharing and portable backups.
 /// This service never uploads document contents to a remote server.
@@ -889,6 +900,7 @@ class DocumentToolsService {
     File zipFile, {
     Future<bool> Function(int pdfCount)? confirm,
     BackupRestoreMode mode = BackupRestoreMode.merge,
+    Set<BackupRestoreSection>? selection,
   }) async {
     final backup = await _decodeValidatedBackup(zipFile);
     try {
@@ -897,6 +909,42 @@ class DocumentToolsService {
       if (mode == BackupRestoreMode.fullReplacement) {
         // Preserve a verified pre-restore archive before replacing live data.
         await createBackup();
+      }
+      if (mode == BackupRestoreMode.selective) {
+        if (selection == null || selection.isEmpty) {
+          throw ArgumentError('Select at least one data group to restore.');
+        }
+        final includeDocuments = selection.contains(BackupRestoreSection.documents);
+        final includeFolders = includeDocuments || selection.contains(BackupRestoreSection.folders);
+        final includeCategories = includeDocuments || selection.contains(BackupRestoreSection.categories);
+        final includeTags = includeDocuments || selection.contains(BackupRestoreSection.tags);
+        final rows = <String, List<Map<String, Object?>>>{
+          for (final table in backup.rowsByTable.keys) table: <Map<String, Object?>>[],
+        };
+        if (includeFolders) rows['folders'] = backup.rowsByTable['folders']!;
+        if (includeDocuments) rows['documents'] = backup.rowsByTable['documents']!;
+        if (includeCategories) rows['categories'] = backup.rowsByTable['categories']!;
+        if (includeTags) rows['tags'] = backup.rowsByTable['tags']!;
+        if (includeDocuments) rows['document_tags'] = backup.rowsByTable['document_tags']!;
+        if (selection.contains(BackupRestoreSection.reminders)) {
+          rows['reminders'] = backup.rowsByTable['reminders']!;
+        }
+        if (selection.contains(BackupRestoreSection.history)) {
+          rows['history'] = backup.rowsByTable['history']!;
+        }
+        if (selection.contains(BackupRestoreSection.settings)) {
+          rows['settings'] = backup.rowsByTable['settings']!;
+        }
+        if (selection.contains(BackupRestoreSection.ocrIndexes) && includeDocuments) {
+          rows['document_text_index'] = backup.rowsByTable['document_text_index']!;
+        }
+        final selectiveBackup = _ValidatedBackup(
+          manifest: backup.manifest,
+          rowsByTable: rows,
+          stagedPdfPaths: includeDocuments ? backup.stagedPdfPaths : const <String, String>{},
+          stagingDirectory: backup.stagingDirectory,
+        );
+        return await _restoreValidatedBackup(selectiveBackup);
       }
       return await _restoreValidatedBackup(
         backup,
@@ -949,7 +997,9 @@ class DocumentToolsService {
     final folderRestoreRoot = Directory(p.join(foldersRoot.path, restoreStamp));
     await restoreRoot.create(recursive: true);
     await folderRestoreRoot.create(recursive: true);
-    final fileRows = (manifest['files'] as List<dynamic>).cast<Map<String, dynamic>>();
+    final fileRows = rowsByTable['documents']!.isEmpty
+        ? <Map<String, dynamic>>[]
+        : (manifest['files'] as List<dynamic>).cast<Map<String, dynamic>>();
     final restoredPaths = <String, String>{};
     final folderPaths = <String, String>{};
     final folderDirectoryNames = <String, String>{
