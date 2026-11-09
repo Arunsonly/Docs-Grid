@@ -353,56 +353,6 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     }
   }
 
-  Future<void> _showStorageDirectory(String uri, String name) async {
-    List<Map<String, Object?>> entries;
-    try {
-      entries = await StorageLocationService.instance.listDirectory(uri);
-    } catch (error) {
-      if (mounted) _message('Could not read $name: $error');
-      return;
-    }
-    if (!mounted) return;
-    await showDialog<void>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: Text(name, maxLines: 1, overflow: TextOverflow.ellipsis),
-        content: SizedBox(
-          width: double.maxFinite,
-          height: 420,
-          child: entries.isEmpty
-              ? const Center(child: Text('This folder is empty.'))
-              : ListView.separated(
-                  itemCount: entries.length,
-                  separatorBuilder: (_, _) => const Divider(height: 1),
-                  itemBuilder: (context, index) {
-                    final entry = entries[index];
-                    final isDirectory = entry['isDirectory'] == true;
-                    final fileName = entry['name'] as String;
-                    final isPdf = !isDirectory && fileName.toLowerCase().endsWith('.pdf');
-                    if (!isDirectory && !isPdf) return const SizedBox.shrink();
-                    return ListTile(
-                      dense: true,
-                      leading: Icon(isDirectory ? Icons.folder_outlined : Icons.picture_as_pdf_outlined),
-                      title: Text(fileName, maxLines: 1, overflow: TextOverflow.ellipsis),
-                      trailing: isDirectory ? const Icon(Icons.chevron_right) : const Icon(Icons.more_vert),
-                      onTap: isDirectory
-                          ? () => _showStorageDirectory(entry['uri'] as String, fileName)
-                          : () => _importStoragePdf(
-                              dialogContext: context,
-                              fileUri: entry['uri'] as String,
-                              fileName: fileName,
-                              targetFolderUri: uri,
-                            ),
-                    );
-                  },
-                ),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Close')),
-        ],
-      ),
-    );
-  }
 
   void _toggleSelected(DocumentRecord document) {
     setState(() {
@@ -488,7 +438,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     final isProviderUri = document.storagePath.startsWith('content://') ||
         document.storagePath.startsWith('file://');
     File? stagedProviderFile;
-    String? viewerPath;
+    late final String viewerPath;
     try {
       if (isProviderUri) {
         // Stage provider-backed content with native streaming I/O; never read
@@ -1222,6 +1172,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
           ],
         ),
       ),
+    ),
     );
   }
 
