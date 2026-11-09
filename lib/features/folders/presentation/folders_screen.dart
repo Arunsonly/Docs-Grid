@@ -766,7 +766,7 @@ class _FoldersScreenState extends State<FoldersScreen> {
                                   key: ValueKey('folder-${folder.id}'),
                                   elevation: 0,
                                   child: ListTile(
-                                    leading: ReorderableDelayedDragStartListener(
+                                    leading: ReorderableDragStartListener(
                                       index: index,
                                       child: const CircleAvatar(child: Icon(Icons.folder_outlined)),
                                     ),
