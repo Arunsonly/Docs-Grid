@@ -913,7 +913,14 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Column(
+    return PopScope<void>(
+      canPop: _selectedIds.isEmpty,
+      onPopInvokedWithResult: (didPop, result) {
+        if (!didPop && _selectedIds.isNotEmpty && mounted) {
+          setState(_selectedIds.clear);
+        }
+      },
+      child: Column(
       children: [
         if (_selectedIds.isNotEmpty)
           Material(
@@ -1215,6 +1222,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
         ),
       ),
       ),
+    ),
     );
   }
 
