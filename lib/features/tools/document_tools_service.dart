@@ -1041,7 +1041,7 @@ class DocumentToolsService {
 
     final stamp = DateTime.now().toUtc().toIso8601String()
         .replaceAll(':', '-').replaceAll('.', '-');
-    final snapshotName = 'snapshot_$stamp';
+    final snapshotName = 'snapshot_${stamp}_${_uuid.v4()}';
     final snapshotUri = await StorageLocationService.instance.createDirectory(
       parentUri: locations['databaseUri']!,
       name: snapshotName,
