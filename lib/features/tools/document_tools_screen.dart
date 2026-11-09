@@ -353,8 +353,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
               builder: (context) => AlertDialog(
                 title: const Text('Restore latest verified backup?'),
                 content: Text(
-                  'Newest candidate: ${p.basename(selected.path)}\n'
-                  'The archive will be validated before import. '
+                  'The newest valid archive is checksum-validated before import. '
                   'Existing records are preserved; documents are merged without overwriting current files. '
                   'PDFs: $count.',
                 ),
