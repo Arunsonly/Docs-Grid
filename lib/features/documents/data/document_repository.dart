@@ -831,6 +831,80 @@ class DocumentRepository {
     }
   }
 
+  /// Registers an already-portable PDF in the database without copying it.
+  /// Used after reinstall when shared media survived but the private DB did not.
+  Future<bool> importExistingSharedPdf({
+    required String storageUri,
+    required String displayName,
+    String? targetFolderId,
+  }) async {
+    if (!storageUri.startsWith('file://') && !storageUri.startsWith('content://')) {
+      throw ArgumentError('Recovery requires a shared-storage file URI.');
+    }
+    final storage = StorageLocationService.instance;
+    final temp = await getTemporaryDirectory();
+    final staged = File(p.join(temp.path, 'recover_${_uuid.v4()}.pdf'));
+    try {
+      await storage.copyPdfToPath(
+        sourceUri: storageUri,
+        destinationPath: staged.path,
+      );
+      final header = await staged.openRead(0, 5)
+          .fold<List<int>>(<int>[], (bytes, chunk) => bytes..addAll(chunk));
+      if (header.length < 5 || String.fromCharCodes(header) != '%PDF-') {
+        throw StateError('Recovered item is not a valid PDF.');
+      }
+      final digest = (await sha256.bind(staged.openRead()).first).toString();
+      final size = await staged.length();
+      final db = await _database.database;
+      final duplicates = await db.query(
+        'documents',
+        columns: ['id'],
+        where: 'sha256 = ? AND deleted_at IS NULL',
+        whereArgs: [digest],
+        limit: 1,
+      );
+      if (duplicates.isNotEmpty) return false;
+      if (targetFolderId != null) {
+        final folders = await db.query(
+          'folders',
+          columns: ['id'],
+          where: 'id = ? AND deleted_at IS NULL',
+          whereArgs: [targetFolderId],
+          limit: 1,
+        );
+        if (folders.isEmpty) throw StateError('Recovery folder could not be created.');
+      }
+      final id = _uuid.v4();
+      final now = DateTime.now().toUtc().toIso8601String();
+      await db.transaction((txn) async {
+        await txn.insert('documents', {
+          'id': id,
+          'name': p.basenameWithoutExtension(displayName),
+          'original_name': displayName,
+          'storage_uri': storageUri,
+          'relative_path': null,
+          'mime_type': 'application/pdf',
+          'size_bytes': size,
+          'sha256': digest,
+          'folder_id': targetFolderId,
+          'extracted_text_status': 'pending',
+          'created_at': now,
+          'updated_at': now,
+          'metadata_json': '{}',
+          'source': 'reinstall_recovery',
+        });
+        await _recordHistory(txn, id, 'recovered_after_reinstall', {
+          'storage_uri': storageUri,
+          'folder_id': targetFolderId,
+        });
+      });
+      return true;
+    } finally {
+      if (await staged.exists()) await staged.delete();
+    }
+  }
+
   Future<ImportSummary> importScannedPdf(File source, {String? displayName, String? targetFolderUri, String? targetFolderId, String sourceType = 'scanner'}) async {
     if (!await source.exists()) throw StateError('Scanned PDF is not available.');
     final header = await source.openRead(0, 5).fold<List<int>>(<int>[], (a, b) => a..addAll(b));
