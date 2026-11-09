@@ -80,18 +80,18 @@ Status: **Eight engineering review lenses inspected; remediation committed for t
 ### EXP-07 — Hosted CI dependency/toolchain resolution is not fully reproducible
 **Severity: Medium — release engineering**
 
-- Evidence: root repository listing contains no committed `pubspec.lock`; workflow selects Flutter `stable` rather than a pinned SDK version and generates native scaffolding during CI.
-- Risk: dependency resolution and generated Android/iOS project scaffolding can change between runs without a source change.
-- Required action: commit the application lockfile, pin or deliberately manage the Flutter toolchain, and document generated native scaffolding/version assumptions.
-- Status: remains an open reproducibility limitation. The workflow still uses Flutter `stable` and the repository currently has no committed `pubspec.lock`; pinning the exact toolchain and committing the solver lockfile require a deliberate dependency-resolution change.
+- Evidence on `audit/10-core-functions`: `pubspec.lock` is committed and the Android/iOS workflow pins Flutter `3.47.9`; both jobs use `flutter pub get --enforce-lockfile`. CI still generates native platform scaffolding during the run, so generated-project drift is not fully eliminated.
+- Risk: an unpinned or regenerated native toolchain could change build behaviour independently of application source.
+- **Remediation present on the audit branch:** commit the resolved package lockfile, pin Flutter to `3.47.9`, and enforce the lockfile in both platform jobs.
+- Status: dependency/toolchain reproducibility controls are implemented on this branch. Remaining verification is a fresh uncancelled CI run against the current branch head; the earlier supplementary run `42509056268` was cancelled and must not be counted as a pass.
 
 ### EXP-08 — Critical integration boundaries have limited automated regression coverage
 **Severity: Medium — QA**
 
-- Evidence: the suite now contains 11 Dart test files and 56 tests, including concurrent database-open/retry tests, reminder reconciliation-state tests, and ZIP expansion-limit tests. Platform storage bridge operations, real v1/v2 database migration fixtures, scheduler failure injection, and full import/move/restore provider flows still lack dedicated integration suites.
+- Evidence: the audit branch contains focused unit tests for concurrent database-open/retry, reminder reconciliation states, ZIP resource limits, folder/category validation, portable snapshot manifests, and related model/security behaviour. Platform storage bridge operations, real v1/v2 database migration fixtures, scheduler failure injection, and full import/move/restore provider flows still lack dedicated integration suites.
 - Risk: hosted analyze/unit CI can pass while platform-channel, migration, provider, and cross-layer regressions remain undetected.
 - Required action: add migration fixtures, fake MethodChannel/provider contract tests, notification failure injection, and end-to-end import/move/restore flows.
-- Status: unit regression coverage expanded; cross-platform integration coverage remains open.
+- Status: unit regression coverage expanded; cross-platform integration coverage remains open. Add fake-channel contract tests and migration fixtures before Task 2 sign-off; physical SAF/Files provider and scheduler-delivery checks remain platform/device validation.
 
 ### EXP-10 — Backup validation has no archive expansion/resource limits
 **Severity: High — security/reliability**
@@ -103,9 +103,9 @@ Status: **Eight engineering review lenses inspected; remediation committed for t
 
 ## Deferred validation (tracked in later project tasks)
 
-1. Database migration fixtures and concurrency/provider race tests remain for Task 4.
+1. Database migration fixtures and repository-level concurrency/provider race tests are required for Task 2 sign-off; deeper migration/data-retention validation continues in Task 4.
 2. Physical Android SAF/Recovery and iOS Files/bookmark persistence checks remain for Tasks 5 and 6.
-3. Real-provider, scheduler failure-injection, and large-file memory/performance measurements remain deferred to Tasks 5–8. Hosted CI does not certify these device-only behaviours.
+3. Real-provider, OS scheduler delivery/failure injection, and measured large-file memory/performance checks remain device/integration validation in Tasks 5–8. Hosted CI does not certify these device-only behaviours.
 
 ## Sign-off rule
 
