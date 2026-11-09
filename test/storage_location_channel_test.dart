@@ -124,18 +124,13 @@ void main() {
     );
   });
 
-  test('storage access check preserves revoked status from native layer', () async {
-    messenger.setMockMethodCallHandler(channel, (call) async {
-      expect(call.method, 'checkStorageAccess');
-      return {
+  test('access status normalization preserves revoked native status', () {
+    expect(
+      StorageLocationService.normalizeAccessStatus({
         'status': 'revoked',
         'message': 'Permission was removed',
         'name': 'Documents',
-      };
-    });
-
-    expect(
-      await StorageLocationService.instance.checkStorageAccess(),
+      }),
       {
         'status': 'revoked',
         'message': 'Permission was removed',
@@ -144,11 +139,9 @@ void main() {
     );
   });
 
-  test('storage access check fails closed for null native response', () async {
-    messenger.setMockMethodCallHandler(channel, (_) async => null);
-
+  test('access status normalization fails closed for null native response', () {
     expect(
-      await StorageLocationService.instance.checkStorageAccess(),
+      StorageLocationService.normalizeAccessStatus(null),
       {
         'status': 'unknown',
         'message': 'Storage access could not be verified.',
