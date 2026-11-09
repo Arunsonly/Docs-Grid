@@ -52,10 +52,17 @@ class MainActivity : FlutterActivity() {
             }
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName)
             .setMethodCallHandler { call, result ->
-                val mainThreadOnly = call.method == "chooseFolder" || call.method == "openPdf" ||
-                    call.method == "consumeSharedPdfs"
+                val mainThreadOnly = call.method == "chooseFolder" || call.method == "openPdf"
                 if (mainThreadOnly) {
                     handleStorageCall(call, result)
+                } else if (call.method == "consumeSharedPdfs") {
+                    // Capture and clear the Activity intent on the main thread,
+                    // then copy provider data on the storage worker.
+                    val incomingIntent = intent
+                    setIntent(Intent())
+                    storageExecutor.execute {
+                        handleStorageCall(call, onMainThreadResult(result), incomingIntent)
+                    }
                 } else {
                     storageExecutor.execute {
                         handleStorageCall(call, onMainThreadResult(result))
@@ -73,7 +80,11 @@ class MainActivity : FlutterActivity() {
             override fun notImplemented() { mainHandler.post { result.notImplemented() } }
         }
 
-    private fun handleStorageCall(call: MethodCall, result: MethodChannel.Result) {
+    private fun handleStorageCall(
+        call: MethodCall,
+        result: MethodChannel.Result,
+        incomingShareIntent: Intent? = null,
+    ) {
                     try {
                         when (call.method) {
                             "chooseFolder" -> {
@@ -108,7 +119,7 @@ class MainActivity : FlutterActivity() {
                                 val uri = prefs.getString("folders_uri", null) ?: prefs.getString("my_files_uri", null)
                                 result.success(uri?.let { mapOf("uri" to it, "name" to "DocsGrid/Folders") })
                             }
-                            "consumeSharedPdfs" -> result.success(consumeSharedPdfs())
+                            "consumeSharedPdfs" -> result.success(consumeSharedPdfs(incomingShareIntent))
                             "checkStorageAccess" -> result.success(checkStorageAccess())
                             "savePdf" -> {
                                 val tree = Uri.parse(call.argument<String>("treeUri")!!)
@@ -248,8 +259,8 @@ class MainActivity : FlutterActivity() {
         super.onDestroy()
     }
 
-    private fun consumeSharedPdfs(): List<Map<String, String>> {
-        val incoming = intent ?: return emptyList()
+    private fun consumeSharedPdfs(incomingIntent: Intent? = intent): List<Map<String, String>> {
+        val incoming = incomingIntent ?: return emptyList()
         val uris = linkedSetOf<Uri>()
         if (incoming.action == Intent.ACTION_SEND) {
             val single = if (android.os.Build.VERSION.SDK_INT >= 33) {
@@ -297,7 +308,6 @@ class MainActivity : FlutterActivity() {
                 else target.delete()
             } catch (_: Exception) { }
         }
-        setIntent(Intent())
         return output
     }
 
