@@ -51,6 +51,24 @@ void main() {
       );
     });
 
+    test('v1 to v2 upgrade does not create schema v3 objects early', () async {
+      final db = _RecordingDatabase();
+      await AppDatabase.forTesting(() async => db)
+          .upgradeForTesting(db, 1, 2);
+
+      expect(
+        db.statements.any((sql) => sql.contains('CREATE TABLE IF NOT EXISTS categories')),
+        isTrue,
+      );
+      expect(
+        db.statements.any((sql) => sql.contains('CREATE TABLE IF NOT EXISTS document_text_index')),
+        isFalse,
+      );
+      expect(db.statements.any((sql) => sql.contains('idx_documents_sha256')), isFalse);
+      expect(db.inserts.where((row) => row['version'] == 2), hasLength(1));
+      expect(db.inserts.where((row) => row['version'] == 3), isEmpty);
+    });
+
     test('upgrades a v2 database without replaying v2 table creation', () async {
       final db = _RecordingDatabase();
       await AppDatabase.forTesting(() async => db)
