@@ -88,10 +88,10 @@ Status: **Eight expert review lenses have been inspected. Source remediation and
 ### EXP-08 — Critical integration boundaries have limited automated regression coverage
 **Severity: Medium — QA**
 
-- Evidence: the audit branch contains focused unit tests for concurrent database-open/retry, reminder reconciliation states, ZIP resource limits, folder/category validation, portable snapshot manifests, and related model/security behaviour. Real v1/v2 database migration fixtures, scheduler failure injection, and full import/move/restore provider flows still lack dedicated integration suites. A new `storage_location_channel_test.dart` now adds five mocked MethodChannel contract tests for PDF save argument forwarding, failed copy handling, missing-child result handling, malformed directory entries, and opaque URI preservation.
+- Evidence: the audit branch contains focused unit tests for concurrent database-open/retry, reminder reconciliation states, ZIP resource limits, folder/category validation, portable snapshot manifests, and related model/security behaviour. Real SQLite v1/v2 migration fixtures, concurrent folder-operation race tests, and full import/move/restore provider flows still lack dedicated integration suites. Reminder scheduler failure-injection unit coverage is now present. A new `storage_location_channel_test.dart` now adds five mocked MethodChannel contract tests for PDF save argument forwarding, failed copy handling, missing-child result handling, malformed directory entries, and opaque URI preservation.
 - Risk: hosted analyze/unit CI can pass while platform-channel, migration, provider, and cross-layer regressions remain undetected.
-- Required action: add migration fixtures, fake MethodChannel/provider contract tests, notification failure injection, and end-to-end import/move/restore flows.
-- Status: unit regression coverage expanded; cross-platform integration coverage remains open. Add fake-channel contract tests and migration fixtures before Task 2 sign-off; physical SAF/Files provider and scheduler-delivery checks remain platform/device validation.
+- Required action: add real migration fixtures, concurrent folder-operation race tests, and end-to-end import/move/restore flows. Notification failure injection is covered by `test/reminder_reconciliation_failure_test.dart`, including create-time scheduling failure with persisted-row retention and reconciliation schedule/cancel failures.
+- Status: unit regression coverage expanded; mocked MethodChannel tests and notification failure injection are present. Real migration fixtures, concurrent folder-operation race tests, and end-to-end import/move/restore flows remain open; physical SAF/Files provider and actual scheduler-delivery checks remain platform/device validation.
 
 ### EXP-10 — Backup validation has no archive expansion/resource limits
 **Severity: High — security/reliability**
@@ -128,4 +128,4 @@ Status: **Eight expert review lenses have been inspected. Source remediation and
 
 ## Sign-off rule
 
-Task 2 sign-off is withheld until the outstanding migration fixtures, concurrency/provider regression suites, notification failure-injection coverage, full import/move/restore flows, and a fresh passing Android/iOS CI run are completed. Physical SAF/Files provider behaviour, actual OS notification delivery and measured device performance remain explicit later-task checks; hosted CI alone does not certify them.
+Task 2 sign-off is withheld until the outstanding real migration fixtures, concurrency/provider regression suites, full import/move/restore flows, and a fresh passing Android/iOS CI run are completed. Notification failure-injection unit coverage is present; real OS scheduler delivery remains a later device-validation item. Physical SAF/Files provider behaviour, actual OS notification delivery and measured device performance remain explicit later-task checks; hosted CI alone does not certify them.
