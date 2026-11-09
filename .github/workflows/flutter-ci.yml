@@ -242,6 +242,10 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev
       - name: Widget and unit tests
         run: flutter test
+      - name: End-to-end integration workflow tests
+        run: flutter test test/integration --reporter expanded
+      - name: Performance benchmark (10k documents)
+        run: flutter test test/performance --reporter expanded
       - name: Build debug APK
         run: |
           for attempt in 1 2 3; do
@@ -347,5 +351,9 @@ jobs:
         run: flutter analyze
       - name: Widget and unit tests
         run: flutter test
+      - name: End-to-end integration workflow tests
+        run: flutter test test/integration --reporter expanded
+      - name: Performance benchmark (10k documents)
+        run: flutter test test/performance --reporter expanded
       - name: Build iOS without code signing
         run: flutter build ios --no-codesign
