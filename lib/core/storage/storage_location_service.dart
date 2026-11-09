@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter/services.dart';
+import 'package:open_filex/open_filex.dart';
 
 class StorageLocationService {
   StorageLocationService._();
@@ -202,6 +203,18 @@ class StorageLocationService {
   }
 
   Future<void> openPdf(String uri) async {
+    if (uri.startsWith('file://')) {
+      final result = await OpenFilex.open(
+        Uri.parse(uri).toFilePath(),
+        type: 'application/pdf',
+      );
+      if (result.type != ResultType.done) {
+        throw StateError(result.message.isEmpty
+            ? 'No PDF viewer is available.'
+            : result.message);
+      }
+      return;
+    }
     await _channel.invokeMethod<bool>('openPdf', {'uri': uri});
   }
 
