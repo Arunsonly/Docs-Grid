@@ -35,7 +35,7 @@ Scope: all ten product functions, their data/repository logic, storage integrati
 - `lib/features/categories/data/category_repository.dart`: transactional category/tag history.
 - `lib/features/tools/document_tools_service.dart`: literal OCR search, current-byte SHA duplicate grouping and safe category/tag ID remapping during backup restore.
 - `lib/features/reminders/data/reminder_notifications.dart` and `reminder_repository.dart`: independent snooze scheduling and recurrence-anchor preservation.
-- `.github/workflows/flutter-ci.yml`: Flutter SDK pinned to 3.47.9 on Android and iOS; both jobs enforce the committed `pubspec.lock`.
+- `.github/workflows/flutter-ci.yml`: Flutter SDK pinned to 3.47.9 on Android and iOS; both jobs enforce the committed `pubspec.lock`, and scaffolding runs with `--no-pub` so it cannot resolve dependencies ahead of the lockfile check.
 - Regression tests added for category/tag history, literal OCR wildcard search, current-byte duplicate grouping, explicit storage NOT_FOUND and independent snooze IDs.
 
 ## Database and migration review
