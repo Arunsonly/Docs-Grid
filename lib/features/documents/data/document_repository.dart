@@ -1050,7 +1050,7 @@ class DocumentRepository {
           if (existingNow.isNotEmpty) throw _DuplicatePdfException();
           if (effectiveTargetFolderId != null) {
             final activeFolder = await txn.query('folders', columns: ['id'],
-              where: 'id = ? AND deleted_at IS NULL', whereArgs: [targetFolderId], limit: 1);
+              where: 'id = ? AND deleted_at IS NULL', whereArgs: [effectiveTargetFolderId], limit: 1);
             if (activeFolder.isEmpty) throw StateError('Destination folder no longer exists.');
           }
           if (selectedCategoryId != null) {
@@ -1068,7 +1068,7 @@ class DocumentRepository {
             'size_bytes': sizeBytes,
             'sha256': digest,
             'category_id': selectedCategoryId,
-            'folder_id': targetFolderId,
+            'folder_id': effectiveTargetFolderId,
             'extracted_text_status': 'pending',
             'created_at': now,
             'updated_at': now,
