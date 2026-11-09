@@ -394,7 +394,35 @@ class DocumentToolsService {
                 },
                 itemBuilder: (context, index) => ListTile(
                   key: ValueKey(ordered[index].path),
-                  leading: CircleAvatar(child: Text('${index + 1}')),
+                  leading: SizedBox(
+                    width: 48,
+                    height: 60,
+                    child: Stack(
+                      fit: StackFit.expand,
+                      children: [
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(6),
+                          child: Image.file(
+                            File(ordered[index].path),
+                            fit: BoxFit.cover,
+                            errorBuilder: (_, __, ___) => const ColoredBox(
+                              color: Colors.black12,
+                              child: Icon(Icons.image_not_supported_outlined),
+                            ),
+                          ),
+                        ),
+                        Align(
+                          alignment: Alignment.bottomLeft,
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                            color: Colors.black87,
+                            child: Text('${index + 1}',
+                              style: const TextStyle(color: Colors.white, fontSize: 11)),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
                   title: Text(ordered[index].name, maxLines: 1, overflow: TextOverflow.ellipsis),
                   trailing: ReorderableDragStartListener(index: index, child: const Icon(Icons.drag_handle)),
                 ),
