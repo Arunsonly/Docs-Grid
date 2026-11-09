@@ -174,6 +174,17 @@ class PortableSnapshotManifest {
     ids('reminders');
     ids('history');
 
+    for (final table in ['categories', 'tags']) {
+      final names = <String>{};
+      for (final row in tables[table] ?? const []) {
+        final name = row['name'];
+        if (name is! String || name.trim().isEmpty ||
+            !names.add(name.toLowerCase())) {
+          throw FormatException('Snapshot contains an invalid or duplicate $table name.');
+        }
+      }
+    }
+
     for (final row in tables['documents'] ?? const []) {
       final folderId = row['folder_id'];
       if (folderId != null && (folderId is! String || !folderIds.contains(folderId))) {
