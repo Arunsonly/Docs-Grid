@@ -870,20 +870,36 @@ class DocumentToolsService {
     final locations = Platform.isAndroid
         ? await StorageLocationService.instance.portableDataLocations()
         : const <String, String>{};
+    final directories = <Directory>[];
     final uri = locations['backupsUri'];
-    final directory = Directory(
-      uri != null && uri.startsWith('file://')
-          ? Uri.parse(uri).toFilePath()
-          : p.join((await getApplicationDocumentsDirectory()).path, 'DocsGrid', 'Backups'),
-    );
-    if (!await directory.exists()) return <File>[];
-    final files = await directory
-        .list(followLinks: false)
-        .where((entity) => entity is File && p.extension(entity.path).toLowerCase() == '.zip')
-        .cast<File>()
-        .toList();
-    files.sort((a, b) => b.lastModifiedSync().compareTo(a.lastModifiedSync()));
-    return files;
+    if (uri != null && uri.startsWith('file://')) {
+      directories.add(Directory(Uri.parse(uri).toFilePath()));
+    } else {
+      directories.add(Directory(
+        p.join((await getApplicationDocumentsDirectory()).path, 'DocsGrid', 'Backups'),
+      ));
+    }
+    final legacyUri = locations['legacyRootUri'];
+    if (legacyUri != null && legacyUri.startsWith('file://')) {
+      final legacyRoot = Uri.parse(legacyUri).toFilePath();
+      directories
+        ..add(Directory(p.join(legacyRoot, 'Backups')))
+        ..add(Directory(p.join(legacyRoot, 'System', 'Backups')));
+    }
+    final files = <File>[];
+    for (final directory in directories) {
+      if (!await directory.exists()) continue;
+      files.addAll(await directory
+          .list(followLinks: false)
+          .where((entity) => entity is File &&
+              p.extension(entity.path).toLowerCase() == '.zip')
+          .cast<File>()
+          .toList());
+    }
+    final unique = <String, File>{for (final file in files) file.path: file};
+    final result = unique.values.toList()
+      ..sort((a, b) => b.lastModifiedSync().compareTo(a.lastModifiedSync()));
+    return result;
   }
 
   /// Rebuilds the library index from surviving shared PDFs after reinstall.
@@ -932,6 +948,18 @@ class DocumentToolsService {
       (uri: unfiledRoot, preserveFolders: false),
       (uri: foldersRoot, preserveFolders: true),
     ];
+    final legacyUri = locations['legacyRootUri'];
+    if (legacyUri != null && legacyUri.startsWith('file://')) {
+      final legacyRoot = Uri.parse(legacyUri).toFilePath();
+      final legacyDocuments = Directory(p.join(legacyRoot, 'Documents'));
+      final legacyFolders = Directory(p.join(legacyRoot, 'Folders'));
+      if (await legacyDocuments.exists()) {
+        roots.add((uri: Uri.directory(legacyDocuments.path).toString(), preserveFolders: false));
+      }
+      if (await legacyFolders.exists()) {
+        roots.add((uri: Uri.directory(legacyFolders.path).toString(), preserveFolders: true));
+      }
+    }
     for (final root in roots) {
       final files = await storage.listPdfFilesRecursively(root.uri);
       for (final item in files) {
