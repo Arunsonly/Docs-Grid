@@ -12,6 +12,16 @@ void main() {
     messenger.setMockMethodCallHandler(channel, null);
   });
 
+  test('only explicit NOT_FOUND errors permit missing-child creation', () {
+    expect(StorageLocationService.isNotFoundError(
+      PlatformException(code: 'NOT_FOUND'),
+    ), isTrue);
+    expect(StorageLocationService.isNotFoundError(
+      PlatformException(code: 'PERMISSION_DENIED'),
+    ), isFalse);
+    expect(StorageLocationService.isNotFoundError(StateError('provider unavailable')), isFalse);
+  });
+
   test('savePdf forwards the opaque tree URI, filename and bytes', () async {
     final expectedBytes = Uint8List.fromList([37, 80, 68, 70]);
     messenger.setMockMethodCallHandler(channel, (call) async {
