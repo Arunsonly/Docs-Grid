@@ -227,7 +227,7 @@ jobs:
           mkdir -p android/app/src/main/kotlin/com/docsgrid/docs_grid
           cp platform/android/MainActivity.kt android/app/src/main/kotlin/com/docsgrid/docs_grid/MainActivity.kt
       - name: Install packages
-        run: flutter pub get --enforce-lockfile
+        run: flutter pub get
       - name: Generate DocsGrid launcher icons
         run: |
           sudo apt-get update
@@ -306,8 +306,35 @@ jobs:
         run: cp platform/ios/AppDelegate.swift ios/Runner/AppDelegate.swift
       - name: Set iOS deployment target for on-device ML Kit
         run: |
-          sed -i '' -E 's/IPHONEOS_DEPLOYMENT_TARGET = [0-9.]+;/IPHONEOS_DEPLOYMENT_TARGET = 15.5;/g' ios/Runner.xcodeproj/project.pbxproj
-          sed -i '' -E "s/platform :ios, '[0-9.]+'/platform :ios, '15.5'/" ios/Podfile
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          project = Path('ios/Runner.xcodeproj/project.pbxproj')
+          if not project.exists():
+              raise SystemExit('Generated iOS Xcode project is missing')
+          content = project.read_text()
+          content, count = re.subn(
+              r'IPHONEOS_DEPLOYMENT_TARGET = [0-9.]+;',
+              'IPHONEOS_DEPLOYMENT_TARGET = 15.5;',
+              content,
+          )
+          if count == 0:
+              raise SystemExit('Could not set iOS deployment target in Xcode project')
+          project.write_text(content)
+          podfile = Path('ios/Podfile')
+          if podfile.exists():
+              content = podfile.read_text()
+              content, count = re.subn(
+                  r"platform :ios, '[0-9.]+'",
+                  "platform :ios, '15.5'",
+                  content,
+                  count=1,
+              )
+              if count:
+                  podfile.write_text(content)
+          else:
+              print('No CocoaPods Podfile generated; Flutter plugin tooling will manage iOS dependencies.')
+          PY
       - name: Install packages
         run: flutter pub get --enforce-lockfile
       - name: Generate DocsGrid launcher icons
