@@ -839,6 +839,9 @@ class DocumentRepository {
 
     final storage = StorageLocationService.instance;
     final selected = await storage.selectedFolder();
+    final portableLocations = Platform.isAndroid
+        ? await storage.portableDataLocations()
+        : const <String, String>{};
     final requestedName = displayName?.trim();
     final safeName = _safePdfName(requestedName == null || requestedName.isEmpty
         ? p.basename(source.path)
@@ -849,7 +852,9 @@ class DocumentRepository {
     final folderUri = targetFolderId == null
         ? null
         : await FolderRepository().ensurePhysicalStorageUri(targetFolderId);
-    final destinationUri = targetFolderUri ?? folderUri ?? selected?['uri'];
+    final destinationUri = targetFolderUri ?? folderUri ??
+        (Platform.isAndroid ? portableLocations['documentsUri'] : selected?['uri']) ??
+        selected?['uri'];
     if (destinationUri != null) {
       uri = await storage.copyPdf(
         sourceUri: Uri.file(source.path).toString(),

@@ -167,7 +167,11 @@ class FolderRepository {
   /// physical storage tree. Returns null when the library is app-private.
   Future<String?> ensurePhysicalStorageUri(String folderId) async {
     final db = await _database.database;
-    final selectedRoot = await StorageLocationService.instance.selectedFolder();
+    final storage = StorageLocationService.instance;
+    final selectedRoot = await storage.selectedFolder();
+    final defaultLibraryRoot = Platform.isAndroid
+        ? (await storage.portableDataLocations())['libraryUri']
+        : null;
 
     final chain = <({String id, String name, String? parentId, String? uri})>[];
     final visited = <String>{};
@@ -192,7 +196,7 @@ class FolderRepository {
       currentId = row['parent_id'] as String?;
     }
 
-    String? parentUri = selectedRoot?['uri'];
+    String? parentUri = selectedRoot?['uri'] ?? defaultLibraryRoot;
     for (final folder in chain.reversed) {
       var childUri = folder.uri;
       if (childUri == null && parentUri != null) {
@@ -246,9 +250,10 @@ class FolderRepository {
       throw StateError('A folder with this name already exists here.');
     }
     final selectedRoot = await storage.selectedFolder();
-    final String? selectedRootUri = selectedRoot == null
-        ? null
-        : selectedRoot['uri'];
+    final String? selectedRootUri = selectedRoot?['uri'] ??
+        (Platform.isAndroid
+            ? (await storage.portableDataLocations())['libraryUri']
+            : null);
     final String? parentStorageUri = parentId == null
         ? selectedRootUri
         : await ensurePhysicalStorageUri(parentId);
