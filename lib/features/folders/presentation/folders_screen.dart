@@ -535,9 +535,13 @@ class _FoldersScreenState extends State<FoldersScreen> {
                                 leading: _selectedDocumentIds.isNotEmpty
                                     ? Checkbox(value: _selectedDocumentIds.contains(document.id), onChanged: (_) => setState(() { if (!_selectedDocumentIds.add(document.id)) _selectedDocumentIds.remove(document.id); }))
                                     : const Icon(Icons.picture_as_pdf_outlined),
-                                title: Text('${document.name}.pdf', maxLines: 1, overflow: TextOverflow.ellipsis),
+                                title: Tooltip(
+                                  message: '${document.name}.pdf',
+                                  triggerMode: TooltipTriggerMode.longPress,
+                                  waitDuration: const Duration(milliseconds: 450),
+                                  child: Text('${document.name}.pdf', maxLines: 1, overflow: TextOverflow.ellipsis),
+                                ),
                                 subtitle: Text(_size(document.sizeBytes)),
-                                onLongPress: () => setState(() { if (!_selectedDocumentIds.add(document.id)) _selectedDocumentIds.remove(document.id); }),
                                 onTap: () async {
                                   if (_selectedDocumentIds.isNotEmpty) {
                                     setState(() { if (!_selectedDocumentIds.add(document.id)) _selectedDocumentIds.remove(document.id); });
