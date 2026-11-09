@@ -926,11 +926,28 @@ class DocumentToolsService {
         if (includeCategories) rows['categories'] = backup.rowsByTable['categories']!;
         if (includeTags) rows['tags'] = backup.rowsByTable['tags']!;
         if (includeDocuments) rows['document_tags'] = backup.rowsByTable['document_tags']!;
-        if (selection.contains(BackupRestoreSection.reminders)) {
-          rows['reminders'] = backup.rowsByTable['reminders']!;
-        }
-        if (selection.contains(BackupRestoreSection.history)) {
-          rows['history'] = backup.rowsByTable['history']!;
+        if (selection.contains(BackupRestoreSection.reminders) ||
+            selection.contains(BackupRestoreSection.history)) {
+          final liveDb = await _database.database;
+          final liveDocumentRows = await liveDb.query('documents', columns: ['id']);
+          final liveDocumentIds = liveDocumentRows
+              .map((row) => row['id'] as String)
+              .toSet();
+          bool safeOptionalReference(Map<String, Object?> row) {
+            final documentId = row['document_id'];
+            return documentId == null ||
+                (documentId is String && liveDocumentIds.contains(documentId)) ||
+                (includeDocuments && documentId is String &&
+                    backup.rowsByTable['documents']!.any((doc) => doc['id'] == documentId));
+          }
+          if (selection.contains(BackupRestoreSection.reminders)) {
+            rows['reminders'] = backup.rowsByTable['reminders']!
+                .where(safeOptionalReference).toList();
+          }
+          if (selection.contains(BackupRestoreSection.history)) {
+            rows['history'] = backup.rowsByTable['history']!
+                .where(safeOptionalReference).toList();
+          }
         }
         if (selection.contains(BackupRestoreSection.settings)) {
           rows['settings'] = backup.rowsByTable['settings']!;
