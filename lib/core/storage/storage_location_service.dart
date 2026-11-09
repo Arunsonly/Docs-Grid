@@ -90,12 +90,12 @@ class StorageLocationService {
   /// Android validates Documents/Folders/Database/Recovery and at least one
   /// snapshot before updating the active portable-storage preferences.
   Future<Map<String, String>?> chooseRecoveryFolder() async {
-    if (Platform.isAndroid) {
-      final value = await _channel.invokeMapMethod<String, dynamic>('chooseRecoveryFolder');
-      if (value == null || value['uri'] == null) return null;
-      return {'uri': value['uri'] as String, 'name': (value['name'] as String?) ?? 'DocsGrid'};
+    if (!Platform.isAndroid) {
+      throw UnsupportedError('Selecting an existing portable recovery tree is currently supported on Android only. Existing data has not been changed.');
     }
-    return chooseFolder();
+    final value = await _channel.invokeMapMethod<String, dynamic>('chooseRecoveryFolder');
+    if (value == null || value['uri'] == null) return null;
+    return {'uri': value['uri'] as String, 'name': (value['name'] as String?) ?? 'DocsGrid'};
   }
 
   Future<String> savePdf({
