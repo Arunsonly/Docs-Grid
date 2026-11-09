@@ -215,6 +215,10 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
               onPressed: () => Navigator.pop(context, BackupRestoreMode.merge),
               child: const Text('Merge'),
             ),
+            TextButton(
+              onPressed: () => Navigator.pop(context, BackupRestoreMode.selective),
+              child: const Text('Selective'),
+            ),
             FilledButton(
               onPressed: () => Navigator.pop(context, BackupRestoreMode.fullReplacement),
               child: const Text('Full replacement'),
@@ -223,9 +227,69 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
         ),
       );
       if (restoreMode == null || !mounted) return;
+      Set<BackupRestoreSection>? selection;
+      if (restoreMode == BackupRestoreMode.selective) {
+        final selected = <BackupRestoreSection>{
+          BackupRestoreSection.documents,
+          BackupRestoreSection.reminders,
+          BackupRestoreSection.history,
+          BackupRestoreSection.settings,
+        };
+        selection = await showDialog<Set<BackupRestoreSection>>(
+          context: context,
+          builder: (dialogContext) => StatefulBuilder(
+            builder: (dialogContext, refresh) => AlertDialog(
+              title: const Text('Select data to restore'),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    for (final item in BackupRestoreSection.values)
+                      CheckboxListTile(
+                        dense: true,
+                        value: selected.contains(item),
+                        title: Text(switch (item) {
+                          BackupRestoreSection.documents => 'PDFs and document records',
+                          BackupRestoreSection.folders => 'Folders',
+                          BackupRestoreSection.categories => 'Categories',
+                          BackupRestoreSection.tags => 'Tags',
+                          BackupRestoreSection.reminders => 'Reminders',
+                          BackupRestoreSection.history => 'Activity and history',
+                          BackupRestoreSection.settings => 'Settings',
+                          BackupRestoreSection.ocrIndexes => 'OCR search indexes',
+                        }),
+                        onChanged: (checked) => refresh(() {
+                          if (checked == true) {
+                            selected.add(item);
+                          } else {
+                            selected.remove(item);
+                          }
+                        }),
+                      ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(dialogContext),
+                  child: const Text('Cancel'),
+                ),
+                FilledButton(
+                  onPressed: selected.isEmpty
+                      ? null
+                      : () => Navigator.pop(dialogContext, Set.of(selected)),
+                  child: const Text('Continue'),
+                ),
+              ],
+            ),
+          ),
+        );
+        if (selection == null || selection.isEmpty || !mounted) return;
+      }
       final restored = await _tools.restoreBackup(
         file,
         mode: restoreMode,
+        selection: selection,
         confirm: (count) async {
           if (!mounted) return false;
           return await showDialog<bool>(
