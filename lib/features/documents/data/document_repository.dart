@@ -1000,7 +1000,7 @@ class DocumentRepository {
           skipped++;
           continue;
         }
-        final effectiveTargetFolderId = review != null && pickedFiles.files.length == 1
+        final effectiveTargetFolderId = review != null && pickedFiles.length == 1
             ? decision.targetFolderId
             : targetFolderId;
         final destinationFolderUri = selectedFolder == null
