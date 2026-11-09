@@ -382,7 +382,10 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     final result = await _repository.moveManyToFolder(selected, destination.isEmpty ? null : destination);
     if (!mounted) return;
     setState(_selectedIds.clear);
-    await _load();
+    for (final document in selected) {
+      await _patchDocument(document.id);
+    }
+    await _refreshDashboardSummary();
     if (!mounted) return;
     final failures = result['failures'] as List<String>;
     final failureSummary = failures.isEmpty ? '' : ' · ${failures.length} failed';

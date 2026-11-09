@@ -49,6 +49,29 @@ void main() {
 
   tearDown(() async => database.close());
 
+  test('dashboard summary cache refreshes after trigger-observed external mutations', () async {
+    await database.insert('documents', {
+      'id': 'cache-1', 'name': 'cache.pdf', 'mime_type': 'application/pdf',
+      'size_bytes': 100, 'created_at': '2026-11-09T00:00:00.000Z',
+      'updated_at': '2026-11-09T00:00:00.000Z', 'metadata_json': '{}',
+      'is_favorite': 0,
+    });
+    final first = await repository.dashboardSummary();
+    final second = await repository.dashboardSummary();
+    expect(identical(first, second), isTrue);
+    expect(first.documentCount, 1);
+    await database.update('documents', {'is_favorite': 1, 'size_bytes': 250},
+        where: 'id = ?', whereArgs: ['cache-1']);
+    final afterUpdate = await repository.dashboardSummary();
+    expect(identical(afterUpdate, first), isFalse);
+    expect(afterUpdate.favoriteCount, 1);
+    expect(afterUpdate.totalBytes, 250);
+    await database.delete('documents', where: 'id = ?', whereArgs: ['cache-1']);
+    final afterDelete = await repository.dashboardSummary();
+    expect(afterDelete.documentCount, 0);
+    expect(afterDelete.totalBytes, 0);
+  });
+
   test('dashboard aggregate and keyset pages return exact, non-overlapping results', () async {
     const count = 125;
     const stamp = '2026-11-09T00:00:00.000Z';
