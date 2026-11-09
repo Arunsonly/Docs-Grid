@@ -219,7 +219,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
       final selected = await storage.selectedFolder() ?? await storage.chooseFolder();
       if (!mounted || selected == null) return;
       _message('Finding PDFs in ${selected['name']}…');
-      final files = await storage.listPdfFilesRecursively(selected['uri']!);
+      final files = await storage.listStorageTreeRecursively(selected['uri']!);
       if (!mounted) return;
       await _showRecursiveStoragePdfs(selected['name']!, files);
     } catch (error) {
@@ -229,37 +229,50 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
 
   Future<void> _showRecursiveStoragePdfs(
     String rootName,
-    List<Map<String, Object?>> files,
+    List<Map<String, Object?>> entries,
   ) async {
     if (!mounted) return;
-    final grouped = <String, List<Map<String, Object?>>>{};
-    for (final file in files) {
-      grouped.putIfAbsent(file['folderPath'] as String, () => []).add(file);
+    final grouped = <String, List<Map<String, Object?>>>{'': []};
+    for (final entry in entries) {
+      final parent = entry['folderPath'] as String;
+      grouped.putIfAbsent(parent, () => []);
+      if (entry['isDirectory'] == true) {
+        grouped.putIfAbsent(entry['path'] as String, () => []);
+      } else {
+        grouped[parent]!.add(entry);
+      }
     }
     final folders = grouped.keys.toList()..sort();
+    final pdfCount = entries.where((entry) => entry['isDirectory'] == false).length;
     await showDialog<void>(
       context: context,
       builder: (dialogContext) => AlertDialog(
-        title: Text('PDFs in $rootName'),
+        title: Text('Phone folders — $rootName'),
         content: SizedBox(
           width: double.maxFinite,
-          height: 520,
-          child: files.isEmpty
-              ? const Center(child: Text('No PDFs found in the selected folder or its subfolders.'))
+          height: MediaQuery.sizeOf(dialogContext).height * 0.65,
+          child: folders.length == 1 && pdfCount == 0
+              ? const Center(child: Text('No folders or PDFs in this location.'))
               : ListView.builder(
                   itemCount: folders.length,
                   itemBuilder: (context, index) {
                     final folderPath = folders[index];
-                    final entries = grouped[folderPath]!;
+                    final files = grouped[folderPath]!;
                     final title = folderPath.isEmpty ? '$rootName (root)' : folderPath;
                     return ExpansionTile(
                       key: PageStorageKey('storage-pdf-folder:$folderPath'),
                       leading: const Icon(Icons.folder_outlined),
                       title: Text(title, maxLines: 2, overflow: TextOverflow.ellipsis),
-                      subtitle: Text('${entries.length} PDF${entries.length == 1 ? '' : 's'}'),
+                      subtitle: Text('${files.length} PDF${files.length == 1 ? '' : 's'}'),
                       initiallyExpanded: folderPath.isEmpty,
                       children: [
-                        for (final entry in entries)
+                        if (files.isEmpty)
+                          const ListTile(
+                            dense: true,
+                            title: Text('No PDFs in this folder'),
+                            subtitle: Text('Subfolders are listed separately'),
+                          ),
+                        for (final entry in files)
                           ListTile(
                             dense: true,
                             leading: const Icon(Icons.picture_as_pdf_outlined),
