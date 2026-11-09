@@ -120,7 +120,9 @@ class ReminderNotifications {
   }
 
   int _id(String id) => stableNotificationId(id);
-  int _snoozeId(String id) => stableNotificationId('${id}:snooze');
+  @visibleForTesting
+  static int stableSnoozeNotificationId(String id) => stableNotificationId('${id}:snooze');
+  int _snoozeId(String id) => stableSnoozeNotificationId(id);
 
   /// Computes the next wall-clock occurrence without changing the stored
   /// original date. This keeps daily/weekly reminders alive after their first
