@@ -34,11 +34,13 @@ Uint8List transformDocumentImageForTesting(Map<String, Object> args) {
       final width = math.max(
         math.sqrt(math.pow(tr.x - tl.x, 2) + math.pow(tr.y - tl.y, 2)),
         math.sqrt(math.pow(br.x - bl.x, 2) + math.pow(br.y - bl.y, 2)),
-      ).round().clamp(64, oriented.width).toInt();
+      ).round();
+      final outputWidth = math.min(oriented.width, math.max(1, width));
       final height = math.max(
         math.sqrt(math.pow(bl.x - tl.x, 2) + math.pow(bl.y - tl.y, 2)),
         math.sqrt(math.pow(br.x - tr.x, 2) + math.pow(br.y - tr.y, 2)),
-      ).round().clamp(64, oriented.height).toInt();
+      ).round();
+      final outputHeight = math.min(oriented.height, math.max(1, height));
       output = img.copyRectify(
         oriented,
         topLeft: tl,
@@ -46,7 +48,7 @@ Uint8List transformDocumentImageForTesting(Map<String, Object> args) {
         bottomLeft: bl,
         bottomRight: br,
         interpolation: img.Interpolation.linear,
-        toImage: img.Image(width: width, height: height),
+        toImage: img.Image(width: outputWidth, height: outputHeight),
       );
       break;
     default:
