@@ -39,14 +39,16 @@ class DocumentRecord {
   final String? folderId;
 
   factory DocumentRecord.fromMap(Map<String, Object?> row) {
-    Map<String, dynamic> metadata;
+    Map<String, dynamic> metadata = <String, dynamic>{};
     try {
-      final decoded = jsonDecode((row['metadata_json'] as String?) ?? '{}');
-      metadata = decoded is Map<String, dynamic> ? decoded : <String, dynamic>{};
-    } on FormatException {
+      final rawMetadata = row['metadata_json'];
+      final decoded = rawMetadata is String && rawMetadata.isNotEmpty
+          ? jsonDecode(rawMetadata)
+          : <String, dynamic>{};
+      if (decoded is Map<String, dynamic>) metadata = decoded;
+    } catch (_) {
       // Damaged optional metadata must not make an otherwise valid PDF
       // unreadable. Non-critical flags safely fall back to their defaults.
-      metadata = <String, dynamic>{};
     }
     return DocumentRecord(
       id: row['id'] as String,
@@ -277,6 +279,14 @@ class DocumentRepository {
 
     try {
       await db.transaction((txn) async {
+        if (folderId != null) {
+          final activeFolder = await txn.query(
+            'folders', columns: ['id'],
+            where: 'id = ? AND deleted_at IS NULL',
+            whereArgs: [folderId], limit: 1,
+          );
+          if (activeFolder.isEmpty) throw StateError('Destination folder no longer exists.');
+        }
         final count = await txn.update(
           'documents',
           {
@@ -953,7 +963,9 @@ class DocumentRepository {
     var cleaned = p.basename(name).replaceAll(RegExp(r'[<>:"/\\|?*]'), '_').trim();
     if (cleaned.isEmpty) cleaned = 'Document.pdf';
     if (!cleaned.toLowerCase().endsWith('.pdf')) cleaned = '$cleaned.pdf';
-    return cleaned;
+    final stem = p.basenameWithoutExtension(cleaned);
+    final boundedStem = String.fromCharCodes(stem.runes.take(120));
+    return '${boundedStem.isEmpty ? 'Document' : boundedStem}.pdf';
   }
 
   Future<File> _uniqueFile(Directory directory, String name) async {
@@ -1129,9 +1141,10 @@ class DocumentRepository {
   Future<void> rename(DocumentRecord document, String newName) async {
     final cleaned = newName.trim();
     if (cleaned.isEmpty) throw ArgumentError('Name cannot be empty.');
-    final safeBase = p.basenameWithoutExtension(cleaned)
+    final rawBase = p.basenameWithoutExtension(cleaned)
         .replaceAll(RegExp(r'[<>:"/\\|?*]'), '_')
         .trim();
+    final safeBase = String.fromCharCodes(rawBase.runes.take(120));
     if (safeBase.isEmpty) throw ArgumentError('Name is not valid.');
     final safeName = '$safeBase.pdf';
     if (safeBase == document.name) return;
