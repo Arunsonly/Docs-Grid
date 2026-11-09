@@ -298,7 +298,11 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
                 builder: (context) => AlertDialog(
                   title: const Text('Restore backup?'),
                   content: Text(
-                    'The archive contains $count PDF file(s). Existing records will be kept; the backup will be added without overwriting your current files.',
+                    restoreMode == BackupRestoreMode.fullReplacement
+                        ? 'The archive contains $count PDF file(s). DocsGrid will first create a full safety backup, then replace the current database. Existing shared PDFs are not automatically deleted.'
+                        : restoreMode == BackupRestoreMode.selective
+                            ? 'The archive contains $count PDF file(s). Only the data groups you selected will be imported; current records are preserved.'
+                            : 'The archive contains $count PDF file(s). Existing records will be kept; the backup will be merged without overwriting your current files.',
                   ),
                   actions: [
                     TextButton(
