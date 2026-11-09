@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:uuid/uuid.dart';
 
@@ -45,7 +46,7 @@ class CategoryRepository {
   }
 
   Future<CategoryRecord> createCategory(String name) async {
-    final cleaned = _validate(name);
+    final cleaned = validateName(name);
     final db = await _database.database;
     final category = CategoryRecord(id: _uuid.v4(), name: cleaned, isBuiltIn: false);
     await db.insert('categories', {
@@ -64,7 +65,7 @@ class CategoryRepository {
     final db = await _database.database;
     final count = await db.update(
       'categories',
-      {'name': _validate(name)},
+      {'name': validateName(name)},
       where: 'id = ? AND is_builtin = 0',
       whereArgs: [category.id],
     );
@@ -77,9 +78,28 @@ class CategoryRepository {
     }
     final db = await _database.database;
     await db.transaction((txn) async {
-      await txn.update('documents', {'category_id': null},
-          where: 'category_id = ?', whereArgs: [category.id]);
-      await txn.delete('categories', where: 'id = ?', whereArgs: [category.id]);
+      final current = await txn.query(
+        'categories',
+        columns: ['is_builtin'],
+        where: 'id = ?',
+        whereArgs: [category.id],
+        limit: 1,
+      );
+      if (current.isEmpty || (current.first['is_builtin'] as int? ?? 0) == 1) {
+        throw StateError('Category no longer exists or is built in.');
+      }
+      await txn.update(
+        'documents',
+        {'category_id': null},
+        where: 'category_id = ?',
+        whereArgs: [category.id],
+      );
+      final deleted = await txn.delete(
+        'categories',
+        where: 'id = ? AND is_builtin = 0',
+        whereArgs: [category.id],
+      );
+      if (deleted == 0) throw StateError('Category changed during deletion.');
     });
   }
 
@@ -90,7 +110,7 @@ class CategoryRepository {
   }
 
   Future<TagRecord> createTag(String name) async {
-    final cleaned = _validate(name);
+    final cleaned = validateName(name);
     final db = await _database.database;
     final tag = TagRecord(id: _uuid.v4(), name: cleaned);
     await db.insert('tags', {
@@ -105,7 +125,7 @@ class CategoryRepository {
     final db = await _database.database;
     final count = await db.update(
       'tags',
-      {'name': _validate(name)},
+      {'name': validateName(name)},
       where: 'id = ?',
       whereArgs: [tag.id],
     );
@@ -130,22 +150,53 @@ class CategoryRepository {
   Future<void> setDocumentTags(String documentId, List<String> tagIds) async {
     final db = await _database.database;
     await db.transaction((txn) async {
+      final documents = await txn.query(
+        'documents',
+        columns: ['id'],
+        where: 'id = ? AND deleted_at IS NULL',
+        whereArgs: [documentId],
+        limit: 1,
+      );
+      if (documents.isEmpty) throw StateError('Document no longer exists.');
       await txn.delete('document_tags', where: 'document_id = ?', whereArgs: [documentId]);
       for (final tagId in tagIds.toSet()) {
-        await txn.insert('document_tags', {'document_id': documentId, 'tag_id': tagId},
-            conflictAlgorithm: ConflictAlgorithm.ignore);
+        await txn.insert(
+          'document_tags',
+          {'document_id': documentId, 'tag_id': tagId},
+          conflictAlgorithm: ConflictAlgorithm.ignore,
+        );
       }
     });
   }
 
   Future<void> setDocumentCategory(String documentId, String? categoryId) async {
     final db = await _database.database;
-    await db.update('documents', {'category_id': categoryId,
-      'updated_at': DateTime.now().toUtc().toIso8601String()},
-      where: 'id = ? AND deleted_at IS NULL', whereArgs: [documentId]);
+    await db.transaction((txn) async {
+      if (categoryId != null) {
+        final categories = await txn.query(
+          'categories',
+          columns: ['id'],
+          where: 'id = ?',
+          whereArgs: [categoryId],
+          limit: 1,
+        );
+        if (categories.isEmpty) throw StateError('Category no longer exists.');
+      }
+      final changed = await txn.update(
+        'documents',
+        {
+          'category_id': categoryId,
+          'updated_at': DateTime.now().toUtc().toIso8601String(),
+        },
+        where: 'id = ? AND deleted_at IS NULL',
+        whereArgs: [documentId],
+      );
+      if (changed == 0) throw StateError('Document no longer exists.');
+    });
   }
 
-  String _validate(String name) {
+  @visibleForTesting
+  static String validateName(String name) {
     final cleaned = name.trim();
     if (cleaned.isEmpty) throw ArgumentError('Name cannot be empty.');
     if (cleaned.length > 40) throw ArgumentError('Name must be 40 characters or fewer.');

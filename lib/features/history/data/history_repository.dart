@@ -17,14 +17,22 @@ class ActivityRecord {
   final DateTime createdAt;
   final Map<String, dynamic> details;
 
-  factory ActivityRecord.fromMap(Map<String, Object?> row) => ActivityRecord(
-        id: row['id'] as String,
-        action: row['action'] as String,
-        documentName: row['document_name'] as String?,
-        createdAt: DateTime.parse(row['created_at'] as String).toLocal(),
-        details: jsonDecode((row['details_json'] as String?) ?? '{}')
-            as Map<String, dynamic>,
-      );
+  factory ActivityRecord.fromMap(Map<String, Object?> row) {
+    Map<String, dynamic> details;
+    try {
+      final decoded = jsonDecode((row['details_json'] as String?) ?? '{}');
+      details = decoded is Map<String, dynamic> ? decoded : <String, dynamic>{};
+    } catch (_) {
+      details = <String, dynamic>{};
+    }
+    return ActivityRecord(
+      id: row['id'] as String,
+      action: row['action'] as String,
+      documentName: row['document_name'] as String?,
+      createdAt: DateTime.parse(row['created_at'] as String).toLocal(),
+      details: details,
+    );
+  }
 }
 
 class HistoryRepository {

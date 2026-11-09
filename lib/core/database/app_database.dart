@@ -1,18 +1,44 @@
+import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart';
 
 class AppDatabase {
-  AppDatabase._();
+  AppDatabase._({this._opener});
+  @visibleForTesting
+  AppDatabase.forTesting(Future<Database> Function() opener) : this._(opener: opener);
+
   static final AppDatabase instance = AppDatabase._();
+  final Future<Database> Function()? _opener;
 
   Database? _database;
+  Future<Database>? _openingDatabase;
 
   Future<Database> get database async {
-    if (_database != null) return _database!;
+    final current = _database;
+    if (current != null) return current;
+
+    // Share the first-open Future so simultaneous first repository calls do
+    // not race to open and initialize the same SQLite database.
+    final opening = _openingDatabase;
+    if (opening != null) return opening;
+
+    final future = _opener?.call() ?? _openDatabase();
+    _openingDatabase = future;
+    try {
+      final opened = await future;
+      _database = opened;
+      return opened;
+    } catch (_) {
+      _openingDatabase = null;
+      rethrow;
+    }
+  }
+
+  Future<Database> _openDatabase() async {
     final directory = await getApplicationDocumentsDirectory();
     final dbPath = p.join(directory.path, 'docs_grid.db');
-    _database = await openDatabase(
+    return openDatabase(
       dbPath,
       version: 3,
       onConfigure: (db) async => db.execute('PRAGMA foreign_keys = ON'),
@@ -99,7 +125,18 @@ class AppDatabase {
           'applied_at': DateTime.now().toUtc().toIso8601String(),
         });
       },
-      onUpgrade: (db, oldVersion, newVersion) async {
+      onUpgrade: upgradeForTesting,
+      onDowngrade: (db, oldVersion, newVersion) async {
+        throw StateError(
+          'Database downgrade from $oldVersion to $newVersion is not supported',
+        );
+      },
+    );
+  }
+
+  @visibleForTesting
+  Future<void> upgradeForTesting(Database db, int oldVersion, int newVersion) async {
+    if (newVersion <= oldVersion) return;
         // Databases created by the original v1 app predate schema_migrations.
         // Create the tracking table before recording the first upgrade so an
         // existing user's database can migrate without a missing-table crash.
@@ -109,24 +146,22 @@ class AppDatabase {
             applied_at TEXT NOT NULL
           )
         ''');
-        if (oldVersion < 2) {
+        if (oldVersion < 2 && newVersion >= 2) {
           await _createV2Tables(db);
           await db.insert('schema_migrations', {
             'version': 2,
             'applied_at': DateTime.now().toUtc().toIso8601String(),
           });
         }
-        if (oldVersion < 3) {
+        if (oldVersion < 3 && newVersion >= 3) {
           await _createV3Tables(db);
           await db.insert('schema_migrations', {
             'version': 3,
             'applied_at': DateTime.now().toUtc().toIso8601String(),
           });
         }
-      },
-    );
-    return _database!;
   }
+
   Future<void> _createV3Tables(DatabaseExecutor db) async {
     await db.execute('''
       CREATE TABLE IF NOT EXISTS document_text_index (
