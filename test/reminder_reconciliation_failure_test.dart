@@ -1,0 +1,108 @@
+import 'package:docs_grid/core/database/app_database.dart';
+import 'package:docs_grid/features/reminders/data/reminder_repository.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:sqflite/sqflite.dart';
+
+class _ReminderRowsDatabase implements Database {
+  _ReminderRowsDatabase(this.rows);
+  final List<Map<String, Object?>> rows;
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) {
+    if (invocation.memberName == #query) {
+      return Future<List<Map<String, Object?>>>.value(rows);
+    }
+    return super.noSuchMethod(invocation);
+  }
+}
+
+class _FailingNotificationGateway implements ReminderNotificationGateway {
+  var scheduleCalls = 0;
+  var cancelCalls = 0;
+
+  @override
+  Future<void> cancel(String id) async {
+    cancelCalls++;
+    throw StateError('OS notification service unavailable');
+  }
+
+  @override
+  Future<void> schedule({
+    required String id,
+    required String title,
+    String? body,
+    required DateTime at,
+    String? recurrence,
+  }) async {
+    scheduleCalls++;
+    throw StateError('OS notification service unavailable');
+  }
+
+  @override
+  Future<void> scheduleSnooze({
+    required String id,
+    required String title,
+    String? body,
+    required DateTime at,
+  }) async {
+    throw StateError('OS notification service unavailable');
+  }
+
+  @override
+  Future<bool> requestPermission() async => false;
+}
+
+void main() {
+  test('scheduler failure is counted and persisted reminder is retained', () async {
+    final row = <String, Object?>{
+      'id': 'reminder-active',
+      'enabled': 1,
+      'status': 'scheduled',
+      'remind_at_utc': DateTime.now().add(const Duration(days: 2)).toUtc().toIso8601String(),
+      'recurrence_rule': null,
+      'snoozed_until': null,
+      'title': 'Renew policy',
+      'note': 'Call insurer',
+    };
+    final db = _ReminderRowsDatabase([row]);
+    final gateway = _FailingNotificationGateway();
+    final repository = ReminderRepository(
+      database: AppDatabase.forTesting(() async => db),
+      notifications: gateway,
+    );
+
+    final failures = await repository.reconcileNotifications();
+
+    expect(failures, 1);
+    expect(gateway.scheduleCalls, 1);
+    expect(db.rows, contains(row));
+    expect(row['status'], 'scheduled');
+    expect(row['enabled'], 1);
+  });
+
+  test('cancellation failure is counted without deleting completed reminder', () async {
+    final row = <String, Object?>{
+      'id': 'reminder-completed',
+      'enabled': 0,
+      'status': 'completed',
+      'remind_at_utc': DateTime.now().toUtc().toIso8601String(),
+      'recurrence_rule': null,
+      'snoozed_until': null,
+      'title': 'Old reminder',
+      'note': null,
+    };
+    final db = _ReminderRowsDatabase([row]);
+    final gateway = _FailingNotificationGateway();
+    final repository = ReminderRepository(
+      database: AppDatabase.forTesting(() async => db),
+      notifications: gateway,
+    );
+
+    final failures = await repository.reconcileNotifications();
+
+    expect(failures, 1);
+    expect(gateway.cancelCalls, 1);
+    expect(db.rows, contains(row));
+    expect(row['status'], 'completed');
+  });
+}
