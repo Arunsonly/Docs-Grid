@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:archive/archive.dart';
 import 'package:crypto/crypto.dart';
 import 'package:docs_grid/features/tools/document_tools_service.dart';
+import 'package:docs_grid/features/tools/portable_snapshot_rows_validator.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -100,6 +101,42 @@ void main() {
     await file.writeAsBytes(ZipEncoder().encode(archive), flush: true);
     return file;
   }
+
+  test('rejects invalid reminder timestamps before restore writes', () {
+    expect(
+      () => PortableSnapshotRowsValidator.validate({
+        'folders': <Map<String, Object?>>[],
+        'documents': <Map<String, Object?>>[],
+        'categories': <Map<String, Object?>>[],
+        'tags': <Map<String, Object?>>[],
+        'document_tags': <Map<String, Object?>>[],
+        'reminders': <Map<String, Object?>>[
+          {
+            'id': 'reminder-1',
+            'title': 'Renewal',
+            'remind_at_utc': 'not-a-timestamp',
+            'timezone_id': 'Asia/Kolkata',
+            'next_fire_at_utc': '2026-11-09T10:00:00.000Z',
+            'created_at': '2026-11-09T00:00:00.000Z',
+            'updated_at': '2026-11-09T00:00:00.000Z',
+            'enabled': 1,
+            'lead_days': 0,
+            'notification_id': 1,
+            'document_id': null,
+            'note': null,
+            'recurrence_rule': null,
+            'recurrence_end_at': null,
+            'snoozed_until': null,
+            'completed_at': null,
+          },
+        ],
+        'history': <Map<String, Object?>>[],
+        'settings': <Map<String, Object?>>[],
+        'document_text_index': <Map<String, Object?>>[],
+      }),
+      throwsA(isA<FormatException>()),
+    );
+  });
 
   test('rejects unreferenced ZIP entries', () async {
     final file = await makeBackup(
