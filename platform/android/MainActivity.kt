@@ -672,9 +672,8 @@ class MainActivity : FlutterActivity() {
             // Reuse the selected DocsGrid directory when the user selected it
             // directly. Previously this always created DocsGrid/DocsGrid, which
             // made Recovery point at a new empty tree instead of the existing data.
-            val selectedRoot = DocumentsContract.buildDocumentUriUsingTree(
-                uri, DocumentsContract.getTreeDocumentId(uri)
-            )
+            // Reuse selectedRoot declared above; both recovery and normal
+            // library setup refer to the same selected SAF tree.
             val selectedName = contentResolver.query(
                 selectedRoot,
                 arrayOf(DocumentsContract.Document.COLUMN_DISPLAY_NAME),
