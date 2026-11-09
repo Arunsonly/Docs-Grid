@@ -140,12 +140,19 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
   }
 
   Future<void> _backup() => _run(() async {
-    final archive = await _tools.createBackup();
-    // Share the on-disk ZIP directly. The platform share sheet lets the user
-    // save it to Files/Drive without loading the whole archive into RAM.
+    final archive = await _tools.createBackup(
+      onProgress: (completed, total) {
+        if (!mounted) return;
+        setState(() => _message =
+            total == 0 ? 'Preparing backup archive…' : 'Backing up PDFs: $completed of $total');
+      },
+    );
+    if (mounted) setState(() => _message = 'Verifying completed backup archive…');
+    // Share only after ZIP validation succeeds. share_plus supplies a secure
+    // content URI through Android's Sharesheet instead of exposing a raw path.
     await _tools.shareFile(archive.path, text: 'DocsGrid backup');
     if (mounted) {
-      setState(() => _message = 'Backup created. Use the share sheet to save a copy somewhere safe.');
+      setState(() => _message = 'Backup verified and created. Use the share sheet to save a copy somewhere safe.');
     }
   });
 
