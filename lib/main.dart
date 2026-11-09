@@ -180,21 +180,61 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
     if (prefs.getBool('docsgrid_restore_prompt_shown') == true) return;
     await prefs.setBool('docsgrid_restore_prompt_shown', true);
     if (!mounted) return;
-    final restore = await showDialog<bool>(
+
+    final restoreChoice = await showDialog<String>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Recover your DocsGrid data?'),
-        content: const Text('DocsGrid will first look for your existing Android/media/DocsGrid recovery folder and restore PDFs, folders, categories, tags, reminders, activity and settings. You will not need to select the folder manually.'),
+        content: const Text(
+          'After reinstall, DocsGrid can look for portable backup ZIPs and existing PDFs '
+          'in Android/media/com.docsgrid. A backup ZIP can recover documents, folders, '
+          'categories, tags, reminders, history and settings. PDFs found without a backup '
+          'can be imported, but their old categories and reminders cannot be reconstructed '
+          'from PDF files alone. Nothing is restored or deleted without your confirmation.',
+        ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Later')),
-          FilledButton.icon(onPressed: () => Navigator.pop(ctx, true), icon: const Icon(Icons.restore), label: const Text('Find and Recover')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, 'later'),
+            child: const Text('Later'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, 'fresh'),
+            child: const Text('Start fresh'),
+          ),
+          FilledButton.icon(
+            onPressed: () => Navigator.pop(ctx, 'recover'),
+            icon: const Icon(Icons.restore),
+            label: const Text('Find recovery data'),
+          ),
         ],
       ),
     );
-    if (restore != true || !mounted) return;
+    if (!mounted || restoreChoice != 'recover') return;
+
+    var hasPortableBackups = false;
+    if (Platform.isAndroid) {
+      try {
+        if (await StorageLocationService.instance.hasAllFilesAccess()) {
+          final locations = await StorageLocationService.instance.portableDataLocations();
+          final backupUri = locations['backupsUri'];
+          if (backupUri != null && backupUri.startsWith('file://')) {
+            final directory = Directory(Uri.parse(backupUri).toFilePath());
+            hasPortableBackups = await directory.exists() &&
+                await directory.list(followLinks: false).any(
+                  (item) => item is File && item.path.toLowerCase().endsWith('.zip'),
+                );
+          }
+        }
+      } catch (_) {
+        // The recovery route will show the actionable permission/storage error.
+      }
+    }
+
     await Navigator.of(context).push(MaterialPageRoute(builder: (_) => Scaffold(
       appBar: AppBar(title: const Text('Recover DocsGrid')),
-      body: const DocumentToolsScreen(quickAction: 'restore_portable'),
+      body: DocumentToolsScreen(
+        quickAction: hasPortableBackups ? 'restore_latest_backup' : 'restore_portable',
+      ),
     )));
   }
 
