@@ -1223,12 +1223,15 @@ class DocumentRepository {
 
   Future<DocumentRecord?> getById(String id) async {
     final db = await _database.database;
-    final rows = await db.query(
-      'documents',
-      where: 'id = ? AND deleted_at IS NULL',
-      whereArgs: [id],
-      limit: 1,
-    );
+    final rows = await db.rawQuery('''
+      SELECT d.*, c.name AS category_name,
+        (SELECT GROUP_CONCAT(t.name, ', ') FROM document_tags dt
+          INNER JOIN tags t ON t.id = dt.tag_id WHERE dt.document_id = d.id) AS tag_names
+      FROM documents d
+      LEFT JOIN categories c ON c.id = d.category_id
+      WHERE d.id = ? AND d.deleted_at IS NULL
+      LIMIT 1
+    ''', [id]);
     if (rows.isEmpty) return null;
     return DocumentRecord.fromMap(rows.first);
   }
