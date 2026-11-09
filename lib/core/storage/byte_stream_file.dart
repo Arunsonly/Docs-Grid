@@ -1,8 +1,8 @@
 import 'dart:io';
 
 /// Writes a picked provider stream to a temporary file without buffering the
-/// complete PDF/ZIP in memory. A failed read never leaves a partial staging
-/// file behind.
+/// complete PDF/ZIP in memory. A failed read or disk write never leaves a
+/// partial staging file behind.
 Future<File> writeByteStreamToFile(
   Stream<List<int>> bytes,
   File destination,
@@ -11,6 +11,8 @@ Future<File> writeByteStreamToFile(
   try {
     await sink.addStream(bytes);
     await sink.flush();
+    await sink.close();
+    return destination;
   } catch (_) {
     try {
       await sink.close();
@@ -24,6 +26,4 @@ Future<File> writeByteStreamToFile(
     }
     rethrow;
   }
-  await sink.close();
-  return destination;
 }
