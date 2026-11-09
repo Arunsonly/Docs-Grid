@@ -188,7 +188,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
   });
 
   Future<void> _restorePortableSnapshot() => _run(() async {
-    final selected = await StorageLocationService.instance.chooseFolder();
+    final selected = await StorageLocationService.instance.chooseRecoveryFolder();
     if (selected == null) return;
     final snapshot = await _tools.verifyLatestPortableMetadataSnapshot();
     if (snapshot == null) {
@@ -196,8 +196,8 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
     }
     if (!mounted) return;
     final androidNote = Platform.isAndroid
-        ? 'Choose the parent folder that contains the existing DocsGrid folder.'
-        : 'Choose the existing DocsGrid data folder that contains System/Database.';
+        ? 'Choose the existing DocsGrid folder or its parent. The app will verify all four folders and at least one snapshot; it will not create missing folders.'
+        : 'Choose the existing DocsGrid data folder; missing folders or snapshots are rejected without creating a new tree.';
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(

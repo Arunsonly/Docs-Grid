@@ -86,6 +86,18 @@ class StorageLocationService {
     return {'uri': value['uri'] as String, 'name': (value['name'] as String?) ?? 'Selected folder'};
   }
 
+  /// Selects an existing DocsGrid backup tree without creating missing folders.
+  /// Android validates Documents/Folders/Database/Recovery and at least one
+  /// snapshot before updating the active portable-storage preferences.
+  Future<Map<String, String>?> chooseRecoveryFolder() async {
+    if (Platform.isAndroid) {
+      final value = await _channel.invokeMapMethod<String, dynamic>('chooseRecoveryFolder');
+      if (value == null || value['uri'] == null) return null;
+      return {'uri': value['uri'] as String, 'name': (value['name'] as String?) ?? 'DocsGrid'};
+    }
+    return chooseFolder();
+  }
+
   Future<String> savePdf({
     required String treeUri,
     required String name,
