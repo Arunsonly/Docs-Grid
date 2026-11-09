@@ -231,6 +231,8 @@ class MainActivity : FlutterActivity() {
                             }
                             else -> result.notImplemented()
                         }
+                    } catch (error: MissingStorageChildException) {
+                        result.error("NOT_FOUND", error.message ?: "The requested child does not exist.", null)
                     } catch (error: Exception) {
                         result.error("STORAGE_ERROR", error.message ?: "Storage operation failed.", null)
                     }
