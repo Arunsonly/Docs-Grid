@@ -106,8 +106,13 @@ class _DocumentScannerScreenState extends State<DocumentScannerScreen> {
       await Future<void>.delayed(const Duration(milliseconds: 900));
       if (mounted) Navigator.of(context).pop();
     } catch (error) {
-      if (mounted) setState(() => _message = 'Scan could not be completed: $error');
-      _finished = true;
+      if (mounted) {
+        setState(() {
+          _message = 'Scan could not be completed: $error';
+          _busy = false;
+        });
+      }
+      _finished = false;
     } finally {
       if (staged != null) {
         try { if (await staged.exists()) await staged.delete(); } catch (_) {}
