@@ -56,11 +56,9 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
 
   Future<void> _scan({bool camera = false}) => _run(() async {
     final file = await _tools.scanToPdf(context: context, useCamera: camera);
-    if (file == null) return;
-    try {
-      if (!mounted) return;
+    if (!mounted || file == null) return;
 
-      final nameController = TextEditingController();
+    final nameController = TextEditingController();
     final chosenName = await showDialog<String?>(
       context: context,
       builder: (dialogContext) => AlertDialog(
@@ -116,11 +114,6 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
       setState(() => _message = imported.added == 1
         ? 'PDF saved in DocsGrid: ${chosenName == null || chosenName.isEmpty ? p.basename(file.path) : chosenName}.pdf'
         : 'This PDF already exists. Duplicate was not added.');
-      }
-    } finally {
-      // Scanner output lives in the temporary directory. Always remove it
-      // after import, cancellation, navigation away, or an import failure.
-      if (await file.exists()) await file.delete();
     }
   });
 
@@ -189,13 +182,15 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
       throw StateError('No verified DocsGrid snapshot was found in the selected folder.');
     }
     if (!mounted) return;
-    const folderSelectionNote = 'Choose the parent folder that contains the DocsGrid folder.';
+    final androidNote = Platform.isAndroid
+        ? 'Choose the parent folder that contains the existing DocsGrid folder.'
+        : 'Choose the existing DocsGrid data folder that contains System/Database.';
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
         title: const Text('Restore DocsGrid folder data?'),
         content: Text(
-          'Verified snapshot: $snapshot\n\n$folderSelectionNote\n'
+          'Verified snapshot: $snapshot\n\n$androidNote\n'
           'Existing records will be retained. Imported IDs will be remapped if needed. '
           'PDFs will be matched by SHA-256; files not found will keep their metadata '
           'and be marked for relinking. No PDF file will be overwritten or deleted.',
@@ -296,17 +291,24 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
         content: SizedBox(width: 440, height: 380, child: Column(children: [
           const Text('Review each matching PDF. Move unwanted copies to Recycle Bin one at a time.'),
           const SizedBox(height: 8),
-                  if (value == true) {
-                    if (selected.length >= docs.length - 1) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('Keep at least one copy outside the Recycle Bin.')),
-                      );
-                      return;
-                    }
-                    selected.add(doc.id);
-                  } else {
-                    selected.remove(doc.id);
-                  }
+          Expanded(child: docs.isEmpty
+            ? const Center(child: Text('No remaining duplicates in this group.'))
+            : ListView.separated(
+              itemCount: docs.length,
+              separatorBuilder: (_, _) => const Divider(height: 1),
+              itemBuilder: (context, index) {
+                final doc = docs[index];
+                return ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.picture_as_pdf_outlined),
+                  title: Text('${doc.name}.pdf', maxLines: 1, overflow: TextOverflow.ellipsis),
+                  subtitle: Text(_formatSize(doc.sizeBytes)),
+                  onTap: () async {
+                    final uri = doc.storagePath;
+                    if (uri.startsWith('content://') || uri.startsWith('file://')) {
+                      await StorageLocationService.instance.openPdf(uri);
+                    } else {
+                      await OpenFilex.open(uri);
                     }
                   },
                   trailing: PopupMenuButton<String>(
@@ -347,7 +349,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
               },
             )),
         ])),
-            child: Text('Move selected to Recycle Bin (${selected.length})'),
+        actions: [TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Back'))],
       ),
     ));
   }
