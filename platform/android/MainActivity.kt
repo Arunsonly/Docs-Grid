@@ -76,7 +76,7 @@ class MainActivity : FlutterActivity() {
 
     private fun enqueueStorageCall(result: MethodChannel.Result, task: () -> Unit): Boolean {
         return try {
-            storageExecutor.execute(task)
+            storageExecutor.execute { task() }
             true
         } catch (_: RejectedExecutionException) {
             result.error("BUSY", "DocsGrid storage is busy. Please retry after the current file operation finishes.", null)
