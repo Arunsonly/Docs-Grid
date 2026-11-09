@@ -118,15 +118,47 @@ class MainActivity : FlutterActivity() {
                             }
                             "getPortableDataLocations" -> {
                                 val prefs = getSharedPreferences("docsgrid_storage", MODE_PRIVATE)
-                                val database = prefs.getString("database_uri", null)
-                                    ?: throw IllegalStateException("DocsGrid Database folder is not configured. Re-select the library folder.")
-                                val recovery = prefs.getString("recovery_uri", null)
-                                    ?: throw IllegalStateException("DocsGrid Recovery folder is not configured. Re-select the library folder.")
-                                val library = prefs.getString("folders_uri", null)
+                                var database = prefs.getString("database_uri", null)
+                                var recovery = prefs.getString("recovery_uri", null)
+                                var library = prefs.getString("folders_uri", null)
                                     ?: prefs.getString("my_files_uri", null)
-                                    ?: throw IllegalStateException("DocsGrid Folders location is not configured. Re-select the library folder.")
-                                val documents = prefs.getString("documents_uri", null)
-                                    ?: throw IllegalStateException("DocsGrid Documents location is not configured. Re-select the library folder.")
+                                var documents = prefs.getString("documents_uri", null)
+                                if (database == null || recovery == null || library == null || documents == null) {
+                                    if (android.os.Build.VERSION.SDK_INT >= 30 &&
+                                        !android.os.Environment.isExternalStorageManager()) {
+                                        throw IllegalStateException("Allow Full internal storage access in DocsGrid Settings, then retry recovery.")
+                                    }
+                                    val root = java.io.File(
+                                        android.os.Environment.getExternalStorageDirectory(),
+                                        "Android/media/DocsGrid"
+                                    )
+                                    val docs = java.io.File(root, "Documents")
+                                    val folders = java.io.File(root, "Folders")
+                                    val dbFolder = java.io.File(root, "Database")
+                                    val recoveryFolder = java.io.File(root, "Recovery")
+                                    if (!root.isDirectory || !docs.isDirectory || !folders.isDirectory ||
+                                        !dbFolder.isDirectory || !recoveryFolder.isDirectory) {
+                                        throw IllegalStateException("No existing Android/media/DocsGrid recovery tree was found.")
+                                    }
+                                    val snapshots = dbFolder.listFiles()?.filter {
+                                        it.isDirectory && it.name.startsWith("snapshot_")
+                                    }.orEmpty()
+                                    if (snapshots.isEmpty()) {
+                                        throw IllegalStateException("Android/media/DocsGrid exists, but no recovery snapshot was found in Database.")
+                                    }
+                                    database = Uri.fromFile(dbFolder).toString()
+                                    recovery = Uri.fromFile(recoveryFolder).toString()
+                                    library = Uri.fromFile(folders).toString()
+                                    documents = Uri.fromFile(docs).toString()
+                                    prefs.edit()
+                                        .putString("docsgrid_uri", Uri.fromFile(root).toString())
+                                        .putString("database_uri", database)
+                                        .putString("recovery_uri", recovery)
+                                        .putString("folders_uri", library)
+                                        .putString("my_files_uri", library)
+                                        .putString("documents_uri", documents)
+                                        .apply()
+                                }
                                 result.success(mapOf("databaseUri" to database, "recoveryUri" to recovery, "libraryUri" to library, "documentsUri" to documents))
                             }
                             "getSelectedFolder" -> {
