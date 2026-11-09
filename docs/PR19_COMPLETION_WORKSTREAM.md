@@ -5,7 +5,7 @@ This PR carries forward every unchecked PR 18 acceptance item and the seven comp
 
 ## PR 18 carry-forward — incomplete acceptance items
 
-- [x] Full-screen SAF folder browser: navigates granted-root folders, displays PDF counts, preserves opaque provider URIs, opens PDFs, and handles Android Back within the current folder path. Empty SAF folders are deliberately omitted by the current PDF-focused discovery API; showing every empty folder remains a separate requirement.
+- [x] Full-screen SAF folder browser: navigates granted-root folders, displays PDF counts, preserves opaque provider URIs, opens PDFs, and handles Android Back within the current folder path. The PDF-focused discovery default still omits empty branches; the full-screen phone browser explicitly opts into including every folder.
 - [x] Single-PDF import dialog parity in the Folders screen: editable filename, destination selection, create-folder, Cancel/Save, and current folder preselected. Confirm the WhatsApp share path uses the same dialog before marking shared-flow parity complete.
 - [ ] Batch import without per-file dialogs; consistent destination.
 - [ ] Discoverable multi-select and accessible context actions; preserve selection on return. (Basic selection toolbar exists; complete lifecycle/back-stack regression coverage remains open.)
