@@ -166,6 +166,41 @@ void main() {
       await v4.close();
     });
 
+    test('v4 to v5 invalidates cached summary through insert update and delete triggers', () async {
+      final fixture = await createV1Fixture('v4_to_v5');
+      final path = fixture.path;
+      await fixture.close();
+      final v4 = await migrateTo(path, 4);
+      await v4.close();
+      final v5 = await migrateTo(path, 5);
+      expect(await v5.getVersion(), 5);
+      final state = await v5.query('document_summary_state', where: 'id = ?', whereArgs: [1]);
+      expect(state, hasLength(1));
+      final triggers = await v5.rawQuery(
+        "SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'documents_summary_after_%'",
+      );
+      expect(triggers.map((row) => row['name']), containsAll([
+        'documents_summary_after_insert',
+        'documents_summary_after_update',
+        'documents_summary_after_delete',
+      ]));
+      final before = state.single['revision'] as int;
+      await v5.insert('documents', {
+        'id': 'doc-2', 'name': 'second.pdf', 'created_at': '2024-01-02',
+        'updated_at': '2024-01-02', 'size_bytes': 512,
+      });
+      final afterInsert = (await v5.query('document_summary_state')).single['revision'] as int;
+      expect(afterInsert, before + 1);
+      await v5.update('documents', {'deleted_at': '2024-01-03'}, where: 'id = ?', whereArgs: ['doc-2']);
+      final afterUpdate = (await v5.query('document_summary_state')).single['revision'] as int;
+      expect(afterUpdate, afterInsert + 1);
+      await v5.delete('documents', where: 'id = ?', whereArgs: ['doc-2']);
+      final afterDelete = (await v5.query('document_summary_state')).single['revision'] as int;
+      expect(afterDelete, afterUpdate + 1);
+      expect((await v5.query('schema_migrations', orderBy: 'version')).map((row) => row['version']), [1, 2, 3, 4, 5]);
+      await v5.close();
+    });
+
     test('refuses downgrade and leaves the v2 database and records intact', () async {
       final v1 = await createV1Fixture('downgrade');
       final path = v1.path;

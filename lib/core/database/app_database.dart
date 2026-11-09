@@ -42,7 +42,7 @@ class AppDatabase {
     final dbPath = p.join(directory.path, 'docs_grid.db');
     return openDatabase(
       dbPath,
-      version: 4,
+      version: 5,
       onConfigure: (db) async => db.execute('PRAGMA foreign_keys = ON'),
       onCreate: (db, version) async {
         await db.execute('''
@@ -115,6 +115,7 @@ class AppDatabase {
         await _createV2Tables(db);
         await _createV3Tables(db);
         await _createV4PerformanceSchema(db);
+        await _createV5SummaryInvalidation(db);
         await db.insert('schema_migrations', {
           'version': 1,
           'applied_at': DateTime.now().toUtc().toIso8601String(),
@@ -131,6 +132,10 @@ class AppDatabase {
           'version': 4,
           'applied_at': DateTime.now().toUtc().toIso8601String(),
         });
+        await db.insert('schema_migrations', {
+          'version': 5,
+          'applied_at': DateTime.now().toUtc().toIso8601String(),
+        });
       },
       onUpgrade: upgradeForTesting,
       onDowngrade: (db, oldVersion, newVersion) async {
@@ -144,7 +149,7 @@ class AppDatabase {
   @visibleForTesting
   Future<void> upgradeForTesting(Database db, int oldVersion, int newVersion) async {
     if (newVersion <= oldVersion) return;
-    if (oldVersion < 1 || newVersion > 4) {
+    if (oldVersion < 1 || newVersion > 5) {
       throw StateError('Unsupported database migration: $oldVersion -> $newVersion');
     }
 
@@ -175,6 +180,11 @@ class AppDatabase {
     if (oldVersion < 4 && newVersion >= 4) {
       await _createV4PerformanceSchema(db);
       await db.insert('schema_migrations', {'version': 4, 'applied_at': applied},
+          conflictAlgorithm: ConflictAlgorithm.ignore);
+    }
+    if (oldVersion < 5 && newVersion >= 5) {
+      await _createV5SummaryInvalidation(db);
+      await db.insert('schema_migrations', {'version': 5, 'applied_at': applied},
           conflictAlgorithm: ConflictAlgorithm.ignore);
     }
   }
@@ -227,6 +237,41 @@ class AppDatabase {
     await db.execute(
       'CREATE INDEX IF NOT EXISTS idx_documents_active_category ON documents(deleted_at, category_id)',
     );
+  }
+
+  Future<void> _createV5SummaryInvalidation(DatabaseExecutor db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS document_summary_state (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        revision INTEGER NOT NULL DEFAULT 0
+      )
+    ''');
+    await db.insert(
+      'document_summary_state',
+      {'id': 1, 'revision': 0},
+      conflictAlgorithm: ConflictAlgorithm.ignore,
+    );
+    // Triggers cover every writer: repository methods, imports, restores,
+    // backup recovery, and future code paths. The cache is valid only while
+    // this monotonic revision remains unchanged.
+    await db.execute('''
+      CREATE TRIGGER IF NOT EXISTS documents_summary_after_insert
+      AFTER INSERT ON documents BEGIN
+        UPDATE document_summary_state SET revision = revision + 1 WHERE id = 1;
+      END
+    ''');
+    await db.execute('''
+      CREATE TRIGGER IF NOT EXISTS documents_summary_after_update
+      AFTER UPDATE ON documents BEGIN
+        UPDATE document_summary_state SET revision = revision + 1 WHERE id = 1;
+      END
+    ''');
+    await db.execute('''
+      CREATE TRIGGER IF NOT EXISTS documents_summary_after_delete
+      AFTER DELETE ON documents BEGIN
+        UPDATE document_summary_state SET revision = revision + 1 WHERE id = 1;
+      END
+    ''');
   }
 
   Future<void> _createV3Tables(DatabaseExecutor db) async {

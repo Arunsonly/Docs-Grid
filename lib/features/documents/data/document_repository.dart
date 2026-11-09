@@ -140,10 +140,22 @@ class DocumentRepository {
 
   final AppDatabase _database;
   static const _uuid = Uuid();
+  DocumentLibrarySummary? _summaryCache;
+  int? _summaryCacheRevision;
 
   /// Returns compact dashboard metrics without materializing document rows.
   Future<DocumentLibrarySummary> dashboardSummary() async {
     final db = await _database.database;
+    final revisionRows = await db.query(
+      'document_summary_state',
+      columns: ['revision'],
+      where: 'id = ?',
+      whereArgs: [1],
+      limit: 1,
+    );
+    final revision = revisionRows.isEmpty ? -1 : revisionRows.single['revision'] as int;
+    final cached = _summaryCache;
+    if (cached != null && _summaryCacheRevision == revision) return cached;
     final rows = await db.rawQuery('''
       SELECT COUNT(*) AS document_count,
              COALESCE(SUM(size_bytes), 0) AS total_bytes,
@@ -152,11 +164,14 @@ class DocumentRepository {
       WHERE deleted_at IS NULL
     ''');
     final row = rows.single;
-    return DocumentLibrarySummary(
+    final summary = DocumentLibrarySummary(
       documentCount: (row['document_count'] as int?) ?? 0,
       favoriteCount: (row['favorite_count'] as int?) ?? 0,
       totalBytes: (row['total_bytes'] as int?) ?? 0,
     );
+    _summaryCache = summary;
+    _summaryCacheRevision = revision;
+    return summary;
   }
 
   /// Fetches a bounded keyset page in the same order as the library screen.

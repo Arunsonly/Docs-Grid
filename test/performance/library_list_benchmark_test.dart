@@ -90,6 +90,53 @@ void main() {
     expect(favorites.items.every((item) => item.isFavorite), isTrue);
   });
 
+  test('100k document scale: summary and first keyset page stay bounded', () async {
+    const count = 100000;
+    const stamp = '2026-11-09T00:00:00.000Z';
+    for (var start = 0; start < count; start += 5000) {
+      await database.transaction((txn) async {
+        final batch = txn.batch();
+        final end = (start + 5000).clamp(0, count);
+        for (var i = start; i < end; i++) {
+          batch.insert('documents', {
+            'id': 'scale-${i.toString().padLeft(6, '0')}',
+            'name': 'Archive policy ${i.toString().padLeft(6, '0')}.pdf',
+            'mime_type': 'application/pdf',
+            'size_bytes': 2048 + (i % 4096),
+            'created_at': stamp,
+            'updated_at': stamp,
+            'metadata_json': '{}',
+            'is_favorite': i % 20 == 0 ? 1 : 0,
+            'deleted_at': null,
+          });
+        }
+        await batch.commit(noResult: true);
+      });
+    }
+    final watch = Stopwatch()..start();
+    final summary = await repository.dashboardSummary();
+    watch.stop();
+    expect(summary.documentCount, count);
+    expect(summary.favoriteCount, count ~/ 20);
+    final summaryUs = watch.elapsedMicroseconds;
+
+    final samples = <int>[];
+    for (var i = 0; i < 12; i++) {
+      final pageWatch = Stopwatch()..start();
+      final page = await repository.listPage(pageSize: 40);
+      pageWatch.stop();
+      expect(page.items, hasLength(40));
+      expect(page.hasMore, isTrue);
+      samples.add(pageWatch.elapsedMicroseconds);
+    }
+    samples.sort();
+    final p50 = samples[samples.length ~/ 2];
+    final p95 = samples[(samples.length * .95).floor().clamp(0, samples.length - 1)];
+    // ignore: avoid_print
+    print('DOCSGRID_SCALE rows=$count page_size=40 p50_us=$p50 p95_us=$p95 summary_us=$summaryUs');
+    expect(p95, lessThan(5000000), reason: '100k first-page p95 exceeded 5 seconds');
+  });
+
   test('real document repository list benchmark: 10,000 documents', () async {
     const count = 10000;
     const stamp = '2026-11-09T00:00:00.000Z';
