@@ -65,7 +65,7 @@ abstract interface class ReminderNotificationGateway {
 
 class _PluginReminderNotificationGateway implements ReminderNotificationGateway {
   @override
-  Future<void> cancel(String id) => _notifications.cancel(id);
+  Future<void> cancel(String id) => ReminderNotifications.instance.cancel(id);
 
   @override
   Future<void> schedule({
@@ -74,7 +74,7 @@ class _PluginReminderNotificationGateway implements ReminderNotificationGateway 
     String? body,
     required DateTime at,
     String? recurrence,
-  }) => _notifications.schedule(
+  }) => ReminderNotifications.instance.schedule(
     id: id, title: title, body: body, at: at, recurrence: recurrence,
   );
 
@@ -84,12 +84,12 @@ class _PluginReminderNotificationGateway implements ReminderNotificationGateway 
     required String title,
     String? body,
     required DateTime at,
-  }) => _notifications.scheduleSnooze(
+  }) => ReminderNotifications.instance.scheduleSnooze(
     id: id, title: title, body: body, at: at,
   );
 
   @override
-  Future<bool> requestPermission() => _notifications.requestPermission();
+  Future<bool> requestPermission() => ReminderNotifications.instance.requestPermission();
 }
 
 class ReminderRepository {
@@ -121,7 +121,7 @@ class ReminderRepository {
           enabled: row['enabled'] as int,
           status: row['status'] as String,
         )) {
-          await ReminderNotifications.instance.cancel(id);
+          await _notifications.cancel(id);
           continue;
         }
 
@@ -133,7 +133,7 @@ class ReminderRepository {
         final note = row['note'] as String?;
 
         if (recurrence != null || snoozedUntil == null || !snoozedUntil.isAfter(DateTime.now())) {
-          await ReminderNotifications.instance.schedule(
+          await _notifications.schedule(
             id: id,
             title: title,
             body: note,
@@ -142,7 +142,7 @@ class ReminderRepository {
           );
         }
         if (snoozedUntil != null && snoozedUntil.isAfter(DateTime.now())) {
-          await ReminderNotifications.instance.scheduleSnooze(
+          await _notifications.scheduleSnooze(
             id: id,
             title: title,
             body: note,
