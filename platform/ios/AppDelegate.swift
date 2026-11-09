@@ -424,12 +424,8 @@ import CryptoKit
     private func createDirectory(parent: URL, name: String) throws -> URL {
         try withAllBookmarkAccess {
             let target = parent.appendingPathComponent(name, isDirectory: true)
-            if FileManager.default.fileExists(atPath: target.path) {
-                var isDirectory: ObjCBool = false
-                guard FileManager.default.fileExists(atPath: target.path, isDirectory: &isDirectory), isDirectory.boolValue else {
-                    throw storageError("A file with this folder name already exists.")
-                }
-                return target
+            guard !FileManager.default.fileExists(atPath: target.path) else {
+                throw storageError("A folder or file with this name already exists in the selected storage location.")
             }
             try FileManager.default.createDirectory(at: target, withIntermediateDirectories: false)
             return target
