@@ -1932,7 +1932,7 @@ class DocumentToolsService {
         final name = entry.name;
         final segments = name.split('/');
         if (!entry.isFile || entry.isSymbolicLink || name.isEmpty ||
-            name.startsWith('/') || name.contains('\\\\') ||
+            name.startsWith('/') || name.contains(String.fromCharCode(92)) ||
             name.codeUnits.any((unit) => unit < 32 || unit == 127) ||
             segments.any((part) => part.isEmpty || part == '.' || part == '..') ||
             !archiveNames.add(name)) {
@@ -1981,7 +1981,7 @@ class DocumentToolsService {
           }
           final name = raw['entry'] as String;
           if (!seenMetadata.add(name) || !name.endsWith('.json') ||
-              name.contains('/') || name.contains('\\\\')) {
+              name.contains('/') || name.contains(String.fromCharCode(92))) {
             throw StateError('Backup contains an unsafe metadata checksum path.');
           }
           final entry = decoded.findFile(name);
@@ -2158,7 +2158,7 @@ class OcrIndexCancelled implements Exception {
           }
           final name = raw['entry'] as String;
           if (!seenMetadata.add(name) || !name.endsWith('.json') ||
-              name.contains('/') || name.contains('\\\\')) {
+              name.contains('/') || name.contains(String.fromCharCode(92))) {
             throw StateError('Backup contains an unsafe metadata checksum path.');
           }
           final entry = decoded.findFile(name);
