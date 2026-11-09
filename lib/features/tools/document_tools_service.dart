@@ -405,7 +405,7 @@ class DocumentToolsService {
                           child: Image.file(
                             File(ordered[index].path),
                             fit: BoxFit.cover,
-                            errorBuilder: (_, __, ___) => const ColoredBox(
+                            errorBuilder: (_, _, _) => const ColoredBox(
                               color: Colors.black12,
                               child: Icon(Icons.image_not_supported_outlined),
                             ),
