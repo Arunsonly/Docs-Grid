@@ -19,27 +19,27 @@ void main() {
   test(
     'stages a large multi-chunk provider stream without changing bytes',
     () async {
-    const chunkSize = 64 * 1024;
-    const chunkCount = 384; // 24 MiB; deliberately larger than a small PDF.
-    final chunks = List<Uint8List>.generate(chunkCount, (index) {
-      final chunk = Uint8List(chunkSize);
-      for (var offset = 0; offset < chunkSize; offset++) {
-        chunk[offset] = (index + offset) & 0xff;
-      }
-      return chunk;
-    }, growable: false);
-    final expected =
-        (await sha256.bind(Stream<List<int>>.fromIterable(chunks)).first)
-            .toString();
-    final target = File('${temp.path}/large-provider.pdf');
-
-    await writeByteStreamToFile(Stream<List<int>>.fromIterable(chunks), target);
-
-    expect(await target.length(), chunkSize * chunkCount);
-    expect(
-      (await sha256.bind(target.openRead()).first).toString(),
-      expected,
-    );
+      const chunkSize = 64 * 1024;
+      const chunkCount = 384; // 24 MiB; deliberately larger than a small PDF.
+      final chunks = List<Uint8List>.generate(chunkCount, (index) {
+        final chunk = Uint8List(chunkSize);
+        for (var offset = 0; offset < chunkSize; offset++) {
+          chunk[offset] = (index + offset) & 0xff;
+        }
+        return chunk;
+      }, growable: false);
+      final expected =
+          (await sha256.bind(Stream<List<int>>.fromIterable(chunks)).first)
+              .toString();
+      final target = File('${temp.path}/large-provider.pdf');
+  
+      await writeByteStreamToFile(Stream<List<int>>.fromIterable(chunks), target);
+  
+      expect(await target.length(), chunkSize * chunkCount);
+      expect(
+        (await sha256.bind(target.openRead()).first).toString(),
+        expected,
+      );
     },
   );
 
