@@ -512,11 +512,11 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
         viewerPath = localFile.path;
       }
       await _repository.markOpened(document);
-      if (!mounted || viewerPath == null) return;
+      if (!mounted) return;
       await Navigator.of(context).push<void>(
         MaterialPageRoute(
           builder: (_) => DocumentPdfViewerScreen(
-            filePath: viewerPath!,
+            filePath: viewerPath,
             title: '${document.name}.pdf',
           ),
         ),
