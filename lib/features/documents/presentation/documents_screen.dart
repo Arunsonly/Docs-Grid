@@ -261,7 +261,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
         content: SizedBox(
           width: double.maxFinite,
           height: MediaQuery.sizeOf(dialogContext).height * 0.65,
-          child: folders.length == 1 && pdfCount == 0
+          child: pdfCount == 0
               ? const Center(child: Text('No folders or PDFs in this location.'))
               : ListView.builder(
                   itemCount: visibleFolders.length,
