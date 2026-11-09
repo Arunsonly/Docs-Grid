@@ -24,7 +24,8 @@ class DocumentToolsScreen extends StatefulWidget {
   State<DocumentToolsScreen> createState() => _DocumentToolsScreenState();
 }
 
-class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
+class _DocumentToolsScreenState extends State<DocumentToolsScreen>
+    with WidgetsBindingObserver {
   late final DocumentToolsService _tools;
   final _search = TextEditingController();
   bool _searching = false;
@@ -33,10 +34,12 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
   bool _busy = false;
   String? _message;
   bool _hasSearched = false;
+  bool _awaitingAllFilesPermission = false;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _tools = widget.service ?? DocumentToolsService();
     _busy = widget.quickAction == 'camera' || widget.quickAction == 'gallery';
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -225,14 +228,18 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
   Future<void> _restorePortableSnapshot({bool autoDetect = false}) => _run(() async {
     final storage = StorageLocationService.instance;
     if (autoDetect) {
-      // Reuse an already-granted DocsGrid tree on this device. Only ask the
-      // user to locate a folder when no portable recovery tree is configured.
-      try {
-        await storage.portableDataLocations();
-      } on StateError {
-        final selected = await storage.chooseRecoveryFolder();
-        if (selected == null) return;
+      // Find the existing Android/media/DocsGrid tree automatically. Android
+      // requires its special all-files access switch for this personal-use build.
+      if (Platform.isAndroid && !await storage.hasAllFilesAccess()) {
+        _awaitingAllFilesPermission = true;
+        await storage.requestAllFilesAccess();
+        if (mounted) {
+          setState(() => _message =
+              'Allow Full internal storage access for DocsGrid. Recovery will scan automatically when you return.');
+        }
+        return;
       }
+      await storage.portableDataLocations();
     } else {
       final selected = await storage.chooseRecoveryFolder();
       if (selected == null) return;
@@ -479,6 +486,17 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
           )).toList())),
       actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('Close'))],
     ));
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed || !_awaitingAllFilesPermission) return;
+    _awaitingAllFilesPermission = false;
+    unawaited(() async {
+      if (await StorageLocationService.instance.hasAllFilesAccess() && mounted) {
+        await _restorePortableSnapshot(autoDetect: true);
+      }
+    }());
   }
 
   @override
