@@ -30,6 +30,67 @@ jobs:
           cache: true
       - name: Generate native platform scaffolding
         run: flutter create --platforms=android,ios --org com.docsgrid .
+      - name: Configure verified Kotlin compiler mirror
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          MIRROR='https://maven.wso2.org/nexus/content/repositories/central/'
+          ARTIFACT='org/jetbrains/kotlin/kotlin-compiler-embeddable/2.2.21/kotlin-compiler-embeddable-2.2.21.jar'
+          EXPECTED='9588fa696ac5507af764fd5660df6894185e12704ec1bc3f5cb772af4987f295'
+          curl --fail --location --silent --show-error --retry 3 --retry-all-errors "$MIRROR$ARTIFACT" -o /tmp/kotlin-compiler-embeddable-2.2.21.jar
+          echo "$EXPECTED  /tmp/kotlin-compiler-embeddable-2.2.21.jar" | sha256sum --check --status
+          echo 'Kotlin 2.2.21 compiler artifact mirror and SHA-256 verified.'
+          mkdir -p "$HOME/.gradle/init.d"
+          cat > "$HOME/.gradle/init.d/docsgrid-kotlin-mirror.gradle" <<'GRADLE'
+          def addKotlinMirror = { repositories ->
+            if (!repositories.find { it.name == 'docsGridVerifiedKotlinMirror' }) {
+              repositories.maven {
+                name = 'docsGridVerifiedKotlinMirror'
+                url = uri('https://maven.wso2.org/nexus/content/repositories/central/')
+                content { includeGroupByRegex('org\\.jetbrains\\.kotlin(\\..*)?') }
+              }
+            }
+          }
+          gradle.beforeSettings { settings ->
+            // The mirror is only a fallback for Kotlin artifacts. Flutter's
+            // Gradle plugin marker (org.gradle.kotlin.kotlin-dsl) is published
+            // through the Gradle Plugin Portal, not the WSO2 Maven mirror.
+            settings.pluginManagement.repositories {
+              gradlePluginPortal()
+              google()
+              mavenCentral()
+            }
+            settings.dependencyResolutionManagement.repositories {
+              google()
+              mavenCentral()
+            }
+            addKotlinMirror(settings.pluginManagement.repositories)
+            addKotlinMirror(settings.dependencyResolutionManagement.repositories)
+          }
+          GRADLE
+      - name: Route Gradle distribution through the official direct download host
+        if: runner.os == 'Linux'
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          wrapper = Path('android/gradle/wrapper/gradle-wrapper.properties')
+          if not wrapper.exists():
+              raise SystemExit('Gradle wrapper properties were not generated')
+          content = wrapper.read_text()
+          match = re.search(r'(?m)^distributionUrl=(.+)$', content)
+          if not match:
+              raise SystemExit('Gradle distributionUrl is missing')
+          url = match.group(1).replace(r'\:', ':')
+          filename = url.rsplit('/', 1)[-1]
+          if (not filename.startswith('gradle-') or not filename.endswith('.zip') or
+                  '/' in filename or '\\' in filename):
+              raise SystemExit('Unexpected Gradle distribution filename: ' + filename)
+          direct_url = r'https\://downloads.gradle.org/distributions/' + filename
+          content = content[:match.start(1)] + direct_url + content[match.end(1):]
+          wrapper.write_text(content)
+          print('Using official direct Gradle distribution: ' + direct_url)
+          PY
       - name: Cache Gradle distributions and dependencies
         uses: actions/cache@v4
         with:

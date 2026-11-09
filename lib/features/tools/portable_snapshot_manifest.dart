@@ -92,9 +92,8 @@ class PortableSnapshotManifest {
     );
   }
 
-  /// Validates the complete folder graph before restore touches external storage.
-  /// Folder names are path components on iOS and Android providers, so dot
-  /// segments, separators and control characters must fail closed.
+  /// Validates folder identifiers, path components and the complete parent graph
+  /// before restore code creates any provider directories.
   static Map<String, Map<String, Object?>> validateFolderRows(
     List<Map<String, Object?>> rows,
   ) {
@@ -108,9 +107,9 @@ class PortableSnapshotManifest {
         throw const FormatException('Snapshot contains an invalid or duplicate folder ID.');
       }
       if (name is! String || name.trim().isEmpty || name != name.trim() ||
-          name.trim() == '.' || name.trim() == '..' ||
-          name.contains('/') || name.contains(r'\') ||
-          name.contains('\u0000') || name.length > 255 ||
+          name == '.' || name == '..' || name.contains('/') ||
+          name.contains(String.fromCharCode(92)) || name.contains(String.fromCharCode(0)) ||
+          name.length > 255 ||
           name.codeUnits.any((unit) => unit < 32 || unit == 127)) {
         throw const FormatException('Snapshot contains an unsafe folder name.');
       }
@@ -121,31 +120,122 @@ class PortableSnapshotManifest {
       byId[id] = row;
     }
 
+    final siblingNames = <(String?, String)>{};
     for (final row in byId.values) {
       final parentId = row['parent_id'] as String?;
       if (parentId != null && !byId.containsKey(parentId)) {
         throw const FormatException('Snapshot references a missing parent folder.');
       }
-    }
-
-    final visiting = <String>{};
-    final visited = <String>{};
-    void visit(String id) {
-      if (visiting.contains(id)) {
-        throw const FormatException('Snapshot folder hierarchy contains a cycle.');
+      final name = (row['name'] as String).toLowerCase();
+      if (!siblingNames.add((parentId, name))) {
+        throw const FormatException('Snapshot contains duplicate sibling folder names.');
       }
-      if (!visited.add(id)) return;
-      visiting.add(id);
-      final parentId = byId[id]!['parent_id'] as String?;
-      if (parentId != null) visit(parentId);
-      visiting.remove(id);
     }
 
+    // Walk parent chains iteratively: a valid but deeply nested user folder
+    // tree must not overflow the Dart call stack during restore validation.
+    final visited = <String>{};
     for (final id in byId.keys) {
-      visit(id);
+      final path = <String>{};
+      String? current = id;
+      while (current != null && !visited.contains(current)) {
+        if (!path.add(current)) {
+          throw const FormatException('Snapshot folder hierarchy contains a cycle.');
+        }
+        current = byId[current]!['parent_id'] as String?;
+      }
+      visited.addAll(path);
     }
     return Map.unmodifiable(byId);
   }
+
+
+  /// Checks cross-table references before restore touches the selected library
+  /// or begins a database transaction.
+  static void validateRelations(
+    Map<String, List<Map<String, Object?>>> tables,
+  ) {
+    Set<String> ids(String table) {
+      final result = <String>{};
+      for (final row in tables[table] ?? const []) {
+        final value = row['id'];
+        if (value is! String || value.trim().isEmpty || value != value.trim() ||
+            !result.add(value)) {
+          throw FormatException('Snapshot contains an invalid or duplicate $table ID.');
+        }
+      }
+      return result;
+    }
+
+    final folderIds = ids('folders');
+    final documentIds = ids('documents');
+    final categoryIds = ids('categories');
+    final tagIds = ids('tags');
+    ids('reminders');
+    ids('history');
+
+    for (final table in ['categories', 'tags']) {
+      final names = <String>{};
+      for (final row in tables[table] ?? const []) {
+        final name = row['name'];
+        if (name is! String || name.trim().isEmpty ||
+            !names.add(name.toLowerCase())) {
+          throw FormatException('Snapshot contains an invalid or duplicate $table name.');
+        }
+      }
+    }
+
+    for (final row in tables['documents'] ?? const []) {
+      final folderId = row['folder_id'];
+      if (folderId != null && (folderId is! String || !folderIds.contains(folderId))) {
+        throw const FormatException('Snapshot document references a missing folder.');
+      }
+      final categoryId = row['category_id'];
+      if (categoryId != null && (categoryId is! String || !categoryIds.contains(categoryId))) {
+        throw const FormatException('Snapshot document references a missing category.');
+      }
+    }
+
+    final documentTagPairs = <String>{};
+    for (final row in tables['document_tags'] ?? const []) {
+      final documentId = row['document_id'];
+      final tagId = row['tag_id'];
+      if (documentId is! String || !documentIds.contains(documentId) ||
+          tagId is! String || !tagIds.contains(tagId)) {
+        throw const FormatException('Snapshot document tag references a missing record.');
+      }
+      if (!documentTagPairs.add('$documentId\\u0000$tagId')) {
+        throw const FormatException('Snapshot contains a duplicate document tag relation.');
+      }
+    }
+
+    for (final table in ['reminders', 'history', 'document_text_index']) {
+      for (final row in tables[table] ?? const []) {
+        final documentId = row['document_id'];
+        if (documentId != null &&
+            (documentId is! String || !documentIds.contains(documentId))) {
+          throw FormatException('Snapshot $table record references a missing document.');
+        }
+      }
+    }
+
+    final indexedDocuments = <String>{};
+    for (final row in tables['document_text_index'] ?? const []) {
+      final documentId = row['document_id'];
+      if (documentId is! String || !indexedDocuments.add(documentId)) {
+        throw const FormatException('Snapshot contains duplicate document text indexes.');
+      }
+    }
+
+    final settingKeys = <String>{};
+    for (final row in tables['settings'] ?? const []) {
+      final key = row['key'];
+      if (key is! String || key.trim().isEmpty || !settingKeys.add(key)) {
+        throw const FormatException('Snapshot contains an invalid or duplicate setting key.');
+      }
+    }
+  }
+
 }
 
 class PortableSnapshotFile {

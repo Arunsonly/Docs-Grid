@@ -7,8 +7,6 @@ import 'package:path/path.dart' as p;
 
 import '../../core/database/app_database.dart';
 import '../documents/data/document_repository.dart';
-import '../categories/data/category_repository.dart';
-import '../reminders/data/reminder_repository.dart';
 import '../folders/data/folder_repository.dart';
 import 'document_tools_service.dart';
 import '../../core/storage/storage_location_service.dart';
@@ -24,7 +22,6 @@ class DocumentToolsScreen extends StatefulWidget {
 
 class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
   final _tools = DocumentToolsService();
-  final _categories = CategoryRepository();
   final _search = TextEditingController();
   List<Map<String, Object?>> _results = [];
   bool _busy = false;
@@ -41,6 +38,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
         case 'gallery': _scan(); break;
         case 'backup': _backup(); break;
         case 'tools': break;
+        case 'duplicates': _showDuplicates(); break;
       }
     });
   }
@@ -58,11 +56,9 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
 
   Future<void> _scan({bool camera = false}) => _run(() async {
     final file = await _tools.scanToPdf(context: context, useCamera: camera);
-    if (file == null) return;
-    try {
-      if (!mounted) return;
+    if (!mounted || file == null) return;
 
-      final nameController = TextEditingController();
+    final nameController = TextEditingController();
     final chosenName = await showDialog<String?>(
       context: context,
       builder: (dialogContext) => AlertDialog(
@@ -118,29 +114,17 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
       setState(() => _message = imported.added == 1
         ? 'PDF saved in DocsGrid: ${chosenName == null || chosenName.isEmpty ? p.basename(file.path) : chosenName}.pdf'
         : 'This PDF already exists. Duplicate was not added.');
-      }
-    } finally {
-      // Scanner output lives in the temporary directory. Always remove it
-      // after import, cancellation, navigation away, or an import failure.
-      if (await file.exists()) await file.delete();
     }
   });
 
   Future<void> _backup() => _run(() async {
     final archive = await _tools.createBackup();
-    final stamp = DateTime.now().toIso8601String().replaceAll(':', '-').split('.').first;
-    final bytes = await archive.readAsBytes();
-    final saved = await FilePicker.saveFile(
-      dialogTitle: 'Save DocsGrid backup',
-      fileName: 'DocsGrid_Backup_$stamp.zip',
-      mimeType: 'application/zip',
-      bytes: bytes,
-    );
-    if (saved == null) {
-      if (mounted) setState(() => _message = 'Backup export cancelled. Your documents were not changed.');
-      return;
+    // Share the on-disk ZIP directly. The platform share sheet lets the user
+    // save it to Files/Drive without loading the whole archive into RAM.
+    await _tools.shareFile(archive.path, text: 'DocsGrid backup');
+    if (mounted) {
+      setState(() => _message = 'Backup created. Use the share sheet to save a copy somewhere safe.');
     }
-    if (mounted) setState(() => _message = 'Backup created successfully. Keep the ZIP file somewhere safe; choose it under Restore backup on a new installation.');
   });
 
   Future<void> _restoreBackup() => _run(() async {
@@ -198,13 +182,15 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
       throw StateError('No verified DocsGrid snapshot was found in the selected folder.');
     }
     if (!mounted) return;
-    const folderSelectionNote = 'Choose the parent folder that contains the DocsGrid folder.';
+    final androidNote = Platform.isAndroid
+        ? 'Choose the parent folder that contains the existing DocsGrid folder.'
+        : 'Choose the existing DocsGrid data folder that contains System/Database.';
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
         title: const Text('Restore DocsGrid folder data?'),
         content: Text(
-          'Verified snapshot: $snapshot\n\n$folderSelectionNote\n'
+          'Verified snapshot: $snapshot\n\n$androidNote\n'
           'Existing records will be retained. Imported IDs will be remapped if needed. '
           'PDFs will be matched by SHA-256; files not found will keep their metadata '
           'and be marked for relinking. No PDF file will be overwritten or deleted.',
@@ -243,18 +229,28 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
   }
 
   Future<void> _searchText() async {
-    final rows = await _tools.searchText(_search.text);
-    if (mounted) setState(() { _results = rows; _hasSearched = true; });
+    try {
+      final rows = await _tools.searchText(_search.text);
+      if (mounted) setState(() { _results = rows; _hasSearched = true; _message = null; });
+    } catch (error) {
+      if (mounted) setState(() => _message = 'Text search failed: $error');
+    }
   }
 
   Future<void> _indexDocuments() => _run(() async {
     final db = await AppDatabase.instance.database;
-    final rows = await db.query('documents', columns: ['id', 'name', 'storage_uri'],
+    final rows = await db.query('documents',
+      columns: ['id', 'name', 'storage_uri', 'extracted_text_status'],
       where: 'deleted_at IS NULL');
     var done = 0;
     var noText = 0;
     var skipped = 0;
+    var alreadyIndexed = 0;
     for (final row in rows) {
+      if (row['extracted_text_status'] == 'indexed') {
+        alreadyIndexed++;
+        continue;
+      }
       final uri = row['storage_uri'] as String?;
       if (uri == null || uri.isEmpty) {
         skipped++;
@@ -273,215 +269,87 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
     }
     if (mounted) {
       setState(() => _message =
-        'OCR indexing finished: $done searchable, $noText had no readable text, $skipped failed. '
+        'OCR indexing finished: $done searchable, $noText had no readable text, $alreadyIndexed already indexed, $skipped failed. '
         'Scanned/image-only PDFs may need clearer pages or a supported OCR language.');
     }
   });
 
 
-  Future<void> _duplicateRename(DocumentRecord document) async {
-    final controller = TextEditingController(text: document.name);
-    final name = await showDialog<String>(context: context, builder: (ctx) => AlertDialog(
-      title: const Text('Rename PDF'),
-      content: TextField(controller: controller, autofocus: true, decoration: const InputDecoration(labelText: 'File name', suffixText: '.pdf')),
-      actions: [
-        TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-        FilledButton(onPressed: () => Navigator.pop(ctx, controller.text), child: const Text('Save')),
-      ],
-    ));
-    await WidgetsBinding.instance.endOfFrame;
-    controller.dispose();
-    if (name == null) return;
-    await DocumentRepository().rename(document, name);
-  }
-
-  Future<void> _duplicateMove(DocumentRecord document) async {
-    final folders = await FolderRepository().allFoldersWithPaths();
-    if (!mounted) return;
-    final destination = await showModalBottomSheet<String>(
-      context: context, showDragHandle: true,
-      builder: (ctx) => SafeArea(child: ListView(shrinkWrap: true, children: [
-        const ListTile(title: Text('Move PDF to folder')),
-        ListTile(leading: const Icon(Icons.home_outlined), title: const Text('My Documents (root)'), onTap: () => Navigator.pop(ctx, '')),
-        for (final folder in folders)
-          ListTile(leading: const Icon(Icons.folder_outlined), title: Text(folder.path), onTap: () => Navigator.pop(ctx, folder.folder.id)),
-      ])),
-    );
-    if (destination == null) return;
-    await DocumentRepository().moveToFolder(document, destination.isEmpty ? null : destination);
-  }
-
-  Future<void> _duplicateCategory(DocumentRecord document) async {
-    final categories = await _categories.listCategories();
-    if (!mounted) return;
-    final selected = await showDialog<String?>(context: context, builder: (ctx) => SimpleDialog(
-      title: const Text('Set category'),
-      children: [
-        SimpleDialogOption(onPressed: () => Navigator.pop(ctx, ''), child: const Text('Uncategorised')),
-        for (final category in categories)
-          SimpleDialogOption(onPressed: () => Navigator.pop(ctx, category.id), child: Text(category.name)),
-      ],
-    ));
-    if (selected == null) return;
-    await _categories.setDocumentCategory(document.id, selected.isEmpty ? null : selected);
-  }
-
-  Future<void> _duplicateTags(DocumentRecord document) async {
-    final tags = await _categories.listTags();
-    final current = await _categories.tagsForDocument(document.id);
-    if (!mounted) return;
-    final selected = current.map((tag) => tag.id).toSet();
-    final result = await showDialog<Set<String>>(context: context, builder: (ctx) => StatefulBuilder(
-      builder: (ctx, refresh) => AlertDialog(
-        title: const Text('Edit tags'),
-        content: SizedBox(width: 360, child: tags.isEmpty
-          ? const Text('Create tags in Category & Tag settings first.')
-          : Column(mainAxisSize: MainAxisSize.min, children: [
-              for (final tag in tags)
-                CheckboxListTile(dense: true, contentPadding: EdgeInsets.zero, value: selected.contains(tag.id),
-                  title: Text(tag.name), onChanged: (value) => refresh(() {
-                    if (value == true) { selected.add(tag.id); } else { selected.remove(tag.id); }
-                  })),
-            ])),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-          FilledButton(onPressed: () => Navigator.pop(ctx, selected), child: const Text('Save tags')),
-        ],
-      ),
-    ));
-    if (result != null) await _categories.setDocumentTags(document.id, result.toList());
-  }
-
-  Future<void> _duplicateReminder(DocumentRecord document) async {
-    final title = TextEditingController(text: 'Reminder - ${document.name}');
-    final note = TextEditingController();
-    var selected = DateTime.now().add(const Duration(days: 1));
-    final saved = await showDialog<bool>(context: context, builder: (ctx) => StatefulBuilder(
-      builder: (ctx, refresh) => AlertDialog(
-        scrollable: true, title: const Text('Add to reminder'),
-        content: Column(mainAxisSize: MainAxisSize.min, children: [
-          TextField(controller: title, decoration: const InputDecoration(labelText: 'Reminder title')),
-          TextField(controller: note, maxLines: 2, decoration: const InputDecoration(labelText: 'Note (optional)')),
-          ListTile(contentPadding: EdgeInsets.zero, title: const Text('Date & time'),
-            subtitle: Text('${selected.day.toString().padLeft(2, '0')}/${selected.month.toString().padLeft(2, '0')}/${selected.year} · ${selected.hour.toString().padLeft(2, '0')}:${selected.minute.toString().padLeft(2, '0')}'),
-            onTap: () async {
-              final date = await showDatePicker(context: ctx, initialDate: selected, firstDate: DateTime.now(), lastDate: DateTime.now().add(const Duration(days: 3650)));
-              if (date == null || !ctx.mounted) return;
-              final time = await showTimePicker(context: ctx, initialTime: TimeOfDay.fromDateTime(selected));
-              if (time != null) refresh(() => selected = DateTime(date.year, date.month, date.day, time.hour, time.minute));
-            }),
-        ]),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
-          FilledButton(onPressed: () { if (title.text.trim().isNotEmpty && selected.isAfter(DateTime.now())) Navigator.pop(ctx, true); }, child: const Text('Save')),
-        ],
-      ),
-    ));
-    await WidgetsBinding.instance.endOfFrame;
-    final reminderTitle = title.text.trim();
-    final reminderNote = note.text.trim();
-    title.dispose(); note.dispose();
-    if (saved == true) await ReminderRepository().create(title: reminderTitle, note: reminderNote, remindAt: selected, documentId: document.id);
-  }
-
-  Future<void> _reviewDuplicateGroup(String sha) async {
+  Future<void> _reviewDuplicateGroup(List<String> documentIds, String duplicateType) async {
+    if (documentIds.length < 2) return;
     final db = await AppDatabase.instance.database;
+    final placeholders = List.filled(documentIds.length, '?').join(',');
     final rows = await db.query('documents',
-      where: 'sha256 = ? AND deleted_at IS NULL', whereArgs: [sha],
+      where: 'id IN ($placeholders) AND deleted_at IS NULL',
+      whereArgs: documentIds,
       orderBy: 'created_at ASC');
     final docs = rows.map(DocumentRecord.fromMap).toList();
     if (docs.length < 2 || !mounted) return;
-    final selected = <String>{};
     await showDialog<void>(context: context, builder: (dialogContext) => StatefulBuilder(
       builder: (context, refresh) => AlertDialog(
-        title: const Text('Duplicate PDFs'),
+        title: Text('Duplicate PDFs · $duplicateType'),
         content: SizedBox(width: 440, height: 380, child: Column(children: [
-          const Text('Open each file to compare it. Select copies you want to move to Recycle Bin.'),
+          const Text('Review each matching PDF. Move unwanted copies to Recycle Bin one at a time.'),
           const SizedBox(height: 8),
-          Expanded(child: ListView.separated(
-            itemCount: docs.length,
-            separatorBuilder: (_, _) => const Divider(height: 1),
-            itemBuilder: (context, index) {
-              final doc = docs[index];
-              return ListTile(
-                contentPadding: EdgeInsets.zero,
-                leading: Checkbox(value: selected.contains(doc.id), onChanged: (value) => refresh(() {
-                  if (value == true) {
-                    if (selected.length >= docs.length - 1) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('Keep at least one copy outside the Recycle Bin.')),
-                      );
-                      return;
-                    }
-                    selected.add(doc.id);
-                  } else {
-                    selected.remove(doc.id);
-                  }
-                })),
-                title: Text('${doc.name}.pdf', maxLines: 1, overflow: TextOverflow.ellipsis),
-                subtitle: Text(_formatSize(doc.sizeBytes)),
-                onTap: () async {
-                  final uri = doc.storagePath;
-                  if (uri.startsWith('content://') || uri.startsWith('file://')) {
-                    await StorageLocationService.instance.openPdf(uri);
-                  } else {
-                    await OpenFilex.open(uri);
-                  }
-                },
-                trailing: PopupMenuButton<String>(
-                  onSelected: (action) async {
-                    if (action == 'open') {
-                      final uri = doc.storagePath;
-                      if (uri.startsWith('content://') || uri.startsWith('file://')) {
-                        await StorageLocationService.instance.openPdf(uri);
-                      } else { await OpenFilex.open(uri); }
-                    } else if (action == 'share') {
-                      await _tools.shareStoredPdf(doc.storagePath, '${doc.name}.pdf');
-                    } else if (action == 'favorite') {
-                      await DocumentRepository().setFavorite(doc, !doc.isFavorite);
-                    } else if (action == 'category') {
-                      await _duplicateCategory(doc);
-                    } else if (action == 'tags') {
-                      await _duplicateTags(doc);
-                    } else if (action == 'rename') {
-                      await _duplicateRename(doc);
-                    } else if (action == 'move') {
-                      await _duplicateMove(doc);
-                    } else if (action == 'reminder') {
-                      await _duplicateReminder(doc);
-                    } else if (action == 'trash') {
-                      await DocumentRepository().moveToTrash(doc);
-                      refresh(() => selected.remove(doc.id));
+          Expanded(child: docs.isEmpty
+            ? const Center(child: Text('No remaining duplicates in this group.'))
+            : ListView.separated(
+              itemCount: docs.length,
+              separatorBuilder: (_, _) => const Divider(height: 1),
+              itemBuilder: (context, index) {
+                final doc = docs[index];
+                return ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.picture_as_pdf_outlined),
+                  title: Text('${doc.name}.pdf', maxLines: 1, overflow: TextOverflow.ellipsis),
+                  subtitle: Text(_formatSize(doc.sizeBytes)),
+                  onTap: () async {
+                    final uri = doc.storagePath;
+                    if (uri.startsWith('content://') || uri.startsWith('file://')) {
+                      await StorageLocationService.instance.openPdf(uri);
+                    } else {
+                      await OpenFilex.open(uri);
                     }
                   },
-                  itemBuilder: (_) => [
-                    const PopupMenuItem(value: 'open', child: Text('Open PDF')),
-                    const PopupMenuItem(value: 'share', child: Text('Share PDF')),
-                    PopupMenuItem(value: 'favorite', child: Text(doc.isFavorite ? 'Remove from Star' : 'Add to Star')),
-                    const PopupMenuItem(value: 'category', child: Text('Set category')),
-                    const PopupMenuItem(value: 'tags', child: Text('Edit tags')),
-                    const PopupMenuItem(value: 'rename', child: Text('Rename')),
-                    const PopupMenuItem(value: 'move', child: Text('Move to folder')),
-                    const PopupMenuItem(value: 'reminder', child: Text('Add to reminder')),
-                    const PopupMenuItem(value: 'trash', child: Text('Move to Recycle Bin')),
-                  ],
-                ),
-              );
-            },
-          )),
+                  trailing: PopupMenuButton<String>(
+                    onSelected: (action) async {
+                      if (action == 'open') {
+                        final uri = doc.storagePath;
+                        if (uri.startsWith('content://') || uri.startsWith('file://')) {
+                          await StorageLocationService.instance.openPdf(uri);
+                        } else { await OpenFilex.open(uri); }
+                      } else if (action == 'share') {
+                        await _tools.shareStoredPdf(doc.storagePath, '${doc.name}.pdf');
+                      } else if (action == 'trash') {
+                        final confirmed = await showDialog<bool>(
+                          context: dialogContext,
+                          builder: (confirmContext) => AlertDialog(
+                            title: const Text('Move this copy to Recycle Bin?'),
+                            content: Text('${doc.name}.pdf will remain recoverable in Recycle Bin.'),
+                            actions: [
+                              TextButton(onPressed: () => Navigator.pop(confirmContext, false), child: const Text('Cancel')),
+                              FilledButton(onPressed: () => Navigator.pop(confirmContext, true), child: const Text('Move')),
+                            ],
+                          ),
+                        );
+                        if (confirmed == true) {
+                          await DocumentRepository().moveToTrash(doc);
+                          refresh(() => docs.removeWhere((item) => item.id == doc.id));
+                          if (mounted) setState(() => _message = 'Moved one duplicate to Recycle Bin. Remaining matches stay open.');
+                        }
+                      }
+                    },
+                    itemBuilder: (_) => const [
+                      PopupMenuItem(value: 'open', child: Text('Open PDF')),
+                      PopupMenuItem(value: 'share', child: Text('Share PDF')),
+                      PopupMenuItem(value: 'trash', child: Text('Move this copy to Recycle Bin')),
+                    ],
+                  ),
+                );
+              },
+            )),
         ])),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Close')),
-          FilledButton.tonal(
-            onPressed: selected.isEmpty ? null : () async {
-              final targets = docs.where((d) => selected.contains(d.id)).toList();
-              for (final doc in targets) { await DocumentRepository().moveToTrash(doc); }
-              if (dialogContext.mounted) Navigator.pop(dialogContext);
-              if (mounted) setState(() => _message = 'Moved ${targets.length} duplicate PDF(s) to Recycle Bin.');
-            },
-            child: Text('Move selected to Recycle Bin (${selected.length})'),
-          ),
-        ],
+        actions: [TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Back'))],
       ),
     ));
   }
@@ -493,19 +361,21 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
   }
 
   Future<void> _showDuplicates() async {
-    final groups = await _tools.findExactDuplicates();
+    final groups = await _tools.findDuplicateGroups();
     if (!mounted) return;
     await showDialog<void>(context: context, builder: (context) => AlertDialog(
-      title: const Text('Duplicate review'),
+      title: const Text('Check Duplicate File'),
       content: SizedBox(width: 420, child: groups.isEmpty
-        ? const Text('No duplicate PDF found.')
+        ? const Text('No duplicates found. Run OCR indexing first to detect matching scanned/text content.')
         : ListView(shrinkWrap: true, children: groups.map((g) => ListTile(
-            title: Text('${g['copies']} matching PDF files'),
+            leading: Icon(g['duplicate_type'] == 'SHA-256' ? Icons.fingerprint : Icons.text_snippet_outlined),
+            title: Text('${g['copies']} matching PDF files · ${g['duplicate_type']}'),
             subtitle: Text((g['names'] ?? '').toString()),
             trailing: const Icon(Icons.chevron_right),
             onTap: () {
               Navigator.pop(context);
-              _reviewDuplicateGroup(g['sha256'] as String);
+              final ids = (g['document_ids'] ?? '').toString().split(',').where((id) => id.isNotEmpty).toList();
+              _reviewDuplicateGroup(ids, g['duplicate_type'] as String);
             },
           )).toList())),
       actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('Close'))],
@@ -535,6 +405,14 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
               labelText: 'Search text inside indexed PDFs',
               suffixIcon: IconButton(onPressed: _searchText, icon: const Icon(Icons.search))),
               onSubmitted: (_) => _searchText()),
+            const SizedBox(height: 6),
+            const Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                'OCR languages: Android supports English and Hindi. iPhone currently supports Latin-script text only.',
+                style: TextStyle(fontSize: 12),
+              ),
+            ),
             if (_results.isNotEmpty) ...[
               const SizedBox(height: 8),
               ..._results.map((r) => ListTile(dense: true,

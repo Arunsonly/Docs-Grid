@@ -3,12 +3,15 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:open_filex/open_filex.dart';
+import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
 
 import '../data/document_repository.dart';
 import '../../../core/storage/storage_location_service.dart';
 import '../../categories/data/category_repository.dart';
 import '../../folders/data/folder_repository.dart';
 import '../../tools/document_tools_service.dart';
+import '../../tools/document_tools_screen.dart' show DocumentToolsScreen;
 import '../../reminders/data/reminder_repository.dart';
 
 class DocumentsScreen extends StatefulWidget {
@@ -28,7 +31,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   final _search = TextEditingController();
   List<DocumentRecord> _documents = [];
   bool _loading = true;
-  bool _importing = false;
+  final bool _importing = false;
   bool _searchInsideText = false;
   int _totalStorageBytes = 0;
   int _totalDocumentCount = 0;
@@ -92,96 +95,115 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     }
   }
 
-  Future<ImportDecision?> _reviewImport(
-    String suggestedName,
-    String? suggestedCategoryId,
-    List<ImportCategoryOption> categories,
-  ) async {
-    final nameController = TextEditingController(text: suggestedName);
-    String? selectedCategoryId = suggestedCategoryId;
-    final result = await showDialog<ImportDecision>(
-      context: context,
-      builder: (dialogContext) => StatefulBuilder(
-        builder: (context, refreshDialog) => AlertDialog(
-          title: const Text('Confirm document details'),
-          content: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                TextField(
-                  controller: nameController,
-                  autofocus: true,
-                  decoration: const InputDecoration(labelText: 'Document name', suffixText: '.pdf'),
-                ),
-                const SizedBox(height: 12),
-                DropdownButtonFormField<String?>(
-                  initialValue: selectedCategoryId,
-                  isExpanded: true,
-                  decoration: const InputDecoration(labelText: 'Suggested category'),
-                  items: [
-                    const DropdownMenuItem<String?>(value: null, child: Text('No category')),
-                    for (final category in categories)
-                      DropdownMenuItem<String?>(value: category.id, child: Text(category.name)),
-                  ],
-                  onChanged: (value) => refreshDialog(() => selectedCategoryId = value),
-                ),
-              ],
-            ),
-          ),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Skip')),
-            FilledButton(
-              onPressed: () => Navigator.pop(dialogContext, ImportDecision(
-                name: nameController.text,
-                categoryId: selectedCategoryId,
-              )),
-              child: const Text('Import PDF'),
-            ),
-          ],
-        ),
-      ),
-    );
-    nameController.dispose();
-    return result;
+  void _message(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
   }
 
-  Future<void> _import() async {
-    final folders = await _folderRepository.allFoldersWithPaths();
-    if (!mounted) return;
-    final destination = await showModalBottomSheet<String>(
-      context: context,
-      showDragHandle: true,
-      builder: (sheetContext) => SafeArea(
-        child: ListView(shrinkWrap: true, children: [
-          const ListTile(title: Text('Choose destination folder')),
-          ListTile(leading: const Icon(Icons.home_outlined), title: const Text('My Documents (root)'), onTap: () => Navigator.pop(sheetContext, '')),
-          for (final option in folders)
-            ListTile(leading: const Icon(Icons.folder_outlined), title: Text(option.path), onTap: () => Navigator.pop(sheetContext, option.folder.id)),
-        ]),
-      ),
-    );
-    if (destination == null || !mounted) return;
-    setState(() => _importing = true);
+  Future<void> _browsePhoneStorage() async {
     try {
-      final result = await _repository.importPdfs(
-        review: _reviewImport,
-        targetFolderId: destination.isEmpty ? null : destination,
+      final selected = await StorageLocationService.instance.chooseFolder();
+      if (!mounted || selected == null) return;
+      await _showStorageDirectory(selected['uri']!, selected['name']!);
+    } catch (error) {
+      if (mounted) _message('Could not access phone storage: $error');
+    }
+  }
+
+  Future<void> _importStoragePdf({
+    required BuildContext dialogContext,
+    required String fileUri,
+    required String fileName,
+    required String targetFolderUri,
+  }) async {
+    Navigator.of(dialogContext).pop();
+    File? stagedFile;
+    try {
+      final temp = await getTemporaryDirectory();
+      stagedFile = File(p.join(
+        temp.path,
+        'docsgrid_storage_import_${DateTime.now().microsecondsSinceEpoch}.pdf',
+      ));
+      await StorageLocationService.instance.copyPdfToPath(
+        sourceUri: fileUri,
+        destinationPath: stagedFile.path,
+      );
+      final summary = await _repository.importScannedPdf(
+        stagedFile,
+        displayName: fileName,
+        targetFolderUri: targetFolderUri,
+        sourceType: 'storage_browser',
       );
       await _load();
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(
-          'Added ${result.added} · Duplicates ${result.duplicates} · Skipped ${result.skipped} · Failed ${result.failed}',
-        )),
-      );
-    } catch (error) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Import failed: $error')));
+      if (summary.added > 0) {
+        _message('Imported $fileName successfully.');
+      } else if (summary.duplicates > 0) {
+        _message('$fileName is already in DocsGrid. No duplicate was imported.');
+      } else {
+        _message('Could not import $fileName.');
       }
+    } catch (error) {
+      _message('Could not import $fileName: $error');
     } finally {
-      if (mounted) setState(() => _importing = false);
+      if (stagedFile != null) {
+        try {
+          if (await stagedFile.exists()) await stagedFile.delete();
+        } catch (_) {
+          // A temporary copy is never allowed to affect the source document.
+        }
+      }
     }
+  }
+
+  Future<void> _showStorageDirectory(String uri, String name) async {
+    List<Map<String, Object?>> entries;
+    try {
+      entries = await StorageLocationService.instance.listDirectory(uri);
+    } catch (error) {
+      if (mounted) _message('Could not read $name: $error');
+      return;
+    }
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(name, maxLines: 1, overflow: TextOverflow.ellipsis),
+        content: SizedBox(
+          width: double.maxFinite,
+          height: 420,
+          child: entries.isEmpty
+              ? const Center(child: Text('This folder is empty.'))
+              : ListView.separated(
+                  itemCount: entries.length,
+                  separatorBuilder: (_, _) => const Divider(height: 1),
+                  itemBuilder: (context, index) {
+                    final entry = entries[index];
+                    final isDirectory = entry['isDirectory'] == true;
+                    final fileName = entry['name'] as String;
+                    final isPdf = !isDirectory && fileName.toLowerCase().endsWith('.pdf');
+                    if (!isDirectory && !isPdf) return const SizedBox.shrink();
+                    return ListTile(
+                      dense: true,
+                      leading: Icon(isDirectory ? Icons.folder_outlined : Icons.picture_as_pdf_outlined),
+                      title: Text(fileName, maxLines: 1, overflow: TextOverflow.ellipsis),
+                      trailing: isDirectory ? const Icon(Icons.chevron_right) : const Icon(Icons.more_vert),
+                      onTap: isDirectory
+                          ? () => _showStorageDirectory(entry['uri'] as String, fileName)
+                          : () => _importStoragePdf(
+                              dialogContext: context,
+                              fileUri: entry['uri'] as String,
+                              fileName: fileName,
+                              targetFolderUri: uri,
+                            ),
+                    );
+                  },
+                ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Close')),
+        ],
+      ),
+    );
   }
 
   void _toggleSelected(DocumentRecord document) {
@@ -687,7 +709,17 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
               Row(children: [
                 Expanded(child: _dashboardMetric(Icons.picture_as_pdf_outlined, '$_totalDocumentCount', 'Documents')),
                 Expanded(child: _dashboardMetric(Icons.star_border, '$_starredCount', 'Starred')),
-                Expanded(child: _dashboardMetric(Icons.offline_pin_outlined, 'Offline', 'On device')),
+                Expanded(
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(14),
+                    onTap: _browsePhoneStorage,
+                    child: _dashboardMetric(
+                      Icons.folder_open_outlined,
+                      'Browse',
+                      'Phone storage',
+                    ),
+                  ),
+                ),
               ]),
             ]),
           ),
@@ -721,16 +753,37 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                   ),
                 ),
                 const SizedBox(width: 4),
-                IconButton(
-                  tooltip: 'Recycle Bin',
-                  onPressed: _showTrash,
-                  icon: const Icon(Icons.delete_outline),
-                ),
-                const SizedBox(width: 4),
-                FilledButton.tonalIcon(
-                  onPressed: _importing ? null : _import,
-                  icon: const Icon(Icons.add),
-                  label: const Text('Import'),
+                PopupMenuButton<String>(
+                  tooltip: 'More document actions',
+                  icon: const Icon(Icons.more_vert),
+                  onSelected: (action) {
+                    if (action == 'trash') _showTrash();
+                    if (action == 'duplicates') {
+                      Navigator.of(context).push(
+                        MaterialPageRoute(
+                          builder: (_) => const DocumentToolsScreen(section: 'tools', quickAction: 'duplicates'),
+                        ),
+                      );
+                    }
+                  },
+                  itemBuilder: (_) => const [
+                    PopupMenuItem(
+                      value: 'trash',
+                      child: ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        leading: Icon(Icons.delete_outline),
+                        title: Text('Recycle Bin'),
+                      ),
+                    ),
+                    PopupMenuItem(
+                      value: 'duplicates',
+                      child: ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        leading: Icon(Icons.copy_all_outlined),
+                        title: Text('Check Duplicate File'),
+                      ),
+                    ),
+                  ],
                 ),
               ],
             ),
@@ -740,7 +793,31 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
           child: _loading
               ? const Center(child: CircularProgressIndicator())
               : _error != null
-                  ? Center(child: Text('Could not load documents\n$_error', textAlign: TextAlign.center))
+                  ? Center(
+                      child: Padding(
+                        padding: const EdgeInsets.all(24),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(Icons.cloud_off_outlined, size: 42),
+                            const SizedBox(height: 12),
+                            const Text(
+                              'Could not load documents',
+                              style: TextStyle(fontWeight: FontWeight.w600),
+                              textAlign: TextAlign.center,
+                            ),
+                            const SizedBox(height: 6),
+                            Text(_error!, textAlign: TextAlign.center),
+                            const SizedBox(height: 14),
+                            FilledButton.icon(
+                              onPressed: _load,
+                              icon: const Icon(Icons.refresh),
+                              label: const Text('Try again'),
+                            ),
+                          ],
+                        ),
+                      ),
+                    )
                   : _documents.isEmpty
                       ? _emptyState()
                       : RefreshIndicator(
@@ -788,8 +865,11 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
               Text(widget.recentOnly ? 'Open a PDF and it will appear here.' : 'Import PDF files from your phone to get started.', textAlign: TextAlign.center),
               if (!widget.favoritesOnly && !widget.recentOnly) ...[
                 const SizedBox(height: 12),
-                FilledButton.icon(onPressed: _importing ? null : _import,
-                  icon: const Icon(Icons.add), label: const Text('Import PDFs')),
+                OutlinedButton.icon(
+                  onPressed: _browsePhoneStorage,
+                  icon: const Icon(Icons.folder_open_outlined),
+                  label: const Text('Browse phone storage'),
+                ),
               ],
             ],
           ),
