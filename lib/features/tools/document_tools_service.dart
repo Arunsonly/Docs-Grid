@@ -1358,16 +1358,14 @@ class DocumentToolsService {
             ? <String>{}
             : (await txn.query('history', columns: ['id']))
                 .map((row) => row['id'] as String).toSet();
-        final existingIndexIds = replaceExisting
-            ? <String>{}
-            : (await txn.query('document_text_index', columns: ['document_id']))
-                .map((row) => row['document_id'] as String).toSet();
         for (final row in rowsByTable['reminders']!) {
           final copy = Map<String, Object?>.from(row);
           final oldId = row['id'] as String;
           copy['id'] = existingReminderIds.contains(oldId) ? _uuid.v4() : oldId;
           final oldDocumentId = row['document_id'] as String?;
-          copy['document_id'] = oldDocumentId == null ? null : documentIdMap[oldDocumentId];
+          copy['document_id'] = oldDocumentId == null
+              ? null
+              : (documentIdMap[oldDocumentId] ?? oldDocumentId);
           queueInsert('reminders', copy);
           restoredReminderRows.add(copy);
           existingReminderIds.add(copy['id'] as String);
@@ -1378,7 +1376,9 @@ class DocumentToolsService {
           final oldId = row['id'] as String;
           copy['id'] = existingHistoryIds.contains(oldId) ? _uuid.v4() : oldId;
           final oldDocumentId = row['document_id'] as String?;
-          copy['document_id'] = oldDocumentId == null ? null : documentIdMap[oldDocumentId];
+          copy['document_id'] = oldDocumentId == null
+              ? null
+              : (documentIdMap[oldDocumentId] ?? oldDocumentId);
           queueInsert('history', copy);
           existingHistoryIds.add(copy['id'] as String);
           if (pending >= 500) await flushBatch();
@@ -1392,7 +1392,6 @@ class DocumentToolsService {
             ...row,
             'document_id': mappedDocumentId,
           }, conflictAlgorithm: ConflictAlgorithm.ignore);
-          existingIndexIds.add(mappedDocumentId);
           if (pending >= 500) await flushBatch();
         }
         // Preferences are additive: never overwrite settings already configured
