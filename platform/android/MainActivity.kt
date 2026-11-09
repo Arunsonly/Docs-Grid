@@ -194,7 +194,7 @@ class MainActivity : FlutterActivity() {
                             "createDirectory" -> {
                                 val parent = Uri.parse(call.argument<String>("parentUri")!!)
                                 val name = call.argument<String>("name")!!
-                                result.success(createDirectory(parent, name).toString())
+                                result.success((if (parent.scheme == "file") createFileDirectory(parent, name) else createDirectory(parent, name)).toString())
                             }
                             "copyPdf" -> {
                                 val source = Uri.parse(call.argument<String>("sourceUri")!!)
@@ -246,54 +246,80 @@ class MainActivity : FlutterActivity() {
                             }
                             "readTextFile" -> {
                                 val uri = Uri.parse(call.argument<String>("uri")!!)
-                                val bytes = contentResolver.openInputStream(uri)?.use { it.readBytes() }
-                                    ?: throw IllegalStateException("Could not read metadata file.")
+                                val bytes = if (uri.scheme == "file") {
+                                    fileForUri(uri).readBytes()
+                                } else {
+                                    contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                                        ?: throw IllegalStateException("Could not read metadata file.")
+                                }
                                 result.success(String(bytes, Charsets.UTF_8))
                             }
                             "listDirectory" -> {
                                 val uri = Uri.parse(call.argument<String>("uri")!!)
-                                result.success(listDirectory(uri))
+                                result.success(if (uri.scheme == "file") listFileDirectory(uri) else listDirectory(uri))
                             }
                             "readPdf" -> {
                                 val uri = Uri.parse(call.argument<String>("uri")!!)
-                                val bytes = contentResolver.openInputStream(uri)?.use { it.readBytes() }
-                                    ?: throw IllegalStateException("Could not read the selected PDF.")
+                                val bytes = if (uri.scheme == "file") {
+                                    fileForUri(uri).readBytes()
+                                } else {
+                                    contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                                        ?: throw IllegalStateException("Could not read the selected PDF.")
+                                }
                                 result.success(bytes)
                             }
                             "findChildUri" -> {
                                 val parent = Uri.parse(call.argument<String>("parentUri")!!)
                                 val name = call.argument<String>("name")!!
-                                result.success(findChildUri(parent, name).toString())
+                                result.success((if (parent.scheme == "file") findFileChild(parent, name) else findChildUri(parent, name)).toString())
                             }
                             "renamePdf" -> {
                                 val uri = Uri.parse(call.argument<String>("uri")!!)
                                 val name = call.argument<String>("name")!!
-                                val renamed = DocumentsContract.renameDocument(contentResolver, uri, name)
-                                    ?: throw IllegalStateException("Android could not rename this PDF.")
+                                val renamed = if (uri.scheme == "file") {
+                                    val source = fileForUri(uri)
+                                    validateLeafName(name)
+                                    val target = java.io.File(source.parentFile, name)
+                                    if (target.exists() || !source.renameTo(target)) {
+                                        throw IllegalStateException("Android could not rename this PDF.")
+                                    }
+                                    Uri.fromFile(target)
+                                } else {
+                                    DocumentsContract.renameDocument(contentResolver, uri, name)
+                                        ?: throw IllegalStateException("Android could not rename this PDF.")
+                                }
                                 result.success(renamed.toString())
                             }
                             "deletePdf" -> {
                                 val uri = Uri.parse(call.argument<String>("uri")!!)
+                                if (uri.scheme == "file") {
+                                val target = fileForUri(uri)
+                                if (target.isDirectory && target.listFiles()?.isNotEmpty() == true) {
+                                    throw IllegalStateException("Folder contains files or subfolders and cannot be deleted.")
+                                }
+                                result.success(target.delete())
+                            } else {
                                 val documentUri = resolveParentUri(uri)
-                            val metadata = contentResolver.query(
-                                documentUri, arrayOf(DocumentsContract.Document.COLUMN_MIME_TYPE),
-                                null, null, null
-                            ) ?: throw IllegalStateException("Could not inspect the selected storage item.")
-                            val mime = metadata.use { if (it.moveToFirst()) it.getString(0) else null }
-                            if (mime == DocumentsContract.Document.MIME_TYPE_DIR) {
-                                val documentId = DocumentsContract.getDocumentId(documentUri)
-                                val children = DocumentsContract.buildChildDocumentsUriUsingTree(uri, documentId)
-                                val cursor = contentResolver.query(
-                                    children, arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID),
+                                val metadata = contentResolver.query(
+                                    documentUri, arrayOf(DocumentsContract.Document.COLUMN_MIME_TYPE),
                                     null, null, null
-                                ) ?: throw IllegalStateException("Could not verify whether the folder is empty.")
-                                cursor.use {
-                                    if (it.moveToFirst()) {
-                                        throw IllegalStateException("Folder contains files or subfolders and cannot be deleted.")
+                                ) ?: throw IllegalStateException("Could not inspect the selected storage item.")
+                                val mime = metadata.use { if (it.moveToFirst()) it.getString(0) else null }
+                                if (mime == DocumentsContract.Document.MIME_TYPE_DIR) {
+                                    val documentId = DocumentsContract.getDocumentId(documentUri)
+                                    val children = DocumentsContract.buildChildDocumentsUriUsingTree(uri, documentId)
+                                    val cursor = contentResolver.query(
+                                        children, arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID),
+                                        null, null, null
+                                    ) ?: throw IllegalStateException("Could not verify whether the folder is empty.")
+                                    cursor.use {
+                                        if (it.moveToFirst()) {
+                                            throw IllegalStateException("Folder contains files or subfolders and cannot be deleted.")
+                                        }
                                     }
                                 }
+                                result.success(DocumentsContract.deleteDocument(contentResolver, uri))
                             }
-                            result.success(DocumentsContract.deleteDocument(contentResolver, uri))
                             }
                             "openPdf" -> {
                                 val uri = Uri.parse(call.argument<String>("uri")!!)
@@ -401,6 +427,51 @@ class MainActivity : FlutterActivity() {
         } catch (_: Exception) {
             mapOf("status" to "revoked", "message" to "Folder access failed. Select the folder again; existing PDF records will be preserved.")
         }
+    }
+
+    private fun fileForUri(uri: Uri): java.io.File {
+        if (uri.scheme != "file") throw IllegalArgumentException("Expected a local file URI.")
+        if (android.os.Build.VERSION.SDK_INT >= 30 &&
+            !android.os.Environment.isExternalStorageManager()) {
+            throw SecurityException("Allow Full internal storage access in DocsGrid Settings.")
+        }
+        val file = java.io.File(uri.path ?: throw IllegalArgumentException("Invalid file URI."))
+        val root = android.os.Environment.getExternalStorageDirectory().canonicalFile
+        val canonical = file.canonicalFile
+        if (canonical.path != root.path && !canonical.path.startsWith(root.path + java.io.File.separator)) {
+            throw SecurityException("DocsGrid file access is limited to shared internal storage.")
+        }
+        return canonical
+    }
+
+    private fun listFileDirectory(uri: Uri): List<Map<String, Any>> {
+        val directory = fileForUri(uri)
+        if (!directory.isDirectory) throw java.io.FileNotFoundException("Missing directory: ${directory.path}")
+        return directory.listFiles()?.sortedBy { it.name.lowercase() }?.map { child ->
+            mapOf(
+                "name" to child.name,
+                "uri" to Uri.fromFile(child).toString(),
+                "isDirectory" to child.isDirectory,
+                "size" to if (child.isFile) child.length() else 0L
+            )
+        } ?: throw IllegalStateException("Could not list the selected internal storage folder.")
+    }
+
+    private fun findFileChild(parent: Uri, name: String): Uri {
+        validateLeafName(name)
+        val child = java.io.File(fileForUri(parent), name)
+        if (!child.exists()) throw MissingStorageChildException("Could not find '$name'.")
+        return Uri.fromFile(child)
+    }
+
+    private fun createFileDirectory(parent: Uri, name: String): Uri {
+        validateLeafName(name)
+        val directory = java.io.File(fileForUri(parent), name)
+        if (!directory.exists() && !directory.mkdirs()) {
+            throw IllegalStateException("Could not create folder in internal storage.")
+        }
+        if (!directory.isDirectory) throw IllegalStateException("A file with this folder name already exists.")
+        return Uri.fromFile(directory)
     }
 
     private fun resolveParentUri(uri: Uri): Uri {
