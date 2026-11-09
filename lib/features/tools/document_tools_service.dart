@@ -475,16 +475,30 @@ class DocumentToolsService {
     }
 
     final pdf = pw.Document();
-    for (final image in selected) {
+    final processedPaths = <String>{};
+    while (processedPaths.length < selected.length) {
+      // Re-read the first unprocessed item after every crop. The crop screen
+      // can reorder the persistent filmstrip while the current page remains
+      // active; the next page follows the newly selected order.
+      final image = selected.firstWhere((item) => !processedPaths.contains(item.path));
       final originalBytes = await image.readAsBytes();
       if (!context.mounted) return null;
       final croppedBytes = await Navigator.of(context).push<Uint8List>(
         MaterialPageRoute(
-          builder: (_) => DocumentCropScreen(imageBytes: originalBytes),
+          builder: (_) => DocumentCropScreen(
+            imageBytes: originalBytes,
+            pagePaths: selected.map((item) => item.path).toList(growable: false),
+            onReorderPages: (orderedPaths) {
+              final byPath = {for (final item in selected) item.path: item};
+              selected = orderedPaths.map((path) => byPath[path])
+                  .whereType<XFile>().toList(growable: true);
+            },
+          ),
           fullscreenDialog: true,
         ),
       );
       if (croppedBytes == null) return null;
+      processedPaths.add(image.path);
       final memory = pw.MemoryImage(croppedBytes);
       pdf.addPage(pw.Page(
         pageFormat: PdfPageFormat.a4,
