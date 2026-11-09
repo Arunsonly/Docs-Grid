@@ -277,11 +277,11 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
       setState(() => _message =
         'Recovery complete. '
         'Folders: ${result['folders']}; PDFs added: ${result['documentsAdded']}; '
-        'PDFs linked: ${result['documentsLinked']}; missing PDFs: ${result['pdfsMissing']}.\\n'
+        'PDFs linked: ${result['documentsLinked']}; missing PDFs: ${result['pdfsMissing']}.\n'
         'Categories: ${result['categories']}; tags: ${result['tags']}; '
         'PDF-tag links: ${result['documentTags']}; reminders: ${result['reminders']}; '
         'activity/history: ${result['activity']}; OCR indexes: ${result['ocrIndexes']}; '
-        'settings: ${result['settings']}.\\n'
+        'settings: ${result['settings']}.\n'
         'Existing data was retained. Reminder records are restored to the app database; '
         'Android notification delivery is rescheduled separately.');
     }
@@ -494,8 +494,12 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
     if (state != AppLifecycleState.resumed || !_awaitingAllFilesPermission) return;
     _awaitingAllFilesPermission = false;
     unawaited(() async {
-      if (await StorageLocationService.instance.hasAllFilesAccess() && mounted) {
-        await _restorePortableSnapshot(autoDetect: true);
+      try {
+        if (await StorageLocationService.instance.hasAllFilesAccess() && mounted) {
+          await _restorePortableSnapshot(autoDetect: true);
+        }
+      } catch (error) {
+        if (mounted) setState(() => _message = 'Could not verify storage permission: $error');
       }
     }());
   }
