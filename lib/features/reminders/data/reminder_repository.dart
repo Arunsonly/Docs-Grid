@@ -45,9 +45,60 @@ class ReminderRecord {
   );
 }
 
+abstract interface class ReminderNotificationGateway {
+  Future<void> cancel(String id);
+  Future<void> schedule({
+    required String id,
+    required String title,
+    String? body,
+    required DateTime at,
+    String? recurrence,
+  });
+  Future<void> scheduleSnooze({
+    required String id,
+    required String title,
+    String? body,
+    required DateTime at,
+  });
+  Future<bool> requestPermission();
+}
+
+class _PluginReminderNotificationGateway implements ReminderNotificationGateway {
+  @override
+  Future<void> cancel(String id) => _notifications.cancel(id);
+
+  @override
+  Future<void> schedule({
+    required String id,
+    required String title,
+    String? body,
+    required DateTime at,
+    String? recurrence,
+  }) => _notifications.schedule(
+    id: id, title: title, body: body, at: at, recurrence: recurrence,
+  );
+
+  @override
+  Future<void> scheduleSnooze({
+    required String id,
+    required String title,
+    String? body,
+    required DateTime at,
+  }) => _notifications.scheduleSnooze(
+    id: id, title: title, body: body, at: at,
+  );
+
+  @override
+  Future<bool> requestPermission() => _notifications.requestPermission();
+}
+
 class ReminderRepository {
-  ReminderRepository({AppDatabase? database}) : _database = database ?? AppDatabase.instance;
+  ReminderRepository({AppDatabase? database, ReminderNotificationGateway? notifications})
+      : _database = database ?? AppDatabase.instance,
+        _notifications = notifications ?? _PluginReminderNotificationGateway();
+
   final AppDatabase _database;
+  final ReminderNotificationGateway _notifications;
   static const _uuid = Uuid();
 
   @visibleForTesting
