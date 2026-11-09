@@ -287,8 +287,8 @@ import CryptoKit
 
     private func validateLeafName(_ name: String) throws {
         guard !name.isEmpty, name != ".", name != "..",
-              !name.contains("/"), !name.contains("\\\\"),
-              !name.contains("\\0") else {
+              !name.contains("/"), !name.contains("\\"),
+              !name.contains("\0") else {
             throw storageError("Invalid file or folder name.")
         }
     }
