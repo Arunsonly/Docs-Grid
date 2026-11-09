@@ -59,6 +59,63 @@ void main() {
       throwsFormatException);
   });
 
+  group('portable snapshot folder graph', () {
+    test('accepts a valid nested folder graph', () {
+      final result = PortableSnapshotManifest.validateFolderRows([
+        {'id': 'root', 'name': 'Policies', 'parent_id': null},
+        {'id': 'child', 'name': 'Motor', 'parent_id': 'root'},
+      ]);
+      expect(result.keys, containsAll(['root', 'child']));
+    });
+
+    test('rejects duplicate IDs and missing parents', () {
+      expect(
+        () => PortableSnapshotManifest.validateFolderRows([
+          {'id': 'same', 'name': 'A', 'parent_id': null},
+          {'id': 'same', 'name': 'B', 'parent_id': null},
+        ]),
+        throwsFormatException,
+      );
+      expect(
+        () => PortableSnapshotManifest.validateFolderRows([
+          {'id': 'child', 'name': 'Child', 'parent_id': 'missing'},
+        ]),
+        throwsFormatException,
+      );
+    });
+
+    test('rejects cycles and unsafe path components', () {
+      expect(
+        () => PortableSnapshotManifest.validateFolderRows([
+          {'id': 'a', 'name': 'A', 'parent_id': 'b'},
+          {'id': 'b', 'name': 'B', 'parent_id': 'a'},
+        ]),
+        throwsFormatException,
+      );
+      for (final unsafe in ['.', '..', 'a/b', r'a\\b', 'bad\u0000name']) {
+        expect(
+          () => PortableSnapshotManifest.validateFolderRows([
+            {'id': 'x', 'name': unsafe, 'parent_id': null},
+          ]),
+          throwsFormatException,
+          reason: 'Unsafe folder name should be rejected: $unsafe',
+        );
+      }
+    });
+
+    test('handles a deep hierarchy iteratively without recursion overflow', () {
+      final rows = List.generate(1500, (index) => {
+        'id': 'folder-$index',
+        'name': 'Folder $index',
+        'parent_id': index == 0 ? null : 'folder-${index - 1}',
+      });
+      expect(
+        PortableSnapshotManifest.validateFolderRows(rows),
+        hasLength(1500),
+      );
+    });
+  });
+
   test('rejects a table count that differs from its metadata file record count', () {
     final value = validManifest();
     (value['files'] as List).first['recordCount'] = 9;
