@@ -10,6 +10,7 @@ import CryptoKit
     private let bookmarkListKey = "docsgrid_storage_bookmarks"
     private var pendingFolderResult: FlutterResult?
     private var documentController: UIDocumentInteractionController?
+    private let storageQueue = DispatchQueue(label: "com.docsgrid.storage-io", qos: .userInitiated)
 
     override func application(
         _ application: UIApplication,
@@ -19,7 +20,19 @@ import CryptoKit
         if let controller = window?.rootViewController as? FlutterViewController {
             let channel = FlutterMethodChannel(name: channelName, binaryMessenger: controller.binaryMessenger)
             channel.setMethodCallHandler { [weak self] call, result in
-                self?.handle(call, result: result)
+                guard let self else {
+                    result(FlutterError(code: "UNAVAILABLE", message: "DocsGrid storage is unavailable.", details: nil))
+                    return
+                }
+                if call.method == "chooseFolder" || call.method == "openPdf" {
+                    self.handle(call, result: result)
+                } else {
+                    self.storageQueue.async {
+                        self.handle(call) { value in
+                            DispatchQueue.main.async { result(value) }
+                        }
+                    }
+                }
             }
             let notificationChannel = FlutterMethodChannel(
                 name: "docsgrid/notifications",
@@ -201,7 +214,9 @@ import CryptoKit
                 result(FlutterMethodNotImplemented)
             }
         } catch {
-            result(FlutterError(code: "STORAGE_ERROR", message: error.localizedDescription, details: nil))
+            let nativeError = error as NSError
+            let code = nativeError.domain == "DocsGridStorageNotFound" ? "NOT_FOUND" : "STORAGE_ERROR"
+            result(FlutterError(code: code, message: error.localizedDescription, details: nil))
         }
     }
 
@@ -519,7 +534,11 @@ import CryptoKit
                 at: parent, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]
             )
             guard let match = children.first(where: { $0.lastPathComponent == name }) else {
-                throw storageError("Could not find '\(name)' inside the selected folder.")
+                throw NSError(
+                    domain: "DocsGridStorageNotFound",
+                    code: 404,
+                    userInfo: [NSLocalizedDescriptionKey: "Could not find '\(name)' inside the selected folder."]
+                )
             }
             return match
         }
@@ -538,9 +557,21 @@ import CryptoKit
 
     private func deleteItem(url: URL) throws {
         try withAllBookmarkAccess {
-            if FileManager.default.fileExists(atPath: url.path) {
-                try FileManager.default.removeItem(at: url)
+            guard FileManager.default.fileExists(atPath: url.path) else { return }
+            let values = try url.resourceValues(forKeys: [.isDirectoryKey])
+            if values.isDirectory == true {
+                // Include hidden entries. removeItem(at:) recursively deletes
+                // directory contents, so refuse unless the folder is truly empty.
+                let children = try FileManager.default.contentsOfDirectory(
+                    at: url,
+                    includingPropertiesForKeys: nil,
+                    options: []
+                )
+                guard children.isEmpty else {
+                    throw storageError("Folder contains files or subfolders and cannot be deleted.")
+                }
             }
+            try FileManager.default.removeItem(at: url)
         }
     }
 
