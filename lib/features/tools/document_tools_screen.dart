@@ -60,7 +60,8 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
     }
   }
 
-  Future<void> _scan({bool camera = false}) => _run(() async {
+  Future<void> _scan({bool camera = false}) async {
+    await _run(() async {
     final file = await _tools.scanToPdf(context: context, useCamera: camera);
     if (!mounted || file == null) return;
 
@@ -121,7 +122,13 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
         ? 'PDF saved in DocsGrid: ${chosenName == null || chosenName.isEmpty ? p.basename(file.path) : chosenName}.pdf'
         : 'This PDF already exists. Duplicate was not added.');
     }
-  });
+    });
+    // Camera/gallery quick actions are transient routes. Return to the library
+    // after save, cancel or failure instead of leaving a permanent launch spinner.
+    if (mounted && (widget.quickAction == 'camera' || widget.quickAction == 'gallery')) {
+      await Navigator.of(context).maybePop();
+    }
+  }
 
   Future<void> _backup() => _run(() async {
     final archive = await _tools.createBackup();
