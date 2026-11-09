@@ -120,7 +120,6 @@ class ReminderNotifications {
   }
 
   int _id(String id) => stableNotificationId(id);
-  @visibleForTesting
   static int stableSnoozeNotificationId(String id) => stableNotificationId('${id}:snooze');
   int _snoozeId(String id) => stableSnoozeNotificationId(id);
 
