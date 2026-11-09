@@ -285,6 +285,14 @@ import CryptoKit
         }
     }
 
+    private func validateLeafName(_ name: String) throws {
+        guard !name.isEmpty, name != ".", name != "..",
+              !name.contains("/"), !name.contains("\\\\"),
+              !name.contains("\\0") else {
+            throw storageError("Invalid file or folder name.")
+        }
+    }
+
     private func stringArg(_ args: [String: Any], _ key: String) throws -> String {
         guard let value = args[key] as? String, !value.isEmpty else {
             throw storageError("Missing required value: \(key)")
@@ -428,6 +436,7 @@ import CryptoKit
     }
 
     private func savePdf(parent: URL, name: String, data: Data) throws -> URL {
+        try validateLeafName(name)
         try withAllBookmarkAccess {
             let target = uniqueURL(parent: parent, requestedName: name)
             try data.write(to: target, options: .atomic)
@@ -456,6 +465,7 @@ import CryptoKit
     }
 
     private func createDirectory(parent: URL, name: String) throws -> URL {
+        try validateLeafName(name)
         try withAllBookmarkAccess {
             let target = parent.appendingPathComponent(name, isDirectory: true)
             guard !FileManager.default.fileExists(atPath: target.path) else {
@@ -575,6 +585,7 @@ import CryptoKit
     }
 
     private func renameItem(url: URL, name: String) throws -> URL {
+        try validateLeafName(name)
         try withAllBookmarkAccess {
             let target = url.deletingLastPathComponent().appendingPathComponent(name)
             if target != url && FileManager.default.fileExists(atPath: target.path) {
