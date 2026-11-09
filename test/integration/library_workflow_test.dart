@@ -51,7 +51,7 @@ void main() {
 
   test('PDF library workflow: index -> OCR search -> duplicate review', () async {
     const stamp = '2026-11-09T00:00:00.000Z';
-    final bytes = '%PDF-1.4\\nPolicy number 987654321\\n%%EOF';
+    final bytes = '%PDF-1.4\nPolicy number 987654321\n%%EOF';
     final digest = sha256.convert(bytes.codeUnits).toString();
     final first = File('${directory.path}/policy-a.pdf');
     final second = File('${directory.path}/policy-b.pdf');
@@ -69,7 +69,7 @@ void main() {
       });
       await database.insert('document_text_index', {
         'document_id': item['id'],
-        'extracted_text': '--- Page 1 ---\\nPolicy number 987654321\\nRenewal date 2027-01-01',
+        'extracted_text': '--- Page 1 ---\nPolicy number 987654321\nRenewal date 2027-01-01',
         'indexed_at': stamp, 'page_count': 1,
       });
     }
