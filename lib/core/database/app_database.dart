@@ -137,29 +137,34 @@ class AppDatabase {
   @visibleForTesting
   Future<void> upgradeForTesting(Database db, int oldVersion, int newVersion) async {
     if (newVersion <= oldVersion) return;
-        // Databases created by the original v1 app predate schema_migrations.
-        // Create the tracking table before recording the first upgrade so an
-        // existing user's database can migrate without a missing-table crash.
-        await db.execute('''
-          CREATE TABLE IF NOT EXISTS schema_migrations (
-            version INTEGER PRIMARY KEY,
-            applied_at TEXT NOT NULL
-          )
-        ''');
-        if (oldVersion < 2 && newVersion >= 2) {
-          await _createV2Tables(db);
-          await db.insert('schema_migrations', {
-            'version': 2,
-            'applied_at': DateTime.now().toUtc().toIso8601String(),
-          });
-        }
-        if (oldVersion < 3 && newVersion >= 3) {
-          await _createV3Tables(db);
-          await db.insert('schema_migrations', {
-            'version': 3,
-            'applied_at': DateTime.now().toUtc().toIso8601String(),
-          });
-        }
+    if (oldVersion < 1 || newVersion > 3) {
+      throw StateError('Unsupported database migration: $oldVersion -> $newVersion');
+    }
+
+    // Legacy v1 databases predate the migration ledger. Create it inside
+    // SQLite's onUpgrade transaction so a failed migration leaves no partial
+    // schema or ledger entries behind.
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS schema_migrations (
+        version INTEGER PRIMARY KEY,
+        applied_at TEXT NOT NULL
+      )
+    ''');
+    final applied = DateTime.now().toUtc().toIso8601String();
+    if (oldVersion < 1) {
+      await db.insert('schema_migrations', {'version': 1, 'applied_at': applied},
+          conflictAlgorithm: ConflictAlgorithm.ignore);
+    }
+    if (oldVersion < 2 && newVersion >= 2) {
+      await _createV2Tables(db);
+      await db.insert('schema_migrations', {'version': 2, 'applied_at': applied},
+          conflictAlgorithm: ConflictAlgorithm.ignore);
+    }
+    if (oldVersion < 3 && newVersion >= 3) {
+      await _createV3Tables(db);
+      await db.insert('schema_migrations', {'version': 3, 'applied_at': applied},
+          conflictAlgorithm: ConflictAlgorithm.ignore);
+    }
   }
 
   Future<void> _createV3Tables(DatabaseExecutor db) async {
