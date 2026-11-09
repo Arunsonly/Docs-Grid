@@ -913,6 +913,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                   icon: const Icon(Icons.more_vert),
                   onSelected: (action) {
                     if (action == 'trash') _showTrash();
+                    if (action == 'select') setState(() => _selectedIds.addAll(_documents.map((document) => document.id)));
                     if (action == 'duplicates') {
                       Navigator.of(context).push(
                         MaterialPageRoute(
@@ -936,6 +937,14 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                         contentPadding: EdgeInsets.zero,
                         leading: Icon(Icons.copy_all_outlined),
                         title: Text('Check Duplicate File'),
+                      ),
+                    ),
+                    PopupMenuItem(
+                      value: 'select',
+                      child: ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        leading: Icon(Icons.checklist),
+                        title: Text('Select PDFs'),
                       ),
                     ),
                   ],
