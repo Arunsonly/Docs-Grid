@@ -36,6 +36,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
   void initState() {
     super.initState();
     _tools = widget.service ?? DocumentToolsService();
+    _busy = widget.quickAction == 'camera' || widget.quickAction == 'gallery';
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       switch (widget.quickAction) {
