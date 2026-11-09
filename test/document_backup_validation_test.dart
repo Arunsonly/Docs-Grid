@@ -37,9 +37,15 @@ Future<File> _makeBackup(
 }) async {
   final bytes = pdfBytes ?? utf8.encode('%PDF-1.7\nDocsGrid test PDF');
   final archive = Archive();
+  final metadataFiles = <Map<String, Object?>>[];
   for (final table in _validRows().entries) {
     final json = Uint8List.fromList(utf8.encode(jsonEncode(table.value)));
     archive.addFile(ArchiveFile('${table.key}.json', json.length, json));
+    metadataFiles.add({
+      'entry': '${table.key}.json',
+      'sizeBytes': json.length,
+      'sha256': sha256.convert(json).toString(),
+    });
   }
   if (!databaseOnly) {
     archive.addFile(ArchiveFile(entry, bytes.length, Uint8List.fromList(bytes)));
@@ -52,6 +58,7 @@ Future<File> _makeBackup(
     'tables': <String, int>{
       for (final table in _validRows().entries) table.key: table.value.length,
     },
+    'metadataFiles': metadataFiles,
     'files': includeFileRecord && !databaseOnly ? [{
       'documentId': 'document-1',
       'entry': entry,
