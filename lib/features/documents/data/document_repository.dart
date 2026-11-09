@@ -965,7 +965,8 @@ class DocumentRepository {
     if (!cleaned.toLowerCase().endsWith('.pdf')) cleaned = '$cleaned.pdf';
     final stem = p.basenameWithoutExtension(cleaned);
     final boundedStem = String.fromCharCodes(stem.runes.take(120));
-    return '${boundedStem.isEmpty ? 'Document' : boundedStem}.pdf';
+    final safeStem = boundedStem.isEmpty ? 'Document' : boundedStem;
+    return '$safeStem.pdf';
   }
 
   Future<File> _uniqueFile(Directory directory, String name) async {
