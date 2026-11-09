@@ -460,9 +460,43 @@ class DocumentToolsService {
     final directory = await getTemporaryDirectory();
     final scans = Directory(p.join(directory.path, 'DocsGrid', 'Scans'));
     await scans.create(recursive: true);
-    final file = File(p.join(scans.path, 'Scan_${DateTime.now().microsecondsSinceEpoch}.pdf'));
-    await file.writeAsBytes(await pdf.save(), flush: true);
-    return file;
+    final stamp = DateTime.now().microsecondsSinceEpoch;
+    final file = File(p.join(scans.path, 'Scan_$stamp.pdf'));
+    final partial = File('${file.path}.partial');
+    try {
+      // Write to a staging file first. A failed encode/write must never leave a
+      // truncated PDF that looks like a successfully exported scan.
+      final bytes = await pdf.save();
+      if (bytes.length < 8 ||
+          String.fromCharCodes(bytes.take(5)) != '%PDF-') {
+        throw StateError('PDF encoder returned an invalid document.');
+      }
+      await partial.writeAsBytes(bytes, flush: true);
+      final writtenHeader = await partial.openRead(0, 5)
+          .fold<List<int>>(<int>[], (a, b) => a..addAll(b));
+      if (writtenHeader.length != 5 ||
+          String.fromCharCodes(writtenHeader) != '%PDF-') {
+        throw StateError('Exported PDF failed its header verification.');
+      }
+      final verification = await pdfx.PdfDocument.openFile(partial.path);
+      try {
+        if (verification.pagesCount != selected.length) {
+          throw StateError('Exported PDF page count does not match the selected images.');
+        }
+      } finally {
+        await verification.close();
+      }
+      await partial.rename(file.path);
+      return file;
+    } catch (_) {
+      try {
+        if (await partial.exists()) await partial.delete();
+      } catch (_) {}
+      try {
+        if (await file.exists()) await file.delete();
+      } catch (_) {}
+      rethrow;
+    }
   }
 
 
