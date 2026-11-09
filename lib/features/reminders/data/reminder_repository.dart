@@ -1,6 +1,7 @@
 import 'package:uuid/uuid.dart';
 
 import '../../../core/database/app_database.dart';
+import '../../tools/document_tools_service.dart';
 import 'reminder_notifications.dart';
 
 class ReminderRecord {
@@ -43,6 +44,18 @@ class ReminderRepository {
   ReminderRepository({AppDatabase? database}) : _database = database ?? AppDatabase.instance;
   final AppDatabase _database;
   static const _uuid = Uuid();
+
+  /// Keep the portable recovery snapshot in sync with reminder changes.
+  /// SQLite remains the live source of truth; each snapshot contains the full
+  /// reminders table together with folders, PDFs, tags, categories and history.
+  Future<void> _refreshPortableSnapshot() async {
+    try {
+      await DocumentToolsService().createPortableMetadataSnapshot();
+    } catch (_) {
+      // Portable storage may not be configured yet. The reminder is already
+      // committed to docs_grid.db and will be included in the next backup.
+    }
+  }
 
   static String validateTitle(String title) {
     final clean = title.trim();
@@ -152,6 +165,7 @@ class ReminderRepository {
       'created_at': now,
       'updated_at': now,
     });
+    await _refreshPortableSnapshot();
     try {
       if (requestPermission &&
           !await ReminderNotifications.instance.areNotificationsEnabled()) {
@@ -204,6 +218,7 @@ class ReminderRepository {
       'completed_at': null,
       'updated_at': DateTime.now().toUtc().toIso8601String(),
     }, where: 'id = ?', whereArgs: [id]);
+    await _refreshPortableSnapshot();
     try {
       await ReminderNotifications.instance.cancel(id);
       await ReminderNotifications.instance.schedule(
@@ -227,6 +242,7 @@ class ReminderRepository {
       'snoozed_until': when.toUtc().toIso8601String(),
       'updated_at': DateTime.now().toUtc().toIso8601String(),
     }, where: 'id = ?', whereArgs: [reminder.id]);
+    await _refreshPortableSnapshot();
     try {
       await ReminderNotifications.instance.scheduleSnooze(
         id: reminder.id, title: reminder.title, body: reminder.note, at: when,
@@ -253,6 +269,7 @@ class ReminderRepository {
       'enabled': enabled ? 1 : 0,
       'updated_at': DateTime.now().toUtc().toIso8601String(),
     }, where: 'id = ?', whereArgs: [reminder.id]);
+    await _refreshPortableSnapshot();
     try {
       if (enabled) {
         await rescheduleEnabled();
@@ -267,6 +284,7 @@ class ReminderRepository {
   Future<void> delete(String id) async {
     final db = await _database.database;
     await db.delete('reminders', where: 'id = ?', whereArgs: [id]);
+    await _refreshPortableSnapshot();
     try { await ReminderNotifications.instance.cancel(id); } catch (_) {}
   }
 
@@ -276,6 +294,7 @@ class ReminderRepository {
     await db.update('reminders', {
       'status': 'completed', 'completed_at': now, 'enabled': 0, 'updated_at': now,
     }, where: 'id = ?', whereArgs: [id]);
+    await _refreshPortableSnapshot();
     try { await ReminderNotifications.instance.cancel(id); } catch (_) {}
   }
 }
