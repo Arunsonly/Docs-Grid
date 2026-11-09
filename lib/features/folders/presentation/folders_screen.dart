@@ -333,7 +333,13 @@ class _FoldersScreenState extends State<FoldersScreen> {
       return;
     }
     final selected = folders.where((folder) => folder.id == selectedId).firstOrNull;
-    if (selected != null) await _openFolder(selected);
+    if (selected == null) return;
+    final ancestorIndex = _ancestors.indexWhere((folder) => folder.id == selectedId);
+    if (ancestorIndex >= 0) {
+      _goToAncestor(ancestorIndex);
+    } else {
+      await _openFolder(selected);
+    }
   }
 
   Future<void> _createFolder() async {
