@@ -453,15 +453,21 @@ class MainActivity : FlutterActivity() {
 
     private fun listFileDirectory(uri: Uri): List<Map<String, Any>> {
         val directory = fileForUri(uri)
-        if (!directory.isDirectory) throw java.io.FileNotFoundException("Missing directory: ${directory.path}")
-        return directory.listFiles()?.sortedBy { it.name.lowercase() }?.map { child ->
+        if (!directory.exists()) throw java.io.FileNotFoundException("Missing directory: ${directory.path}")
+        if (!directory.isDirectory) throw IllegalStateException("The selected storage item is not a folder.")
+        // Android intentionally blocks some protected subtrees (notably
+        // Android/data and Android/obb) even with all-files access. Skip those
+        // inaccessible branches without aborting the scan of the rest of storage.
+        val children = try { directory.listFiles() } catch (_: SecurityException) { null }
+            ?: return emptyList()
+        return children.sortedBy { it.name.lowercase() }.map { child ->
             mapOf(
                 "name" to child.name,
                 "uri" to Uri.fromFile(child).toString(),
                 "isDirectory" to child.isDirectory,
                 "size" to if (child.isFile) child.length() else 0L
             )
-        } ?: throw IllegalStateException("Could not list the selected internal storage folder.")
+        }
     }
 
     private fun createFilePdf(parent: Uri, requestedName: String, bytes: ByteArray): Uri {
