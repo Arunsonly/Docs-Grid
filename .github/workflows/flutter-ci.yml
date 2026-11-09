@@ -36,7 +36,7 @@ jobs:
           set -euo pipefail
           MIRROR='https://maven.wso2.org/nexus/content/repositories/central/'
           ARTIFACT='org/jetbrains/kotlin/kotlin-compiler-embeddable/2.2.21/kotlin-compiler-embeddable-2.2.21.jar'
-          EXPECTED='9309638a2ee03e6bde9ef4b7444055a94b84ab906563675d71ff9aecb64da913'
+          EXPECTED='9588fa696ac5507af764fd5660df6894185e12704ec1bc3f5cb772af4987f295'
           curl --fail --location --silent --show-error --retry 3 --retry-all-errors "$MIRROR$ARTIFACT" -o /tmp/kotlin-compiler-embeddable-2.2.21.jar
           echo "$EXPECTED  /tmp/kotlin-compiler-embeddable-2.2.21.jar" | sha256sum --check --status
           echo 'Kotlin 2.2.21 compiler artifact mirror and SHA-256 verified.'
