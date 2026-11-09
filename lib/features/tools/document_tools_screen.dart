@@ -283,6 +283,8 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
     var skipped = 0;
     var alreadyIndexed = 0;
     for (final row in rows) {
+      // Stop background OCR work when the owning route is dismissed.
+      if (!mounted) return;
       if (row['extracted_text_status'] == 'indexed') {
         alreadyIndexed++;
         continue;
