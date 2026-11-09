@@ -94,7 +94,6 @@ class FolderRepository {
   Future<String?> ensurePhysicalStorageUri(String folderId) async {
     final db = await _database.database;
     final selectedRoot = await StorageLocationService.instance.selectedFolder();
-    if (selectedRoot == null) return null;
 
     final chain = <({String id, String name, String? parentId, String? uri})>[];
     final visited = <String>{};
@@ -119,10 +118,10 @@ class FolderRepository {
       currentId = row['parent_id'] as String?;
     }
 
-    var parentUri = selectedRoot['uri']!;
+    String? parentUri = selectedRoot?['uri'];
     for (final folder in chain.reversed) {
       var childUri = folder.uri;
-      if (childUri == null) {
+      if (childUri == null && parentUri != null) {
         try {
           childUri = await StorageLocationService.instance.findChildUri(
             parentUri: parentUri,
@@ -145,6 +144,7 @@ class FolderRepository {
           whereArgs: [folder.id],
         );
       }
+      if (childUri == null) return null;
       parentUri = childUri;
     }
     return parentUri;
