@@ -110,3 +110,6 @@ Hosted CI passing is necessary but does not replace these device and real-data c
 - Verify on device: create a reminder, inspect the newest `Database/snapshot_*/reminders.json`, relaunch, restore to a clean app install, confirm reminder details and linked PDF IDs, and confirm notification scheduling when Android notification permission is granted.
 - Delete a folder externally in Samsung My Files / Android Files. Refresh DocsGrid; missing physical folder rows must be soft-deleted from the active folder list, while permission/provider errors must not be mistaken for deletion.
 - In a folder containing both subfolders and PDFs, folder drag handles remain visible and PDF long-press enters multi-select without opening a name tooltip.
+
+
+Implementation note: CI is intentionally deferred for this PR until the owner authorizes it; do not treat this as an automated green build.
