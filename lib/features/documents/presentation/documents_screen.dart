@@ -1086,6 +1086,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                         ),
         ),
       ],
+    ),
     );
   }
 
@@ -1221,8 +1222,6 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
           ],
         ),
       ),
-      ),
-    ),
     );
   }
 
