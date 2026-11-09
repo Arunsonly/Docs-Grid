@@ -32,9 +32,9 @@ void main() {
           (await sha256.bind(Stream<List<int>>.fromIterable(chunks)).first)
               .toString();
       final target = File('${temp.path}/large-provider.pdf');
-  
+
       await writeByteStreamToFile(Stream<List<int>>.fromIterable(chunks), target);
-  
+
       expect(await target.length(), chunkSize * chunkCount);
       expect(
         (await sha256.bind(target.openRead()).first).toString(),
