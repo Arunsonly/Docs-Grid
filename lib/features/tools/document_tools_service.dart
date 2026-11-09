@@ -1384,6 +1384,19 @@ class DocumentToolsService {
     var addedDocuments = 0;
     var linkedDocuments = 0;
     var missingPdfs = 0;
+    // Metadata entities are restored from the same verified snapshot as PDFs.
+    // Report source record counts separately so the UI does not imply that
+    // reminders/tags/categories are physical files.
+    final recoveredCounts = <String, int>{
+      'folders': folderRows.length,
+      'categories': rowsByTable['categories']!.length,
+      'tags': rowsByTable['tags']!.length,
+      'documentTags': rowsByTable['document_tags']!.length,
+      'reminders': rowsByTable['reminders']!.length,
+      'activity': rowsByTable['history']!.length,
+      'ocrIndexes': rowsByTable['document_text_index']!.length,
+      'settings': rowsByTable['settings']!.length,
+    };
     Future<void> rollbackCreatedFolders() async {
       for (final uri in createdFolderUris.reversed) {
         try {
@@ -1590,6 +1603,7 @@ class DocumentToolsService {
       'documentsAdded': addedDocuments,
       'documentsLinked': linkedDocuments,
       'pdfsMissing': missingPdfs,
+      ...recoveredCounts,
     };
   }
 
