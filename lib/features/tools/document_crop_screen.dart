@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
@@ -64,9 +65,16 @@ List<int> _readImageDimensions(Uint8List bytes) {
 }
 
 class DocumentCropScreen extends StatefulWidget {
-  const DocumentCropScreen({super.key, required this.imageBytes});
+  const DocumentCropScreen({
+    super.key,
+    required this.imageBytes,
+    this.pagePaths = const [],
+    this.onReorderPages,
+  });
 
   final Uint8List imageBytes;
+  final List<String> pagePaths;
+  final ValueChanged<List<String>>? onReorderPages;
 
   @override
   State<DocumentCropScreen> createState() => _DocumentCropScreenState();
@@ -82,11 +90,13 @@ class _DocumentCropScreenState extends State<DocumentCropScreen> {
   int _activeCorner = -1;
   bool _processing = false;
   bool _completed = false;
+  late List<String> _pagePaths;
 
   @override
   void initState() {
     super.initState();
     _workingImage = widget.imageBytes;
+    _pagePaths = List<String>.of(widget.pagePaths);
     _dimensions = compute(_readImageDimensions, _workingImage);
   }
 
@@ -268,6 +278,69 @@ class _DocumentCropScreenState extends State<DocumentCropScreen> {
                 },
               ),
             ),
+            if (_pagePaths.length > 1)
+              SizedBox(
+                height: 104,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Padding(
+                      padding: EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                      child: Text('Pages · drag to reorder'),
+                    ),
+                    Expanded(
+                      child: ReorderableListView.builder(
+                        key: const ValueKey('crop-page-filmstrip'),
+                        scrollDirection: Axis.horizontal,
+                        padding: const EdgeInsets.symmetric(horizontal: 8),
+                        itemCount: _pagePaths.length,
+                        onReorderItem: (oldIndex, newIndex) {
+                          setState(() {
+                            final path = _pagePaths.removeAt(oldIndex);
+                            _pagePaths.insert(newIndex, path);
+                          });
+                          widget.onReorderPages?.call(List<String>.unmodifiable(_pagePaths));
+                        },
+                        itemBuilder: (context, index) => SizedBox(
+                          key: ValueKey('crop-page-${_pagePaths[index]}'),
+                          width: 76,
+                          child: Card(
+                            clipBehavior: Clip.antiAlias,
+                            child: Stack(
+                              fit: StackFit.expand,
+                              children: [
+                                Image.file(
+                                  File(_pagePaths[index]),
+                                  fit: BoxFit.cover,
+                                  errorBuilder: (_, _, _) => const ColoredBox(
+                                    color: Colors.black12,
+                                    child: Icon(Icons.image_not_supported_outlined),
+                                  ),
+                                ),
+                                Positioned(
+                                  left: 4,
+                                  top: 4,
+                                  child: CircleAvatar(
+                                    radius: 11,
+                                    child: Text('${index + 1}',
+                                      style: const TextStyle(fontSize: 10)),
+                                  ),
+                                ),
+                                const Positioned(
+                                  right: 2,
+                                  bottom: 2,
+                                  child: Icon(Icons.drag_indicator, color: Colors.white,
+                                    shadows: [Shadow(blurRadius: 4, color: Colors.black)]),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             Padding(
               padding: const EdgeInsets.fromLTRB(8, 8, 8, 12),
               child: Wrap(

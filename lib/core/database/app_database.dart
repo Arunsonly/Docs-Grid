@@ -42,7 +42,7 @@ class AppDatabase {
     final dbPath = p.join(directory.path, 'docs_grid.db');
     return openDatabase(
       dbPath,
-      version: 6,
+      version: 7,
       onConfigure: (db) async => db.execute('PRAGMA foreign_keys = ON'),
       onCreate: (db, version) async {
         await db.execute('''
@@ -50,6 +50,7 @@ class AppDatabase {
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
             parent_id TEXT,
+            sort_order INTEGER NOT NULL DEFAULT 0,
             storage_uri_or_relative_path TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
@@ -117,6 +118,7 @@ class AppDatabase {
         await _createV4PerformanceSchema(db);
         await _createV5SummaryInvalidation(db);
         await _createV6NameSearchIndex(db);
+        await _createV7FolderOrder(db);
         await db.insert('schema_migrations', {
           'version': 1,
           'applied_at': DateTime.now().toUtc().toIso8601String(),
@@ -141,6 +143,10 @@ class AppDatabase {
           'version': 6,
           'applied_at': DateTime.now().toUtc().toIso8601String(),
         });
+        await db.insert('schema_migrations', {
+          'version': 7,
+          'applied_at': DateTime.now().toUtc().toIso8601String(),
+        });
       },
       onUpgrade: upgradeForTesting,
       onDowngrade: (db, oldVersion, newVersion) async {
@@ -154,7 +160,7 @@ class AppDatabase {
   @visibleForTesting
   Future<void> upgradeForTesting(Database db, int oldVersion, int newVersion) async {
     if (newVersion <= oldVersion) return;
-    if (oldVersion < 1 || newVersion > 6) {
+    if (oldVersion < 1 || newVersion > 7) {
       throw StateError('Unsupported database migration: $oldVersion -> $newVersion');
     }
 
@@ -195,6 +201,11 @@ class AppDatabase {
     if (oldVersion < 6 && newVersion >= 6) {
       await _createV6NameSearchIndex(db);
       await db.insert('schema_migrations', {'version': 6, 'applied_at': applied},
+          conflictAlgorithm: ConflictAlgorithm.ignore);
+    }
+    if (oldVersion < 7 && newVersion >= 7) {
+      await _createV7FolderOrder(db);
+      await db.insert('schema_migrations', {'version': 7, 'applied_at': applied},
           conflictAlgorithm: ConflictAlgorithm.ignore);
     }
   }
@@ -282,6 +293,19 @@ class AppDatabase {
         UPDATE document_summary_state SET revision = revision + 1 WHERE id = 1;
       END
     ''');
+  }
+
+  Future<void> _createV7FolderOrder(DatabaseExecutor db) async {
+    final columns = await db.rawQuery('PRAGMA table_info(folders)');
+    final hasSortOrder = columns.any((column) => column['name'] == 'sort_order');
+    if (!hasSortOrder) {
+      await db.execute(
+        'ALTER TABLE folders ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0',
+      );
+    }
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_folders_parent_order ON folders(parent_id, deleted_at, sort_order, name COLLATE NOCASE)',
+    );
   }
 
   Future<void> _createV6NameSearchIndex(DatabaseExecutor db) async {

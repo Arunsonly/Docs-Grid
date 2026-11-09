@@ -9,6 +9,7 @@ import 'package:sqflite/sqflite.dart';
 import 'package:uuid/uuid.dart';
 
 import '../../../core/database/app_database.dart';
+import '../../../core/storage/byte_stream_file.dart';
 import '../../../core/storage/storage_location_service.dart';
 import '../../folders/data/folder_repository.dart';
 import '../../reminders/data/reminder_notifications.dart';
@@ -677,12 +678,11 @@ class DocumentRepository {
   /// Reconnects a missing or inaccessible PDF to a user-selected copy.
   /// If the record has a SHA-256 value, the replacement must match exactly.
   Future<void> relinkDocument(DocumentRecord document) async {
-    final picked = await FilePicker.pickFiles(
+    final pickedFile = await FilePicker.pickFile(
       type: FileType.custom,
       allowedExtensions: ['pdf'],
     );
-    if (picked.isEmpty) return;
-    final pickedFile = picked.single;
+    if (pickedFile == null) return;
     File? stagedSource;
     String? createdUri;
     try {
@@ -693,13 +693,17 @@ class DocumentRepository {
       } else {
         final temp = await getTemporaryDirectory();
         stagedSource = File(p.join(temp.path, 'relink_${_uuid.v4()}.pdf'));
-        // file_picker 13.x exposes provider bytes rather than a read stream
-        // when no local path is available. Stage them immediately in cache.
-        await stagedSource.writeAsBytes(await pickedFile.readAsBytes(), flush: true);
+        // Cloud/Files providers may not expose a filesystem path. Stream their
+        // bytes into cache so large PDFs do not require a second full-size
+        // Uint8List allocation in memory.
+        await writeByteStreamToFile(pickedFile.readAsByteStream(), stagedSource);
         source = stagedSource;
       }
-      if (!await source.exists()) throw StateError('The selected PDF is no longer available.');
-      final header = await source.openRead(0, 5)
+      if (!await source.exists()) {
+        throw StateError('The selected PDF is no longer available.');
+      }
+      final header = await source
+          .openRead(0, 5)
           .fold<List<int>>(<int>[], (a, b) => a..addAll(b));
       if (header.length < 5 || String.fromCharCodes(header) != '%PDF-') {
         throw StateError('The selected file is not a valid PDF.');
@@ -967,7 +971,8 @@ class DocumentRepository {
           // Stage them in cache immediately and remove the staged copy below.
           final temp = await getTemporaryDirectory();
           stagedSource = File(p.join(temp.path, 'import_${_uuid.v4()}.pdf'));
-          await stagedSource.writeAsBytes(await picked.readAsBytes(), flush: true);
+          // Keep provider-backed imports bounded in memory for large PDFs.
+          await writeByteStreamToFile(picked.readAsByteStream(), stagedSource);
           sourceFile = stagedSource;
         }
 

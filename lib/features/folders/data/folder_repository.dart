@@ -62,9 +62,42 @@ class FolderRepository {
       'folders',
       where: parentId == null ? 'parent_id IS NULL AND deleted_at IS NULL' : 'parent_id = ? AND deleted_at IS NULL',
       whereArgs: parentId == null ? null : [parentId],
-      orderBy: 'name COLLATE NOCASE ASC',
+      orderBy: 'sort_order ASC, name COLLATE NOCASE ASC',
     );
     return rows.map(Folder.fromMap).toList();
+  }
+
+  /// Persists the visual order of the active children of one parent.
+  /// The supplied ids must be an exact permutation of that parent's folders.
+  Future<void> reorderChildren(String? parentId, List<String> orderedIds) async {
+    final db = await _database.database;
+    await db.transaction((txn) async {
+      final rows = await txn.query(
+        'folders',
+        columns: ['id'],
+        where: parentId == null
+            ? 'parent_id IS NULL AND deleted_at IS NULL'
+            : 'parent_id = ? AND deleted_at IS NULL',
+        whereArgs: parentId == null ? null : [parentId],
+        orderBy: 'sort_order ASC, name COLLATE NOCASE ASC',
+      );
+      final currentIds = rows.map((row) => row['id'] as String).toSet();
+      if (orderedIds.length != currentIds.length ||
+          orderedIds.toSet().length != orderedIds.length ||
+          !orderedIds.toSet().containsAll(currentIds)) {
+        throw StateError('Folder order changed. Refresh and try again.');
+      }
+      final batch = txn.batch();
+      for (var index = 0; index < orderedIds.length; index++) {
+        batch.update(
+          'folders',
+          {'sort_order': index},
+          where: 'id = ? AND deleted_at IS NULL',
+          whereArgs: [orderedIds[index]],
+        );
+      }
+      await batch.commit(noResult: true);
+    });
   }
 
   Future<List<FolderOption>> allFoldersWithPaths() async {
@@ -210,8 +243,16 @@ class FolderRepository {
         if (duplicates.isNotEmpty) {
           throw StateError('A folder with this name already exists here.');
         }
+        final maxOrderRows = await txn.rawQuery(
+          parentId == null
+              ? 'SELECT COALESCE(MAX(sort_order), -1) AS max_order FROM folders WHERE parent_id IS NULL AND deleted_at IS NULL'
+              : 'SELECT COALESCE(MAX(sort_order), -1) AS max_order FROM folders WHERE parent_id = ? AND deleted_at IS NULL',
+          parentId == null ? null : [parentId],
+        );
+        final nextOrder = ((maxOrderRows.first['max_order'] as int?) ?? -1) + 1;
         await txn.insert('folders', {
           'id': folder.id,
+          'sort_order': nextOrder,
           'name': folder.name,
           'parent_id': folder.parentId,
           'storage_uri_or_relative_path': physicalUri,

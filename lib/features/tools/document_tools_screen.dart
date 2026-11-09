@@ -4,12 +4,14 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:open_filex/open_filex.dart';
 import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
 
 import '../../core/database/app_database.dart';
+import '../../core/storage/byte_stream_file.dart';
+import '../../core/storage/storage_location_service.dart';
 import '../documents/data/document_repository.dart';
 import '../folders/data/folder_repository.dart';
 import 'document_tools_service.dart';
-import '../../core/storage/storage_location_service.dart';
 
 class DocumentToolsScreen extends StatefulWidget {
   const DocumentToolsScreen({super.key, this.quickAction, this.section = 'tools', this.service});
@@ -158,37 +160,69 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
       return;
     }
     if (source != 'zip') return;
-    final picked = await FilePicker.pickFiles(type: FileType.custom, allowedExtensions: ['zip']);
-    if (picked.isEmpty) return;
-    final platformFile = picked.single;
-    final temporaryCopy = platformFile.path == null;
+    final platformFile = await FilePicker.pickFile(
+      type: FileType.custom,
+      allowedExtensions: ['zip'],
+    );
+    if (platformFile == null) return;
+    final temporaryCopy =
+        platformFile.path == null || platformFile.path!.isEmpty;
+    final temporaryDirectory =
+        temporaryCopy ? await getTemporaryDirectory() : null;
     final file = temporaryCopy
-        ? File(p.join(Directory.systemTemp.path, 'DocsGrid_restore_${DateTime.now().microsecondsSinceEpoch}.zip'))
+        ? File(
+            p.join(
+              temporaryDirectory!.path,
+              'DocsGrid_restore_${DateTime.now().microsecondsSinceEpoch}.zip',
+            ),
+          )
         : File(platformFile.path!);
     try {
       if (temporaryCopy) {
-        await file.writeAsBytes(await platformFile.readAsBytes(), flush: true);
+        // Backup ZIPs may contain many large PDFs. Stage provider data as a
+        // stream rather than materializing the entire archive in RAM.
+        await writeByteStreamToFile(platformFile.readAsByteStream(), file);
       }
-      final count = await _tools.validateBackup(file);
       if (!mounted) return;
-      final confirmed = await showDialog<bool>(context: context, builder: (context) => AlertDialog(
-        title: const Text('Restore backup?'),
-        content: Text('The archive contains $count PDF file(s). Existing records will be kept; the backup will be added without overwriting your current files.'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
-          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Restore')),
-        ],
-      ));
-      if (confirmed != true) return;
-      final restored = await _tools.restoreBackup(file);
-      if (mounted) setState(() => _message = 'Restore completed: $restored PDF file(s) restored and verified.');
+      final restored = await _tools.restoreBackup(
+        file,
+        confirm: (count) async {
+          if (!mounted) return false;
+          return await showDialog<bool>(
+                context: context,
+                builder: (context) => AlertDialog(
+                  title: const Text('Restore backup?'),
+                  content: Text(
+                    'The archive contains $count PDF file(s). Existing records will be kept; the backup will be added without overwriting your current files.',
+                  ),
+                  actions: [
+                    TextButton(
+                      onPressed: () => Navigator.pop(context, false),
+                      child: const Text('Cancel'),
+                    ),
+                    FilledButton(
+                      onPressed: () => Navigator.pop(context, true),
+                      child: const Text('Restore'),
+                    ),
+                  ],
+                ),
+              ) ??
+              false;
+        },
+      );
+      if (restored != null && mounted) {
+        setState(
+          () => _message =
+              'Restore completed: $restored PDF file(s) restored and verified.',
+        );
+      }
     } finally {
       if (temporaryCopy && await file.exists()) await file.delete();
     }
   });
 
   Future<void> _restorePortableSnapshot() => _run(() async {
-    final selected = await StorageLocationService.instance.chooseFolder();
+    final selected = await StorageLocationService.instance.chooseRecoveryFolder();
     if (selected == null) return;
     final snapshot = await _tools.verifyLatestPortableMetadataSnapshot();
     if (snapshot == null) {
@@ -196,8 +230,8 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
     }
     if (!mounted) return;
     final androidNote = Platform.isAndroid
-        ? 'Choose the parent folder that contains the existing DocsGrid folder.'
-        : 'Choose the existing DocsGrid data folder that contains System/Database.';
+        ? 'Choose the existing DocsGrid folder or its parent. The app will verify all four folders and at least one snapshot; it will not create missing folders.'
+        : 'Choose the existing DocsGrid data folder; missing folders or snapshots are rejected without creating a new tree.';
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
@@ -283,6 +317,8 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
     var skipped = 0;
     var alreadyIndexed = 0;
     for (final row in rows) {
+      // Stop background OCR work when the owning route is dismissed.
+      if (!mounted) return;
       if (row['extracted_text_status'] == 'indexed') {
         alreadyIndexed++;
         continue;
@@ -293,12 +329,19 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
         continue;
       }
       try {
-        final characters = await _tools.indexPdfTextFromUri(row['id'] as String, uri);
+        final characters = await _tools.indexPdfTextFromUri(
+          row['id'] as String,
+          uri,
+          shouldCancel: () => !mounted,
+        );
         if (characters == 0) {
           noText++;
         } else {
           done++;
         }
+      } on OcrIndexCancelled {
+        // Route disposal is an expected cancellation, not a failed document.
+        return;
       } catch (error, stackTrace) {
         skipped++;
         debugPrint('DocsGrid OCR indexing failed for document ${row['id']}: $error');

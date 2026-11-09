@@ -27,6 +27,7 @@ class MainActivity : FlutterActivity() {
     private val channelName = "docsgrid/storage"
     private val requestChooseFolder = 4817
     private var pendingFolderResult: MethodChannel.Result? = null
+    private var pendingRecoverySelection = false
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -55,7 +56,7 @@ class MainActivity : FlutterActivity() {
             }
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName)
             .setMethodCallHandler { call, result ->
-                val mainThreadOnly = call.method == "chooseFolder" || call.method == "openPdf"
+                val mainThreadOnly = call.method == "chooseFolder" || call.method == "chooseRecoveryFolder" || call.method == "openPdf"
                 if (mainThreadOnly) {
                     handleStorageCall(call, result)
                 } else if (call.method == "consumeSharedPdfs") {
@@ -100,11 +101,12 @@ class MainActivity : FlutterActivity() {
     ) {
                     try {
                         when (call.method) {
-                            "chooseFolder" -> {
+                            "chooseFolder", "chooseRecoveryFolder" -> {
                                 if (pendingFolderResult != null) {
                                     result.error("BUSY", "Folder picker is already open.", null)
                                 } else {
                                     pendingFolderResult = result
+                                    pendingRecoverySelection = call.method == "chooseRecoveryFolder"
                                     val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)
                                     intent.addFlags(
                                         Intent.FLAG_GRANT_READ_URI_PERMISSION or
@@ -603,6 +605,8 @@ class MainActivity : FlutterActivity() {
         if (requestCode != requestChooseFolder) return
         val callback = pendingFolderResult
         pendingFolderResult = null
+        val recoveryOnly = pendingRecoverySelection
+        pendingRecoverySelection = false
         if (resultCode != Activity.RESULT_OK || data?.data == null) {
             callback?.success(null)
             return
@@ -622,12 +626,54 @@ class MainActivity : FlutterActivity() {
             return
         }
         try {
-            // Reuse the selected DocsGrid directory when the user selected it
-            // directly. Previously this always created DocsGrid/DocsGrid, which
-            // made Recovery point at a new empty tree instead of the existing data.
             val selectedRoot = DocumentsContract.buildDocumentUriUsingTree(
                 uri, DocumentsContract.getTreeDocumentId(uri)
             )
+            if (recoveryOnly) {
+                val selectedName = contentResolver.query(
+                    selectedRoot,
+                    arrayOf(DocumentsContract.Document.COLUMN_DISPLAY_NAME),
+                    null, null, null
+                )?.use { cursor ->
+                    if (cursor.moveToFirst()) {
+                        val index = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+                        if (index >= 0) cursor.getString(index) else null
+                    } else null
+                } ?: throw IllegalStateException("Could not read the selected folder name.")
+                val docsGrid = if (selectedName.equals("DocsGrid", ignoreCase = true)) {
+                    selectedRoot
+                } else {
+                    findChildUri(uri, "DocsGrid")
+                }
+                // Recovery selection is read/validate-only: never create a new
+                // DocsGrid tree that could masquerade as a recoverable backup.
+                val documents = findChildUri(docsGrid, "Documents")
+                val folders = findChildUri(docsGrid, "Folders")
+                val database = findChildUri(docsGrid, "Database")
+                val recovery = findChildUri(docsGrid, "Recovery")
+                val snapshots = listDirectory(database).filter {
+                    it["isDirectory"] == true && (it["name"] as? String)?.startsWith("snapshot_") == true
+                }
+                if (snapshots.isEmpty()) {
+                    throw IllegalStateException("The existing DocsGrid/Database folder contains no recovery snapshots.")
+                }
+                getSharedPreferences("docsgrid_storage", MODE_PRIVATE).edit()
+                    .putString("tree_uri", uri.toString())
+                    .putString("docsgrid_uri", docsGrid.toString())
+                    .putString("documents_uri", documents.toString())
+                    .putString("folders_uri", folders.toString())
+                    .putString("my_files_uri", folders.toString())
+                    .putString("database_uri", database.toString())
+                    .putString("recovery_uri", recovery.toString())
+                    .apply()
+                callback?.success(mapOf("uri" to docsGrid.toString(), "name" to "DocsGrid", "rootUri" to docsGrid.toString()))
+                return
+            }
+            // Reuse the selected DocsGrid directory when the user selected it
+            // directly. Previously this always created DocsGrid/DocsGrid, which
+            // made Recovery point at a new empty tree instead of the existing data.
+            // Reuse selectedRoot declared above; both recovery and normal
+            // library setup refer to the same selected SAF tree.
             val selectedName = contentResolver.query(
                 selectedRoot,
                 arrayOf(DocumentsContract.Document.COLUMN_DISPLAY_NAME),

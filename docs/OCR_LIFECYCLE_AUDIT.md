@@ -17,6 +17,9 @@ Target: PR 18 / DocsGrid
 - Add a monotonically increasing request generation and invalidate it when the screen is disposed. Late completions are ignored.
 - Log the complete search exception stack trace through Flutter debug logging.
 - Log per-document OCR indexing exceptions with document ID and full stack trace instead of swallowing them.
+- Pass a route-disposal cancellation predicate through provider staging, PDF page rendering and ML Kit recognition; stop before starting another page or committing a stale index.
+- Close Latin recognizer, Devanagari recognizer and PDF document with nested `finally` blocks so a failure closing one native handle cannot leak the others.
+- Keep route-dismissal cancellation separate from genuine OCR failure and restore the prior index status without treating cancellation as a failed document.
 - Add widget tests for duplicate search submission and for a search completing after its route is removed.
 
 ## Assertion status

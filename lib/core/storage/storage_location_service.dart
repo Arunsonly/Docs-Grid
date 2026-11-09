@@ -86,6 +86,18 @@ class StorageLocationService {
     return {'uri': value['uri'] as String, 'name': (value['name'] as String?) ?? 'Selected folder'};
   }
 
+  /// Selects an existing DocsGrid backup tree without creating missing folders.
+  /// Android validates Documents/Folders/Database/Recovery and at least one
+  /// snapshot before updating the active portable-storage preferences.
+  Future<Map<String, String>?> chooseRecoveryFolder() async {
+    if (!Platform.isAndroid) {
+      throw UnsupportedError('Selecting an existing portable recovery tree is currently supported on Android only. Existing data has not been changed.');
+    }
+    final value = await _channel.invokeMapMethod<String, dynamic>('chooseRecoveryFolder');
+    if (value == null || value['uri'] == null) return null;
+    return {'uri': value['uri'] as String, 'name': (value['name'] as String?) ?? 'DocsGrid'};
+  }
+
   Future<String> savePdf({
     required String treeUri,
     required String name,
@@ -206,6 +218,7 @@ class StorageLocationService {
     String rootUri, {
     int maxEntries = 50000,
     int maxDepth = 64,
+    bool includeEmptyFolders = false,
   }) async {
     final pending = <({String uri, String path, int depth})>[
       (uri: rootUri, path: '', depth: 0),
@@ -249,6 +262,77 @@ class StorageLocationService {
           .compareTo((b['name'] as String).toLowerCase());
     });
     return pdfs;
+  }
+
+
+  /// Lists PDFs and only folders that contain PDFs somewhere below them,
+  /// within the explicitly granted SAF root. Empty folder branches are omitted.
+  Future<List<Map<String, Object?>>> listStorageTreeRecursively(
+    String rootUri, {
+    int maxEntries = 50000,
+    int maxDepth = 64,
+    bool includeEmptyFolders = false,
+  }) async {
+    final pending = <({String uri, String path, int depth})>[
+      (uri: rootUri, path: '', depth: 0),
+    ];
+    final visited = <String>{};
+    final entries = <Map<String, Object?>>[];
+    final foldersWithPdfs = <String>{};
+    final allFolders = <String>{};
+    var visitedEntries = 0;
+    while (pending.isNotEmpty) {
+      final current = pending.removeLast();
+      if (!visited.add(current.uri)) continue;
+      if (current.depth > maxDepth) {
+        throw StateError('The selected folder is nested too deeply to browse safely.');
+      }
+      final children = await listDirectory(current.uri);
+      for (final child in children) {
+        visitedEntries++;
+        if (visitedEntries > maxEntries) {
+          throw StateError('The selected folder contains more than $maxEntries entries. Choose a smaller folder.');
+        }
+        final name = child['name'] as String;
+        final uri = child['uri'] as String;
+        if (child['isDirectory'] == true) {
+          final path = current.path.isEmpty ? name : '${current.path}/$name';
+          allFolders.add(path);
+          pending.add((uri: uri, path: path, depth: current.depth + 1));
+        } else if (name.toLowerCase().endsWith('.pdf')) {
+          entries.add(<String, Object?>{
+            'name': name, 'uri': uri, 'folderPath': current.path,
+            'isDirectory': false,
+          });
+          var ancestor = current.path;
+          while (ancestor.isNotEmpty) {
+            foldersWithPdfs.add(ancestor);
+            final separator = ancestor.lastIndexOf('/');
+            ancestor = separator < 0 ? '' : ancestor.substring(0, separator);
+          }
+        }
+      }
+    }
+    // Keep only folders on a path to at least one PDF. Root-level PDFs remain
+    // visible without creating a synthetic empty-folder row.
+    final visibleFolders = includeEmptyFolders ? allFolders : foldersWithPdfs;
+    entries.addAll(visibleFolders.map((path) {
+      final segments = path.split('/');
+      return <String, Object?>{
+        'name': segments.last,
+        'uri': '',
+        'folderPath': segments.length == 1 ? '' : segments.sublist(0, segments.length - 1).join('/'),
+        'path': path,
+        'isDirectory': true,
+      };
+    }));
+    entries.sort((a, b) {
+      final path = (a['folderPath'] as String).compareTo(b['folderPath'] as String);
+      if (path != 0) return path;
+      if (a['isDirectory'] != b['isDirectory']) return a['isDirectory'] == true ? -1 : 1;
+      return (a['name'] as String).toLowerCase().compareTo((b['name'] as String).toLowerCase());
+    });
+    return entries;
   }
 
   /// Enumerates only immediate children. Returned URIs remain opaque platform

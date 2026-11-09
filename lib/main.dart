@@ -17,6 +17,7 @@ import 'features/folders/presentation/folders_screen.dart';
 import 'features/folders/data/folder_repository.dart';
 import 'core/storage/storage_location_service.dart';
 import 'features/tools/document_tools_screen.dart' show DocumentToolsScreen;
+import 'features/tools/document_scanner_screen.dart';
 
 final GlobalKey<NavigatorState> docsGridNavigatorKey = GlobalKey<NavigatorState>();
 
@@ -322,6 +323,13 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
       'tools' => 'OCR Search',
       _ => 'Document tools',
     };
+    if (action == 'camera' || action == 'gallery') {
+      await Navigator.of(context).push(MaterialPageRoute(
+        builder: (_) => DocumentScannerScreen(useCamera: action == 'camera'),
+        fullscreenDialog: true,
+      ));
+      return;
+    }
     await Navigator.of(context).push(MaterialPageRoute(builder: (_) => Scaffold(
       appBar: AppBar(title: Text(pageTitle)),
       body: DocumentToolsScreen(quickAction: action),

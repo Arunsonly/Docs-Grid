@@ -13,6 +13,7 @@ import '../../folders/data/folder_repository.dart';
 import '../../tools/document_tools_service.dart';
 import '../../tools/document_tools_screen.dart' show DocumentToolsScreen;
 import 'document_pdf_viewer_screen.dart';
+import 'phone_storage_browser_screen.dart';
 import '../../reminders/data/reminder_repository.dart';
 
 class DocumentsScreen extends StatefulWidget {
@@ -39,6 +40,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   int _totalDocumentCount = 0;
   int _starredCount = 0;
   final Set<String> _selectedIds = <String>{};
+  bool _selectionMode = false;
   int _loadGeneration = 0;
   Timer? _searchDebounce;
   String? _error;
@@ -68,6 +70,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
 
   @override
   void dispose() {
+    _loadGeneration++;
     _searchDebounce?.cancel();
     _search.removeListener(_onSearchChanged);
     _scrollController.removeListener(_onScroll);
@@ -219,7 +222,9 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
       final selected = await storage.selectedFolder() ?? await storage.chooseFolder();
       if (!mounted || selected == null) return;
       _message('Finding PDFs in ${selected['name']}…');
-      final files = await storage.listPdfFilesRecursively(selected['uri']!);
+      final files = await storage.listStorageTreeRecursively(
+        selected['uri']!, includeEmptyFolders: true,
+      );
       if (!mounted) return;
       await _showRecursiveStoragePdfs(selected['name']!, files);
     } catch (error) {
@@ -227,65 +232,13 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     }
   }
 
-  Future<void> _showRecursiveStoragePdfs(
-    String rootName,
-    List<Map<String, Object?>> files,
-  ) async {
+  Future<void> _showRecursiveStoragePdfs(String rootName, List<Map<String, Object?>> entries) async {
     if (!mounted) return;
-    final grouped = <String, List<Map<String, Object?>>>{};
-    for (final file in files) {
-      grouped.putIfAbsent(file['folderPath'] as String, () => []).add(file);
-    }
-    final folders = grouped.keys.toList()..sort();
-    await showDialog<void>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: Text('PDFs in $rootName'),
-        content: SizedBox(
-          width: double.maxFinite,
-          height: 520,
-          child: files.isEmpty
-              ? const Center(child: Text('No PDFs found in the selected folder or its subfolders.'))
-              : ListView.builder(
-                  itemCount: folders.length,
-                  itemBuilder: (context, index) {
-                    final folderPath = folders[index];
-                    final entries = grouped[folderPath]!;
-                    final title = folderPath.isEmpty ? '$rootName (root)' : folderPath;
-                    return ExpansionTile(
-                      key: PageStorageKey('storage-pdf-folder:$folderPath'),
-                      leading: const Icon(Icons.folder_outlined),
-                      title: Text(title, maxLines: 2, overflow: TextOverflow.ellipsis),
-                      subtitle: Text('${entries.length} PDF${entries.length == 1 ? '' : 's'}'),
-                      initiallyExpanded: folderPath.isEmpty,
-                      children: [
-                        for (final entry in entries)
-                          ListTile(
-                            dense: true,
-                            leading: const Icon(Icons.picture_as_pdf_outlined),
-                            title: Text(entry['name'] as String,
-                                maxLines: 1, overflow: TextOverflow.ellipsis),
-                            onTap: () {
-                              Navigator.pop(dialogContext);
-                              _openExternalStoragePdf(
-                                entry['uri'] as String,
-                                entry['name'] as String,
-                              );
-                            },
-                          ),
-                      ],
-                    );
-                  },
-                ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext),
-            child: const Text('Close'),
-          ),
-        ],
+    await Navigator.of(context).push<void>(MaterialPageRoute(
+      builder: (_) => PhoneStorageBrowserScreen(
+        rootName: rootName, entries: entries, onOpenPdf: _openExternalStoragePdf,
       ),
-    );
+    ));
   }
 
   Future<void> _openExternalStoragePdf(String uri, String name) async {
@@ -297,9 +250,27 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   }
 
 
+  void _startSelection(DocumentRecord document) {
+    if (!mounted) return;
+    setState(() {
+      _selectionMode = true;
+      _selectedIds.add(document.id);
+    });
+  }
+
   void _toggleSelected(DocumentRecord document) {
     setState(() {
+      _selectionMode = true;
       if (!_selectedIds.add(document.id)) _selectedIds.remove(document.id);
+      if (_selectedIds.isEmpty) _selectionMode = false;
+    });
+  }
+
+  void _clearSelection() {
+    if (!mounted) return;
+    setState(() {
+      _selectedIds.clear();
+      _selectionMode = false;
     });
   }
 
@@ -322,6 +293,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     if (!mounted) return;
     setState(() {
       _selectedIds.clear();
+      _selectionMode = false;
       _documents.removeWhere((document) => selected.any((item) => item.id == document.id));
     });
     await _refreshDashboardSummary();
@@ -338,7 +310,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     } catch (error) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not share selected PDFs: $error')));
     } finally {
-      if (mounted) setState(_selectedIds.clear);
+      if (mounted) _clearSelection();
     }
   }
   Future<void> _bulkMove() async {
@@ -364,7 +336,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     if (destination == null) return;
     final result = await _repository.moveManyToFolder(selected, destination.isEmpty ? null : destination);
     if (!mounted) return;
-    setState(_selectedIds.clear);
+    _clearSelection();
     for (final document in selected) {
       await _patchDocument(document.id);
     }
@@ -807,21 +779,21 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   @override
   Widget build(BuildContext context) {
     return PopScope<void>(
-      canPop: _selectedIds.isEmpty,
+      canPop: !_selectionMode,
       onPopInvokedWithResult: (didPop, result) {
-        if (!didPop && _selectedIds.isNotEmpty && mounted) {
-          setState(_selectedIds.clear);
+        if (!didPop && _selectionMode && mounted) {
+          _clearSelection();
         }
       },
       child: Column(
       children: [
-        if (_selectedIds.isNotEmpty)
+        if (_selectionMode)
           Material(
             color: Theme.of(context).colorScheme.secondaryContainer,
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
               child: Row(children: [
-                IconButton(tooltip: 'Clear selection', onPressed: () => setState(_selectedIds.clear), icon: const Icon(Icons.close)),
+                IconButton(tooltip: 'Clear selection', onPressed: _clearSelection, icon: const Icon(Icons.close)),
                 Expanded(child: Text('${_selectedIds.length} selected', style: const TextStyle(fontWeight: FontWeight.w700))),
                 IconButton(tooltip: 'Share selected', onPressed: _bulkShare, icon: const Icon(Icons.share_outlined)),
                 IconButton(tooltip: _selectedIds.length == _documents.length ? 'Clear all selection' : 'Select all', onPressed: () => setState(() { if (_selectedIds.length == _documents.length) { _selectedIds.clear(); } else { _selectedIds.addAll(_documents.map((d) => d.id)); } }), icon: const Icon(Icons.select_all)),
@@ -900,6 +872,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                   icon: const Icon(Icons.more_vert),
                   onSelected: (action) {
                     if (action == 'trash') _showTrash();
+                    if (action == 'select') setState(() { _selectionMode = true; _selectedIds.clear(); });
                     if (action == 'duplicates') {
                       Navigator.of(context).push(
                         MaterialPageRoute(
@@ -923,6 +896,14 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                         contentPadding: EdgeInsets.zero,
                         leading: Icon(Icons.copy_all_outlined),
                         title: Text('Check Duplicate File'),
+                      ),
+                    ),
+                    PopupMenuItem(
+                      value: 'select',
+                      child: ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        leading: Icon(Icons.checklist),
+                        title: Text('Select PDFs'),
                       ),
                     ),
                   ],
@@ -1036,8 +1017,9 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
         label: '${document.name}.pdf, ${_size(document.sizeBytes)}, ${document.isFavorite ? 'starred' : 'not starred'}',
         child: ListTile(
         key: ValueKey(document.id),
-        onTap: () => _selectedIds.isNotEmpty ? _toggleSelected(document) : _open(document),
-        leading: _selectedIds.isNotEmpty
+        onTap: () => _selectionMode ? _toggleSelected(document) : _open(document),
+        onLongPress: () => _startSelection(document),
+        leading: _selectionMode
             ? Checkbox(value: selected, onChanged: (_) => _toggleSelected(document))
             : const CircleAvatar(child: Icon(Icons.picture_as_pdf_outlined)),
         title: Tooltip(
@@ -1052,7 +1034,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
           if (document.tagNames.isNotEmpty) document.tagNames.join(', '),
           (document.storagePath.startsWith('content://') || document.storagePath.startsWith('file://') || document.storagePath.isNotEmpty) ? 'On this device' : 'File missing',
         ].join(' · ')),
-        trailing: PopupMenuButton<String>(
+        trailing: _selectionMode ? null : PopupMenuButton<String>(
           tooltip: 'Actions for ${document.name}',
           onSelected: (value) async {
             if (value == 'favorite') {

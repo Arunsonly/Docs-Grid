@@ -224,6 +224,34 @@ void main() {
       await v6.close();
     });
 
+    test('v6 to v7 adds stable folder ordering without changing existing folders', () async {
+      final fixture = await createV1Fixture('v6_to_v7');
+      final path = fixture.path;
+      await fixture.close();
+
+      final v6 = await migrateTo(path, 6);
+      await v6.insert('folders', {
+        'id': 'folder-2',
+        'name': 'Claims',
+        'parent_id': 'folder-1',
+        'created_at': '2024-01-02',
+        'updated_at': '2024-01-02',
+      });
+      await v6.close();
+
+      final v7 = await migrateTo(path, 7);
+      expect(await v7.getVersion(), 7);
+      final columns = await v7.rawQuery('PRAGMA table_info(folders)');
+      expect(columns.any((column) => column['name'] == 'sort_order'), isTrue);
+      final folders = await v7.query('folders', orderBy: 'id');
+      expect(folders.map((row) => row['id']), ['folder-1', 'folder-2']);
+      expect(folders.every((row) => row['sort_order'] == 0), isTrue);
+      expect((await v7.query('schema_migrations', orderBy: 'version'))
+          .map((row) => row['version']), [1, 2, 3, 4, 5, 6, 7]);
+      expect(await v7.rawQuery('PRAGMA foreign_key_check'), isEmpty);
+      await v7.close();
+    });
+
     test('refuses downgrade and leaves the v2 database and records intact', () async {
       final v1 = await createV1Fixture('downgrade');
       final path = v1.path;
