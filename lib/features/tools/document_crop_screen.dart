@@ -109,7 +109,7 @@ class _DocumentCropScreenState extends State<DocumentCropScreen> {
       final args = <String, Object>{
         'bytes': _workingImage,
         'operation': operation,
-        if (points != null) 'points': points,
+        'points': ?points,
       };
       final bytes = await compute(transformDocumentImageForTesting, args);
       if (mounted) _replaceImage(bytes);
