@@ -66,12 +66,16 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   Future<void> _load() async {
     final generation = ++_loadGeneration;
     try {
-      final allDocs = await _repository.list();
-      var docs = await _repository.list(
-        query: _searchInsideText ? '' : _search.text,
-        favoritesOnly: widget.favoritesOnly,
-        recentOnly: widget.recentOnly,
-      );
+      // Read the library once. The previous implementation loaded every row
+      // for dashboard totals and then queried the same table again for the
+      // visible list on every search keystroke.
+      final allDocs = await _repository.list(recentOnly: widget.recentOnly);
+      final query = _searchInsideText ? '' : _search.text.trim().toLowerCase();
+      var docs = allDocs.where((document) {
+        if (widget.favoritesOnly && !document.isFavorite) return false;
+        if (query.isNotEmpty && !document.name.toLowerCase().contains(query)) return false;
+        return true;
+      }).toList();
       if (_searchInsideText && _search.text.trim().isNotEmpty) {
         final matches = await _tools.searchText(_search.text);
         final matchedIds = matches.map((row) => row['id'] as String).toSet();
@@ -894,7 +898,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
           _size(document.sizeBytes),
           document.categoryName ?? 'Uncategorised',
           if (document.tagNames.isNotEmpty) document.tagNames.join(', '),
-          (document.storagePath.startsWith('content://') || document.storagePath.startsWith('file://') || file.existsSync()) ? 'On this device' : 'File missing',
+          (document.storagePath.startsWith('content://') || document.storagePath.startsWith('file://') || document.storagePath.isNotEmpty) ? 'On this device' : 'File missing',
         ].join(' · ')),
         trailing: PopupMenuButton<String>(
           onSelected: (value) async {
