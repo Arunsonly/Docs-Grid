@@ -44,6 +44,12 @@ class ReminderRepository {
   final AppDatabase _database;
   static const _uuid = Uuid();
 
+  static String validateTitle(String title) {
+    final clean = title.trim();
+    if (clean.isEmpty) throw ArgumentError('Reminder title cannot be empty.');
+    return clean;
+  }
+
   Future<List<ReminderRecord>> list() async {
     final db = await _database.database;
     final rows = await db.rawQuery('''
@@ -124,8 +130,7 @@ class ReminderRepository {
     String? documentId,
     bool requestPermission = false,
   }) async {
-    final cleanTitle = title.trim();
-    if (cleanTitle.isEmpty) throw ArgumentError('Reminder title cannot be empty.');
+    final cleanTitle = validateTitle(title);
     if (!remindAt.isAfter(DateTime.now())) {
       throw ArgumentError('Reminder date and time must be in the future.');
     }
@@ -174,8 +179,7 @@ class ReminderRepository {
     required DateTime remindAt,
     String? recurrenceRule,
   }) async {
-    final cleanTitle = title.trim();
-    if (cleanTitle.isEmpty) throw ArgumentError('Reminder title cannot be empty.');
+    final cleanTitle = validateTitle(title);
     if (!remindAt.isAfter(DateTime.now())) {
       throw ArgumentError('Reminder date and time must be in the future.');
     }

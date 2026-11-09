@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 
 import 'package:archive/archive.dart';
+import 'package:archive/archive_io.dart' show InputFileStream, OutputFileStream, ZipFileEncoder;
 import 'package:crypto/crypto.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import 'package:image_picker/image_picker.dart';
@@ -19,8 +20,10 @@ import 'package:uuid/uuid.dart';
 import '../../core/database/app_database.dart';
 import '../../core/storage/storage_location_service.dart';
 import '../reminders/data/reminder_notifications.dart';
+import 'backup_folder_graph_validator.dart';
 import 'document_crop_screen.dart';
 import 'portable_snapshot_manifest.dart';
+import 'portable_snapshot_rows_validator.dart';
 
 /// Local-only utilities for indexing, scanning, sharing and portable backups.
 /// This service never uploads document contents to a remote server.
@@ -30,6 +33,56 @@ class DocumentToolsService {
 
   final AppDatabase _database;
   static const _uuid = Uuid();
+  static final Set<String> _indexingDocumentIds = <String>{};
+
+  /// Normalizes OCR text for exact-content duplicate comparison.
+  /// Keeps letters and numbers from all scripts, including Devanagari.
+  @visibleForTesting
+  static String normalizeDuplicateText(String raw) => raw
+      .toLowerCase()
+      .replaceAll(RegExp(r'--- page \d+ ---', caseSensitive: false), ' ')
+      .replaceAll(RegExp(r'[^\p{L}\p{M}\p{N}]+', unicode: true), ' ')
+      .trim()
+      .replaceAll(RegExp(r'\s+'), ' ');
+
+  /// Finds exact file duplicates and OCR-text duplicates locally.
+  Future<List<Map<String, Object?>>> findDuplicateGroups() async {
+    final db = await _database.database;
+    final exact = await db.rawQuery('''
+      SELECT sha256 AS group_key, 'SHA-256' AS duplicate_type,
+             COUNT(*) AS copies, GROUP_CONCAT(id) AS document_ids,
+             GROUP_CONCAT(name, ' | ') AS names
+      FROM documents
+      WHERE deleted_at IS NULL AND sha256 IS NOT NULL AND sha256 <> ''
+      GROUP BY sha256 HAVING COUNT(*) > 1
+    ''');
+    final indexed = await db.rawQuery('''
+      SELECT d.id, d.name, i.extracted_text
+      FROM documents d JOIN document_text_index i ON i.document_id = d.id
+      WHERE d.deleted_at IS NULL AND i.extracted_text IS NOT NULL
+    ''');
+    final textGroups = <String, List<Map<String, Object?>>>{};
+    for (final row in indexed) {
+      final normalized = normalizeDuplicateText(row['extracted_text']?.toString() ?? '');
+      if (normalized.length < 80) continue;
+      final key = sha256.convert(utf8.encode(normalized)).toString();
+      textGroups.putIfAbsent(key, () => []).add(row);
+    }
+    final ocr = <Map<String, Object?>>[];
+    for (final entry in textGroups.entries) {
+      if (entry.value.length < 2) continue;
+      ocr.add({
+        'group_key': entry.key,
+        'duplicate_type': 'OCR text',
+        'copies': entry.value.length,
+        'document_ids': entry.value.map((row) => row['id']).join(','),
+        'names': entry.value.map((row) => row['name']).join(' | '),
+      });
+    }
+    final groups = <Map<String, Object?>>[...exact, ...ocr];
+    groups.sort((a, b) => (b['copies'] as int).compareTo(a['copies'] as int));
+    return groups;
+  }
 
   Future<List<Map<String, Object?>>> findExactDuplicates() async {
     final db = await _database.database;
@@ -57,6 +110,55 @@ class DocumentToolsService {
   }
 
   Future<int> indexPdfText(String documentId, String path) async {
+    if (!_indexingDocumentIds.add(documentId)) {
+      throw StateError('This document is already being indexed.');
+    }
+    try {
+      final db = await _database.database;
+      final previousIndex = await db.query(
+        'document_text_index',
+        columns: ['document_id'],
+        where: 'document_id = ?',
+        whereArgs: [documentId],
+        limit: 1,
+      );
+      try {
+        await db.update(
+          'documents',
+          {'extracted_text_status': 'indexing'},
+          where: 'id = ? AND deleted_at IS NULL',
+          whereArgs: [documentId],
+        );
+        return await _indexPdfTextInternal(documentId, path);
+      } catch (_) {
+        // Keep an older successful index usable if a re-index attempt fails.
+        try {
+          await db.update(
+            'documents',
+            {'extracted_text_status': previousIndex.isEmpty ? 'failed' : 'indexed'},
+            where: 'id = ? AND deleted_at IS NULL',
+            whereArgs: [documentId],
+          );
+        } catch (_) {
+          // Preserve the original OCR failure if status recovery also fails.
+        }
+        rethrow;
+      }
+    } finally {
+      _indexingDocumentIds.remove(documentId);
+    }
+  }
+
+  Future<int> _indexPdfTextInternal(String documentId, String path) async {
+    final db = await _database.database;
+    final documentRows = await db.query(
+      'documents',
+      columns: ['id'],
+      where: 'id = ? AND deleted_at IS NULL',
+      whereArgs: [documentId],
+      limit: 1,
+    );
+    if (documentRows.isEmpty) throw StateError('Document no longer exists in the library.');
     final file = File(path);
     if (!await file.exists()) throw StateError('PDF is not available on this device.');
     final header = await file.openRead(0, 5).fold<List<int>>(<int>[], (a, b) => a..addAll(b));
@@ -66,8 +168,12 @@ class DocumentToolsService {
     final document = await pdfx.PdfDocument.openFile(path);
     final pageCount = document.pagesCount;
     final recognizer = TextRecognizer(script: TextRecognitionScript.latin);
-    final pages = <String>[];
+    TextRecognizer? devanagariRecognizer;
+    final pages = StringBuffer();
     try {
+      if (Platform.isAndroid) {
+        devanagariRecognizer = TextRecognizer(script: TextRecognitionScript.devanagiri);
+      }
       for (var pageNumber = 1; pageNumber <= document.pagesCount; pageNumber++) {
         final page = await document.getPage(pageNumber);
         try {
@@ -79,10 +185,17 @@ class DocumentToolsService {
           if (rendered == null) continue;
           final temp = await getTemporaryDirectory();
           final image = File(p.join(temp.path, 'ocr_${_uuid.v4()}.png'));
-          await image.writeAsBytes(rendered.bytes, flush: true);
           try {
-            final result = await recognizer.processImage(InputImage.fromFilePath(image.path));
-            pages.add('--- Page $pageNumber ---\n${result.text}');
+            await image.writeAsBytes(rendered.bytes, flush: true);
+            final input = InputImage.fromFilePath(image.path);
+            final latinResult = await recognizer.processImage(input);
+            final extracted = <String>[latinResult.text];
+            if (devanagariRecognizer != null) {
+              final devanagariResult = await devanagariRecognizer.processImage(input);
+              if (devanagariResult.text.isNotEmpty) extracted.add(devanagariResult.text);
+            }
+            final pageText = extracted.where((value) => value.trim().isNotEmpty).join('\n');
+            pages.write('--- Page $pageNumber ---\n$pageText\n\n');
           } finally {
             if (await image.exists()) await image.delete();
           }
@@ -92,18 +205,24 @@ class DocumentToolsService {
       }
     } finally {
       await recognizer.close();
+      await devanagariRecognizer?.close();
       await document.close();
     }
-    final text = pages.join('\n\n').trim();
-    final db = await _database.database;
-    await db.insert('document_text_index', {
-      'document_id': documentId,
-      'extracted_text': text,
-      'indexed_at': DateTime.now().toUtc().toIso8601String(),
-      'page_count': pageCount,
-    }, conflictAlgorithm: ConflictAlgorithm.replace);
-    await db.update('documents', {'extracted_text_status': text.isEmpty ? 'empty' : 'indexed'},
-      where: 'id = ?', whereArgs: [documentId]);
+    final text = pages.toString().trim();
+    await db.transaction((txn) async {
+      await txn.insert('document_text_index', {
+        'document_id': documentId,
+        'extracted_text': text,
+        'indexed_at': DateTime.now().toUtc().toIso8601String(),
+        'page_count': pageCount,
+      }, conflictAlgorithm: ConflictAlgorithm.replace);
+      await txn.update(
+        'documents',
+        {'extracted_text_status': text.isEmpty ? 'empty' : 'indexed'},
+        where: 'id = ? AND deleted_at IS NULL',
+        whereArgs: [documentId],
+      );
+    });
     return text.length;
   }
 
@@ -333,7 +452,6 @@ class DocumentToolsService {
 
   Future<File> createBackup({void Function(int, int)? onProgress}) async {
     final db = await _database.database;
-    final archive = Archive();
     final tables = ['folders', 'documents', 'categories', 'tags',
       'document_tags', 'reminders', 'history', 'settings', 'document_text_index'];
     final manifest = <String, Object?>{
@@ -343,194 +461,302 @@ class DocumentToolsService {
       'tables': <String, int>{},
       'files': <Map<String, Object?>>[],
     };
-    for (final table in tables) {
-      final rows = await db.query(table);
-      (manifest['tables'] as Map<String, int>)[table] = rows.length;
-      archive.addFile(ArchiveFile('$table.json', utf8.encode(jsonEncode(rows)).length,
-        Uint8List.fromList(utf8.encode(jsonEncode(rows)))));
-    }
-    final docs = await db.query('documents',
-      columns: ['id', 'name', 'storage_uri', 'sha256']);
-    var completed = 0;
-    for (final row in docs) {
-      final uri = row['storage_uri'] as String?;
-      if (uri == null || uri.isEmpty) {
-        throw StateError('Backup cannot be complete: "${row['name']}" has no storage reference.');
-      }
-      File? stagedProviderFile;
+
+    final directory = await getApplicationDocumentsDirectory();
+    final backups = Directory(p.join(directory.path, 'DocsGrid', 'Backups'));
+    await backups.create(recursive: true);
+    final temp = await getTemporaryDirectory();
+    final staging = await temp.createTemp('docsgrid_backup_');
+    final output = File(p.join(
+      backups.path,
+      'DocsGrid_${DateTime.now().toUtc().millisecondsSinceEpoch}_${_uuid.v4()}.zip',
+    ));
+    final encoder = ZipFileEncoder();
+    var encoderOpened = false;
+    Future<void> addStoredFile(File file, String archiveName) async {
+      final input = InputFileStream(file.path);
       try {
-        late final File file;
-        if (uri.startsWith('content://') || uri.startsWith('file://')) {
-          final temp = await getTemporaryDirectory();
-          stagedProviderFile = File(p.join(temp.path, 'backup_${_uuid.v4()}.pdf'));
+        final entry = ArchiveFile.stream(archiveName, input)
+          ..compression = CompressionType.none;
+        encoder.addArchiveFile(entry);
+      } finally {
+        await input.close();
+      }
+    }
+    try {
+      encoder.create(output.path);
+      encoderOpened = true;
+
+      // Page database rows into JSON files so a large history/documents table
+      // does not have to be materialized as one giant List in memory.
+      const orderBy = <String, String>{
+        'folders': 'id',
+        'documents': 'id',
+        'categories': 'id',
+        'tags': 'id',
+        'document_tags': 'document_id, tag_id',
+        'reminders': 'id',
+        'history': 'id',
+        'settings': 'key',
+        'document_text_index': 'document_id',
+      };
+      for (final table in tables) {
+        final metadataFile = File(p.join(staging.path, '$table.json'));
+        final outputFile = await metadataFile.open(mode: FileMode.write);
+        var offset = 0;
+        var rowCount = 0;
+        try {
+          await outputFile.writeString('[');
+          while (true) {
+            final rows = await db.query(
+              table,
+              limit: 500,
+              offset: offset,
+              orderBy: orderBy[table],
+            );
+            if (rows.isEmpty) break;
+            for (final row in rows) {
+              if (rowCount > 0) await outputFile.writeString(',');
+              await outputFile.writeString(jsonEncode(row), encoding: utf8);
+              rowCount++;
+            }
+            offset += rows.length;
+          }
+          await outputFile.writeString(']');
+          await outputFile.flush();
+        } finally {
+          await outputFile.close();
+        }
+        (manifest['tables'] as Map<String, int>)[table] = rowCount;
+        await addStoredFile(metadataFile, '$table.json');
+      }
+
+      final totalDocs = Sqflite.firstIntValue(
+        await db.rawQuery('SELECT COUNT(*) FROM documents'),
+      ) ?? 0;
+      var completed = 0;
+      var documentOffset = 0;
+      while (true) {
+        final docs = await db.query(
+          'documents',
+          columns: ['id', 'name', 'storage_uri', 'sha256'],
+          limit: 250,
+          offset: documentOffset,
+          orderBy: 'id',
+        );
+        if (docs.isEmpty) break;
+        for (final row in docs) {
+        final uri = row['storage_uri'] as String?;
+        if (uri == null || uri.isEmpty) {
+          throw StateError('Backup cannot be complete: "${row['name']}" has no storage reference.');
+        }
+        File? stagedProviderFile;
+        final File file;
+        if (uri.startsWith('content://')) {
+          stagedProviderFile = File(p.join(staging.path, 'source_${_uuid.v4()}.pdf'));
           await StorageLocationService.instance.copyPdfToPath(
             sourceUri: uri,
             destinationPath: stagedProviderFile.path,
           );
           file = stagedProviderFile;
         } else {
-          file = File(uri);
+          file = File(uri.startsWith('file://') ? Uri.parse(uri).toFilePath() : uri);
         }
-        if (!await file.exists()) {
-          throw StateError('Backup cannot be complete: "${row['name']}" is unavailable. Repair storage access and retry.');
-        }
-        final bytes = await file.readAsBytes();
-        final digest = sha256.convert(bytes).toString();
-        final expected = row['sha256'] as String?;
-        if (expected != null && expected.isNotEmpty && digest != expected) {
-          throw StateError('Backup stopped: "${row['name']}" failed SHA-256 verification.');
-        }
-        final entry = 'pdfs/${row['id']}.pdf';
-        archive.addFile(ArchiveFile(entry, bytes.length, bytes));
-        (manifest['files'] as List).add({
-          'documentId': row['id'], 'entry': entry, 'sha256': digest,
-          'originalName': row['name'],
-        });
-      } finally {
-        if (stagedProviderFile != null) {
-          try {
-            if (await stagedProviderFile.exists()) await stagedProviderFile.delete();
-          } catch (_) {
-            // Temporary cache cleanup must not mask a successful backup step.
+        try {
+          if (!await file.exists()) {
+            throw StateError('Backup cannot be complete: "${row['name']}" is unavailable. Repair storage access and retry.');
+          }
+          final digest = (await sha256.bind(file.openRead()).first).toString();
+          final expected = row['sha256'] as String?;
+          if (expected != null && expected.isNotEmpty && digest != expected) {
+            throw StateError('Backup stopped: "${row['name']}" failed SHA-256 verification.');
+          }
+          // Never place imported database IDs in archive paths.
+          final entry = 'pdfs/${_uuid.v4()}.pdf';
+          // Stream already-compressed PDF bytes directly into the ZIP without
+          // allocating a second full-size buffer or recompressing the payload.
+          await addStoredFile(file, entry);
+          (manifest['files'] as List).add({
+            'documentId': row['id'], 'entry': entry, 'sha256': digest,
+            'originalName': row['name'],
+          });
+        } finally {
+          if (stagedProviderFile != null && await stagedProviderFile.exists()) {
+            await stagedProviderFile.delete();
           }
         }
+          completed++;
+          onProgress?.call(completed, totalDocs);
+        }
+        documentOffset += docs.length;
       }
-      completed++;
-      onProgress?.call(completed, docs.length);
-    }
-    final manifestBytes = utf8.encode(jsonEncode(manifest));
-    archive.addFile(ArchiveFile('manifest.json', manifestBytes.length, manifestBytes));
-    final zipped = ZipEncoder().encode(archive);
-    final directory = await getApplicationDocumentsDirectory();
-    final backups = Directory(p.join(directory.path, 'DocsGrid', 'Backups'));
-    await backups.create(recursive: true);
-    final output = File(p.join(backups.path, 'DocsGrid_${DateTime.now().toUtc().millisecondsSinceEpoch}.zip'));
-    await output.writeAsBytes(zipped, flush: true);
-    return output;
-  }
 
+      final manifestFile = File(p.join(staging.path, 'manifest.json'));
+      await manifestFile.writeAsString(jsonEncode(manifest), encoding: utf8, flush: true);
+      await addStoredFile(manifestFile, 'manifest.json');
+      await encoder.close();
+      encoderOpened = false;
+      return output;
+    } catch (_) {
+      if (encoderOpened) {
+        try { await encoder.close(); } catch (_) {}
+      }
+      try { if (await output.exists()) await output.delete(); } catch (_) {}
+      rethrow;
+    } finally {
+      try { if (await staging.exists()) await staging.delete(recursive: true); } catch (_) {}
+    }
+  }
 
   /// Additively restores a verified archive. Existing document/folder IDs are
   /// never overwritten; any collision aborts the database transaction.
+  /// Additively restores a verified archive. Existing document/folder IDs are
+  /// never overwritten; any collision aborts the database transaction.
   Future<int> restoreBackup(File zipFile) async {
-    await validateBackup(zipFile);
-    final decoded = ZipDecoder().decodeBytes(await zipFile.readAsBytes());
-    final manifestFile = decoded.findFile('manifest.json')!;
-    final manifest = jsonDecode(utf8.decode(manifestFile.content as List<int>)) as Map<String, dynamic>;
-    final tableNames = ['folders', 'documents', 'categories', 'tags',
-      'document_tags', 'reminders', 'history', 'settings', 'document_text_index'];
-    final rowsByTable = <String, List<Map<String, Object?>>>{};
-    for (final table in tableNames) {
-      final entry = decoded.findFile('$table.json');
-      // Older v1 backups predate OCR indexing; keep them restorable.
-      if (entry == null && table == 'document_text_index') {
-        rowsByTable[table] = <Map<String, Object?>>[];
-        continue;
-      }
-      if (entry == null) throw StateError('Backup is incomplete: missing $table metadata.');
-      final rows = jsonDecode(utf8.decode(entry.content as List<int>)) as List<dynamic>;
-      rowsByTable[table] = rows.map((e) => Map<String, Object?>.from(e as Map)).toList();
+    final backup = await _decodeValidatedBackup(zipFile);
+    try {
+      return await _restoreValidatedBackup(backup);
+    } finally {
+      await backup.dispose();
     }
+  }
 
+  Future<int> _restoreValidatedBackup(_ValidatedBackup backup) async {
+    final manifest = backup.manifest;
+    final rowsByTable = backup.rowsByTable;
+    final folderRows = rowsByTable['folders']!;
+    final folderRowsById = <String, Map<String, Object?>>{
+      for (final row in folderRows) row['id'] as String: row,
+    };
+    final documentsById = <String, Map<String, Object?>>{
+      for (final row in rowsByTable['documents']!) row['id'] as String: row,
+    };
+    // A ZIP is untrusted input. Validate parent links before creating any
+    // directories, and never use imported IDs as filesystem path segments.
+    BackupFolderGraphValidator.validate(folderRows);
+    PortableSnapshotRowsValidator.validate(rowsByTable);
     final root = Directory(p.join((await getApplicationDocumentsDirectory()).path, 'DocsGrid', 'Restored'));
     final restoreRoot = Directory(p.join(root.path, DateTime.now().microsecondsSinceEpoch.toString()));
+    await restoreRoot.create(recursive: true);
     final fileRows = (manifest['files'] as List<dynamic>).cast<Map<String, dynamic>>();
     final restoredPaths = <String, String>{};
-    final folderRows = rowsByTable['folders']!;
-    final folderRowsById = <String, Map<String, Object?>>{};
-    for (final row in folderRows) {
-      final id = row['id'];
-      if (id is! String || id.isEmpty || folderRowsById.containsKey(id)) {
-        throw StateError('Backup contains an invalid or duplicate folder ID.');
-      }
-      folderRowsById[id] = row;
-    }
     final folderPaths = <String, String>{};
-    final resolvingFolders = <String>{};
+    final folderDirectoryNames = <String, String>{
+      for (final row in folderRows) (row['id'] as String): 'folder_${_uuid.v4()}',
+    };
     String folderPath(String id) {
       final known = folderPaths[id];
       if (known != null) return known;
-      if (!resolvingFolders.add(id)) {
-        throw StateError('Backup folder hierarchy contains a cycle.');
+      final unresolved = <String>[];
+      String? current = id;
+      while (current != null && !folderPaths.containsKey(current)) {
+        unresolved.add(current);
+        final row = folderRowsById[current];
+        if (row == null) throw StateError('Backup contains an unknown folder reference.');
+        current = row['parent_id'] as String?;
       }
-      try {
-        final row = folderRowsById[id];
-        if (row == null) throw StateError('Backup references a missing folder.');
-        final parent = row['parent_id'] as String?;
-        if (parent != null && !folderRowsById.containsKey(parent)) {
-          throw StateError('Backup references a missing parent folder.');
-        }
-        final base = parent == null ? restoreRoot.path : folderPath(parent);
-        // Never use untrusted archive IDs as filesystem path components.
-        final path = p.join(base, 'folder_${_uuid.v4()}');
-        folderPaths[id] = path;
-        return path;
-      } finally {
-        resolvingFolders.remove(id);
+      var base = current == null ? restoreRoot.path : folderPaths[current]!;
+      for (final folderId in unresolved.reversed) {
+        base = p.join(base, folderDirectoryNames[folderId]!);
+        folderPaths[folderId] = base;
       }
+      return folderPaths[id]!;
     }
 
     var databaseCommitted = false;
     try {
-      // Create staging storage only after all folder IDs have been checked.
-      // Invalid archives must fail before leaving any filesystem side effects.
-      await restoreRoot.create(recursive: true);
       for (final row in folderRows) {
         await Directory(folderPath(row['id'] as String)).create(recursive: true);
       }
       for (final item in fileRows) {
         final id = item['documentId'] as String;
-        final document = rowsByTable['documents']!.firstWhere((r) => r['id'] == id);
+        final document = documentsById[id];
+        if (document == null) throw StateError('Backup contains an unknown document reference.');
         final folderId = document['folder_id'] as String?;
         final destinationDir = folderId == null ? restoreRoot : Directory(folderPath(folderId));
         await destinationDir.create(recursive: true);
-        final safeName = p.basename((item['originalName'] as String?) ?? 'document.pdf');
-        // IDs come from the archive; use a generated filename to prevent path traversal.
+        final requestedName = p.basename((item['originalName'] as String?) ?? 'document.pdf')
+            .replaceAll(RegExp(r'[<>:"|?*\x00-\x1F]'), '_')
+            .replaceAll('/', '_')
+            .replaceAll('\\', '_')
+            .trim();
+        final safeName = requestedName.isEmpty
+            ? 'document.pdf'
+            : String.fromCharCodes(requestedName.runes.take(120));
+        // Use a fresh local filename; imported document IDs are database keys,
+        // not trusted path components.
         final destination = File(p.join(destinationDir.path, '${_uuid.v4()}_$safeName'));
-        final entry = decoded.findFile(item['entry'] as String)!;
-        final bytes = entry.content as List<int>;
-        final digest = sha256.convert(bytes).toString();
-        if (digest != item['sha256']) throw StateError('PDF integrity check failed during restore.');
-        await destination.writeAsBytes(bytes, flush: true);
+        final stagedPath = backup.stagedPdfPaths[id];
+        if (stagedPath == null) throw StateError('Backup is missing staged PDF bytes.');
+        await File(stagedPath).copy(destination.path);
+        final digest = (await sha256.bind(destination.openRead()).first).toString();
+        if (digest != item['sha256']) {
+          await destination.delete();
+          throw StateError('PDF integrity check failed during restore.');
+        }
         restoredPaths[id] = destination.path;
       }
 
       final db = await _database.database;
       await db.transaction((txn) async {
+        var batch = txn.batch();
+        var pending = 0;
+        Future<void> flushBatch() async {
+          if (pending == 0) return;
+          await batch.commit(noResult: true);
+          batch = txn.batch();
+          pending = 0;
+        }
+        void queueInsert(
+          String table,
+          Map<String, Object?> row, {
+          ConflictAlgorithm? conflictAlgorithm,
+        }) {
+          batch.insert(table, row, conflictAlgorithm: conflictAlgorithm);
+          pending++;
+        }
+
         for (final row in folderRows) {
           final copy = Map<String, Object?>.from(row);
           copy['storage_uri_or_relative_path'] = folderPath(row['id'] as String);
-          await txn.insert('folders', copy);
+          queueInsert('folders', copy);
+          if (pending >= 500) await flushBatch();
         }
         for (final row in rowsByTable['categories']!) {
-          await txn.insert('categories', row, conflictAlgorithm: ConflictAlgorithm.ignore);
+          queueInsert('categories', row, conflictAlgorithm: ConflictAlgorithm.ignore);
+          if (pending >= 500) await flushBatch();
         }
         for (final row in rowsByTable['tags']!) {
-          await txn.insert('tags', row);
+          queueInsert('tags', row);
+          if (pending >= 500) await flushBatch();
         }
         for (final row in rowsByTable['documents']!) {
           final copy = Map<String, Object?>.from(row);
           final restored = restoredPaths[row['id']];
           if (restored == null) throw StateError('Backup is missing PDF bytes for "${row['name']}".');
           copy['storage_uri'] = restored;
-          await txn.insert('documents', copy);
+          queueInsert('documents', copy);
+          if (pending >= 500) await flushBatch();
         }
         for (final table in ['document_tags', 'reminders', 'history', 'document_text_index']) {
           for (final row in rowsByTable[table]!) {
-            await txn.insert(table, row);
+            queueInsert(table, row);
+            if (pending >= 500) await flushBatch();
           }
         }
         // Preferences are additive: never overwrite settings already configured
         // on this device when importing a backup from another installation.
         for (final row in rowsByTable['settings']!) {
-          await txn.insert('settings', row, conflictAlgorithm: ConflictAlgorithm.ignore);
+          queueInsert('settings', row, conflictAlgorithm: ConflictAlgorithm.ignore);
+          if (pending >= 500) await flushBatch();
         }
+        await flushBatch();
       });
       databaseCommitted = true;
       for (final row in rowsByTable['reminders']!) {
         if ((row['enabled'] as int? ?? 0) != 1 || row['status'] == 'completed') continue;
-        final at = DateTime.parse(row['remind_at_utc'] as String).toLocal();
         try {
+          final at = DateTime.parse(row['remind_at_utc'] as String).toLocal();
           await ReminderNotifications.instance.schedule(
             id: row['id'] as String,
             title: row['title'] as String,
@@ -540,13 +766,13 @@ class DocumentToolsService {
             documentId: row['document_id'] as String?,
           );
         } catch (_) {
-          // Imported records remain valid even if the OS declines a notification.
+          // Imported records remain valid even if dates or OS scheduling fail.
         }
       }
       return restoredPaths.length;
     } catch (_) {
       if (!databaseCommitted && await restoreRoot.exists()) {
-        await restoreRoot.delete(recursive: true);
+        try { await restoreRoot.delete(recursive: true); } catch (_) {}
       }
       rethrow;
     }
@@ -1131,249 +1357,184 @@ class DocumentToolsService {
   }
 
   Future<int> validateBackup(File zipFile) async {
+    final backup = await _decodeValidatedBackup(zipFile);
+    try {
+      return (backup.manifest['files'] as List<dynamic>).length;
+    } finally {
+      await backup.dispose();
+    }
+  }
+
+  Future<_ValidatedBackup> _decodeValidatedBackup(File zipFile) async {
     if (!await zipFile.exists()) throw StateError('Backup file not found.');
-    final decoded = ZipDecoder().decodeBytes(await zipFile.readAsBytes());
-    // ZIP readers may accept duplicate names and silently return one of them.
-    // Reject ambiguous or path-like entries before interpreting any metadata.
-    final archiveNames = <String>{};
-    for (final entry in decoded.files) {
-      final name = entry.name;
-      final segments = name.split('/');
-      if (!entry.isFile ||
-          name.isEmpty ||
-          name.startsWith('/') ||
-          name.contains(String.fromCharCode(92)) ||
-          name.codeUnits.any((unit) => unit < 32 || unit == 127) ||
-          segments.any((segment) => segment == '.' || segment == '..') ||
-          !archiveNames.add(name)) {
-        throw StateError('Backup contains an unsafe, duplicate, or unsupported ZIP entry.');
+    final input = InputFileStream(zipFile.path);
+    Directory? staging;
+    try {
+      final decoded = ZipDecoder().decodeStream(input);
+      final archiveNames = <String>{};
+      for (final entry in decoded.files) {
+        final name = entry.name;
+        final segments = name.split('/');
+        if (!entry.isFile || entry.isSymbolicLink || name.isEmpty ||
+            name.startsWith('/') || name.contains('\\\\') ||
+            name.codeUnits.any((unit) => unit < 32 || unit == 127) ||
+            segments.any((part) => part.isEmpty || part == '.' || part == '..') ||
+            !archiveNames.add(name)) {
+          throw StateError('Backup contains an unsafe, duplicate, or unsupported ZIP entry.');
+        }
       }
-    }
-    final manifestFile = decoded.findFile('manifest.json');
-    if (manifestFile == null || !manifestFile.isFile) {
-      throw StateError('This is not a DocsGrid backup.');
-    }
-    final manifest = jsonDecode(utf8.decode(manifestFile.content as List<int>));
-    if (manifest is! Map<String, dynamic> ||
-        manifest['format'] != 'DocsGridBackup' || manifest['version'] != 1) {
-      throw StateError('Unsupported backup format or version.');
-    }
-
-    final tableNames = <String>[
-      'folders', 'documents', 'categories', 'tags', 'document_tags',
-      'reminders', 'history', 'settings', 'document_text_index',
-    ];
-    final declaredTables = manifest['tables'];
-    if (declaredTables is! Map<String, dynamic>) {
-      throw StateError('Backup manifest is missing table counts.');
-    }
-    if (declaredTables.keys.any((key) => !tableNames.contains(key))) {
-      throw StateError('Backup manifest contains an unsupported metadata table.');
-    }
-    final rowsByTable = <String, List<dynamic>>{};
-    for (final table in tableNames) {
-      final archiveEntry = decoded.findFile('$table.json');
-      if (archiveEntry == null && table == 'document_text_index' &&
-          declaredTables[table] == null) {
-        rowsByTable[table] = <dynamic>[];
-        continue;
+      final manifestFile = decoded.findFile('manifest.json');
+      if (manifestFile == null) throw StateError('This is not a DocsGrid backup.');
+      final manifestValue = jsonDecode(utf8.decode(manifestFile.content as List<int>));
+      if (manifestValue is! Map<String, dynamic> ||
+          manifestValue['format'] != 'DocsGridBackup' ||
+          manifestValue['version'] != 1) {
+        throw StateError('Unsupported backup format or version.');
       }
-      if (archiveEntry == null || !archiveEntry.isFile) {
-        throw StateError('Backup is incomplete: missing $table metadata.');
+      final manifest = manifestValue;
+      final declaredTables = manifest['tables'];
+      if (declaredTables is! Map<String, dynamic>) {
+        throw StateError('Backup manifest is missing table counts.');
       }
-      final rows = jsonDecode(utf8.decode(archiveEntry.content as List<int>));
-      if (rows is! List) {
-        throw StateError('Backup contains invalid $table metadata.');
+      final documentsFile = decoded.findFile('documents.json');
+      if (documentsFile == null) {
+        throw StateError('Backup is incomplete: missing documents metadata.');
       }
-      final declaredCount = declaredTables[table];
-      if (declaredCount is! int) {
-        throw StateError('Backup manifest has an invalid or missing count for $table.');
-      }
-      if (declaredCount != rows.length) {
-        throw StateError('Backup metadata count mismatch for $table.');
-      }
-      rowsByTable[table] = rows;
-    }
-
-    // Preflight the complete folder graph before restore creates any files.
-    final foldersById = <String, Map<String, dynamic>>{};
-    for (final raw in rowsByTable['folders']!) {
-      if (raw is! Map) {
-        throw StateError('Backup contains invalid folder metadata.');
-      }
-      final folder = Map<String, dynamic>.from(raw);
-      final id = folder['id'];
-      final name = folder['name'];
-      final parentId = folder['parent_id'];
-      if (id is! String || id.trim().isEmpty || id != id.trim() ||
-          foldersById.containsKey(id) ||
-          name is! String || name.trim().isEmpty || name != name.trim() ||
-          name.trim() == '.' || name.trim() == '..' ||
-          name.contains('/') || name.contains(String.fromCharCode(92)) ||
-          name.length > 255 ||
-          name.codeUnits.any((unit) => unit < 32 || unit == 127) ||
-          (parentId != null &&
-              (parentId is! String || parentId.trim().isEmpty || parentId != parentId.trim()))) {
-        throw StateError('Backup contains an invalid or duplicate folder ID, name, or parent reference.');
-      }
-      foldersById[id] = folder;
-    }
-    for (final folder in foldersById.values) {
-      final parentId = folder['parent_id'] as String?;
-      if (parentId != null && !foldersById.containsKey(parentId)) {
-        throw StateError('Backup references a missing parent folder.');
-      }
-    }
-    for (final raw in rowsByTable['documents']!) {
-      if (raw is! Map) throw StateError('Backup contains invalid document metadata.');
-      final folderId = raw['folder_id'];
-      if (folderId != null && (folderId is! String || !foldersById.containsKey(folderId))) {
-        throw StateError('Backup document references a missing folder.');
-      }
-    }
-    final visitingFolders = <String>{};
-    final visitedFolders = <String>{};
-    void visitFolder(String id) {
-      if (visitingFolders.contains(id)) {
-        throw StateError('Backup folder hierarchy contains a cycle.');
-      }
-      if (!visitedFolders.add(id)) return;
-      visitingFolders.add(id);
-      final parentId = foldersById[id]!['parent_id'] as String?;
-      if (parentId != null) visitFolder(parentId);
-      visitingFolders.remove(id);
-    }
-    for (final id in foldersById.keys) {
-      visitFolder(id);
-    }
-
-    final rawFiles = manifest['files'];
-    if (rawFiles is! List) {
-      throw StateError('Backup manifest has an invalid PDF list.');
-    }
-    final documentIds = <String>{};
-    final fileIds = <String>{};
-    for (final raw in rawFiles) {
-      if (raw is! Map<String, dynamic>) {
-        throw StateError('Backup manifest contains an invalid PDF record.');
-      }
-      final id = raw['documentId'];
-      final entryName = raw['entry'];
-      final expectedDigest = raw['sha256'];
-      if (id is! String ||
-          !RegExp(r'^[A-Za-z0-9_-]{1,128}$').hasMatch(id) ||
-          !fileIds.add(id)) {
-        throw StateError('Backup contains a missing or duplicate document reference.');
-      }
-      final digestIsValid = expectedDigest is String &&
-          expectedDigest.length == 64 &&
-          expectedDigest.codeUnits.every((unit) =>
-              (unit >= 48 && unit <= 57) ||
-              (unit >= 65 && unit <= 70) ||
-              (unit >= 97 && unit <= 102));
-      if (entryName != 'pdfs/$id.pdf' || !digestIsValid) {
-        throw StateError('Backup contains an invalid PDF entry reference.');
-      }
-      final entry = decoded.findFile(entryName as String);
-      if (entry == null || !entry.isFile) {
-        throw StateError('Backup is incomplete: missing PDF entry.');
-      }
-      final pdfBytes = entry.content as List<int>;
-      if (pdfBytes.length < 5 ||
-          String.fromCharCodes(pdfBytes.take(5)) != '%PDF-') {
-        throw StateError('Backup contains a file that is not a valid PDF.');
-      }
-      final digest = sha256.convert(pdfBytes).toString();
-      if (digest != expectedDigest) {
-        throw StateError('Backup integrity check failed.');
-      }
-      documentIds.add(id);
-    }
-
-    final metadataDocumentIds = <String>{};
-    for (final row in rowsByTable['documents']!) {
-      if (row is! Map || row['id'] is! String ||
-          !metadataDocumentIds.add(row['id'] as String)) {
-        throw StateError('Backup contains an invalid or duplicate document metadata record.');
-      }
-      if (!documentIds.contains(row['id'])) {
-        throw StateError('Backup metadata references a document with no PDF.');
-      }
-    }
-    if (metadataDocumentIds.length != documentIds.length ||
-        !metadataDocumentIds.containsAll(documentIds)) {
-      throw StateError('Backup contains orphaned PDF entries or missing document records.');
-    }
-    Set<String> uniqueIdsFor(String table) {
-      final ids = <String>{};
-      for (final raw in rowsByTable[table]!) {
+      final rawDocuments = jsonDecode(utf8.decode(documentsFile.content as List<int>));
+      if (rawDocuments is! List) throw StateError('Backup document metadata is invalid.');
+      final documentIds = <String>{};
+      for (final raw in rawDocuments) {
         if (raw is! Map || raw['id'] is! String ||
             (raw['id'] as String).trim().isEmpty ||
-            !ids.add(raw['id'] as String)) {
-          throw StateError('Backup contains an invalid or duplicate $table ID.');
+            !documentIds.add(raw['id'] as String)) {
+          throw StateError('Backup contains an invalid or duplicate document ID.');
         }
       }
-      return ids;
-    }
 
-    final categoryIds = uniqueIdsFor('categories');
-    final tagIds = uniqueIdsFor('tags');
-    uniqueIdsFor('reminders');
-    uniqueIdsFor('history');
-    for (final row in rowsByTable['documents']!) {
-      final categoryId = (row as Map)['category_id'];
-      if (categoryId != null &&
-          (categoryId is! String || !categoryIds.contains(categoryId))) {
-        throw StateError('Backup document references a missing category.');
-      }
-    }
-    final tagLinks = <String>{};
-    for (final raw in rowsByTable['document_tags']!) {
-      if (raw is! Map) throw StateError('Backup contains an invalid document-tag link.');
-      final documentId = raw['document_id'];
-      final tagId = raw['tag_id'];
-      if (documentId is! String || !metadataDocumentIds.contains(documentId) ||
-          tagId is! String || !tagIds.contains(tagId) ||
-          !tagLinks.add('$documentId\u0000$tagId')) {
-        throw StateError('Backup contains a duplicate or invalid document-tag reference.');
-      }
-    }
-    for (final table in ['reminders', 'history']) {
-      for (final raw in rowsByTable[table]!) {
-        if (raw is! Map) throw StateError('Backup contains invalid $table metadata.');
-        final documentId = raw['document_id'];
-        if (documentId != null &&
-            (documentId is! String || !metadataDocumentIds.contains(documentId))) {
-          throw StateError('Backup $table record references a missing document.');
+      final tableNames = ['folders', 'documents', 'categories', 'tags',
+        'document_tags', 'reminders', 'history', 'settings', 'document_text_index'];
+      final rowsByTable = <String, List<Map<String, Object?>>>{};
+      for (final table in tableNames) {
+        final tableFile = decoded.findFile('$table.json');
+        if (tableFile == null && table == 'document_text_index' &&
+            declaredTables[table] == null) {
+          rowsByTable[table] = <Map<String, Object?>>[];
+          continue;
         }
+        if (tableFile == null) {
+          throw StateError('Backup is incomplete: missing $table metadata.');
+        }
+        final tableRows = jsonDecode(utf8.decode(tableFile.content as List<int>));
+        if (tableRows is! List) throw StateError('Backup contains invalid $table metadata.');
+        final declaredCount = declaredTables[table];
+        if (declaredCount is! int || declaredCount != tableRows.length) {
+          throw StateError('Backup metadata count mismatch for $table.');
+        }
+        rowsByTable[table] = tableRows
+            .map((value) => Map<String, Object?>.from(value as Map))
+            .toList();
       }
-    }
-    for (final raw in rowsByTable['document_text_index']!) {
-      if (raw is! Map || raw['document_id'] is! String ||
-          !metadataDocumentIds.contains(raw['document_id'])) {
-        throw StateError('Backup text index references a missing document.');
-      }
-    }
-    final settingKeys = <String>{};
-    for (final raw in rowsByTable['settings']!) {
-      if (raw is! Map || raw['key'] is! String ||
-          (raw['key'] as String).isEmpty ||
-          !settingKeys.add(raw['key'] as String)) {
-        throw StateError('Backup contains an invalid or duplicate setting key.');
-      }
-    }
+      BackupFolderGraphValidator.validate(rowsByTable['folders']!);
+      PortableSnapshotRowsValidator.validate(rowsByTable);
 
-    final expectedEntries = <String>{
-      'manifest.json',
-      for (final table in tableNames)
-        if (table != 'document_text_index' || archiveNames.contains('$table.json'))
-          '$table.json',
-      for (final raw in rawFiles) (raw as Map<String, dynamic>)['entry'] as String,
-    };
-    if (archiveNames.length != expectedEntries.length ||
-        !archiveNames.containsAll(expectedEntries)) {
-      throw StateError('Backup contains unexpected or unreferenced ZIP entries.');
+      final rawFiles = manifest['files'];
+      if (rawFiles is! List) throw StateError('Backup file manifest is invalid.');
+      staging = await Directory.systemTemp.createTemp('docsgrid_restore_');
+      final stagedPdfPaths = <String, String>{};
+      final seenDocuments = <String>{};
+      final seenEntries = <String>{};
+      for (final raw in rawFiles) {
+        if (raw is! Map ||
+            raw['documentId'] is! String ||
+            raw['entry'] is! String ||
+            raw['sha256'] is! String ||
+            !RegExp(r'^[a-fA-F0-9]{64}$').hasMatch(raw['sha256'] as String) ||
+            (raw['originalName'] != null && raw['originalName'] is! String)) {
+          throw StateError('Backup contains an invalid PDF manifest record.');
+        }
+        final documentId = raw['documentId'] as String;
+        final entryName = raw['entry'] as String;
+        if (!documentIds.contains(documentId) ||
+            !seenDocuments.add(documentId) ||
+            !seenEntries.add(entryName) ||
+            !entryName.startsWith('pdfs/') ||
+            entryName.contains('\\') ||
+            entryName.split('/').any((part) => part.isEmpty || part == '.' || part == '..')) {
+          throw StateError('Backup contains an unsafe or duplicate PDF entry.');
+        }
+        final entry = decoded.findFile(entryName);
+        if (entry == null || !entry.isFile || entry.isSymbolicLink) {
+          throw StateError('Backup is incomplete or contains a non-file PDF entry.');
+        }
+        final stagedFile = File(p.join(staging.path, '${_uuid.v4()}.pdf'));
+        final output = OutputFileStream(stagedFile.path);
+        try {
+          entry.writeContent(output);
+        } finally {
+          output.closeSync();
+        }
+        final header = await stagedFile.openRead(0, 1024).fold<List<int>>(
+          <int>[], (bytes, chunk) => bytes..addAll(chunk),
+        );
+        if (!String.fromCharCodes(header).contains('%PDF-')) {
+          throw StateError('Backup contains a file that is not a PDF.');
+        }
+        final digest = (await sha256.bind(stagedFile.openRead()).first).toString();
+        if (digest != (raw['sha256'] as String).toLowerCase()) {
+          throw StateError('Backup integrity check failed.');
+        }
+        stagedPdfPaths[documentId] = stagedFile.path;
+      }
+      if (seenDocuments.length != documentIds.length ||
+          !seenDocuments.containsAll(documentIds)) {
+        throw StateError('Backup is incomplete: every document must have exactly one PDF entry.');
+      }
+      final expectedEntries = <String>{
+        'manifest.json',
+        for (final table in tableNames)
+          if (archiveNames.contains('$table.json')) '$table.json',
+        for (final raw in rawFiles) (raw as Map)['entry'] as String,
+      };
+      if (archiveNames.length != expectedEntries.length ||
+          !archiveNames.containsAll(expectedEntries)) {
+        throw StateError('Backup contains unexpected or unreferenced ZIP entries.');
+      }
+      input.closeSync();
+      return _ValidatedBackup(
+        manifest: manifest,
+        rowsByTable: rowsByTable,
+        stagedPdfPaths: stagedPdfPaths,
+        stagingDirectory: staging,
+      );
+    } catch (_) {
+      try { input.closeSync(); } catch (_) {}
+      if (staging != null) {
+        try { if (await staging.exists()) await staging.delete(recursive: true); } catch (_) {}
+      }
+      rethrow;
     }
-    return rawFiles.length;
   }
 }
+
+class _ValidatedBackup {
+  const _ValidatedBackup({
+    required this.manifest,
+    required this.rowsByTable,
+    required this.stagedPdfPaths,
+    required this.stagingDirectory,
+  });
+
+  final Map<String, dynamic> manifest;
+  final Map<String, List<Map<String, Object?>>> rowsByTable;
+  final Map<String, String> stagedPdfPaths;
+  final Directory stagingDirectory;
+
+  Future<void> dispose() async {
+    try {
+      if (await stagingDirectory.exists()) {
+        await stagingDirectory.delete(recursive: true);
+      }
+    } catch (_) {}
+  }
+}
+

@@ -43,7 +43,13 @@ class _FoldersScreenState extends State<FoldersScreen> {
 
   Future<void> _refresh() async {
     setState(_load);
-    await _foldersFuture;
+    // Wait for both sections to settle. FutureBuilder renders any errors;
+    // swallowing here prevents a failed refresh from escaping the indicator.
+    try {
+      await Future.wait<Object?>([_foldersFuture, _documentsFuture]);
+    } catch (_) {
+      // The corresponding FutureBuilder displays the actionable error state.
+    }
   }
 
   Future<void> _openFolder(Folder folder) async {
@@ -362,14 +368,26 @@ class _FoldersScreenState extends State<FoldersScreen> {
                 child: Text(_currentTitle,
                     style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700)),
               ),
-              IconButton(
-                tooltip: 'Add PDF to this folder',
-                onPressed: () async {
-                  final result = await _documents.importPdfs(targetFolderId: _currentFolderId);
-                  await _refresh();
-                  if (mounted) _message('Added ${result.added} · Duplicates ${result.duplicates}');
+              PopupMenuButton<String>(
+                tooltip: 'Folder actions',
+                icon: const Icon(Icons.more_vert),
+                onSelected: (action) async {
+                  if (action == 'add_pdf') {
+                    final result = await _documents.importPdfs(targetFolderId: _currentFolderId);
+                    await _refresh();
+                    if (mounted) _message('Added ${result.added} · Duplicates ${result.duplicates}');
+                  }
                 },
-                icon: const Icon(Icons.picture_as_pdf_outlined),
+                itemBuilder: (_) => const [
+                  PopupMenuItem(
+                    value: 'add_pdf',
+                    child: ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      leading: Icon(Icons.picture_as_pdf_outlined),
+                      title: Text('Add PDF to this folder'),
+                    ),
+                  ),
+                ],
               ),
               IconButton(
                 tooltip: 'Create folder',
@@ -426,7 +444,30 @@ class _FoldersScreenState extends State<FoldersScreen> {
                     return const Center(child: CircularProgressIndicator());
                   }
                   if (documentSnapshot.hasError) {
-                    return Center(child: Text('Could not load PDFs: ${documentSnapshot.error}'));
+                    return Center(
+                      child: Padding(
+                        padding: const EdgeInsets.all(24),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(Icons.error_outline, size: 40),
+                            const SizedBox(height: 8),
+                            const Text('Could not load PDFs.'),
+                            const SizedBox(height: 4),
+                            Text(
+                              '${documentSnapshot.error}',
+                              textAlign: TextAlign.center,
+                            ),
+                            const SizedBox(height: 8),
+                            FilledButton.icon(
+                              onPressed: _refresh,
+                              icon: const Icon(Icons.refresh),
+                              label: const Text('Try again'),
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
                   }
                   final documents = documentSnapshot.data ?? const <DocumentRecord>[];
                   if (folders.isEmpty && documents.isEmpty) {

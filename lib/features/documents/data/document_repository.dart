@@ -78,6 +78,13 @@ class ImportCategoryOption {
   final String name;
 }
 
+String escapeLikeWildcards(String value) {
+  return value
+      .replaceAll('\\', '\\\\')
+      .replaceAll('%', r'\%')
+      .replaceAll('_', r'\_');
+}
+
 class DocumentRepository {
   DocumentRepository({AppDatabase? database})
       : _database = database ?? AppDatabase.instance;
@@ -96,10 +103,10 @@ class DocumentRepository {
       LEFT JOIN categories c ON c.id = d.category_id
       WHERE d.deleted_at IS NULL
         AND (? = 0 OR d.last_opened_at IS NOT NULL)
-        AND d.name LIKE ?
+        AND d.name LIKE ? ESCAPE '\\'
       ORDER BY d.last_opened_at DESC, d.name COLLATE NOCASE ASC
       ''',
-      [recentOnly ? 1 : 0, '%${query.trim()}%'],
+      [recentOnly ? 1 : 0, '%${escapeLikeWildcards(query.trim())}%'],
     );
     // Avoid SQLite JSON1 dependency: several Android SQLite builds do not
     // expose json_extract(). Favorite metadata is decoded in Dart instead.
@@ -325,8 +332,13 @@ class DocumentRepository {
     final rootUri = selected['uri']!;
     final db = await _database.database;
     final folderUris = <String, String>{};
+    final pendingFolders = <(String?, String)>[(null, rootUri)];
+    final visitedFolderIds = <String>{};
 
-    Future<void> mirrorFolders(String? parentId, String parentUri) async {
+    // Walk the hierarchy iteratively so deeply nested user folders cannot
+    // overflow the Dart call stack during a storage migration.
+    while (pendingFolders.isNotEmpty) {
+      final (parentId, parentUri) = pendingFolders.removeLast();
       final rows = await db.query(
         'folders',
         columns: ['id', 'name'],
@@ -338,6 +350,9 @@ class DocumentRepository {
       );
       for (final row in rows) {
         final id = row['id'] as String;
+        if (!visitedFolderIds.add(id)) {
+          throw StateError('Folder hierarchy contains a cycle or duplicate parent path.');
+        }
         // Legacy folder names must pass the same path-segment validation as
         // newly created folders before they reach an external storage provider.
         final name = FolderRepository.validateFolderName(row['name'] as String);
@@ -357,11 +372,9 @@ class DocumentRepository {
           where: 'id = ? AND deleted_at IS NULL',
           whereArgs: [id],
         );
-        await mirrorFolders(id, childUri);
+        pendingFolders.add((id, childUri));
       }
     }
-
-    await mirrorFolders(null, rootUri);
 
     final rows = await db.query(
       'documents',
@@ -970,27 +983,35 @@ class DocumentRepository {
 
   Future<void> setFavorite(DocumentRecord document, bool favorite) async {
     final db = await _database.database;
-    final rows = await db.query(
-      'documents',
-      columns: ['metadata_json'],
-      where: 'id = ? AND deleted_at IS NULL',
-      whereArgs: [document.id],
-      limit: 1,
-    );
-    if (rows.isEmpty) return;
-    final metadata = jsonDecode((rows.first['metadata_json'] as String?) ?? '{}')
-        as Map<String, dynamic>;
-    metadata['favorite'] = favorite;
-    await db.update(
-      'documents',
-      {
-        'metadata_json': jsonEncode(metadata),
-        'updated_at': DateTime.now().toUtc().toIso8601String(),
-      },
-      where: 'id = ? AND deleted_at IS NULL',
-      whereArgs: [document.id],
-    );
-    await _recordHistory(db, document.id, favorite ? 'favorited' : 'unfavorited', {});
+    await db.transaction((txn) async {
+      final rows = await txn.query(
+        'documents',
+        columns: ['metadata_json'],
+        where: 'id = ? AND deleted_at IS NULL',
+        whereArgs: [document.id],
+        limit: 1,
+      );
+      if (rows.isEmpty) return;
+      final metadata = jsonDecode((rows.first['metadata_json'] as String?) ?? '{}')
+          as Map<String, dynamic>;
+      metadata['favorite'] = favorite;
+      final count = await txn.update(
+        'documents',
+        {
+          'metadata_json': jsonEncode(metadata),
+          'updated_at': DateTime.now().toUtc().toIso8601String(),
+        },
+        where: 'id = ? AND deleted_at IS NULL',
+        whereArgs: [document.id],
+      );
+      if (count == 0) return;
+      await _recordHistory(
+        txn,
+        document.id,
+        favorite ? 'favorited' : 'unfavorited',
+        {},
+      );
+    });
   }
 
   Future<DocumentRecord?> getById(String id) async {
@@ -1007,10 +1028,16 @@ class DocumentRepository {
 
   Future<void> markOpened(DocumentRecord document) async {
     final db = await _database.database;
-    await db.update('documents', {
-      'last_opened_at': DateTime.now().toUtc().toIso8601String(),
-    }, where: 'id = ?', whereArgs: [document.id]);
-    await _recordHistory(db, document.id, 'opened', {});
+    await db.transaction((txn) async {
+      final count = await txn.update(
+        'documents',
+        {'last_opened_at': DateTime.now().toUtc().toIso8601String()},
+        where: 'id = ? AND deleted_at IS NULL',
+        whereArgs: [document.id],
+      );
+      if (count == 0) return;
+      await _recordHistory(txn, document.id, 'opened', {});
+    });
   }
 
   Future<List<DocumentRecord>> listTrash({String query = ''}) async {
@@ -1020,10 +1047,10 @@ class DocumentRepository {
       SELECT d.*, c.name AS category_name
       FROM documents d
       LEFT JOIN categories c ON c.id = d.category_id
-      WHERE d.deleted_at IS NOT NULL AND d.name LIKE ?
+      WHERE d.deleted_at IS NOT NULL AND d.name LIKE ? ESCAPE '\\'
       ORDER BY d.deleted_at DESC
       ''',
-      ['%${query.trim()}%'],
+      ['%${escapeLikeWildcards(query.trim())}%'],
     );
     return rows.map(DocumentRecord.fromMap).toList();
   }

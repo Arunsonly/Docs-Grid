@@ -147,6 +147,16 @@ class StorageLocationService {
     return result;
   }
 
+  Future<String?> findChildUriIfExists({
+    required String parentUri,
+    required String name,
+  }) {
+    return _channel.invokeMethod<String>('findChildUriIfExists', {
+      'parentUri': parentUri,
+      'name': name,
+    });
+  }
+
   Future<String> renamePdf({required String uri, required String name}) async {
     final result = await _channel.invokeMethod<String>('renamePdf', {'uri': uri, 'name': name});
     if (result == null) throw StateError('The platform did not return the renamed PDF location.');
