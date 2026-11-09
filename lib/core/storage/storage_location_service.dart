@@ -54,6 +54,8 @@ class StorageLocationService {
       'databaseUri': value['databaseUri'] as String,
       'recoveryUri': value['recoveryUri'] as String,
       'libraryUri': value['libraryUri'] as String,
+      if (value['documentsUri'] is String)
+        'documentsUri': value['documentsUri'] as String,
     };
   }
 
