@@ -176,19 +176,36 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
         // stream rather than materializing the entire archive in RAM.
         await writeByteStreamToFile(platformFile.readAsByteStream(), file);
       }
-      final count = await _tools.validateBackup(file);
       if (!mounted) return;
-      final confirmed = await showDialog<bool>(context: context, builder: (context) => AlertDialog(
-        title: const Text('Restore backup?'),
-        content: Text('The archive contains $count PDF file(s). Existing records will be kept; the backup will be added without overwriting your current files.'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
-          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Restore')),
-        ],
-      ));
-      if (confirmed != true) return;
-      final restored = await _tools.restoreBackup(file);
-      if (mounted) setState(() => _message = 'Restore completed: $restored PDF file(s) restored and verified.');
+      final restored = await _tools.restoreBackup(
+        file,
+        confirm: (count) async {
+          if (!mounted) return false;
+          return await showDialog<bool>(
+                context: context,
+                builder: (context) => AlertDialog(
+                  title: const Text('Restore backup?'),
+                  content: Text(
+                    'The archive contains $count PDF file(s). Existing records will be kept; the backup will be added without overwriting your current files.',
+                  ),
+                  actions: [
+                    TextButton(
+                      onPressed: () => Navigator.pop(context, false),
+                      child: const Text('Cancel'),
+                    ),
+                    FilledButton(
+                      onPressed: () => Navigator.pop(context, true),
+                      child: const Text('Restore'),
+                    ),
+                  ],
+                ),
+              ) ??
+              false;
+        },
+      );
+      if (restored != null && mounted) {
+        setState(() => _message = 'Restore completed: $restored PDF file(s) restored and verified.');
+      }
     } finally {
       if (temporaryCopy && await file.exists()) await file.delete();
     }
