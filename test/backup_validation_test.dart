@@ -28,6 +28,13 @@ void main() {
       {'id': 'doc-1', 'name': 'Policy'},
     ],
     List<Map<String, Object?>> folders = const [],
+    List<Map<String, Object?>> categories = const [],
+    List<Map<String, Object?>> tags = const [],
+    List<Map<String, Object?>> documentTags = const [],
+    List<Map<String, Object?>> reminders = const [],
+    List<Map<String, Object?>> history = const [],
+    List<Map<String, Object?>> textIndexes = const [],
+    List<Map<String, Object?>> settings = const [],
   }) async {
     final archive = Archive();
     final resolvedEntryName = entryName ??
@@ -35,13 +42,13 @@ void main() {
     final tableRows = <String, List<Map<String, Object?>>>{ 
       'folders': folders,
       'documents': documents,
-      'categories': [],
-      'tags': [],
-      'document_tags': [],
-      'reminders': [],
-      'history': [],
-      'settings': [],
-      'document_text_index': [],
+      'categories': categories,
+      'tags': tags,
+      'document_tags': documentTags,
+      'reminders': reminders,
+      'history': history,
+      'settings': settings,
+      'document_text_index': textIndexes,
     };
     final metadataFiles = <Map<String, Object?>>[];
     for (final entry in tableRows.entries) {
@@ -174,6 +181,53 @@ void main() {
       {'id': 'doc-1', 'name': '../../outside'},
     ]);
     await expectLater(DocumentToolsService().validateBackup(file), throwsStateError);
+  });
+
+  test('rejects orphaned tag, reminder, history and OCR references', () async {
+    final badTags = await writeArchive(
+      tags: const [{'id': 'tag-1', 'name': 'Motor'}],
+      documentTags: const [{'document_id': 'missing-doc', 'tag_id': 'tag-1'}],
+    );
+    await expectLater(DocumentToolsService().validateBackup(badTags), throwsFormatException);
+
+    final badReminder = await writeArchive(
+      reminders: const [{'id': 'reminder-1', 'document_id': 'missing-doc'}],
+    );
+    await expectLater(DocumentToolsService().validateBackup(badReminder), throwsFormatException);
+
+    final badHistory = await writeArchive(
+      history: const [{'id': 'history-1', 'document_id': 'missing-doc'}],
+    );
+    await expectLater(DocumentToolsService().validateBackup(badHistory), throwsFormatException);
+
+    final badIndex = await writeArchive(
+      textIndexes: const [{'document_id': 'missing-doc'}],
+    );
+    await expectLater(DocumentToolsService().validateBackup(badIndex), throwsFormatException);
+  });
+
+  test('rejects duplicate category and tag names before restore', () async {
+    final duplicateCategories = await writeArchive(
+      categories: const [
+        {'id': 'cat-1', 'name': 'Insurance'},
+        {'id': 'cat-2', 'name': 'insurance'},
+      ],
+    );
+    await expectLater(
+      DocumentToolsService().validateBackup(duplicateCategories),
+      throwsFormatException,
+    );
+
+    final duplicateTags = await writeArchive(
+      tags: const [
+        {'id': 'tag-1', 'name': 'Motor'},
+        {'id': 'tag-2', 'name': 'motor'},
+      ],
+    );
+    await expectLater(
+      DocumentToolsService().validateBackup(duplicateTags),
+      throwsFormatException,
+    );
   });
 
   test('rejects missing parents and cyclic folder graphs', () async {
