@@ -4,12 +4,14 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:open_filex/open_filex.dart';
 import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
 
 import '../../core/database/app_database.dart';
 import '../documents/data/document_repository.dart';
 import '../folders/data/folder_repository.dart';
 import 'document_tools_service.dart';
 import '../../core/storage/storage_location_service.dart';
+import '../../core/storage/byte_stream_file.dart';
 
 class DocumentToolsScreen extends StatefulWidget {
   const DocumentToolsScreen({super.key, this.quickAction, this.section = 'tools', this.service});
@@ -162,12 +164,15 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
     if (picked.isEmpty) return;
     final platformFile = picked.single;
     final temporaryCopy = platformFile.path == null;
+    final temporaryDirectory = temporaryCopy ? await getTemporaryDirectory() : null;
     final file = temporaryCopy
-        ? File(p.join(Directory.systemTemp.path, 'DocsGrid_restore_${DateTime.now().microsecondsSinceEpoch}.zip'))
+        ? File(p.join(temporaryDirectory!.path, 'DocsGrid_restore_${DateTime.now().microsecondsSinceEpoch}.zip'))
         : File(platformFile.path!);
     try {
       if (temporaryCopy) {
-        await file.writeAsBytes(await platformFile.readAsBytes(), flush: true);
+        // Backup ZIPs may contain many large PDFs. Stage provider data as a
+        // stream rather than materializing the entire archive in RAM.
+        await writeByteStreamToFile(platformFile.readAsByteStream(), file);
       }
       final count = await _tools.validateBackup(file);
       if (!mounted) return;
