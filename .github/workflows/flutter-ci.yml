@@ -209,7 +209,7 @@ jobs:
           sed -i '' -E 's/IPHONEOS_DEPLOYMENT_TARGET = [0-9.]+;/IPHONEOS_DEPLOYMENT_TARGET = 15.5;/g' ios/Runner.xcodeproj/project.pbxproj
           sed -i '' -E "s/platform :ios, '[0-9.]+'/platform :ios, '15.5'/" ios/Podfile
       - name: Install packages
-        run: flutter pub get --enforce-lockfile
+        run: flutter pub get
       - name: Generate DocsGrid launcher icons
         run: |
           brew install librsvg
