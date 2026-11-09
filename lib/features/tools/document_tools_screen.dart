@@ -148,6 +148,15 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
     }
   });
 
+  Future<void> _databaseBackup() => _run(() async {
+    final archive = await _tools.createBackup(includePdfs: false);
+    await _tools.shareFile(archive.path, text: 'DocsGrid database backup');
+    if (mounted) {
+      setState(() => _message =
+          'Database backup created. It contains metadata only; PDF contents are not included.');
+    }
+  });
+
   Future<void> _restoreBackup() => _run(() async {
     final source = await showModalBottomSheet<String>(
       context: context, showDragHandle: true,
@@ -190,8 +199,33 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
         await writeByteStreamToFile(platformFile.readAsByteStream(), file);
       }
       if (!mounted) return;
+      final restoreMode = await showDialog<BackupRestoreMode>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Choose restore mode'),
+          content: const Text(
+            'Merge keeps current records and adds backup data. Full replacement first creates a safety backup, then replaces the current DocsGrid database.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, null),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(context, BackupRestoreMode.merge),
+              child: const Text('Merge'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, BackupRestoreMode.fullReplacement),
+              child: const Text('Full replacement'),
+            ),
+          ],
+        ),
+      );
+      if (restoreMode == null || !mounted) return;
       final restored = await _tools.restoreBackup(
         file,
+        mode: restoreMode,
         confirm: (count) async {
           if (!mounted) return false;
           return await showDialog<bool>(
@@ -621,9 +655,13 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
         ])),
       ],
       if (widget.section == 'backup' || widget.section == 'restore' || widget.section == 'backup_restore') Card(child: Column(children: [
-        ListTile(leading: const Icon(Icons.backup_outlined), title: const Text('Create backup'),
+        ListTile(leading: const Icon(Icons.backup_outlined), title: const Text('Create full backup'),
           subtitle: const Text('Save PDFs, folders, reminders, tags and settings into one ZIP file.'),
           trailing: const Icon(Icons.chevron_right), onTap: _busy ? null : _backup),
+        const Divider(height: 1),
+        ListTile(leading: const Icon(Icons.storage_outlined), title: const Text('Create database backup'),
+          subtitle: const Text('Save database and metadata only; PDF contents are excluded.'),
+          trailing: const Icon(Icons.chevron_right), onTap: _busy ? null : _databaseBackup),
         const Divider(height: 1),
         ListTile(leading: const Icon(Icons.settings_backup_restore_outlined), title: const Text('Restore backup'),
           subtitle: const Text('Choose a DocsGrid backup ZIP from this phone or another storage location.'),
