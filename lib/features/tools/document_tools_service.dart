@@ -928,18 +928,33 @@ class DocumentToolsService {
         ? await StorageLocationService.instance.portableDataLocations()
         : const <String, String>{};
     final portableUnfiledUri = portableLocations['documentsUri'];
-    final root = Directory(
+    final portableFoldersUri = portableLocations['libraryUri'];
+    final fallbackRoot = p.join(
+      (await getApplicationDocumentsDirectory()).path,
+      'DocsGrid',
+      'Restored',
+    );
+    final unfiledRoot = Directory(
       portableUnfiledUri != null && portableUnfiledUri.startsWith('file://')
           ? Uri.parse(portableUnfiledUri).toFilePath()
-          : p.join((await getApplicationDocumentsDirectory()).path, 'DocsGrid', 'Restored'),
+          : fallbackRoot,
     );
-    final restoreRoot = Directory(p.join(root.path, 'Restored_${DateTime.now().microsecondsSinceEpoch}'));
+    final foldersRoot = Directory(
+      portableFoldersUri != null && portableFoldersUri.startsWith('file://')
+          ? Uri.parse(portableFoldersUri).toFilePath()
+          : p.join(fallbackRoot, 'Folders'),
+    );
+    final restoreStamp = 'Restored_${DateTime.now().microsecondsSinceEpoch}';
+    final restoreRoot = Directory(p.join(unfiledRoot.path, restoreStamp));
+    final folderRestoreRoot = Directory(p.join(foldersRoot.path, restoreStamp));
     await restoreRoot.create(recursive: true);
+    await folderRestoreRoot.create(recursive: true);
     final fileRows = (manifest['files'] as List<dynamic>).cast<Map<String, dynamic>>();
     final restoredPaths = <String, String>{};
     final folderPaths = <String, String>{};
     final folderDirectoryNames = <String, String>{
-      for (final row in folderRows) (row['id'] as String): 'folder_${_uuid.v4()}',
+      for (final row in folderRows)
+        (row['id'] as String): '${(row['name'] as String).replaceAll(RegExp(r'[^A-Za-z0-9 _.-]'), '_').trim()}_${safeRestorePathToken(row['id'] as String).substring(0, 8)}',
     };
     String folderPath(String id) {
       final known = folderPaths[id];
@@ -952,7 +967,7 @@ class DocumentToolsService {
         if (row == null) throw StateError('Backup contains an unknown folder reference.');
         current = row['parent_id'] as String?;
       }
-      var base = current == null ? restoreRoot.path : folderPaths[current]!;
+      var base = current == null ? folderRestoreRoot.path : folderPaths[current]!;
       for (final folderId in unresolved.reversed) {
         base = p.join(base, folderDirectoryNames[folderId]!);
         folderPaths[folderId] = base;
