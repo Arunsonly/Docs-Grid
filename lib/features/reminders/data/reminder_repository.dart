@@ -193,8 +193,8 @@ class ReminderRepository {
       'created_at': now,
       'updated_at': now,
     });
-    await ReminderNotifications.instance.requestPermission();
-    await ReminderNotifications.instance.schedule(
+    await _notifications.requestPermission();
+    await _notifications.schedule(
       id: id, title: title.trim(), body: cleanNote, at: remindAt, recurrence: recurrenceRule,
     );
   }
@@ -221,8 +221,8 @@ class ReminderRepository {
       'updated_at': DateTime.now().toUtc().toIso8601String(),
     }, where: 'id = ?', whereArgs: [id]);
     if (changed == 0) throw StateError('Reminder no longer exists.');
-    await ReminderNotifications.instance.cancel(id);
-    await ReminderNotifications.instance.schedule(
+    await _notifications.cancel(id);
+    await _notifications.schedule(
       id: id, title: title.trim(), body: cleanNote, at: remindAt, recurrence: recurrenceRule,
     );
   }
@@ -240,7 +240,7 @@ class ReminderRepository {
     }, where: 'id = ?', whereArgs: [reminder.id]);
     if (changed == 0) throw StateError('Reminder no longer exists.');
     if (reminder.recurrenceRule != null) {
-      await ReminderNotifications.instance.schedule(
+      await _notifications.schedule(
         id: reminder.id,
         title: reminder.title,
         body: reminder.note,
@@ -248,7 +248,7 @@ class ReminderRepository {
         recurrence: reminder.recurrenceRule,
       );
     }
-    await ReminderNotifications.instance.scheduleSnooze(
+    await _notifications.scheduleSnooze(
       id: reminder.id, title: reminder.title, body: reminder.note, at: when,
     );
   }
@@ -277,26 +277,26 @@ class ReminderRepository {
     }, where: 'id = ?', whereArgs: [reminder.id]);
     if (changed == 0) throw StateError('Reminder no longer exists.');
     if (enabled) {
-      await ReminderNotifications.instance.schedule(
+      await _notifications.schedule(
         id: reminder.id, title: reminder.title, body: reminder.note,
         at: reminder.remindAt, recurrence: reminder.recurrenceRule,
       );
       final rawSnoozedUntil = rows.first['snoozed_until'] as String?;
       final snoozedUntil = rawSnoozedUntil == null ? null : DateTime.parse(rawSnoozedUntil).toLocal();
       if (snoozedUntil != null && snoozedUntil.isAfter(DateTime.now())) {
-        await ReminderNotifications.instance.scheduleSnooze(
+        await _notifications.scheduleSnooze(
           id: reminder.id, title: reminder.title, body: reminder.note, at: snoozedUntil,
         );
       }
     } else {
-      await ReminderNotifications.instance.cancel(reminder.id);
+      await _notifications.cancel(reminder.id);
     }
   }
 
   Future<void> delete(String id) async {
     final db = await _database.database;
     await db.delete('reminders', where: 'id = ?', whereArgs: [id]);
-    await ReminderNotifications.instance.cancel(id);
+    await _notifications.cancel(id);
   }
 
   Future<void> complete(String id) async {
@@ -305,6 +305,6 @@ class ReminderRepository {
     await db.update('reminders', {
       'status': 'completed', 'completed_at': now, 'enabled': 0, 'updated_at': now,
     }, where: 'id = ?', whereArgs: [id]);
-    await ReminderNotifications.instance.cancel(id);
+    await _notifications.cancel(id);
   }
 }
