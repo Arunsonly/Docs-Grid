@@ -11,6 +11,26 @@ class _ConcurrentFolderDatabase implements Database {
 
   @override
   dynamic noSuchMethod(Invocation invocation) {
+    if (invocation.memberName == #rawQuery) {
+      final sql = invocation.positionalArguments[0] as String;
+      if (sql.contains('MAX(sort_order)')) {
+        final args = invocation.positionalArguments.length > 1
+            ? invocation.positionalArguments[1] as List<Object?>?
+            : null;
+        final parentId = args?.isNotEmpty == true ? args!.first : null;
+        final siblings = folders.where((row) => row['parent_id'] == parentId);
+        final maxOrder = siblings.fold<int>(
+          -1,
+          (maximum, row) => (row['sort_order'] as int? ?? -1) > maximum
+              ? row['sort_order'] as int
+              : maximum,
+        );
+        return Future<List<Map<String, Object?>>>.value([
+          {'max_order': maxOrder},
+        ]);
+      }
+      return Future<List<Map<String, Object?>>>.value([]);
+    }
     if (invocation.memberName == #query) {
       // Both callers may pass the non-transactional preflight check.
       return Future<List<Map<String, Object?>>>.value([]);
