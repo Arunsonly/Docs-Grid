@@ -35,12 +35,12 @@ Uint8List transformDocumentImageForTesting(Map<String, Object> args) {
         math.sqrt(math.pow(tr.x - tl.x, 2) + math.pow(tr.y - tl.y, 2)),
         math.sqrt(math.pow(br.x - bl.x, 2) + math.pow(br.y - bl.y, 2)),
       ).round();
-      final outputWidth = math.min(oriented.width, math.max(1, width));
+      final outputWidth = math.min(oriented.width, math.max(1, width)).toInt();
       final height = math.max(
         math.sqrt(math.pow(bl.x - tl.x, 2) + math.pow(bl.y - tl.y, 2)),
         math.sqrt(math.pow(br.x - tr.x, 2) + math.pow(br.y - tr.y, 2)),
       ).round();
-      final outputHeight = math.min(oriented.height, math.max(1, height));
+      final outputHeight = math.min(oriented.height, math.max(1, height)).toInt();
       output = img.copyRectify(
         oriented,
         topLeft: tl,
