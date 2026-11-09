@@ -7,6 +7,11 @@ class StorageLocationService {
   static final StorageLocationService instance = StorageLocationService._();
   static const MethodChannel _channel = MethodChannel('docsgrid/storage');
 
+  /// Only an explicit native NOT_FOUND result permits creating a provider child.
+  /// Permission, provider and I/O failures must propagate without side effects.
+  static bool isNotFoundError(Object error) =>
+      error is PlatformException && error.code == 'NOT_FOUND';
+
   /// Converts the native access-check response into a stable, testable shape.
   /// Unknown native values fail closed instead of being treated as available.
   static Map<String, String> normalizeAccessStatus(
