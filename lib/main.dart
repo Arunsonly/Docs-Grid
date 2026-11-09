@@ -193,8 +193,8 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
     );
     if (restore != true || !mounted) return;
     await Navigator.of(context).push(MaterialPageRoute(builder: (_) => Scaffold(
-      appBar: AppBar(title: const Text('Restore Data')),
-      body: const DocumentToolsScreen(section: 'backup_restore'),
+      appBar: AppBar(title: const Text('Recover DocsGrid')),
+      body: const DocumentToolsScreen(quickAction: 'restore_portable'),
     )));
   }
 
