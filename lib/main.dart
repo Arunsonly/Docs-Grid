@@ -183,11 +183,11 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
     final restore = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Restore your DocsGrid data?'),
-        content: const Text('If you have a DocsGrid backup ZIP on this phone, SD card, USB drive or cloud storage, you can restore your PDFs, folders, reminders, tags and settings now.'),
+        title: const Text('Recover your DocsGrid data?'),
+        content: const Text('DocsGrid will first look for your existing Android/media/DocsGrid recovery folder and restore PDFs, folders, categories, tags, reminders, activity and settings. You will not need to select the folder manually.'),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Later')),
-          FilledButton.icon(onPressed: () => Navigator.pop(ctx, true), icon: const Icon(Icons.restore), label: const Text('Restore Data')),
+          FilledButton.icon(onPressed: () => Navigator.pop(ctx, true), icon: const Icon(Icons.restore), label: const Text('Find and Recover')),
         ],
       ),
     );
