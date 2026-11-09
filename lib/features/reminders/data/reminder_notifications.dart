@@ -120,7 +120,7 @@ class ReminderNotifications {
   }
 
   int _id(String id) => stableNotificationId(id);
-  static int stableSnoozeNotificationId(String id) => stableNotificationId('${id}:snooze');
+  static int stableSnoozeNotificationId(String id) => stableNotificationId('$id:snooze');
   int _snoozeId(String id) => stableSnoozeNotificationId(id);
 
   /// Computes the next wall-clock occurrence without changing the stored
