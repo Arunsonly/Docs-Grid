@@ -40,6 +40,11 @@ dev_dependencies:
 flutter:
   uses-material-design: true
 
+hooks:
+  user_defines:
+    sqlite3:
+      source: system
+
 flutter_launcher_icons:
   android: true
   ios: true
