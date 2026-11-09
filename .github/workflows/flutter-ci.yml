@@ -159,7 +159,7 @@ jobs:
           mkdir -p android/app/src/main/kotlin/com/docsgrid/docs_grid
           cp platform/android/MainActivity.kt android/app/src/main/kotlin/com/docsgrid/docs_grid/MainActivity.kt
       - name: Install packages
-        run: flutter pub get --enforce-lockfile
+        run: flutter pub get
       - name: Generate DocsGrid launcher icons
         run: |
           sudo apt-get update
