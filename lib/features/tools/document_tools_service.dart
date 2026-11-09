@@ -1029,7 +1029,9 @@ class DocumentToolsService {
         if (selection == null || selection.isEmpty) {
           throw ArgumentError('Select at least one data group to restore.');
         }
-        final includeDocuments = selection.contains(BackupRestoreSection.documents);
+        // OCR indexes require their document rows and PDF payloads.
+        final includeDocuments = selection.contains(BackupRestoreSection.documents) ||
+            selection.contains(BackupRestoreSection.ocrIndexes);
         final includeFolders = includeDocuments || selection.contains(BackupRestoreSection.folders);
         final includeCategories = includeDocuments || selection.contains(BackupRestoreSection.categories);
         final includeTags = includeDocuments || selection.contains(BackupRestoreSection.tags);
