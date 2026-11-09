@@ -1,38 +1,57 @@
-# DocsGrid — 10 Core Functions Audit
+# DocsGrid — Consolidated Audit of All 10 Core Functions
 
-Audit branch: `audit/10-core-functions`  
-Base: `feature/complete-ten-features`  
-Status: **Source review and corrective changes committed; current-head Android/iOS CI and final regression sign-off pending.**
+Audit date: 2026-11-09  
+Audited base commit: `703f36032394356971d8a6ab34740afaa1c9c4bb`  
+Audit branch: `audit/consolidated-10-core-fixes`  
+Scope: all ten product functions, their data/repository logic, storage integration, database schema/migrations, native Android/iOS bridges, and existing automated tests.
 
-This audit is limited to the ten requested core product functions. It does not claim Android/iOS physical-device verification.
+**Source review: 10/10 functions completed.**  
+**Corrective changes: consolidated into this one branch.**  
+**Hosted CI: pending on the single consolidated PR.**  
+**Physical-device sign-off: not claimed; Android/iOS devices and third-party storage providers still require hands-on testing.**
 
-| # | Core function | Source audit result | Changes made on this branch | Remaining verification / limitation |
+## Results by function
+
+| # | Core function | Source audit result | Consolidated corrections | Remaining gate |
 |---|---|---|---|---|
-| 1 | Smart Import & Auto Rename | Import validates the PDF signature, computes SHA-256, checks exact duplicates, sanitizes names and uses collision-safe private filenames. | Scanned PDFs copied to external storage are now SHA-256 verified before a DB record is committed. Malformed optional metadata no longer prevents the document list from loading. | FilePicker providers without a local path still use an in-memory fallback; large-file memory behaviour and import-failure recovery need CI/device coverage. |
-| 2 | Smart Folder & Subfolder Management | Nested folder CRUD and external URI reconciliation reviewed. Found private-mode rename could update only the DB name while leaving files at the old path. | Private folder rename now moves the directory and updates descendant document paths transactionally; external descendant URIs are reconciled; duplicate sibling names, unsafe names and cyclic parent traversal are rejected. | Automated repository tests for deep nested moves/renames and provider-specific SAF behaviour remain required. |
-| 3 | Smart Category & Tags | CRUD, built-in category protection, category clearing and transactional document-tag assignment reviewed. | Shared category/tag name validation now has boundary tests; category deletion and tag assignment remain transactional. | Dedicated database tests for duplicate names, multi-document assignment and migration from older DB versions remain required. |
-| 4 | Advanced PDF Search (OCR) | Per-page rendering, recognizer lifecycle, temporary image cleanup, SQLite index and text search reviewed. | Android now runs Latin + Devanagari recognizers and CI bundles the Devanagari model; OCR search escapes SQL LIKE wildcards for literal matching. | iOS ML Kit currently supports Latin only; mixed-script OCR accuracy and large/multi-page PDF tests remain required. |
-| 5 | Duplicate Detection | Exact SHA-256 grouping and user review flow verified; reviewed copies are sent to Recycle Bin rather than immediately erased. | Re-hashes every current file before cleanup, rechecks the group inside one DB transaction, and records all soft-delete history atomically. | DB-backed 3+ copy groups, changed-file and concurrent-review regression tests remain required. |
-| 6 | Favorites & Recent Documents | Favorite metadata and recent ordering reviewed. | Favorite metadata/history and recent-open timestamp/history now commit atomically; deleted records are excluded from both actions; malformed optional metadata falls back safely. | Persistence and ordering tests across app restart remain required. |
-| 7 | Expiry Reminder System | Local notification scheduling and recurrence reviewed. Found process-dependent `String.hashCode` used for persisted notification IDs and no monthly UI option. | Replaced with deterministic IDs; daily/weekly/monthly next-occurrence handling; snooze now has an independent ID and does not replace recurring schedules; cancellation removes both IDs. | Current-head CI must pass; real notification delivery, timezone changes, snooze interactions and reboot behaviour require devices. |
-| 8 | Document Scanner & Quick Share | Camera/gallery capture, crop workflow, PDF import and Android incoming share path reviewed. | External scanner copies are SHA-256 verified; scanner staging files and incoming shared-PDF cache copies are cleaned after success, cancellation or failure; outbound share staging files are cleaned. | Camera capture is currently one page per camera action (gallery supports multiple images); native share-sheet/device tests remain required. |
-| 9 | Document History & Recycle Bin | Soft delete, restore, history writes and permanent deletion reviewed. | Trash/restore transitions update records and history in one DB transaction; permanent deletion is blocked unless the record is already in Recycle Bin; malformed optional history JSON is tolerated. | Failure-injection tests for storage deletion and DB commit boundaries remain required. |
-| 10 | Backup & Restore | ZIP archive, PDF hashes, additive DB transaction, staged restore and rollback reviewed. Found restore paths used raw archive IDs and metadata entries were not independently hashed. | Restore paths use SHA-256-derived safe path tokens; folder cycles are rejected; staging paths are not misreported as canonical library-relative paths; backup validation checks metadata hashes/counts, PDF entry mapping, signatures, hashes and completeness; portable recovery skips corrupt newest snapshots and falls back to an older verified one. | Large-archive memory usage, interruption recovery and full restore/rollback tests remain required. |
+| 1 | Smart Import & Auto Rename | PDF header validation, SHA-256, collision-safe private filenames, staging cleanup and DB writes reviewed. | Added duplicate recheck inside the DB transaction for ordinary and scanner imports; stale destination/category selection is revalidated before insert; migration no longer treats provider errors or hash mismatches as a missing file; optional metadata parsing is fail-safe; PDF names are bounded. | FilePicker providers without a local path still expose bytes rather than a stream; large-file memory and interrupted provider-import tests remain. |
+| 2 | Smart Folder & Subfolder Management | Nested CRUD, rename, delete, physical URI mapping and cycle handling reviewed. | Folder traversal and ancestor resolution are iterative; rename rejects duplicate siblings; empty-folder deletion rechecks DB state inside the transaction; provider errors are classified as NOT_FOUND only when native confirms absence; Android/iOS native delete refuses non-empty directories, including hidden iOS entries; storage I/O moved off the UI thread. | Physical SAF/Files provider permission persistence, revocation, cloud folders and very deep trees need device/provider tests. |
+| 3 | Smart Category & Tags | CRUD, built-in protections, document assignment, tag links and backup references reviewed. | Category/tag create, rename, delete and document assignments now write history in the same SQLite transaction; assignment updates document timestamps; backup restore remaps category/tag IDs by name rather than silently ignoring conflicting IDs. | Full restore conflict integration tests and UI/history rendering checks remain in hosted CI. |
+| 4 | Advanced PDF Search (OCR) | PDF page rendering, recognizer lifecycle, page markers, temporary image cleanup, indexing and search query reviewed. | OCR search uses literal `instr()` matching so `%` and `_` are not SQL wildcards; added SQLite-backed regression tests. | iOS recognizer remains Latin-only; Android includes Latin and Devanagari. OCR index provenance is not stored, so text indexes can become stale if a PDF is modified outside DocsGrid; mixed-script, large and multi-page accuracy need device tests. |
+| 5 | Duplicate Detection | Exact SHA-256 and normalized OCR-text grouping, plus manual review/Recycle Bin path reviewed. | Exact duplicate grouping now re-hashes current PDF bytes before grouping and refreshes stale stored hashes; added a regression test with stale hashes and different file contents. Automatic bulk deletion remains intentionally disabled; reviewed copies use Recycle Bin. | OCR-text duplicate hints rely on the last OCR index and can be stale after external file edits; manual review remains required before trashing. |
+| 6 | Favorites & Recent Documents | Favorite metadata, last-opened ordering and history writes reviewed. | Malformed optional metadata no longer prevents favorite toggling or document listing; favorite/open events and their metadata/timestamps are committed transactionally. | App-restart persistence and sort behaviour are covered by the full hosted test run. |
+| 7 | Expiry Reminder System | Stable IDs, recurrence calculation, OS scheduling, resume reconciliation, snooze, enable/disable and cancellation reviewed. | Snooze now uses an independent deterministic notification ID and does not overwrite the recurring reminder's original time; reconciliation schedules/cancels both IDs; re-enabling runs full reconciliation; regression coverage checks ID separation and recurrence calculations. | Real delivery, timezone/DST changes, reboot, Android inexact scheduling and iOS pending-notification limits need physical-device checks. |
+| 8 | Document Scanner & Quick Share | Camera/gallery scanning, PDF assembly, temporary files, Android Share receive, iOS Files Open-In and outbound share reviewed. | Native storage file work runs on serial background queues; Android incoming-share file staging is moved off the UI thread; provider copies continue to use SHA-256 verification and cleanup paths. | Camera/gallery permissions, multi-page capture, Android Share sheet, iOS Files/Open-In and cloud-provider behaviour require real devices. |
+| 9 | Document History & Recycle Bin | Open/import/move/rename/trash/restore/permanent-delete history paths and soft-delete behaviour reviewed. | Category/tag events now join the same history system; folder deletion is guarded against concurrent DB inserts and physical non-empty folders; existing trash/restore history remains transactional. | Failure-injection around physical permanent-delete followed by DB failure remains a recovery edge case; test on device before release. |
+| 10 | Backup & Restore | ZIP streaming, archive bounds, metadata validation, PDF mapping/hash checks, additive restore and portable snapshot fallback reviewed. | Backup restore now maps category/tag IDs safely to existing records; staged restore remains transactional and cleanup-safe; regression coverage is added for adjacent integrity/search paths. | Large archives are bounded by configured archive limits; portable metadata snapshots are materialized as JSON tables in memory. Large-library, interruption, cross-device and provider recovery drills remain. |
 
-## Added/updated automated tests
+## Consolidated code changes in this branch
 
-The current branch contains **10 Dart test files and 46 unit/widget test cases**:
+- `lib/features/documents/data/document_repository.dart`: transactional duplicate rechecks for import, active folder/category revalidation, strict storage migration error handling, safer metadata parsing and bounded PDF names.
+- `lib/features/folders/data/folder_repository.dart`: iterative deep-tree traversal, iterative ancestor resolution, sibling-name protection and transactional empty-folder recheck.
+- `lib/core/storage/storage_location_service.dart`: explicit native `NOT_FOUND` classification; permission/provider/I/O failures now fail closed.
+- `platform/android/MainActivity.kt`: serial background storage executor, main-thread result dispatch, background share staging, explicit NOT_FOUND and non-empty SAF directory deletion guard.
+- `platform/ios/AppDelegate.swift`: serial background storage queue, main-thread result dispatch, explicit NOT_FOUND and hidden-file-aware non-empty directory deletion guard.
+- `lib/features/categories/data/category_repository.dart`: transactional category/tag history.
+- `lib/features/tools/document_tools_service.dart`: literal OCR search, current-byte SHA duplicate grouping and safe category/tag ID remapping during backup restore.
+- `lib/features/reminders/data/reminder_notifications.dart` and `reminder_repository.dart`: independent snooze scheduling and recurrence-anchor preservation.
+- `.github/workflows/flutter-ci.yml`: Flutter SDK pinned to 3.47.9 on Android and iOS; both jobs enforce the committed `pubspec.lock`.
+- Regression tests added for category/tag history, literal OCR wildcard search, current-byte duplicate grouping, explicit storage NOT_FOUND and independent snooze IDs.
 
-- `test/backup_validation_test.dart` — archive integrity, path mapping, missing PDFs and duplicate IDs.
-- `test/category_validation_test.dart` — category/tag name trimming and length boundaries.
-- `test/document_tools_security_test.dart` — safe restore tokens and literal OCR LIKE escaping.
-- `test/folder_repository_validation_test.dart` — traversal, separators and invalid folder names.
-- `test/history_model_test.dart` — malformed optional history metadata.
-- `test/portable_snapshot_manifest_test.dart` — manifest schema, hashes and safe paths.
-- `test/reminder_notifications_test.dart` and `test/reminder_repository_test.dart` — stable IDs, recurrence and reminder mapping.
-- `test/storage_model_test.dart` — storage status, URI and malformed document metadata.
-- `test/widget_test.dart` — app smoke/widget coverage.
+## Database and migration review
 
-## Audit completion gate
+- Current schema remains version 3; this audit branch does not introduce a schema migration.
+- Existing migration tests cover real SQLite v1 → v2 → v3, v2 → v3, downgrade refusal and rollback after a failed v1 → v2 migration.
+- Foreign-key enforcement and migration transactions are retained.
+- Backup and portable snapshot restore both validate their incoming metadata before permanent writes; backup category/tag mapping was corrected in this branch.
 
-**Current-head hosted CI passed:** Android Analyze, 46 unit/widget tests, debug APK build and artifact upload; iOS Analyze, 46 unit/widget tests and unsigned build. This closes the automated code-level verification gate for the ten feature audit. A green hosted CI run does not replace real Android SAF, iOS Files/bookmark, provider, notification or recovery device checks.
+## CI and release gates
+
+1. Open exactly one PR from this branch to `main`.
+2. Run the complete Android job: Flutter analyze, all tests, strict dependency verification, debug APK build and artifact upload.
+3. Run the complete iOS job: Flutter analyze, all tests and unsigned iOS build.
+4. Fix every CI failure on this same PR; do not create a second PR for this audit.
+5. Merge only after both jobs are green.
+6. After merge, verify Post-Merge CI and then perform the physical Android/iPhone/provider checks listed above.
+
+A green hosted CI result proves the code compiled and automated tests passed on the runners. It does **not** prove real-device permission persistence, Files bookmarks, notification delivery, cloud provider behaviour, scanner camera permissions or recovery after a device/app interruption.
