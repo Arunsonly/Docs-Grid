@@ -248,7 +248,6 @@ class _FoldersScreenState extends State<FoldersScreen> {
       showDragHandle: true,
       builder: (sheetContext) => StatefulBuilder(
         builder: (sheetContext, refresh) {
-          final expanded = <String>{};
           Widget buildNode(Folder folder, int depth) {
             final children = byParent[folder.id] ?? const <Folder>[];
             final isExpanded = expanded.contains(folder.id);
