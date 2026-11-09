@@ -883,7 +883,6 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   );
 
   Widget _documentTile(DocumentRecord document) {
-    final file = File(document.storagePath);
     final selected = _selectedIds.contains(document.id);
     return Card(
       elevation: 0,
