@@ -120,15 +120,14 @@ class PortableSnapshotManifest {
       byId[id] = row;
     }
 
-    final siblingNames = <String>{};
+    final siblingNames = <(String?, String)>{};
     for (final row in byId.values) {
       final parentId = row['parent_id'] as String?;
       if (parentId != null && !byId.containsKey(parentId)) {
         throw const FormatException('Snapshot references a missing parent folder.');
       }
       final name = (row['name'] as String).toLowerCase();
-      final siblingKey = '${parentId ?? '<root>'}\\u0000$name';
-      if (!siblingNames.add(siblingKey)) {
+      if (!siblingNames.add((parentId, name))) {
         throw const FormatException('Snapshot contains duplicate sibling folder names.');
       }
     }
