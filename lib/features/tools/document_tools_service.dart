@@ -482,20 +482,27 @@ class DocumentToolsService {
     final restoredPaths = <String, String>{};
     final folderRows = rowsByTable['folders']!;
     final folderPaths = <String, String>{};
-    final visitingFolderIds = <String>{};
+    final folderRowsById = {
+      for (final row in folderRows) row['id'] as String: row,
+    };
     String folderPath(String id) {
       final known = folderPaths[id];
       if (known != null) return known;
-      if (!visitingFolderIds.add(id)) {
-        throw StateError('Backup folder hierarchy contains a cycle.');
+      final chain = <String>[];
+      String? currentId = id;
+      while (currentId != null && !folderPaths.containsKey(currentId)) {
+        final row = folderRowsById[currentId];
+        if (row == null) throw StateError('Backup folder hierarchy refers to a missing parent.');
+        chain.add(currentId);
+        currentId = row['parent_id'] as String?;
       }
-      final row = folderRows.firstWhere((r) => r['id'] == id);
-      final parent = row['parent_id'] as String?;
-      final base = parent == null ? restoreRoot.path : folderPath(parent);
-      final path = p.join(base, 'folder_${safeRestorePathToken(id)}');
-      visitingFolderIds.remove(id);
-      folderPaths[id] = path;
-      return path;
+      for (final folderId in chain.reversed) {
+        final row = folderRowsById[folderId]!;
+        final parentId = row['parent_id'] as String?;
+        final base = parentId == null ? restoreRoot.path : folderPaths[parentId]!;
+        folderPaths[folderId] = p.join(base, 'folder_${safeRestorePathToken(folderId)}');
+      }
+      return folderPaths[id]!;
     }
 
     var databaseCommitted = false;
