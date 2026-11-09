@@ -57,6 +57,13 @@ class StorageLocationService {
       'libraryUri': value['libraryUri'] as String,
       if (value['documentsUri'] is String)
         'documentsUri': value['documentsUri'] as String,
+      if (value['rootUri'] is String) 'rootUri': value['rootUri'] as String,
+      if (value['sharedUri'] is String) 'sharedUri': value['sharedUri'] as String,
+      if (value['backupsUri'] is String) 'backupsUri': value['backupsUri'] as String,
+      if (value['tempUri'] is String) 'tempUri': value['tempUri'] as String,
+      if (value['logsUri'] is String) 'logsUri': value['logsUri'] as String,
+      if (value['exportsUri'] is String) 'exportsUri': value['exportsUri'] as String,
+      if (value['thumbnailsUri'] is String) 'thumbnailsUri': value['thumbnailsUri'] as String,
     };
   }
 
