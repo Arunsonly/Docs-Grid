@@ -150,6 +150,81 @@ class PortableSnapshotManifest {
     return Map.unmodifiable(byId);
   }
 
+
+  /// Checks cross-table references before restore touches the selected library
+  /// or begins a database transaction.
+  static void validateRelations(
+    Map<String, List<Map<String, Object?>>> tables,
+  ) {
+    Set<String> ids(String table) {
+      final result = <String>{};
+      for (final row in tables[table] ?? const []) {
+        final value = row['id'];
+        if (value is! String || value.trim().isEmpty || !result.add(value)) {
+          throw FormatException('Snapshot contains an invalid or duplicate $table ID.');
+        }
+      }
+      return result;
+    }
+
+    final folderIds = ids('folders');
+    final documentIds = ids('documents');
+    final categoryIds = ids('categories');
+    final tagIds = ids('tags');
+    ids('reminders');
+    ids('history');
+
+    for (final row in tables['documents'] ?? const []) {
+      final folderId = row['folder_id'];
+      if (folderId != null && (folderId is! String || !folderIds.contains(folderId))) {
+        throw const FormatException('Snapshot document references a missing folder.');
+      }
+      final categoryId = row['category_id'];
+      if (categoryId != null && (categoryId is! String || !categoryIds.contains(categoryId))) {
+        throw const FormatException('Snapshot document references a missing category.');
+      }
+    }
+
+    final documentTagPairs = <String>{};
+    for (final row in tables['document_tags'] ?? const []) {
+      final documentId = row['document_id'];
+      final tagId = row['tag_id'];
+      if (documentId is! String || !documentIds.contains(documentId) ||
+          tagId is! String || !tagIds.contains(tagId)) {
+        throw const FormatException('Snapshot document tag references a missing record.');
+      }
+      if (!documentTagPairs.add('$documentId\\u0000$tagId')) {
+        throw const FormatException('Snapshot contains a duplicate document tag relation.');
+      }
+    }
+
+    for (final table in ['reminders', 'history', 'document_text_index']) {
+      for (final row in tables[table] ?? const []) {
+        final documentId = row['document_id'];
+        if (documentId != null &&
+            (documentId is! String || !documentIds.contains(documentId))) {
+          throw FormatException('Snapshot $table record references a missing document.');
+        }
+      }
+    }
+
+    final indexedDocuments = <String>{};
+    for (final row in tables['document_text_index'] ?? const []) {
+      final documentId = row['document_id'];
+      if (documentId is! String || !indexedDocuments.add(documentId)) {
+        throw const FormatException('Snapshot contains duplicate document text indexes.');
+      }
+    }
+
+    final settingKeys = <String>{};
+    for (final row in tables['settings'] ?? const []) {
+      final key = row['key'];
+      if (key is! String || key.trim().isEmpty || !settingKeys.add(key)) {
+        throw const FormatException('Snapshot contains an invalid or duplicate setting key.');
+      }
+    }
+  }
+
 }
 
 class PortableSnapshotFile {
