@@ -316,8 +316,14 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
       await Navigator.of(context).push(MaterialPageRoute(builder: (_) => const RemindersScreen()));
       return;
     }
+    final pageTitle = switch (action) {
+      'camera' => 'Scan document',
+      'gallery' => 'Create PDF from gallery',
+      'tools' => 'OCR Search',
+      _ => 'Document tools',
+    };
     await Navigator.of(context).push(MaterialPageRoute(builder: (_) => Scaffold(
-      appBar: AppBar(title: const Text('Document tools')),
+      appBar: AppBar(title: Text(pageTitle)),
       body: DocumentToolsScreen(quickAction: action),
     )));
   }
