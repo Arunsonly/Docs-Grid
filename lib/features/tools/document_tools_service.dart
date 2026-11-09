@@ -64,14 +64,7 @@ class DocumentToolsService {
   /// Finds exact file duplicates and OCR-text duplicates locally.
   Future<List<Map<String, Object?>>> findDuplicateGroups() async {
     final db = await _database.database;
-    final exact = await db.rawQuery('''
-      SELECT sha256 AS group_key, 'SHA-256' AS duplicate_type,
-             COUNT(*) AS copies, GROUP_CONCAT(id) AS document_ids,
-             GROUP_CONCAT(name, ' | ') AS names
-      FROM documents
-      WHERE deleted_at IS NULL AND sha256 IS NOT NULL AND sha256 <> ''
-      GROUP BY sha256 HAVING COUNT(*) > 1
-    ''');
+    final exact = await _verifiedExactDuplicateGroups();
     final indexed = await db.rawQuery('''
       SELECT d.id, d.name, i.extracted_text
       FROM documents d JOIN document_text_index i ON i.document_id = d.id
@@ -100,17 +93,51 @@ class DocumentToolsService {
     return groups;
   }
 
-  Future<List<Map<String, Object?>>> findExactDuplicates() async {
+  Future<List<Map<String, Object?>>> _verifiedExactDuplicateGroups() async {
     final db = await _database.database;
-    return db.rawQuery('''
-      SELECT sha256, COUNT(*) AS copies, GROUP_CONCAT(id) AS document_ids,
-             GROUP_CONCAT(name, ' | ') AS names
-      FROM documents
-      WHERE deleted_at IS NULL AND sha256 IS NOT NULL AND sha256 <> ''
-      GROUP BY sha256 HAVING COUNT(*) > 1
-      ORDER BY copies DESC
-    ''');
+    final documents = await db.query(
+      'documents',
+      columns: ['id', 'name', 'storage_uri', 'sha256'],
+      where: 'deleted_at IS NULL',
+      orderBy: 'created_at ASC',
+    );
+    final groups = <String, List<Map<String, Object?>>>{};
+    for (final document in documents) {
+      final uri = document['storage_uri'] as String?;
+      if (uri == null || uri.isEmpty) continue;
+      try {
+        final digest = uri.startsWith('content://') || uri.startsWith('file://')
+            ? await StorageLocationService.instance.sha256Pdf(uri)
+            : (await sha256.bind(File(uri).openRead()).first).toString();
+        if (digest != document['sha256']) {
+          await db.update(
+            'documents',
+            {'sha256': digest, 'updated_at': DateTime.now().toUtc().toIso8601String()},
+            where: 'id = ? AND deleted_at IS NULL',
+            whereArgs: [document['id']],
+          );
+        }
+        groups.putIfAbsent(digest, () => []).add(document);
+      } catch (_) {
+        // Missing or inaccessible PDFs are not treated as verified duplicates.
+      }
+    }
+    return groups.entries
+        .where((entry) => entry.value.length > 1)
+        .map((entry) => <String, Object?>{
+          'group_key': entry.key,
+          'duplicate_type': 'SHA-256',
+          'copies': entry.value.length,
+          'document_ids': entry.value.map((row) => row['id']).join(','),
+          'names': entry.value.map((row) => row['name']).join(' | '),
+          'sha256': entry.key,
+        })
+        .toList()
+      ..sort((a, b) => (b['copies'] as int).compareTo(a['copies'] as int));
   }
+
+  Future<List<Map<String, Object?>>> findExactDuplicates() async =>
+      _verifiedExactDuplicateGroups();
 
   Future<void> keepOneDuplicate(String sha, String keepId) async {
     final db = await _database.database;
