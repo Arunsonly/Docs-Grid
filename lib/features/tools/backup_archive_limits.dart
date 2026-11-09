@@ -2,8 +2,10 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
-/// Resource limits for the in-memory ZIP decoder used by portable backups.
-/// The central directory is checked before decompression to reject ZIP bombs.
+/// Resource limits for untrusted portable backup ZIPs.
+/// The ZIP payload is decoded from an InputFileStream and PDF entries are
+/// written to staging files; JSON metadata is materialized only after these
+/// compressed/expanded size limits have been checked.
 class BackupArchiveLimits {
   BackupArchiveLimits._();
 
