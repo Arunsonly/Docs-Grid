@@ -50,6 +50,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
         case 'gallery': _scan(); break;
         case 'backup': _backup(); break;
         case 'restore_portable': _restorePortableSnapshot(autoDetect: true); break;
+        case 'restore_latest_backup': _restoreNewestPortableBackup(); break;
         case 'tools': break;
         case 'duplicates': _showDuplicates(); break;
       }
@@ -223,6 +224,47 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
       }
     } finally {
       if (temporaryCopy && await file.exists()) await file.delete();
+    }
+  });
+
+  Future<void> _restoreNewestPortableBackup() => _run(() async {
+    final candidates = await _tools.listPortableBackupArchives();
+    if (candidates.isEmpty) {
+      throw StateError('No portable DocsGrid backup ZIP was found.');
+    }
+    final selected = candidates.first;
+    if (!mounted) return;
+    final restored = await _tools.restoreNewestPortableBackup(
+      confirm: (count) async {
+        if (!mounted) return false;
+        return await showDialog<bool>(
+              context: context,
+              builder: (context) => AlertDialog(
+                title: const Text('Restore latest verified backup?'),
+                content: Text(
+                  'Newest candidate: ${p.basename(selected.path)}\n'
+                  'The archive will be validated before import. '
+                  'Existing records are preserved; documents are merged without overwriting current files. '
+                  'PDFs: $count.',
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.pop(context, false),
+                    child: const Text('Cancel'),
+                  ),
+                  FilledButton(
+                    onPressed: () => Navigator.pop(context, true),
+                    child: const Text('Restore'),
+                  ),
+                ],
+              ),
+            ) ??
+            false;
+      },
+    );
+    if (restored != null && mounted) {
+      setState(() => _message =
+          'Portable recovery completed: $restored PDF(s) restored from a verified backup.');
     }
   });
 
