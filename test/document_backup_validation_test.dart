@@ -81,6 +81,22 @@ void main() {
     expect(await service.validateBackup(file), 1);
   });
 
+  test('restore confirmation receives the validated count and cancel skips restore', () async {
+    final file = await _makeBackup(temp);
+    int? confirmedCount;
+
+    final restored = await service.restoreBackup(
+      file,
+      confirm: (count) async {
+        confirmedCount = count;
+        return false;
+      },
+    );
+
+    expect(confirmedCount, 1);
+    expect(restored, isNull);
+  });
+
   test('rejects unsafe archive paths before extracting any file', () async {
     final file = await _makeBackup(temp, entry: 'pdfs/../escape.pdf');
     await expectLater(service.validateBackup(file), throwsA(isA<StateError>()));
