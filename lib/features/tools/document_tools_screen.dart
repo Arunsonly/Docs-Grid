@@ -342,7 +342,6 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
     if (candidates.isEmpty) {
       throw StateError('No portable DocsGrid backup ZIP was found.');
     }
-    final selected = candidates.first;
     if (!mounted) return;
     final restored = await _tools.restoreNewestPortableBackup(
       confirm: (count) async {
