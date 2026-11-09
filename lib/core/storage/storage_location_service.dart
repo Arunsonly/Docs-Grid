@@ -251,6 +251,58 @@ class StorageLocationService {
     return pdfs;
   }
 
+
+  /// Lists every directory (including empty folders) and PDF below the
+  /// explicitly granted SAF root. Provider URIs remain opaque handles.
+  Future<List<Map<String, Object?>>> listStorageTreeRecursively(
+    String rootUri, {
+    int maxEntries = 50000,
+    int maxDepth = 64,
+  }) async {
+    final pending = <({String uri, String path, int depth})>[
+      (uri: rootUri, path: '', depth: 0),
+    ];
+    final visited = <String>{};
+    final entries = <Map<String, Object?>>[];
+    var visitedEntries = 0;
+    while (pending.isNotEmpty) {
+      final current = pending.removeLast();
+      if (!visited.add(current.uri)) continue;
+      if (current.depth > maxDepth) {
+        throw StateError('The selected folder is nested too deeply to browse safely.');
+      }
+      final children = await listDirectory(current.uri);
+      for (final child in children) {
+        visitedEntries++;
+        if (visitedEntries > maxEntries) {
+          throw StateError('The selected folder contains more than $maxEntries entries. Choose a smaller folder.');
+        }
+        final name = child['name'] as String;
+        final uri = child['uri'] as String;
+        if (child['isDirectory'] == true) {
+          final path = current.path.isEmpty ? name : '${current.path}/$name';
+          entries.add(<String, Object?>{
+            'name': name, 'uri': uri, 'folderPath': current.path,
+            'path': path, 'isDirectory': true,
+          });
+          pending.add((uri: uri, path: path, depth: current.depth + 1));
+        } else if (name.toLowerCase().endsWith('.pdf')) {
+          entries.add(<String, Object?>{
+            'name': name, 'uri': uri, 'folderPath': current.path,
+            'isDirectory': false,
+          });
+        }
+      }
+    }
+    entries.sort((a, b) {
+      final path = (a['folderPath'] as String).compareTo(b['folderPath'] as String);
+      if (path != 0) return path;
+      if (a['isDirectory'] != b['isDirectory']) return a['isDirectory'] == true ? -1 : 1;
+      return (a['name'] as String).toLowerCase().compareTo((b['name'] as String).toLowerCase());
+    });
+    return entries;
+  }
+
   /// Enumerates only immediate children. Returned URIs remain opaque platform
   /// handles; callers must never convert them into filesystem paths.
   Future<List<Map<String, Object?>>> listDirectory(String uri) async {

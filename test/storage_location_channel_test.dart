@@ -125,6 +125,33 @@ void main() {
     );
   });
 
+
+  test('recursive storage browser includes empty folders and nested PDFs', () async {
+    final tree = <String, List<Map<String, Object?>>{
+      'content://tree/root': [
+        {'name': 'Empty', 'uri': 'content://tree/empty', 'isDirectory': true},
+        {'name': 'Insurance', 'uri': 'content://tree/insurance', 'isDirectory': true},
+      ],
+      'content://tree/empty': [],
+      'content://tree/insurance': [
+        {'name': 'Policy.pdf', 'uri': 'content://doc/policy', 'isDirectory': false},
+        {'name': 'Archive', 'uri': 'content://tree/archive', 'isDirectory': true},
+      ],
+      'content://tree/archive': [],
+    };
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      expect(call.method, 'listDirectory');
+      return tree[call.arguments['uri']]!;
+    });
+    final entries = await StorageLocationService.instance
+        .listStorageTreeRecursively('content://tree/root');
+    expect(entries.where((entry) => entry['isDirectory'] == true)
+        .map((entry) => entry['path']).toSet(),
+        {'Empty', 'Insurance', 'Insurance/Archive'});
+    expect(entries.where((entry) => entry['isDirectory'] == false).single['uri'],
+        'content://doc/policy');
+  });
+
   test('listDirectory rejects a non-map native entry', () async {
     messenger.setMockMethodCallHandler(channel, (_) async => ['not-an-entry']);
 
