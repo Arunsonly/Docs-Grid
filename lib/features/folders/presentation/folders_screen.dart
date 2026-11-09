@@ -228,9 +228,8 @@ class _FoldersScreenState extends State<FoldersScreen> {
     // repository's import transaction through this one-file review result.
     return ImportDecision(
       name: result.name,
-      categoryId: destinationId == _currentFolderId
-          ? result.categoryId
-          : result.categoryId,
+      categoryId: result.categoryId,
+      targetFolderId: destinationId,
     );
   }
 
@@ -242,6 +241,7 @@ class _FoldersScreenState extends State<FoldersScreen> {
     for (final folder in folders) {
       byParent.putIfAbsent(folder.parentId, () => <Folder>[]).add(folder);
     }
+    final expanded = <String>{};
     final selectedId = await showModalBottomSheet<String>(
       context: context,
       isScrollControlled: true,
