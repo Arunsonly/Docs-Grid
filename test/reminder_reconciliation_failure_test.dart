@@ -12,8 +12,39 @@ class _ReminderRowsDatabase implements Database {
     if (invocation.memberName == #query) {
       return Future<List<Map<String, Object?>>>.value(rows);
     }
+    if (invocation.memberName == #insert) {
+      final values = Map<String, Object?>.from(
+        invocation.positionalArguments[1] as Map,
+      );
+      rows.add(values);
+      return Future<int>.value(1);
+    }
     return super.noSuchMethod(invocation);
   }
+  test('create keeps the committed reminder when OS scheduling throws', () async {
+    final db = _ReminderRowsDatabase([]);
+    final gateway = _FailingNotificationGateway();
+    final repository = ReminderRepository(
+      database: AppDatabase.forTesting(() async => db),
+      notifications: gateway,
+    );
+
+    await expectLater(
+      repository.create(
+        title: 'Renew policy',
+        note: 'Call insurer',
+        remindAt: DateTime.now().add(const Duration(days: 3)),
+      ),
+      throwsStateError,
+    );
+
+    expect(db.rows, hasLength(1));
+    expect(db.rows.single['title'], 'Renew policy');
+    expect(db.rows.single['status'], 'scheduled');
+    expect(db.rows.single['enabled'], 1);
+    expect(gateway.scheduleCalls, 1);
+  });
+
 }
 
 class _FailingNotificationGateway implements ReminderNotificationGateway {
