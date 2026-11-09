@@ -118,7 +118,8 @@ class FolderRepository {
           parentUri: parentUri,
           name: folderName,
         );
-      } catch (_) {
+      } catch (error) {
+        if (!StorageLocationService.isNotFoundError(error)) rethrow;
         childUri = await StorageLocationService.instance.createDirectory(
           parentUri: parentUri,
           name: folderName,
@@ -166,10 +167,13 @@ class FolderRepository {
           ? (selectedRoot == null ? null : selectedRoot['uri'])
           : await ensurePhysicalFolder(ancestorId);
       if (ancestorUri == null) return null;
-      final createdUri = await storage.createDirectory(
-        parentUri: ancestorUri,
-        name: folderName,
-      );
+      String createdUri;
+      try {
+        createdUri = await storage.findChildUri(parentUri: ancestorUri, name: folderName);
+      } catch (error) {
+        if (!StorageLocationService.isNotFoundError(error)) rethrow;
+        createdUri = await storage.createDirectory(parentUri: ancestorUri, name: folderName);
+      }
       await db.update(
         'folders',
         {
@@ -236,7 +240,7 @@ class FolderRepository {
     final db = await _database.database;
     final rows = await db.query(
       'folders',
-      columns: ['name', 'storage_uri_or_relative_path'],
+      columns: ['name', 'parent_id', 'storage_uri_or_relative_path'],
       where: 'id = ? AND deleted_at IS NULL',
       whereArgs: [id],
       limit: 1,
@@ -388,6 +392,16 @@ class FolderRepository {
       }
 
       await db.transaction((txn) async {
+        final siblings = await txn.query(
+          'folders',
+          columns: ['id'],
+          where: 'parent_id IS ? AND name = ? COLLATE NOCASE AND deleted_at IS NULL AND id != ?',
+          whereArgs: [rows.first['parent_id'], cleaned, id],
+          limit: 1,
+        );
+        if (siblings.isNotEmpty) {
+          throw StateError('A folder with this name already exists here.');
+        }
         final now = DateTime.now().toUtc().toIso8601String();
         final count = await txn.update(
           'folders',
@@ -477,6 +491,20 @@ class FolderRepository {
     }
     final now = DateTime.now().toUtc().toIso8601String();
     await db.transaction((txn) async {
+      final current = await txn.query(
+        'folders', columns: ['id'],
+        where: 'id = ? AND deleted_at IS NULL', whereArgs: [id], limit: 1,
+      );
+      if (current.isEmpty) throw StateError('Folder no longer exists.');
+      final childFoldersNow = Sqflite.firstIntValue(await txn.rawQuery(
+        'SELECT COUNT(*) FROM folders WHERE parent_id = ? AND deleted_at IS NULL', [id],
+      )) ?? 0;
+      final documentsNow = Sqflite.firstIntValue(await txn.rawQuery(
+        'SELECT COUNT(*) FROM documents WHERE folder_id = ?', [id],
+      )) ?? 0;
+      if (childFoldersNow > 0 || documentsNow > 0) {
+        throw StateError('Folder is no longer empty. Move its contents before deleting it.');
+      }
       final count = await txn.update(
         'folders',
         {'deleted_at': now, 'updated_at': now},
