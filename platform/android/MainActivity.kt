@@ -199,7 +199,26 @@ class MainActivity : FlutterActivity() {
                             }
                             "deletePdf" -> {
                                 val uri = Uri.parse(call.argument<String>("uri")!!)
-                                result.success(DocumentsContract.deleteDocument(contentResolver, uri))
+                                val documentUri = resolveParentUri(uri)
+                            val metadata = contentResolver.query(
+                                documentUri, arrayOf(DocumentsContract.Document.COLUMN_MIME_TYPE),
+                                null, null, null
+                            ) ?: throw IllegalStateException("Could not inspect the selected storage item.")
+                            val mime = metadata.use { if (it.moveToFirst()) it.getString(0) else null }
+                            if (mime == DocumentsContract.Document.MIME_TYPE_DIR) {
+                                val documentId = DocumentsContract.getDocumentId(documentUri)
+                                val children = DocumentsContract.buildChildDocumentsUriUsingTree(uri, documentId)
+                                val cursor = contentResolver.query(
+                                    children, arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID),
+                                    null, null, null
+                                ) ?: throw IllegalStateException("Could not verify whether the folder is empty.")
+                                cursor.use {
+                                    if (it.moveToFirst()) {
+                                        throw IllegalStateException("Folder contains files or subfolders and cannot be deleted.")
+                                    }
+                                }
+                            }
+                            result.success(DocumentsContract.deleteDocument(contentResolver, uri))
                             }
                             "openPdf" -> {
                                 val uri = Uri.parse(call.argument<String>("uri")!!)
