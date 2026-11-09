@@ -126,8 +126,29 @@ void main() {
     final p50 = samples[samples.length ~/ 2];
     final p95 = samples[(samples.length * .95).floor().clamp(0, samples.length - 1)];
     expect(p95, lessThan(5000000), reason: '10k document repository list p95 exceeded 5 seconds');
+    // Measure the bounded page path separately from the legacy full-list
+    // API so CI reports the cost users pay when opening the first screen.
+    final pageSamples = <int>[];
+    for (var i = 0; i < 20; i++) {
+      final watch = Stopwatch()..start();
+      final page = await repository.listPage(pageSize: 40);
+      watch.stop();
+      expect(page.items, hasLength(40));
+      expect(page.hasMore, isTrue);
+      pageSamples.add(watch.elapsedMicroseconds);
+    }
+    pageSamples.sort();
+    final pageP50 = pageSamples[pageSamples.length ~/ 2];
+    final pageP95 = pageSamples[(pageSamples.length * .95).floor().clamp(0, pageSamples.length - 1)];
+    final summaryWatch = Stopwatch()..start();
+    final summary = await repository.dashboardSummary();
+    summaryWatch.stop();
+    expect(summary.documentCount, count);
+    expect(summary.favoriteCount, count ~/ 10);
     // ignore: avoid_print
     print('DOCSGRID_BENCHMARK list_docs=$count iterations=${samples.length} '
-        'p50_us=$p50 p95_us=$p95');
+        'full_list_p50_us=$p50 full_list_p95_us=$p95 '
+        'page_size=40 page_p50_us=$pageP50 page_p95_us=$pageP95 '
+        'summary_us=${summaryWatch.elapsedMicroseconds}');
   });
 }
