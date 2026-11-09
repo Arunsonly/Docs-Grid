@@ -17,6 +17,7 @@ This PR carries forward every unchecked PR 18 acceptance item and the seven comp
 - [x] Provider-backed pathless PDF imports, relinks and backup ZIP staging now use chunked byte streams instead of loading the full payload with readAsBytes; automated 24 MiB stream integrity and interrupted-stream cleanup tests added.
 - [x] Relink and backup restore now use the single-file picker API, avoiding `.single` failures when the v13 picker defaults to multi-select; backup restore validates once and reuses the staged archive after confirmation instead of decoding it twice.
 - [x] Interrupted-stream regression fixture explicitly closes its stream after emitting the simulated provider error.
+- [x] Documented current portable ZIP restore safety ceilings (128 MiB compressed, 128 MiB per entry, 256 MiB expanded total; ZIP64 unsupported) so the large-PDF test matrix does not imply unsupported backup sizes.
 - [ ] End-to-end large real-PDF imports through Android SAF/cloud providers and iOS Files/iCloud Drive, including peak-memory profiling and provider interruption.
 - [ ] Physical Android/iOS validation and real backup restore; see docs/DEVICE_VALIDATION_RUNBOOK.md.
 
