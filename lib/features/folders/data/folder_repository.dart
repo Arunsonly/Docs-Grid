@@ -172,8 +172,11 @@ class FolderRepository {
       throw StateError('A folder with this name already exists here.');
     }
     final selectedRoot = await storage.selectedFolder();
+    final String? selectedRootUri = selectedRoot == null
+        ? null
+        : selectedRoot['uri'];
     final String? parentStorageUri = parentId == null
-        ? selectedRoot?['uri'] as String?
+        ? selectedRootUri
         : await ensurePhysicalStorageUri(parentId);
     String? physicalUri;
     if (parentStorageUri != null) {
