@@ -296,63 +296,6 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     }
   }
 
-  Future<void> _importStoragePdf({
-    required BuildContext dialogContext,
-    required String fileUri,
-    required String fileName,
-    required String targetFolderUri,
-  }) async {
-    Navigator.of(dialogContext).pop();
-    File? stagedFile;
-    try {
-      final temp = await getTemporaryDirectory();
-      stagedFile = File(p.join(
-        temp.path,
-        'docsgrid_storage_import_${DateTime.now().microsecondsSinceEpoch}.pdf',
-      ));
-      await StorageLocationService.instance.copyPdfToPath(
-        sourceUri: fileUri,
-        destinationPath: stagedFile.path,
-      );
-      final summary = await _repository.importScannedPdf(
-        stagedFile,
-        displayName: fileName,
-        targetFolderUri: targetFolderUri,
-        sourceType: 'storage_browser',
-      );
-      if (summary.added > 0) {
-        final added = await _repository.listPage(query: fileName, pageSize: 10);
-        if (mounted) {
-          setState(() {
-            for (final item in added.items) {
-              if (!_documents.any((existing) => existing.id == item.id)) {
-                _documents.insert(0, item);
-              }
-            }
-          });
-        }
-        await _refreshDashboardSummary();
-      }
-      if (summary.added > 0) {
-        _message('Imported $fileName successfully.');
-      } else if (summary.duplicates > 0) {
-        _message('$fileName is already in DocsGrid. No duplicate was imported.');
-      } else {
-        _message('Could not import $fileName.');
-      }
-    } catch (error) {
-      _message('Could not import $fileName: $error');
-    } finally {
-      if (stagedFile != null) {
-        try {
-          if (await stagedFile.exists()) await stagedFile.delete();
-        } catch (_) {
-          // A temporary copy is never allowed to affect the source document.
-        }
-      }
-    }
-  }
-
 
   void _toggleSelected(DocumentRecord document) {
     setState(() {
