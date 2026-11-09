@@ -237,6 +237,9 @@ jobs:
           dart run flutter_launcher_icons
       - name: Analyze
         run: flutter analyze
+      - name: Install system SQLite for FFI tests
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev
       - name: Widget and unit tests
         run: flutter test
       - name: Build debug APK
