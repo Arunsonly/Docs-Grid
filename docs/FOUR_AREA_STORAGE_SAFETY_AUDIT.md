@@ -47,3 +47,7 @@ Remaining verification: adversarial archive corpus, static analysis on native ta
 The PR's Android and iOS hosted CI jobs must both pass (Flutter analyze, full Flutter tests, and platform builds) before merge.
 
 Hosted CI is not a substitute for physical-device testing. Do not claim complete release sign-off until the Android SAF and iOS Files recovery scenarios above have been exercised on real devices.
+
+## CI failure analysis and corrective action
+
+The first PR CI attempt passed Android analyze, all 114 Flutter tests, and the Android debug APK build. The iOS analyze and all 114 Flutter tests also passed; the iOS unsigned build exposed three Swift compile errors caused by missing explicit `return` statements after adding pre-validation statements to URL-returning methods. The methods now explicitly return the security-scoped operation result. The iOS PDF copy entry point also now validates its requested leaf name. The SQLite `no such column: name` diagnostic in the logs is emitted by the intentional migration rollback test's deliberately conflicting legacy `tags` table; the test passes and confirms transaction rollback, so it is not an outstanding failure. The remaining Node/Kotlin-plugin/SwiftPM notices are deprecation or compatibility warnings, not job failures.
