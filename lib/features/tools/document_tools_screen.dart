@@ -502,6 +502,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     // Invalidate pending search completions before the route is deactivated.
     _searchGeneration++;
     _search.dispose();
