@@ -734,30 +734,66 @@ class _FoldersScreenState extends State<FoldersScreen> {
                     child: ListView(
                       padding: const EdgeInsets.fromLTRB(12, 8, 12, 24),
                       children: [
-                        if (folders.isNotEmpty) ...[
+                        if (folders.isNotEmpty && documents.isEmpty) ...[
                           Padding(
                             padding: const EdgeInsets.fromLTRB(4, 8, 4, 4),
                             child: Text('FOLDERS', style: Theme.of(context).textTheme.labelLarge),
                           ),
-                          for (final folder in folders)
-                            Card(
-                              elevation: 0,
-                              child: ListTile(
-                                leading: const CircleAvatar(child: Icon(Icons.folder_outlined)),
-                                title: Text(folder.name, maxLines: 1, overflow: TextOverflow.ellipsis),
-                                subtitle: const Text('Folder'),
-                                onTap: () => _openFolder(folder),
-                                trailing: PopupMenuButton<String>(
-                                  tooltip: 'Folder actions',
-                                  onSelected: (value) {
-                                    if (value == 'rename') _renameFolder(folder);
-                                    if (value == 'delete') _deleteFolder(folder);
-                                  },
-                                  itemBuilder: (_) => const [
-                                    PopupMenuItem(value: 'rename', child: Text('Rename')),
-                                    PopupMenuItem(value: 'delete', child: Text('Delete')),
-                                  ],
-                                ),
+                          if (documents.isEmpty)
+                            ReorderableListView.builder(
+                              shrinkWrap: true,
+                              physics: const NeverScrollableScrollPhysics(),
+                              buildDefaultDragHandles: false,
+                              itemCount: folders.length,
+                              onReorder: (oldIndex, newIndex) async {
+                                if (newIndex > oldIndex) newIndex -= 1;
+                                final reordered = List<Folder>.of(folders);
+                                final moved = reordered.removeAt(oldIndex);
+                                reordered.insert(newIndex, moved);
+                                try {
+                                  await _repository.reorderChildren(
+                                    _currentFolderId,
+                                    reordered.map((folder) => folder.id).toList(),
+                                  );
+                                  if (mounted) await _refresh();
+                                } catch (error) {
+                                  if (mounted) _message('Could not reorder folders: $error');
+                                }
+                              },
+                              itemBuilder: (context, index) {
+                                final folder = folders[index];
+                                return Card(
+                                  key: ValueKey('folder-${folder.id}'),
+                                  elevation: 0,
+                                  child: ListTile(
+                                    leading: ReorderableDragStartListener(
+                                      index: index,
+                                      child: const CircleAvatar(child: Icon(Icons.folder_outlined)),
+                                    ),
+                                    title: Text(folder.name, maxLines: 1, overflow: TextOverflow.ellipsis),
+                                    subtitle: const Text('Folder'),
+                                    onTap: () => _openFolder(folder),
+                                    trailing: PopupMenuButton<String>(
+                                      tooltip: 'Folder actions · Hold folder icon to reorder',
+                                      onSelected: (value) {
+                                        if (value == 'rename') _renameFolder(folder);
+                                        if (value == 'delete') _deleteFolder(folder);
+                                      },
+                                      itemBuilder: (_) => const [
+                                        PopupMenuItem(value: 'rename', child: Text('Rename')),
+                                        PopupMenuItem(value: 'delete', child: Text('Delete')),
+                                      ],
+                                    ),
+                                  ),
+                                );
+                              },
+                            )
+                          else
+                            Padding(
+                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
+                              child: Text(
+                                'Subfolders are available from the folder menu above.',
+                                style: Theme.of(context).textTheme.bodySmall,
                               ),
                             ),
                         ],
