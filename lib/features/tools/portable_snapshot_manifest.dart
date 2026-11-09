@@ -74,9 +74,13 @@ class PortableSnapshotManifest {
         recordCount: count,
       ));
     }
-    for (final table in tables.keys) {
-      if (!seen.contains('$table.json')) {
-        throw FormatException('Snapshot is missing metadata for $table.');
+    for (final entry in tables.entries) {
+      if (!seen.contains('${entry.key}.json')) {
+        throw FormatException('Snapshot is missing metadata for ${entry.key}.');
+      }
+      final file = files.firstWhere((item) => item.path == '${entry.key}.json');
+      if (file.recordCount != entry.value) {
+        throw FormatException('Snapshot table count does not match ${entry.key}.json.');
       }
     }
     return PortableSnapshotManifest._(
