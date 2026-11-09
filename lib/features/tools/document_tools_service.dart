@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:isolate';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 
@@ -25,6 +26,33 @@ import 'backup_folder_graph_validator.dart';
 import 'document_crop_screen.dart';
 import 'portable_snapshot_manifest.dart';
 import 'portable_snapshot_rows_validator.dart';
+
+
+/// Pure, isolate-safe OCR grouping. Input contains only SQLite scalar values;
+/// this function never touches plugins, files, widgets, or database handles.
+List<Map<String, Object?>> _groupOcrDuplicateRows(
+  List<Map<String, Object?>> rows,
+) {
+  final groups = <String, List<Map<String, Object?>>>{};
+  for (final row in rows) {
+    final normalized = DocumentToolsService.normalizeDuplicateText(
+      row['extracted_text']?.toString() ?? '',
+    );
+    if (normalized.length < 80) continue;
+    final key = sha256.convert(utf8.encode(normalized)).toString();
+    groups.putIfAbsent(key, () => []).add(row);
+  }
+  return groups.entries
+      .where((entry) => entry.value.length > 1)
+      .map((entry) => <String, Object?>{
+            'group_key': entry.key,
+            'duplicate_type': 'OCR text',
+            'copies': entry.value.length,
+            'document_ids': entry.value.map((row) => row['id']).join(','),
+            'names': entry.value.map((row) => row['name']).join(' | '),
+          })
+      .toList();
+}
 
 /// Local-only utilities for indexing, scanning, sharing and portable backups.
 /// This service never uploads document contents to a remote server.
@@ -70,24 +98,10 @@ class DocumentToolsService {
       FROM documents d JOIN document_text_index i ON i.document_id = d.id
       WHERE d.deleted_at IS NULL AND i.extracted_text IS NOT NULL
     ''');
-    final textGroups = <String, List<Map<String, Object?>>>{};
-    for (final row in indexed) {
-      final normalized = normalizeDuplicateText(row['extracted_text']?.toString() ?? '');
-      if (normalized.length < 80) continue;
-      final key = sha256.convert(utf8.encode(normalized)).toString();
-      textGroups.putIfAbsent(key, () => []).add(row);
-    }
-    final ocr = <Map<String, Object?>>[];
-    for (final entry in textGroups.entries) {
-      if (entry.value.length < 2) continue;
-      ocr.add({
-        'group_key': entry.key,
-        'duplicate_type': 'OCR text',
-        'copies': entry.value.length,
-        'document_ids': entry.value.map((row) => row['id']).join(','),
-        'names': entry.value.map((row) => row['name']).join(' | '),
-      });
-    }
+    // OCR text normalization and digest grouping are CPU-bound pure Dart
+    // work. Run them off the UI isolate; database and platform file access
+    // remain on the main isolate and are completed before this hand-off.
+    final ocr = await Isolate.run(() => _groupOcrDuplicateRows(indexed));
     final groups = <Map<String, Object?>>[...exact, ...ocr];
     groups.sort((a, b) => (b['copies'] as int).compareTo(a['copies'] as int));
     return groups;
