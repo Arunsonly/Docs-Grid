@@ -702,14 +702,19 @@ class MainActivity : FlutterActivity() {
 
     private fun digest(uri: Uri): ByteArray {
         val md = MessageDigest.getInstance("SHA-256")
-        contentResolver.openInputStream(uri)?.use { input ->
+        val inputStream = if (uri.scheme == "file") {
+            fileForUri(uri).inputStream()
+        } else {
+            contentResolver.openInputStream(uri)
+        } ?: throw IllegalStateException("Could not read PDF for verification.")
+        inputStream.use { input ->
             val buffer = ByteArray(64 * 1024)
             while (true) {
                 val count = input.read(buffer)
                 if (count < 0) break
                 md.update(buffer, 0, count)
             }
-        } ?: throw IllegalStateException("Could not read PDF for verification.")
+        }
         return md.digest()
     }
 
