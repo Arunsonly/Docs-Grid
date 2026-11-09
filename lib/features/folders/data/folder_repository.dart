@@ -154,6 +154,23 @@ class FolderRepository {
     final cleaned = validateFolderName(name);
     final db = await _database.database;
     final storage = StorageLocationService.instance;
+    if (parentId != null) {
+      final parent = await db.query(
+        'folders', columns: ['id'],
+        where: 'id = ? AND deleted_at IS NULL', whereArgs: [parentId], limit: 1,
+      );
+      if (parent.isEmpty) throw StateError('Parent folder no longer exists.');
+    }
+    final existingBeforeCreate = await db.query(
+      'folders',
+      columns: ['id'],
+      where: 'parent_id IS ? AND name = ? COLLATE NOCASE AND deleted_at IS NULL',
+      whereArgs: [parentId, cleaned],
+      limit: 1,
+    );
+    if (existingBeforeCreate.isNotEmpty) {
+      throw StateError('A folder with this name already exists here.');
+    }
     final selectedRoot = await storage.selectedFolder();
     final parentStorageUri = parentId == null
         ? selectedRoot?['uri']
