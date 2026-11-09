@@ -84,6 +84,25 @@ void main() {
       );
     });
 
+    test('rejects duplicate sibling names case-insensitively', () {
+      expect(
+        () => PortableSnapshotManifest.validateFolderRows([
+          {'id': 'one', 'name': 'Policies', 'parent_id': null},
+          {'id': 'two', 'name': 'policies', 'parent_id': null},
+        ]),
+        throwsFormatException,
+      );
+      expect(
+        () => PortableSnapshotManifest.validateFolderRows([
+          {'id': 'root-a', 'name': 'A', 'parent_id': null},
+          {'id': 'root-b', 'name': 'B', 'parent_id': null},
+          {'id': 'child-a', 'name': 'Policy', 'parent_id': 'root-a'},
+          {'id': 'child-b', 'name': 'policy', 'parent_id': 'root-b'},
+        ]),
+        returnsNormally,
+      );
+    });
+
     test('rejects cycles and unsafe path components', () {
       expect(
         () => PortableSnapshotManifest.validateFolderRows([
