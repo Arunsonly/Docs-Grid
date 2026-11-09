@@ -12,17 +12,21 @@ import 'document_tools_service.dart';
 import '../../core/storage/storage_location_service.dart';
 
 class DocumentToolsScreen extends StatefulWidget {
-  const DocumentToolsScreen({super.key, this.quickAction, this.section = 'tools'});
+  const DocumentToolsScreen({super.key, this.quickAction, this.section = 'tools', this.service});
   final String? quickAction;
   final String section;
+  @visibleForTesting
+  final DocumentToolsService? service;
 
   @override
   State<DocumentToolsScreen> createState() => _DocumentToolsScreenState();
 }
 
 class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
-  final _tools = DocumentToolsService();
+  late final DocumentToolsService _tools;
   final _search = TextEditingController();
+  bool _searching = false;
+  int _searchGeneration = 0;
   List<Map<String, Object?>> _results = [];
   bool _busy = false;
   String? _message;
@@ -31,6 +35,8 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
   @override
   void initState() {
     super.initState();
+    _tools = widget.service ?? DocumentToolsService();
+    _busy = widget.quickAction == 'camera' || widget.quickAction == 'gallery';
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       switch (widget.quickAction) {
@@ -54,7 +60,8 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
     }
   }
 
-  Future<void> _scan({bool camera = false}) => _run(() async {
+  Future<void> _scan({bool camera = false}) async {
+    await _run(() async {
     final file = await _tools.scanToPdf(context: context, useCamera: camera);
     if (!mounted || file == null) return;
 
@@ -115,7 +122,13 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
         ? 'PDF saved in DocsGrid: ${chosenName == null || chosenName.isEmpty ? p.basename(file.path) : chosenName}.pdf'
         : 'This PDF already exists. Duplicate was not added.');
     }
-  });
+    });
+    // Camera/gallery quick actions are transient routes. Return to the library
+    // after save, cancel or failure instead of leaving a permanent launch spinner.
+    if (mounted && (widget.quickAction == 'camera' || widget.quickAction == 'gallery')) {
+      await Navigator.of(context).maybePop();
+    }
+  }
 
   Future<void> _backup() => _run(() async {
     final archive = await _tools.createBackup();
@@ -229,11 +242,34 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
   }
 
   Future<void> _searchText() async {
+    final query = _search.text.trim();
+    if (_searching || query.isEmpty) return;
+    final generation = ++_searchGeneration;
+    setState(() {
+      _searching = true;
+      _message = null;
+    });
     try {
-      final rows = await _tools.searchText(_search.text);
-      if (mounted) setState(() { _results = rows; _hasSearched = true; _message = null; });
-    } catch (error) {
-      if (mounted) setState(() => _message = 'Text search failed: $error');
+      final rows = await _tools.searchText(query);
+      if (!mounted || generation != _searchGeneration) return;
+      setState(() {
+        _results = rows;
+        _hasSearched = true;
+        _message = null;
+      });
+    } catch (error, stackTrace) {
+      // Keep the full diagnostic in logcat/Flutter logs. The visible message
+      // remains concise; swallowing this stack made native/plugin failures
+      // impossible to distinguish from widget lifecycle failures.
+      debugPrint('DocsGrid OCR search failed for query "$query": $error');
+      debugPrintStack(stackTrace: stackTrace);
+      if (mounted && generation == _searchGeneration) {
+        setState(() => _message = 'Text search failed. Please retry; diagnostic details were recorded.');
+      }
+    } finally {
+      if (mounted && generation == _searchGeneration) {
+        setState(() => _searching = false);
+      }
     }
   }
 
@@ -263,8 +299,10 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
         } else {
           done++;
         }
-      } catch (_) {
+      } catch (error, stackTrace) {
         skipped++;
+        debugPrint('DocsGrid OCR indexing failed for document ${row['id']}: $error');
+        debugPrintStack(stackTrace: stackTrace);
       }
     }
     if (mounted) {
@@ -383,10 +421,26 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
   }
 
   @override
-  void dispose() { _search.dispose(); super.dispose(); }
+  void dispose() {
+    // Invalidate pending search completions before the route is deactivated.
+    _searchGeneration++;
+    _search.dispose();
+    super.dispose();
+  }
 
   @override
-  Widget build(BuildContext context) => ListView(
+  Widget build(BuildContext context) {
+    // Capture actions must not flash the generic tools catalogue.
+    if (widget.quickAction == 'camera' || widget.quickAction == 'gallery') {
+      return Center(
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          const CircularProgressIndicator(),
+          const SizedBox(height: 16),
+          Text(widget.quickAction == 'camera' ? 'Opening camera…' : 'Opening photo gallery…'),
+        ]),
+      );
+    }
+    return ListView(
     padding: const EdgeInsets.all(16),
     children: [
       if (_busy) const LinearProgressIndicator(),
@@ -403,7 +457,12 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
           Padding(padding: const EdgeInsets.fromLTRB(16, 0, 16, 16), child: Column(children: [
             TextField(controller: _search, decoration: InputDecoration(
               labelText: 'Search text inside indexed PDFs',
-              suffixIcon: IconButton(onPressed: _searchText, icon: const Icon(Icons.search))),
+              suffixIcon: IconButton(
+                key: const ValueKey('ocr-search-button'),
+                onPressed: _searching ? null : _searchText,
+                icon: _searching
+                    ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                    : const Icon(Icons.search))),
               onSubmitted: (_) => _searchText()),
             const SizedBox(height: 6),
             const Align(
@@ -445,4 +504,5 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
       ])),
     ],
   );
+  }
 }

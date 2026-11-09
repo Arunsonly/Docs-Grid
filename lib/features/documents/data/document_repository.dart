@@ -119,9 +119,10 @@ class ImportSummary {
 }
 
 class ImportDecision {
-  const ImportDecision({required this.name, this.categoryId});
+  const ImportDecision({required this.name, this.categoryId, this.targetFolderId});
   final String name;
   final String? categoryId;
+  final String? targetFolderId;
 }
 
 class ImportCategoryOption {
@@ -939,12 +940,6 @@ class DocumentRepository {
 
     final storage = StorageLocationService.instance;
     final selectedFolder = await storage.selectedFolder();
-    final destinationFolderUri = selectedFolder == null
-        ? null
-        : targetFolderId == null
-            ? selectedFolder['uri']
-            : await FolderRepository().ensurePhysicalStorageUri(targetFolderId);
-    final library = selectedFolder == null ? await _privateFolderFor(targetFolderId) : null;
     final db = await _database.database;
     var added = 0;
     var duplicates = 0;
@@ -998,13 +993,24 @@ class DocumentRepository {
 
         final suggestedName = p.basenameWithoutExtension(picked.name);
         final suggestedCategoryId = _suggestCategoryId(picked.name, categoryOptions);
-        final decision = review == null
+        final decision = review == null || pickedFiles.length != 1
             ? ImportDecision(name: suggestedName, categoryId: suggestedCategoryId)
             : await review(suggestedName, suggestedCategoryId, categoryOptions);
         if (decision == null) {
           skipped++;
           continue;
         }
+        final effectiveTargetFolderId = review != null && pickedFiles.length == 1
+            ? decision.targetFolderId
+            : targetFolderId;
+        final destinationFolderUri = selectedFolder == null
+            ? null
+            : effectiveTargetFolderId == null
+                ? selectedFolder['uri']
+                : await FolderRepository().ensurePhysicalStorageUri(effectiveTargetFolderId);
+        final library = selectedFolder == null
+            ? await _privateFolderFor(effectiveTargetFolderId)
+            : null;
         final safeName = _safePdfName(decision.name);
         final selectedCategoryId = categoryOptions.any((item) => item.id == decision.categoryId)
             ? decision.categoryId
@@ -1042,9 +1048,9 @@ class DocumentRepository {
           final existingNow = await txn.query('documents', columns: ['id'],
             where: 'sha256 = ? AND deleted_at IS NULL', whereArgs: [digest], limit: 1);
           if (existingNow.isNotEmpty) throw _DuplicatePdfException();
-          if (targetFolderId != null) {
+          if (effectiveTargetFolderId != null) {
             final activeFolder = await txn.query('folders', columns: ['id'],
-              where: 'id = ? AND deleted_at IS NULL', whereArgs: [targetFolderId], limit: 1);
+              where: 'id = ? AND deleted_at IS NULL', whereArgs: [effectiveTargetFolderId], limit: 1);
             if (activeFolder.isEmpty) throw StateError('Destination folder no longer exists.');
           }
           if (selectedCategoryId != null) {
@@ -1062,7 +1068,7 @@ class DocumentRepository {
             'size_bytes': sizeBytes,
             'sha256': digest,
             'category_id': selectedCategoryId,
-            'folder_id': targetFolderId,
+            'folder_id': effectiveTargetFolderId,
             'extracted_text_status': 'pending',
             'created_at': now,
             'updated_at': now,

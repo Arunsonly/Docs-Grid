@@ -199,6 +199,58 @@ class StorageLocationService {
     return result;
   }
 
+  /// Recursively discovers PDFs only inside the root the user explicitly
+  /// granted through SAF / Files. URIs stay opaque; no guessed filesystem path
+  /// or unrestricted device-wide storage scan is attempted.
+  Future<List<Map<String, Object?>>> listPdfFilesRecursively(
+    String rootUri, {
+    int maxEntries = 50000,
+    int maxDepth = 64,
+  }) async {
+    final pending = <({String uri, String path, int depth})>[
+      (uri: rootUri, path: '', depth: 0),
+    ];
+    final visited = <String>{};
+    final pdfs = <Map<String, Object?>>[];
+    var visitedEntries = 0;
+    while (pending.isNotEmpty) {
+      final current = pending.removeLast();
+      if (!visited.add(current.uri)) continue;
+      if (current.depth > maxDepth) {
+        throw StateError('The selected folder is nested too deeply to index safely.');
+      }
+      final children = await listDirectory(current.uri);
+      for (final child in children) {
+        visitedEntries++;
+        if (visitedEntries > maxEntries) {
+          throw StateError('The selected folder contains more than $maxEntries entries. Choose a smaller folder.');
+        }
+        final name = child['name'] as String;
+        final uri = child['uri'] as String;
+        if (child['isDirectory'] == true) {
+          pending.add((
+            uri: uri,
+            path: current.path.isEmpty ? name : '${current.path}/$name',
+            depth: current.depth + 1,
+          ));
+        } else if (name.toLowerCase().endsWith('.pdf')) {
+          pdfs.add(<String, Object?>{
+            'name': name,
+            'uri': uri,
+            'folderPath': current.path,
+            'parentUri': current.uri,
+          });
+        }
+      }
+    }
+    pdfs.sort((a, b) {
+      final folder = (a['folderPath'] as String).compareTo(b['folderPath'] as String);
+      return folder != 0 ? folder : (a['name'] as String).toLowerCase()
+          .compareTo((b['name'] as String).toLowerCase());
+    });
+    return pdfs;
+  }
+
   /// Enumerates only immediate children. Returned URIs remain opaque platform
   /// handles; callers must never convert them into filesystem paths.
   Future<List<Map<String, Object?>>> listDirectory(String uri) async {

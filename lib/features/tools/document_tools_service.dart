@@ -383,21 +383,84 @@ class DocumentToolsService {
             title: const Text('Arrange page order'),
             content: SizedBox(
               width: 360,
-              height: 320,
-              child: ReorderableListView.builder(
-                itemCount: ordered.length,
-                onReorderItem: (oldIndex, newIndex) {
-                  refresh(() {
-                    final item = ordered.removeAt(oldIndex);
-                    ordered.insert(newIndex, item);
-                  });
-                },
-                itemBuilder: (context, index) => ListTile(
-                  key: ValueKey(ordered[index].path),
-                  leading: CircleAvatar(child: Text('${index + 1}')),
-                  title: Text(ordered[index].name, maxLines: 1, overflow: TextOverflow.ellipsis),
-                  trailing: ReorderableDragStartListener(index: index, child: const Icon(Icons.drag_handle)),
-                ),
+              height: 190,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('Drag thumbnails to change page order.'),
+                  const SizedBox(height: 10),
+                  Expanded(
+                    child: ReorderableListView.builder(
+                      scrollDirection: Axis.horizontal,
+                      itemCount: ordered.length,
+                      onReorderItem: (oldIndex, newIndex) {
+                        refresh(() {
+                          final item = ordered.removeAt(oldIndex);
+                          ordered.insert(newIndex, item);
+                        });
+                      },
+                      itemBuilder: (context, index) => SizedBox(
+                        key: ValueKey(ordered[index].path),
+                        width: 112,
+                        child: Card(
+                          clipBehavior: Clip.antiAlias,
+                          child: Column(
+                            children: [
+                              Expanded(
+                                child: Stack(
+                                  fit: StackFit.expand,
+                                  children: [
+                                    Image.file(
+                                      File(ordered[index].path),
+                                      fit: BoxFit.cover,
+                                      errorBuilder: (_, _, _) => const ColoredBox(
+                                        color: Colors.black12,
+                                        child: Icon(Icons.image_not_supported_outlined),
+                                      ),
+                                    ),
+                                    Positioned(
+                                      left: 4,
+                                      top: 4,
+                                      child: CircleAvatar(
+                                        radius: 12,
+                                        child: Text('${index + 1}',
+                                            style: const TextStyle(fontSize: 11)),
+                                      ),
+                                    ),
+                                    const Positioned(
+                                      right: 4,
+                                      bottom: 4,
+                                      child: DecoratedBox(
+                                        decoration: BoxDecoration(
+                                          color: Color(0xAA000000),
+                                          shape: BoxShape.circle,
+                                        ),
+                                        child: Padding(
+                                          padding: EdgeInsets.all(5),
+                                          child: Icon(Icons.drag_indicator,
+                                              color: Colors.white, size: 18),
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              Padding(
+                                padding: const EdgeInsets.all(4),
+                                child: Text(
+                                  ordered[index].name,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(fontSize: 10),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ),
             actions: [
@@ -432,9 +495,43 @@ class DocumentToolsService {
     final directory = await getTemporaryDirectory();
     final scans = Directory(p.join(directory.path, 'DocsGrid', 'Scans'));
     await scans.create(recursive: true);
-    final file = File(p.join(scans.path, 'Scan_${DateTime.now().microsecondsSinceEpoch}.pdf'));
-    await file.writeAsBytes(await pdf.save(), flush: true);
-    return file;
+    final stamp = DateTime.now().microsecondsSinceEpoch;
+    final file = File(p.join(scans.path, 'Scan_$stamp.pdf'));
+    final partial = File('${file.path}.partial');
+    try {
+      // Write to a staging file first. A failed encode/write must never leave a
+      // truncated PDF that looks like a successfully exported scan.
+      final bytes = await pdf.save();
+      if (bytes.length < 8 ||
+          String.fromCharCodes(bytes.take(5)) != '%PDF-') {
+        throw StateError('PDF encoder returned an invalid document.');
+      }
+      await partial.writeAsBytes(bytes, flush: true);
+      final writtenHeader = await partial.openRead(0, 5)
+          .fold<List<int>>(<int>[], (a, b) => a..addAll(b));
+      if (writtenHeader.length != 5 ||
+          String.fromCharCodes(writtenHeader) != '%PDF-') {
+        throw StateError('Exported PDF failed its header verification.');
+      }
+      final verification = await pdfx.PdfDocument.openFile(partial.path);
+      try {
+        if (verification.pagesCount != selected.length) {
+          throw StateError('Exported PDF page count does not match the selected images.');
+        }
+      } finally {
+        await verification.close();
+      }
+      await partial.rename(file.path);
+      return file;
+    } catch (_) {
+      try {
+        if (await partial.exists()) await partial.delete();
+      } catch (_) {}
+      try {
+        if (await file.exists()) await file.delete();
+      } catch (_) {}
+      rethrow;
+    }
   }
 
 

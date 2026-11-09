@@ -12,6 +12,7 @@ import '../../categories/data/category_repository.dart';
 import '../../folders/data/folder_repository.dart';
 import '../../tools/document_tools_service.dart';
 import '../../tools/document_tools_screen.dart' show DocumentToolsScreen;
+import 'document_pdf_viewer_screen.dart';
 import '../../reminders/data/reminder_repository.dart';
 
 class DocumentsScreen extends StatefulWidget {
@@ -78,13 +79,16 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   Future<void> _load() async {
     final generation = ++_loadGeneration;
     if (mounted) setState(() { _loading = true; _loadingMore = false; });
+    // Run the small first page and dashboard aggregates concurrently. Render
+    // the document rows as soon as the page is ready; never make the first
+    // useful screen wait for a full-library summary query.
+    final summaryFuture = _repository.dashboardSummary();
     try {
-      final summary = await _repository.dashboardSummary();
       if (_searchInsideText && _search.text.trim().isNotEmpty) {
-        // OCR content search is still a distinct indexed-text workflow. Keep
-        // its current result semantics while the name-search path is paged.
-        final allDocs = await _repository.list(recentOnly: widget.recentOnly);
-        final matches = await _tools.searchText(_search.text);
+        final allDocsFuture = _repository.list(recentOnly: widget.recentOnly);
+        final matchesFuture = _tools.searchText(_search.text);
+        final allDocs = await allDocsFuture;
+        final matches = await matchesFuture;
         final matchedIds = matches.map((row) => row['id'] as String).toSet();
         final docs = allDocs.where((document) =>
           (!widget.favoritesOnly || document.isFavorite) &&
@@ -94,31 +98,38 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
           _documents = docs;
           _nextCursor = null;
           _hasMore = false;
-          _totalStorageBytes = summary.totalBytes;
-          _totalDocumentCount = summary.documentCount;
-          _starredCount = summary.favoriteCount;
           _loading = false;
           _error = null;
         });
-        return;
+      } else {
+        final page = await _repository.listPage(
+          query: _search.text,
+          favoritesOnly: widget.favoritesOnly,
+          recentOnly: widget.recentOnly,
+          pageSize: 40,
+        );
+        if (!mounted || generation != _loadGeneration) return;
+        setState(() {
+          _documents = page.items;
+          _nextCursor = page.nextCursor;
+          _hasMore = page.hasMore;
+          _loading = false;
+          _error = null;
+        });
       }
-      final page = await _repository.listPage(
-        query: _search.text,
-        favoritesOnly: widget.favoritesOnly,
-        recentOnly: widget.recentOnly,
-        pageSize: 40,
-      );
-      if (!mounted || generation != _loadGeneration) return;
-      setState(() {
-        _documents = page.items;
-        _nextCursor = page.nextCursor;
-        _hasMore = page.hasMore;
-        _totalStorageBytes = summary.totalBytes;
-        _totalDocumentCount = summary.documentCount;
-        _starredCount = summary.favoriteCount;
-        _loading = false;
-        _error = null;
-      });
+      // Summary is secondary UI. Update it when ready without delaying the
+      // first page, and ignore stale completions after a newer refresh.
+      try {
+        final summary = await summaryFuture;
+        if (!mounted || generation != _loadGeneration) return;
+        setState(() {
+          _totalStorageBytes = summary.totalBytes;
+          _totalDocumentCount = summary.documentCount;
+          _starredCount = summary.favoriteCount;
+        });
+      } catch (_) {
+        // A summary failure must not blank a successfully loaded PDF list.
+      }
     } catch (error) {
       if (!mounted || generation != _loadGeneration) return;
       setState(() {
@@ -201,122 +212,90 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   }
 
   Future<void> _browsePhoneStorage() async {
+    final storage = StorageLocationService.instance;
     try {
-      final selected = await StorageLocationService.instance.chooseFolder();
+      // Reuse the persisted SAF / Files grant. Ask only on first use or after
+      // the user repairs a revoked permission.
+      final selected = await storage.selectedFolder() ?? await storage.chooseFolder();
       if (!mounted || selected == null) return;
-      await _showStorageDirectory(selected['uri']!, selected['name']!);
+      _message('Finding PDFs in ${selected['name']}…');
+      final files = await storage.listPdfFilesRecursively(selected['uri']!);
+      if (!mounted) return;
+      await _showRecursiveStoragePdfs(selected['name']!, files);
     } catch (error) {
-      if (mounted) _message('Could not access phone storage: $error');
+      if (mounted) _message('Could not index the selected folder. Check its storage permission and try again: $error');
     }
   }
 
-  Future<void> _importStoragePdf({
-    required BuildContext dialogContext,
-    required String fileUri,
-    required String fileName,
-    required String targetFolderUri,
-  }) async {
-    Navigator.of(dialogContext).pop();
-    File? stagedFile;
-    try {
-      final temp = await getTemporaryDirectory();
-      stagedFile = File(p.join(
-        temp.path,
-        'docsgrid_storage_import_${DateTime.now().microsecondsSinceEpoch}.pdf',
-      ));
-      await StorageLocationService.instance.copyPdfToPath(
-        sourceUri: fileUri,
-        destinationPath: stagedFile.path,
-      );
-      final summary = await _repository.importScannedPdf(
-        stagedFile,
-        displayName: fileName,
-        targetFolderUri: targetFolderUri,
-        sourceType: 'storage_browser',
-      );
-      if (summary.added > 0) {
-        final added = await _repository.listPage(query: fileName, pageSize: 10);
-        if (mounted) {
-          setState(() {
-            for (final item in added.items) {
-              if (!_documents.any((existing) => existing.id == item.id)) {
-                _documents.insert(0, item);
-              }
-            }
-          });
-        }
-        await _refreshDashboardSummary();
-      }
-      if (summary.added > 0) {
-        _message('Imported $fileName successfully.');
-      } else if (summary.duplicates > 0) {
-        _message('$fileName is already in DocsGrid. No duplicate was imported.');
-      } else {
-        _message('Could not import $fileName.');
-      }
-    } catch (error) {
-      _message('Could not import $fileName: $error');
-    } finally {
-      if (stagedFile != null) {
-        try {
-          if (await stagedFile.exists()) await stagedFile.delete();
-        } catch (_) {
-          // A temporary copy is never allowed to affect the source document.
-        }
-      }
-    }
-  }
-
-  Future<void> _showStorageDirectory(String uri, String name) async {
-    List<Map<String, Object?>> entries;
-    try {
-      entries = await StorageLocationService.instance.listDirectory(uri);
-    } catch (error) {
-      if (mounted) _message('Could not read $name: $error');
-      return;
-    }
+  Future<void> _showRecursiveStoragePdfs(
+    String rootName,
+    List<Map<String, Object?>> files,
+  ) async {
     if (!mounted) return;
+    final grouped = <String, List<Map<String, Object?>>>{};
+    for (final file in files) {
+      grouped.putIfAbsent(file['folderPath'] as String, () => []).add(file);
+    }
+    final folders = grouped.keys.toList()..sort();
     await showDialog<void>(
       context: context,
       builder: (dialogContext) => AlertDialog(
-        title: Text(name, maxLines: 1, overflow: TextOverflow.ellipsis),
+        title: Text('PDFs in $rootName'),
         content: SizedBox(
           width: double.maxFinite,
-          height: 420,
-          child: entries.isEmpty
-              ? const Center(child: Text('This folder is empty.'))
-              : ListView.separated(
-                  itemCount: entries.length,
-                  separatorBuilder: (_, _) => const Divider(height: 1),
+          height: 520,
+          child: files.isEmpty
+              ? const Center(child: Text('No PDFs found in the selected folder or its subfolders.'))
+              : ListView.builder(
+                  itemCount: folders.length,
                   itemBuilder: (context, index) {
-                    final entry = entries[index];
-                    final isDirectory = entry['isDirectory'] == true;
-                    final fileName = entry['name'] as String;
-                    final isPdf = !isDirectory && fileName.toLowerCase().endsWith('.pdf');
-                    if (!isDirectory && !isPdf) return const SizedBox.shrink();
-                    return ListTile(
-                      dense: true,
-                      leading: Icon(isDirectory ? Icons.folder_outlined : Icons.picture_as_pdf_outlined),
-                      title: Text(fileName, maxLines: 1, overflow: TextOverflow.ellipsis),
-                      trailing: isDirectory ? const Icon(Icons.chevron_right) : const Icon(Icons.more_vert),
-                      onTap: isDirectory
-                          ? () => _showStorageDirectory(entry['uri'] as String, fileName)
-                          : () => _importStoragePdf(
-                              dialogContext: context,
-                              fileUri: entry['uri'] as String,
-                              fileName: fileName,
-                              targetFolderUri: uri,
-                            ),
+                    final folderPath = folders[index];
+                    final entries = grouped[folderPath]!;
+                    final title = folderPath.isEmpty ? '$rootName (root)' : folderPath;
+                    return ExpansionTile(
+                      key: PageStorageKey('storage-pdf-folder:$folderPath'),
+                      leading: const Icon(Icons.folder_outlined),
+                      title: Text(title, maxLines: 2, overflow: TextOverflow.ellipsis),
+                      subtitle: Text('${entries.length} PDF${entries.length == 1 ? '' : 's'}'),
+                      initiallyExpanded: folderPath.isEmpty,
+                      children: [
+                        for (final entry in entries)
+                          ListTile(
+                            dense: true,
+                            leading: const Icon(Icons.picture_as_pdf_outlined),
+                            title: Text(entry['name'] as String,
+                                maxLines: 1, overflow: TextOverflow.ellipsis),
+                            onTap: () {
+                              Navigator.pop(dialogContext);
+                              _openExternalStoragePdf(
+                                entry['uri'] as String,
+                                entry['name'] as String,
+                              );
+                            },
+                          ),
+                      ],
                     );
                   },
                 ),
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Close')),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Close'),
+          ),
         ],
       ),
     );
   }
+
+  Future<void> _openExternalStoragePdf(String uri, String name) async {
+    try {
+      await StorageLocationService.instance.openPdf(uri);
+    } catch (error) {
+      if (mounted) _message('Could not open $name: $error');
+    }
+  }
+
 
   void _toggleSelected(DocumentRecord document) {
     setState(() {
@@ -399,37 +378,70 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   }
 
   Future<void> _open(DocumentRecord document) async {
-    final isSafUri = document.storagePath.startsWith('content://') || document.storagePath.startsWith('file://');
-    if (!isSafUri) {
-      final file = File(document.storagePath);
-      if (!await file.exists()) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('PDF file is missing from local storage.')),
+    final isProviderUri = document.storagePath.startsWith('content://') ||
+        document.storagePath.startsWith('file://');
+    File? stagedProviderFile;
+    late final String viewerPath;
+    try {
+      if (isProviderUri) {
+        // Stage provider-backed content with native streaming I/O; never read
+        // the entire PDF into Dart memory before the viewer starts.
+        final temp = await getTemporaryDirectory();
+        stagedProviderFile = File(p.join(
+          temp.path,
+          'docsgrid_view_${DateTime.now().microsecondsSinceEpoch}.pdf',
+        ));
+        await StorageLocationService.instance.copyPdfToPath(
+          sourceUri: document.storagePath,
+          destinationPath: stagedProviderFile.path,
         );
-        return;
+        viewerPath = stagedProviderFile.path;
+      } else {
+        final localFile = File(document.storagePath);
+        if (!await localFile.exists()) {
+          if (mounted) _message('PDF file is missing from local storage.');
+          return;
+        }
+        viewerPath = localFile.path;
       }
-    }
-    await _repository.markOpened(document);
-    if (isSafUri) {
-      try {
-        await StorageLocationService.instance.openPdf(document.storagePath);
-      } catch (error) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Could not open PDF: $error')),
-          );
+      await _repository.markOpened(document);
+      if (!mounted) return;
+      await Navigator.of(context).push<void>(
+        MaterialPageRoute(
+          builder: (_) => DocumentPdfViewerScreen(
+            filePath: viewerPath,
+            title: '${document.name}.pdf',
+          ),
+        ),
+      );
+      await _patchDocument(document.id);
+    } catch (error) {
+      if (mounted) {
+        _message('Could not open PDF in the fast viewer: $error');
+        // Keep an OS-viewer fallback for files that a native PDF renderer
+        // cannot decode (for example, unsupported encryption).
+        if (isProviderUri) {
+          try {
+            await StorageLocationService.instance.openPdf(document.storagePath);
+          } catch (fallbackError) {
+            _message('External PDF viewer also failed: $fallbackError');
+          }
+        } else {
+          final result = await OpenFilex.open(document.storagePath);
+          if (mounted && result.type != ResultType.done) {
+            _message(result.message.isEmpty ? 'No PDF viewer is available.' : result.message);
+          }
         }
       }
-    } else {
-      final result = await OpenFilex.open(document.storagePath);
-      if (mounted && result.type != ResultType.done) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(result.message.isEmpty ? 'No PDF viewer is available.' : result.message)),
-        );
+    } finally {
+      if (stagedProviderFile != null) {
+        try {
+          if (await stagedProviderFile.exists()) await stagedProviderFile.delete();
+        } catch (_) {
+          // Do not let cache cleanup mask the viewer outcome.
+        }
       }
     }
-    await _patchDocument(document.id);
   }
 
 
@@ -794,7 +806,14 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Column(
+    return PopScope<void>(
+      canPop: _selectedIds.isEmpty,
+      onPopInvokedWithResult: (didPop, result) {
+        if (!didPop && _selectedIds.isNotEmpty && mounted) {
+          setState(_selectedIds.clear);
+        }
+      },
+      child: Column(
       children: [
         if (_selectedIds.isNotEmpty)
           Material(
@@ -960,6 +979,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                         ),
         ),
       ],
+    ),
     );
   }
 
@@ -1016,12 +1036,16 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
         label: '${document.name}.pdf, ${_size(document.sizeBytes)}, ${document.isFavorite ? 'starred' : 'not starred'}',
         child: ListTile(
         key: ValueKey(document.id),
-        onLongPress: () => _toggleSelected(document),
         onTap: () => _selectedIds.isNotEmpty ? _toggleSelected(document) : _open(document),
         leading: _selectedIds.isNotEmpty
             ? Checkbox(value: selected, onChanged: (_) => _toggleSelected(document))
             : const CircleAvatar(child: Icon(Icons.picture_as_pdf_outlined)),
-        title: Text('${document.name}.pdf', maxLines: 1, overflow: TextOverflow.ellipsis),
+        title: Tooltip(
+          message: '${document.name}.pdf',
+          triggerMode: TooltipTriggerMode.longPress,
+          waitDuration: const Duration(milliseconds: 450),
+          child: Text('${document.name}.pdf', maxLines: 1, overflow: TextOverflow.ellipsis),
+        ),
         subtitle: Text([
           _size(document.sizeBytes),
           document.categoryName ?? 'Uncategorised',
@@ -1091,7 +1115,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
           ],
         ),
       ),
-      ),
+    ),
     );
   }
 

@@ -622,8 +622,27 @@ class MainActivity : FlutterActivity() {
             return
         }
         try {
-            // Create or reconnect the app's shared folder layout using SAF.
-            val docsGrid = ensureDirectory(uri, "DocsGrid")
+            // Reuse the selected DocsGrid directory when the user selected it
+            // directly. Previously this always created DocsGrid/DocsGrid, which
+            // made Recovery point at a new empty tree instead of the existing data.
+            val selectedRoot = DocumentsContract.buildDocumentUriUsingTree(
+                uri, DocumentsContract.getTreeDocumentId(uri)
+            )
+            val selectedName = contentResolver.query(
+                selectedRoot,
+                arrayOf(DocumentsContract.Document.COLUMN_DISPLAY_NAME),
+                null, null, null
+            )?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val index = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+                    if (index >= 0) cursor.getString(index) else null
+                } else null
+            }
+            val docsGrid = if (selectedName.equals("DocsGrid", ignoreCase = true)) {
+                selectedRoot
+            } else {
+                ensureDirectory(uri, "DocsGrid")
+            }
             // Canonical portable layout; legacy folders remain untouched for migration.
             val documents = ensureDirectory(docsGrid, "Documents")
             val folders = ensureDirectory(docsGrid, "Folders")

@@ -176,4 +176,50 @@ void main() {
     );
   });
 
+  test('recursive PDF discovery returns folder paths and keeps provider URIs opaque', () async {
+    final tree = <String, List<Map<String, Object?>>>{
+      'content://tree/root': [
+        {'name': 'Root.pdf', 'uri': 'content://doc/root-pdf', 'isDirectory': false},
+        {'name': 'Insurance', 'uri': 'content://tree/insurance', 'isDirectory': true},
+        {'name': 'Ignore.txt', 'uri': 'content://doc/text', 'isDirectory': false},
+      ],
+      'content://tree/insurance': [
+        {'name': 'Policy.pdf', 'uri': 'content://doc/policy', 'isDirectory': false},
+        {'name': '2026', 'uri': 'content://tree/2026', 'isDirectory': true},
+      ],
+      'content://tree/2026': [
+        {'name': 'Renewal.PDF', 'uri': 'content://doc/renewal', 'isDirectory': false},
+        {'name': 'Insurance', 'uri': 'content://tree/insurance', 'isDirectory': true},
+      ],
+    };
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      expect(call.method, 'listDirectory');
+      return tree[call.arguments['uri']]!;
+    });
+
+    final files = await StorageLocationService.instance
+        .listPdfFilesRecursively('content://tree/root');
+
+    expect(files.map((file) => file['name']).toList(),
+        ['Root.pdf', 'Policy.pdf', 'Renewal.PDF']);
+    expect(files[1]['folderPath'], 'Insurance');
+    expect(files[2]['folderPath'], 'Insurance/2026');
+    expect(files[2]['uri'], 'content://doc/renewal');
+  });
+
+  test('recursive PDF discovery stops safely at configured entry limit', () async {
+    messenger.setMockMethodCallHandler(channel, (_) async => [
+      {'name': 'A.pdf', 'uri': 'content://doc/a', 'isDirectory': false},
+      {'name': 'B.pdf', 'uri': 'content://doc/b', 'isDirectory': false},
+    ]);
+
+    await expectLater(
+      StorageLocationService.instance.listPdfFilesRecursively(
+        'content://tree/root',
+        maxEntries: 1,
+      ),
+      throwsStateError,
+    );
+  });
+
 }
