@@ -16,7 +16,9 @@ void main() {
     database = await databaseFactoryFfi.openDatabase(
       inMemoryDatabasePath,
       options: OpenDatabaseOptions(
-        onConfigure: (db) async => db.execute('PRAGMA foreign_keys = ON'),
+        onConfigure: (db) async {
+          await db.execute('PRAGMA foreign_keys = ON');
+        },
         onCreate: (db, version) async {
           await db.execute('''
             CREATE TABLE categories (
