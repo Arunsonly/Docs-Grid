@@ -42,5 +42,16 @@ void main() {
 
     expect(openedUri, 'content://policy');
     expect(openedName, 'Policy.pdf');
+
+    await tester.binding.handlePopRoute();
+    await tester.pumpAndSettle();
+    expect(find.text('Archive'), findsOneWidget);
+    expect(find.text('Policy.pdf'), findsNothing);
+    await tester.binding.handlePopRoute();
+    await tester.pumpAndSettle();
+    expect(find.text('Insurance'), findsOneWidget);
+    await tester.binding.handlePopRoute();
+    await tester.pumpAndSettle();
+    expect(find.text('Root.pdf'), findsOneWidget);
   });
 }
