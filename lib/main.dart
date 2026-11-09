@@ -180,6 +180,15 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
     if (prefs.getBool('docsgrid_restore_prompt_shown') == true) return;
     await prefs.setBool('docsgrid_restore_prompt_shown', true);
     if (!mounted) return;
+    if (Platform.isAndroid) {
+      try {
+        if (await StorageLocationService.instance.hasAllFilesAccess()) {
+          await StorageLocationService.instance.portableDataLocations();
+        }
+      } catch (_) {
+        // Fresh setup remains available; recovery surfaces permission failures.
+      }
+    }
 
     final restoreChoice = await showDialog<String>(
       context: context,
@@ -201,15 +210,27 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
             onPressed: () => Navigator.pop(ctx, 'fresh'),
             child: const Text('Start fresh'),
           ),
+          TextButton.icon(
+            onPressed: () => Navigator.pop(ctx, 'pdfs'),
+            icon: const Icon(Icons.picture_as_pdf_outlined),
+            label: const Text('Recover existing PDFs'),
+          ),
           FilledButton.icon(
             onPressed: () => Navigator.pop(ctx, 'recover'),
             icon: const Icon(Icons.restore),
-            label: const Text('Find recovery data'),
+            label: const Text('Restore previous data'),
           ),
         ],
       ),
     );
-    if (!mounted || restoreChoice != 'recover') return;
+    if (!mounted || (restoreChoice != 'recover' && restoreChoice != 'pdfs')) return;
+    if (restoreChoice == 'pdfs') {
+      await Navigator.of(context).push(MaterialPageRoute(builder: (_) => Scaffold(
+        appBar: AppBar(title: const Text('Recover existing PDFs')),
+        body: const DocumentToolsScreen(quickAction: 'recover_loose_pdfs'),
+      )));
+      return;
+    }
 
     var hasPortableBackups = false;
     if (Platform.isAndroid) {
