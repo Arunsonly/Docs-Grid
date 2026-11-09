@@ -124,6 +124,205 @@ class _FoldersScreenState extends State<FoldersScreen> {
     return result?.trim();
   }
 
+  Future<ImportDecision?> _reviewSinglePdf(
+    String suggestedName,
+    String? suggestedCategoryId,
+    List<ImportCategoryOption> categories,
+  ) async {
+    final allFolders = await _repository.allFoldersWithPaths();
+    if (!mounted) return null;
+    final nameController = TextEditingController(text: suggestedName);
+    String? destinationId = _currentFolderId;
+    final result = await showDialog<ImportDecision>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (dialogContext, refresh) => AlertDialog(
+          scrollable: true,
+          title: const Text('Add PDF to DocsGrid'),
+          content: Column(mainAxisSize: MainAxisSize.min, children: [
+            TextField(
+              controller: nameController,
+              autofocus: true,
+              decoration: const InputDecoration(
+                labelText: 'PDF name',
+                suffixText: '.pdf',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 14),
+            DropdownButtonFormField<String?>(
+              initialValue: destinationId,
+              isExpanded: true,
+              decoration: const InputDecoration(
+                labelText: 'Destination folder',
+                border: OutlineInputBorder(),
+              ),
+              items: [
+                const DropdownMenuItem<String?>(
+                  value: null,
+                  child: Text('My Documents (root)'),
+                ),
+                for (final option in allFolders)
+                  DropdownMenuItem<String?>(
+                    value: option.folder.id,
+                    child: Text(option.path, overflow: TextOverflow.ellipsis),
+                  ),
+              ],
+              onChanged: (value) => refresh(() => destinationId = value),
+            ),
+            Align(
+              alignment: Alignment.centerRight,
+              child: TextButton.icon(
+                icon: const Icon(Icons.create_new_folder_outlined),
+                label: const Text('New folder'),
+                onPressed: () async {
+                  final newName = await _askName();
+                  if (newName == null || newName.isEmpty || !dialogContext.mounted) return;
+                  try {
+                    final created = await _repository.create(
+                      name: newName,
+                      parentId: destinationId,
+                    );
+                    final updated = await _repository.allFoldersWithPaths();
+                    refresh(() {
+                      destinationId = created.id;
+                      allFolders
+                        ..clear()
+                        ..addAll(updated);
+                    });
+                  } catch (error) {
+                    if (dialogContext.mounted) {
+                      ScaffoldMessenger.of(dialogContext).showSnackBar(
+                        SnackBar(content: Text(error.toString())),
+                      );
+                    }
+                  }
+                },
+              ),
+            ),
+          ]),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () {
+                final name = nameController.text.trim();
+                if (name.isEmpty) return;
+                Navigator.pop(dialogContext, ImportDecision(
+                  name: name,
+                  categoryId: suggestedCategoryId,
+                ));
+              },
+              child: const Text('Save PDF'),
+            ),
+          ],
+        ),
+      ),
+    );
+    await WidgetsBinding.instance.endOfFrame;
+    nameController.dispose();
+    if (result == null) return null;
+    // The destination is captured by the dialog state and applied by the
+    // repository's import transaction through this one-file review result.
+    return ImportDecision(
+      name: result.name,
+      categoryId: destinationId == _currentFolderId
+          ? result.categoryId
+          : result.categoryId,
+    );
+  }
+
+  Future<void> _showFolderTree() async {
+    final options = await _repository.allFoldersWithPaths();
+    if (!mounted) return;
+    final folders = options.map((option) => option.folder).toList(growable: false);
+    final byParent = <String?, List<Folder>>{};
+    for (final folder in folders) {
+      byParent.putIfAbsent(folder.parentId, () => <Folder>[]).add(folder);
+    }
+    final selectedId = await showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (sheetContext) => StatefulBuilder(
+        builder: (sheetContext, refresh) {
+          final expanded = <String>{};
+          Widget buildNode(Folder folder, int depth) {
+            final children = byParent[folder.id] ?? const <Folder>[];
+            final isExpanded = expanded.contains(folder.id);
+            final isCurrent = folder.id == _currentFolderId;
+            return Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                ListTile(
+                  dense: true,
+                  contentPadding: EdgeInsets.only(left: 12.0 + depth * 18.0, right: 12),
+                  leading: Icon(children.isEmpty
+                      ? Icons.folder_outlined
+                      : isExpanded ? Icons.folder_open_outlined : Icons.folder_outlined),
+                  title: Text(folder.name, maxLines: 1, overflow: TextOverflow.ellipsis),
+                  selected: isCurrent,
+                  trailing: children.isEmpty ? null : IconButton(
+                    tooltip: isExpanded ? 'Collapse folder' : 'Expand folder',
+                    icon: Icon(isExpanded ? Icons.expand_less : Icons.expand_more),
+                    onPressed: () => refresh(() {
+                      if (isExpanded) {
+                        expanded.remove(folder.id);
+                      } else {
+                        expanded.add(folder.id);
+                      }
+                    }),
+                  ),
+                  onTap: () => Navigator.pop(sheetContext, folder.id),
+                ),
+                if (isExpanded)
+                  for (final child in children) buildNode(child, depth + 1),
+              ],
+            );
+          }
+          return SafeArea(
+            child: FractionallySizedBox(
+              heightFactor: 0.78,
+              child: Column(
+                children: [
+                  const ListTile(
+                    title: Text('Browse folders', style: TextStyle(fontWeight: FontWeight.w700)),
+                    subtitle: Text('Tap a folder to open it; use arrows to expand subfolders.'),
+                  ),
+                  ListTile(
+                    leading: const Icon(Icons.home_outlined),
+                    title: const Text('Folders (root)'),
+                    selected: _currentFolderId == null,
+                    onTap: () => Navigator.pop(sheetContext, ''),
+                  ),
+                  const Divider(height: 1),
+                  Expanded(
+                    child: ListView(
+                      key: const PageStorageKey('docsgrid-folder-tree'),
+                      children: [
+                        for (final root in byParent[null] ?? const <Folder>[])
+                          buildNode(root, 0),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+    if (!mounted || selectedId == null) return;
+    if (selectedId.isEmpty) {
+      _goToRoot();
+      return;
+    }
+    final selected = folders.where((folder) => folder.id == selectedId).firstOrNull;
+    if (selected != null) await _openFolder(selected);
+  }
+
   Future<void> _createFolder() async {
     final name = await _askName();
     if (!mounted || name == null || name.isEmpty) return;
@@ -365,15 +564,35 @@ class _FoldersScreenState extends State<FoldersScreen> {
           child: Row(
             children: [
               Expanded(
-                child: Text(_currentTitle,
-                    style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700)),
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(8),
+                  onTap: _showFolderTree,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 8),
+                    child: Row(
+                      children: [
+                        Flexible(
+                          child: Text(_currentTitle,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700)),
+                        ),
+                        const SizedBox(width: 4),
+                        const Icon(Icons.arrow_drop_down, size: 24),
+                      ],
+                    ),
+                  ),
+                ),
               ),
               PopupMenuButton<String>(
                 tooltip: 'Folder actions',
                 icon: const Icon(Icons.more_vert),
                 onSelected: (action) async {
                   if (action == 'add_pdf') {
-                    final result = await _documents.importPdfs(targetFolderId: _currentFolderId);
+                    final result = await _documents.importPdfs(
+                      targetFolderId: _currentFolderId,
+                      review: _reviewSinglePdf,
+                    );
                     await _refresh();
                     if (mounted) _message('Added ${result.added} · Duplicates ${result.duplicates}');
                   }
