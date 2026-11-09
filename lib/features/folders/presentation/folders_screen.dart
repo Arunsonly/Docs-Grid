@@ -296,13 +296,27 @@ class _FoldersScreenState extends State<FoldersScreen> {
                     selected: _currentFolderId == null,
                     onTap: () => Navigator.pop(sheetContext, ''),
                   ),
+                  if (_currentFolderId != null && _ancestors.length > 1)
+                    ListTile(
+                      dense: true,
+                      leading: const Icon(Icons.arrow_upward),
+                      title: Text('Up to ${_ancestors[_ancestors.length - 2].name}',
+                          maxLines: 1, overflow: TextOverflow.ellipsis),
+                      onTap: () => Navigator.pop(
+                        sheetContext, _ancestors[_ancestors.length - 2].id),
+                    ),
                   const Divider(height: 1),
                   Expanded(
                     child: ListView(
                       key: const PageStorageKey('docsgrid-folder-tree'),
                       children: [
-                        for (final root in byParent[null] ?? const <Folder>[])
-                          buildNode(root, 0),
+                        for (final child in byParent[_currentFolderId] ?? const <Folder>[])
+                          buildNode(child, 0),
+                        if ((byParent[_currentFolderId] ?? const <Folder>[]).isEmpty)
+                          const Padding(
+                            padding: EdgeInsets.all(24),
+                            child: Center(child: Text('No subfolders in this folder.')),
+                          ),
                       ],
                     ),
                   ),
