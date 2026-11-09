@@ -1,5 +1,4 @@
 import 'dart:math' as math;
-import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -110,7 +109,7 @@ class _DocumentCropScreenState extends State<DocumentCropScreen> {
       final args = <String, Object>{
         'bytes': _workingImage,
         'operation': operation,
-        if (points != null) 'points': points,
+        if (points case final pointValues) 'points': pointValues,
       };
       final bytes = await compute(transformDocumentImageForTesting, args);
       if (mounted) _replaceImage(bytes);
