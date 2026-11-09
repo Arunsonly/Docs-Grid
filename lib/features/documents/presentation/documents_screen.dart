@@ -79,13 +79,16 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   Future<void> _load() async {
     final generation = ++_loadGeneration;
     if (mounted) setState(() { _loading = true; _loadingMore = false; });
+    // Run the small first page and dashboard aggregates concurrently. Render
+    // the document rows as soon as the page is ready; never make the first
+    // useful screen wait for a full-library summary query.
+    final summaryFuture = _repository.dashboardSummary();
     try {
-      final summary = await _repository.dashboardSummary();
       if (_searchInsideText && _search.text.trim().isNotEmpty) {
-        // OCR content search is still a distinct indexed-text workflow. Keep
-        // its current result semantics while the name-search path is paged.
-        final allDocs = await _repository.list(recentOnly: widget.recentOnly);
-        final matches = await _tools.searchText(_search.text);
+        final allDocsFuture = _repository.list(recentOnly: widget.recentOnly);
+        final matchesFuture = _tools.searchText(_search.text);
+        final allDocs = await allDocsFuture;
+        final matches = await matchesFuture;
         final matchedIds = matches.map((row) => row['id'] as String).toSet();
         final docs = allDocs.where((document) =>
           (!widget.favoritesOnly || document.isFavorite) &&
@@ -95,31 +98,38 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
           _documents = docs;
           _nextCursor = null;
           _hasMore = false;
-          _totalStorageBytes = summary.totalBytes;
-          _totalDocumentCount = summary.documentCount;
-          _starredCount = summary.favoriteCount;
           _loading = false;
           _error = null;
         });
-        return;
+      } else {
+        final page = await _repository.listPage(
+          query: _search.text,
+          favoritesOnly: widget.favoritesOnly,
+          recentOnly: widget.recentOnly,
+          pageSize: 40,
+        );
+        if (!mounted || generation != _loadGeneration) return;
+        setState(() {
+          _documents = page.items;
+          _nextCursor = page.nextCursor;
+          _hasMore = page.hasMore;
+          _loading = false;
+          _error = null;
+        });
       }
-      final page = await _repository.listPage(
-        query: _search.text,
-        favoritesOnly: widget.favoritesOnly,
-        recentOnly: widget.recentOnly,
-        pageSize: 40,
-      );
-      if (!mounted || generation != _loadGeneration) return;
-      setState(() {
-        _documents = page.items;
-        _nextCursor = page.nextCursor;
-        _hasMore = page.hasMore;
-        _totalStorageBytes = summary.totalBytes;
-        _totalDocumentCount = summary.documentCount;
-        _starredCount = summary.favoriteCount;
-        _loading = false;
-        _error = null;
-      });
+      // Summary is secondary UI. Update it when ready without delaying the
+      // first page, and ignore stale completions after a newer refresh.
+      try {
+        final summary = await summaryFuture;
+        if (!mounted || generation != _loadGeneration) return;
+        setState(() {
+          _totalStorageBytes = summary.totalBytes;
+          _totalDocumentCount = summary.documentCount;
+          _starredCount = summary.favoriteCount;
+        });
+      } catch (_) {
+        // A summary failure must not blank a successfully loaded PDF list.
+      }
     } catch (error) {
       if (!mounted || generation != _loadGeneration) return;
       setState(() {
