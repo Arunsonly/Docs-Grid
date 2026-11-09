@@ -54,6 +54,9 @@ List<Map<String, Object?>> _groupOcrDuplicateRows(
       .toList();
 }
 
+/// Restore behavior for portable DocsGrid archives.
+enum BackupRestoreMode { merge, fullReplacement }
+
 /// Local-only utilities for indexing, scanning, sharing and portable backups.
 /// This service never uploads document contents to a remote server.
 class DocumentToolsService {
@@ -870,18 +873,29 @@ class DocumentToolsService {
   Future<int?> restoreBackup(
     File zipFile, {
     Future<bool> Function(int pdfCount)? confirm,
+    BackupRestoreMode mode = BackupRestoreMode.merge,
   }) async {
     final backup = await _decodeValidatedBackup(zipFile);
     try {
       final pdfCount = (backup.manifest['files'] as List<dynamic>).length;
       if (confirm != null && !await confirm(pdfCount)) return null;
-      return await _restoreValidatedBackup(backup);
+      if (mode == BackupRestoreMode.fullReplacement) {
+        // Preserve a verified pre-restore archive before replacing live data.
+        await createBackup();
+      }
+      return await _restoreValidatedBackup(
+        backup,
+        replaceExisting: mode == BackupRestoreMode.fullReplacement,
+      );
     } finally {
       await backup.dispose();
     }
   }
 
-  Future<int> _restoreValidatedBackup(_ValidatedBackup backup) async {
+  Future<int> _restoreValidatedBackup(
+    _ValidatedBackup backup, {
+    bool replaceExisting = false,
+  }) async {
     final manifest = backup.manifest;
     final rowsByTable = backup.rowsByTable;
     final folderRows = rowsByTable['folders']!;
@@ -895,8 +909,16 @@ class DocumentToolsService {
     // directories, and never use imported IDs as filesystem path segments.
     BackupFolderGraphValidator.validate(folderRows);
     PortableSnapshotRowsValidator.validate(rowsByTable);
-    final root = Directory(p.join((await getApplicationDocumentsDirectory()).path, 'DocsGrid', 'Restored'));
-    final restoreRoot = Directory(p.join(root.path, DateTime.now().microsecondsSinceEpoch.toString()));
+    final portableLocations = Platform.isAndroid
+        ? await StorageLocationService.instance.portableDataLocations()
+        : const <String, String>{};
+    final portableUnfiledUri = portableLocations['documentsUri'];
+    final root = Directory(
+      portableUnfiledUri != null && portableUnfiledUri.startsWith('file://')
+          ? Uri.parse(portableUnfiledUri).toFilePath()
+          : p.join((await getApplicationDocumentsDirectory()).path, 'DocsGrid', 'Restored'),
+    );
+    final restoreRoot = Directory(p.join(root.path, 'Restored_${DateTime.now().microsecondsSinceEpoch}'));
     await restoreRoot.create(recursive: true);
     final fileRows = (manifest['files'] as List<dynamic>).cast<Map<String, dynamic>>();
     final restoredPaths = <String, String>{};
@@ -959,6 +981,16 @@ class DocumentToolsService {
 
       final db = await _database.database;
       await db.transaction((txn) async {
+        if (replaceExisting) {
+          // Dependent rows are removed before parents. SQLite rolls the
+          // complete replacement back if any insert or constraint fails.
+          for (final table in [
+            'document_tags', 'reminders', 'history', 'document_text_index',
+            'documents', 'folders', 'categories', 'tags', 'settings',
+          ]) {
+            await txn.delete(table);
+          }
+        }
         var batch = txn.batch();
         var pending = 0;
         Future<void> flushBatch() async {
