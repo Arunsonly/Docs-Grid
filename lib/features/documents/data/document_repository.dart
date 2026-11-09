@@ -739,7 +739,9 @@ class DocumentRepository {
       final folderId = rows.first['folder_id'] as String?;
       String? destinationUri;
       if (folderId == null) {
-        destinationUri = (await storage.selectedFolder())?['uri'];
+        destinationUri = Platform.isAndroid
+            ? (await storage.portableDataLocations())['documentsUri']
+            : (await storage.selectedFolder())?['uri'];
       } else {
         final folderRows = await db.query(
           'folders',
