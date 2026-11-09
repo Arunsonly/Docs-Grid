@@ -1,8 +1,16 @@
 # DocsGrid implementation status
 
-Last updated: 2026-11-08
+Last updated: 2026-11-09
 
 This is an implementation tracker, not a release claim. A green CI build does not mean physical-device testing has passed.
+
+## Current consolidated audit — 2026-11-09
+
+- All 10 core functions have now received a source-level audit against main commit `703f36032394356971d8a6ab34740afaa1c9c4bb`.
+- Consolidated corrective work is on `audit/consolidated-10-core-fixes`; no separate PRs are being opened for individual functions.
+- The updated detailed report is `docs/CORE_FUNCTIONS_AUDIT.md`.
+- A fresh full Android/iOS CI run is pending on the single consolidated PR. Historical Run #687 applies to its recorded commit only and is not evidence that this newer branch passes.
+- Physical Android/iPhone, SAF/Files bookmark, notification, scanner, cloud-provider and recovery checks remain separate release gates.
 
 ## Core Storage and PDF Management
 
