@@ -51,6 +51,19 @@ void main() {
           ''');
           await db.execute('CREATE INDEX idx_folders_parent ON folders(parent_id, deleted_at)');
           await db.execute('CREATE INDEX idx_documents_folder ON documents(folder_id, deleted_at)');
+          await db.execute('''
+            CREATE TABLE reminders (
+              id TEXT PRIMARY KEY, document_id TEXT, title TEXT NOT NULL, note TEXT,
+              remind_at_utc TEXT NOT NULL, timezone_id TEXT NOT NULL,
+              recurrence_rule TEXT, recurrence_end_at TEXT, lead_days INTEGER,
+              enabled INTEGER NOT NULL DEFAULT 1, status TEXT NOT NULL DEFAULT 'scheduled',
+              snoozed_until TEXT, next_fire_at_utc TEXT NOT NULL, notification_id INTEGER,
+              created_at TEXT NOT NULL, updated_at TEXT NOT NULL, completed_at TEXT,
+              FOREIGN KEY(document_id) REFERENCES documents(id) ON DELETE SET NULL
+            )
+          ''');
+          await db.execute('CREATE INDEX idx_reminders_next_fire ON reminders(status, enabled, next_fire_at_utc)');
+          await db.execute('CREATE INDEX idx_reminders_document ON reminders(document_id)');
           await db.insert('folders', {
             'id': 'folder-1', 'name': 'Policies', 'created_at': '2024-01-01',
             'updated_at': '2024-01-01',
