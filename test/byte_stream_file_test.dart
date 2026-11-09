@@ -32,7 +32,7 @@ void main() {
     await writeByteStreamToFile(Stream<List<int>>.fromIterable(chunks), target);
 
     expect(await target.length(), chunkSize * chunkCount);
-    expect(await sha256.bind(target.openRead()).first, expected);
+    expect((await sha256.bind(target.openRead()).first).toString(), expected);
   });
 
   test('removes a partial staging file when provider stream fails', () async {
