@@ -842,6 +842,29 @@ class DocumentToolsService {
     return files;
   }
 
+  /// Tries portable archives newest-first. A filename or timestamp is never
+  /// accepted as proof: every candidate is decoded and checksum-validated.
+  Future<int?> restoreNewestPortableBackup({
+    Future<bool> Function(int pdfCount)? confirm,
+  }) async {
+    final candidates = await listPortableBackupArchives();
+    if (candidates.isEmpty) {
+      throw StateError('No portable DocsGrid backup ZIP was found.');
+    }
+    Object? lastError;
+    for (final candidate in candidates) {
+      try {
+        return await restoreBackup(candidate, confirm: confirm);
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    throw StateError(
+      'No valid portable backup could be restored. '
+      'The newest candidates may be incomplete or damaged. Last error: $lastError',
+    );
+  }
+
   /// Additively restores a verified archive. Existing document/folder IDs are
   /// never overwritten; any collision aborts the database transaction.
   Future<int?> restoreBackup(
