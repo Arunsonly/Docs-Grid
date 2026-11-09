@@ -153,6 +153,32 @@ void main() {
         'content://doc/policy');
   });
 
+  test('full phone browser can include empty SAF folders without changing PDF-focused default', () async {
+    final tree = <String, List<Map<String, Object?>>>{
+      'content://tree/root': [
+        {'name': 'Empty', 'uri': 'content://tree/empty', 'isDirectory': true},
+        {'name': 'HasPdf', 'uri': 'content://tree/has-pdf', 'isDirectory': true},
+      ],
+      'content://tree/empty': [],
+      'content://tree/has-pdf': [
+        {'name': 'Policy.pdf', 'uri': 'content://doc/policy', 'isDirectory': false},
+      ],
+    };
+    messenger.setMockMethodCallHandler(channel, (call) async =>
+        tree[call.arguments['uri']]!);
+
+    final pdfFocused = await StorageLocationService.instance
+        .listStorageTreeRecursively('content://tree/root');
+    final fullTree = await StorageLocationService.instance
+        .listStorageTreeRecursively('content://tree/root', includeEmptyFolders: true);
+
+    expect(pdfFocused.where((entry) => entry['isDirectory'] == true)
+        .map((entry) => entry['path']), ['HasPdf']);
+    expect(fullTree.where((entry) => entry['isDirectory'] == true)
+        .map((entry) => entry['path']).toSet(), {'Empty', 'HasPdf'});
+    expect(fullTree.where((entry) => entry['isDirectory'] == false), hasLength(1));
+  });
+
   test('listDirectory rejects a non-map native entry', () async {
     messenger.setMockMethodCallHandler(channel, (_) async => ['not-an-entry']);
 
