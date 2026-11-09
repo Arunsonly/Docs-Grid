@@ -217,8 +217,15 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   Future<void> _browsePhoneStorage() async {
     final storage = StorageLocationService.instance;
     try {
-      // Reuse the persisted SAF / Files grant. Ask only on first use or after
-      // the user repairs a revoked permission.
+      // Personal-use builds request Android's one-time special access once,
+      // then browse shared internal storage directly without a SAF folder picker.
+      if (Platform.isAndroid && !await storage.hasAllFilesAccess()) {
+        await storage.requestAllFilesAccess();
+        if (mounted) {
+          _message('Allow “Full internal storage access” in Android Settings, return to DocsGrid, and tap Browse again.');
+        }
+        return;
+      }
       final selected = await storage.selectedFolder() ?? await storage.chooseFolder();
       if (!mounted || selected == null) return;
       _message('Finding PDFs in ${selected['name']}…');
@@ -243,7 +250,15 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
 
   Future<void> _openExternalStoragePdf(String uri, String name) async {
     try {
-      await StorageLocationService.instance.openPdf(uri);
+      if (uri.startsWith('file://')) {
+        final path = Uri.parse(uri).toFilePath();
+        final result = await OpenFilex.open(path, type: 'application/pdf');
+        if (result.type != ResultType.done) {
+          throw StateError(result.message.isEmpty ? 'No PDF viewer is available.' : result.message);
+        }
+      } else {
+        await StorageLocationService.instance.openPdf(uri);
+      }
     } catch (error) {
       if (mounted) _message('Could not open $name: $error');
     }
@@ -1022,12 +1037,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
         leading: _selectionMode
             ? Checkbox(value: selected, onChanged: (_) => _toggleSelected(document))
             : const CircleAvatar(child: Icon(Icons.picture_as_pdf_outlined)),
-        title: Tooltip(
-          message: '${document.name}.pdf',
-          triggerMode: TooltipTriggerMode.longPress,
-          waitDuration: const Duration(milliseconds: 450),
-          child: Text('${document.name}.pdf', maxLines: 1, overflow: TextOverflow.ellipsis),
-        ),
+        title: Text('${document.name}.pdf', maxLines: 1, overflow: TextOverflow.ellipsis),
         subtitle: Text([
           _size(document.sizeBytes),
           document.categoryName ?? 'Uncategorised',

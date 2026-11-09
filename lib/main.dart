@@ -183,18 +183,18 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
     final restore = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Restore your DocsGrid data?'),
-        content: const Text('If you have a DocsGrid backup ZIP on this phone, SD card, USB drive or cloud storage, you can restore your PDFs, folders, reminders, tags and settings now.'),
+        title: const Text('Recover your DocsGrid data?'),
+        content: const Text('DocsGrid will first look for your existing Android/media/DocsGrid recovery folder and restore PDFs, folders, categories, tags, reminders, activity and settings. You will not need to select the folder manually.'),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Later')),
-          FilledButton.icon(onPressed: () => Navigator.pop(ctx, true), icon: const Icon(Icons.restore), label: const Text('Restore Data')),
+          FilledButton.icon(onPressed: () => Navigator.pop(ctx, true), icon: const Icon(Icons.restore), label: const Text('Find and Recover')),
         ],
       ),
     );
     if (restore != true || !mounted) return;
     await Navigator.of(context).push(MaterialPageRoute(builder: (_) => Scaffold(
-      appBar: AppBar(title: const Text('Restore Data')),
-      body: const DocumentToolsScreen(section: 'backup_restore'),
+      appBar: AppBar(title: const Text('Recover DocsGrid')),
+      body: const DocumentToolsScreen(quickAction: 'restore_portable'),
     )));
   }
 
@@ -514,6 +514,37 @@ class _SettingsScreenState extends State<_SettingsScreen> {
     return ListView(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
       children: [
+        if (Platform.isAndroid)
+          FutureBuilder<bool>(
+            future: StorageLocationService.instance.hasAllFilesAccess(),
+            builder: (context, snapshot) {
+              final granted = snapshot.data == true;
+              return ListTile(
+                leading: Icon(
+                  granted ? Icons.folder_special : Icons.folder_off_outlined,
+                  color: granted ? Theme.of(context).colorScheme.primary : null,
+                ),
+                title: const Text('Full internal storage access'),
+                subtitle: Text(granted
+                    ? 'Allowed. DocsGrid can access shared internal storage.'
+                    : 'Required for personal-use full storage browsing and automatic recovery discovery.'),
+                trailing: granted
+                    ? const Icon(Icons.check_circle_outline)
+                    : const Icon(Icons.chevron_right),
+                onTap: () async {
+                  try {
+                    await StorageLocationService.instance.requestAllFilesAccess();
+                  } catch (error) {
+                    if (context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text('Could not open storage permission settings: $error')),
+                      );
+                    }
+                  }
+                },
+              );
+            },
+          ),
         SwitchListTile(
           secondary: const Icon(Icons.dark_mode_outlined),
           title: const Text('Dark appearance'),

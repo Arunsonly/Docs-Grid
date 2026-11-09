@@ -118,40 +118,96 @@ class MainActivity : FlutterActivity() {
                             }
                             "getPortableDataLocations" -> {
                                 val prefs = getSharedPreferences("docsgrid_storage", MODE_PRIVATE)
-                                val database = prefs.getString("database_uri", null)
-                                    ?: throw IllegalStateException("DocsGrid Database folder is not configured. Re-select the library folder.")
-                                val recovery = prefs.getString("recovery_uri", null)
-                                    ?: throw IllegalStateException("DocsGrid Recovery folder is not configured. Re-select the library folder.")
-                                val library = prefs.getString("folders_uri", null)
+                                var database = prefs.getString("database_uri", null)
+                                var recovery = prefs.getString("recovery_uri", null)
+                                var library = prefs.getString("folders_uri", null)
                                     ?: prefs.getString("my_files_uri", null)
-                                    ?: throw IllegalStateException("DocsGrid Folders location is not configured. Re-select the library folder.")
-                                val documents = prefs.getString("documents_uri", null)
-                                    ?: throw IllegalStateException("DocsGrid Documents location is not configured. Re-select the library folder.")
+                                var documents = prefs.getString("documents_uri", null)
+                                if (database == null || recovery == null || library == null || documents == null) {
+                                    if (android.os.Build.VERSION.SDK_INT >= 30 &&
+                                        !android.os.Environment.isExternalStorageManager()) {
+                                        throw IllegalStateException("Allow Full internal storage access in DocsGrid Settings, then retry recovery.")
+                                    }
+                                    val root = java.io.File(
+                                        android.os.Environment.getExternalStorageDirectory(),
+                                        "Android/media/DocsGrid"
+                                    )
+                                    val docs = java.io.File(root, "Documents")
+                                    val folders = java.io.File(root, "Folders")
+                                    val dbFolder = java.io.File(root, "Database")
+                                    val recoveryFolder = java.io.File(root, "Recovery")
+                                    if (!root.isDirectory || !docs.isDirectory || !folders.isDirectory ||
+                                        !dbFolder.isDirectory || !recoveryFolder.isDirectory) {
+                                        throw IllegalStateException("No existing Android/media/DocsGrid recovery tree was found.")
+                                    }
+                                    val snapshots = dbFolder.listFiles()?.filter {
+                                        it.isDirectory && it.name.startsWith("snapshot_")
+                                    }.orEmpty()
+                                    if (snapshots.isEmpty()) {
+                                        throw IllegalStateException("Android/media/DocsGrid exists, but no recovery snapshot was found in Database.")
+                                    }
+                                    database = Uri.fromFile(dbFolder).toString()
+                                    recovery = Uri.fromFile(recoveryFolder).toString()
+                                    library = Uri.fromFile(folders).toString()
+                                    documents = Uri.fromFile(docs).toString()
+                                    prefs.edit()
+                                        .putString("docsgrid_uri", Uri.fromFile(root).toString())
+                                        .putString("database_uri", database)
+                                        .putString("recovery_uri", recovery)
+                                        .putString("folders_uri", library)
+                                        .putString("my_files_uri", library)
+                                        .putString("documents_uri", documents)
+                                        .apply()
+                                }
                                 result.success(mapOf("databaseUri" to database, "recoveryUri" to recovery, "libraryUri" to library, "documentsUri" to documents))
                             }
                             "getSelectedFolder" -> {
                                 val prefs = getSharedPreferences("docsgrid_storage", MODE_PRIVATE)
                                 val uri = prefs.getString("folders_uri", null) ?: prefs.getString("my_files_uri", null)
-                                result.success(uri?.let { mapOf("uri" to it, "name" to "DocsGrid/Folders") })
+                                val hasAllFiles = android.os.Build.VERSION.SDK_INT < 30 ||
+                                    android.os.Environment.isExternalStorageManager()
+                                val selected = if (hasAllFiles) {
+                                    Uri.fromFile(android.os.Environment.getExternalStorageDirectory()).toString()
+                                } else uri
+                                result.success(selected?.let {
+                                    mapOf("uri" to it, "name" to if (hasAllFiles) "Internal storage" else "DocsGrid/Folders")
+                                })
                             }
                             "consumeSharedPdfs" -> result.success(consumeSharedPdfs(incomingShareIntent))
                             "checkStorageAccess" -> result.success(checkStorageAccess())
+                            "hasAllFilesAccess" -> result.success(
+                                android.os.Build.VERSION.SDK_INT < 30 ||
+                                    android.os.Environment.isExternalStorageManager()
+                            )
+                            "requestAllFilesAccess" -> {
+                                if (android.os.Build.VERSION.SDK_INT < 30 ||
+                                    android.os.Environment.isExternalStorageManager()) {
+                                    result.success(true)
+                                } else {
+                                    val settingsIntent = Intent(
+                                        android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                                        Uri.parse("package:$packageName")
+                                    )
+                                    startActivity(settingsIntent)
+                                    result.success(false)
+                                }
+                            }
                             "savePdf" -> {
                                 val tree = Uri.parse(call.argument<String>("treeUri")!!)
                                 val name = call.argument<String>("name")!!
                                 val bytes = call.argument<ByteArray>("bytes")!!
-                                result.success(createPdf(tree, name, bytes).toString())
+                                result.success((if (tree.scheme == "file") createFilePdf(tree, name, bytes) else createPdf(tree, name, bytes)).toString())
                             }
                             "createDirectory" -> {
                                 val parent = Uri.parse(call.argument<String>("parentUri")!!)
                                 val name = call.argument<String>("name")!!
-                                result.success(createDirectory(parent, name).toString())
+                                result.success((if (parent.scheme == "file") createFileDirectory(parent, name) else createDirectory(parent, name)).toString())
                             }
                             "copyPdf" -> {
                                 val source = Uri.parse(call.argument<String>("sourceUri")!!)
                                 val parent = Uri.parse(call.argument<String>("parentUri")!!)
                                 val name = call.argument<String>("name")!!
-                                result.success(copyPdf(source, parent, name).toString())
+                                result.success((if (parent.scheme == "file") copyFilePdf(source, parent, name) else copyPdf(source, parent, name)).toString())
                             }
                             "copyPdfToPath" -> {
                                 val source = Uri.parse(call.argument<String>("sourceUri")!!)
@@ -193,58 +249,84 @@ class MainActivity : FlutterActivity() {
                                 val parent = Uri.parse(call.argument<String>("parentUri")!!)
                                 val name = call.argument<String>("name")!!
                                 val contents = call.argument<String>("contents")!!
-                                result.success(writeTextFile(parent, name, contents).toString())
+                                result.success((if (parent.scheme == "file") writeFileText(parent, name, contents) else writeTextFile(parent, name, contents)).toString())
                             }
                             "readTextFile" -> {
                                 val uri = Uri.parse(call.argument<String>("uri")!!)
-                                val bytes = contentResolver.openInputStream(uri)?.use { it.readBytes() }
-                                    ?: throw IllegalStateException("Could not read metadata file.")
+                                val bytes = if (uri.scheme == "file") {
+                                    fileForUri(uri).readBytes()
+                                } else {
+                                    contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                                        ?: throw IllegalStateException("Could not read metadata file.")
+                                }
                                 result.success(String(bytes, Charsets.UTF_8))
                             }
                             "listDirectory" -> {
                                 val uri = Uri.parse(call.argument<String>("uri")!!)
-                                result.success(listDirectory(uri))
+                                result.success(if (uri.scheme == "file") listFileDirectory(uri) else listDirectory(uri))
                             }
                             "readPdf" -> {
                                 val uri = Uri.parse(call.argument<String>("uri")!!)
-                                val bytes = contentResolver.openInputStream(uri)?.use { it.readBytes() }
-                                    ?: throw IllegalStateException("Could not read the selected PDF.")
+                                val bytes = if (uri.scheme == "file") {
+                                    fileForUri(uri).readBytes()
+                                } else {
+                                    contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                                        ?: throw IllegalStateException("Could not read the selected PDF.")
+                                }
                                 result.success(bytes)
                             }
                             "findChildUri" -> {
                                 val parent = Uri.parse(call.argument<String>("parentUri")!!)
                                 val name = call.argument<String>("name")!!
-                                result.success(findChildUri(parent, name).toString())
+                                result.success((if (parent.scheme == "file") findFileChild(parent, name) else findChildUri(parent, name)).toString())
                             }
                             "renamePdf" -> {
                                 val uri = Uri.parse(call.argument<String>("uri")!!)
                                 val name = call.argument<String>("name")!!
-                                val renamed = DocumentsContract.renameDocument(contentResolver, uri, name)
-                                    ?: throw IllegalStateException("Android could not rename this PDF.")
+                                val renamed = if (uri.scheme == "file") {
+                                    val source = fileForUri(uri)
+                                    validateLeafName(name)
+                                    val target = java.io.File(source.parentFile, name)
+                                    if (target.exists() || !source.renameTo(target)) {
+                                        throw IllegalStateException("Android could not rename this PDF.")
+                                    }
+                                    Uri.fromFile(target)
+                                } else {
+                                    DocumentsContract.renameDocument(contentResolver, uri, name)
+                                        ?: throw IllegalStateException("Android could not rename this PDF.")
+                                }
                                 result.success(renamed.toString())
                             }
                             "deletePdf" -> {
                                 val uri = Uri.parse(call.argument<String>("uri")!!)
+                                if (uri.scheme == "file") {
+                                val target = fileForUri(uri)
+                                if (target.isDirectory && target.listFiles()?.isNotEmpty() == true) {
+                                    throw IllegalStateException("Folder contains files or subfolders and cannot be deleted.")
+                                }
+                                result.success(target.delete())
+                            } else {
                                 val documentUri = resolveParentUri(uri)
-                            val metadata = contentResolver.query(
-                                documentUri, arrayOf(DocumentsContract.Document.COLUMN_MIME_TYPE),
-                                null, null, null
-                            ) ?: throw IllegalStateException("Could not inspect the selected storage item.")
-                            val mime = metadata.use { if (it.moveToFirst()) it.getString(0) else null }
-                            if (mime == DocumentsContract.Document.MIME_TYPE_DIR) {
-                                val documentId = DocumentsContract.getDocumentId(documentUri)
-                                val children = DocumentsContract.buildChildDocumentsUriUsingTree(uri, documentId)
-                                val cursor = contentResolver.query(
-                                    children, arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID),
+                                val metadata = contentResolver.query(
+                                    documentUri, arrayOf(DocumentsContract.Document.COLUMN_MIME_TYPE),
                                     null, null, null
-                                ) ?: throw IllegalStateException("Could not verify whether the folder is empty.")
-                                cursor.use {
-                                    if (it.moveToFirst()) {
-                                        throw IllegalStateException("Folder contains files or subfolders and cannot be deleted.")
+                                ) ?: throw IllegalStateException("Could not inspect the selected storage item.")
+                                val mime = metadata.use { if (it.moveToFirst()) it.getString(0) else null }
+                                if (mime == DocumentsContract.Document.MIME_TYPE_DIR) {
+                                    val documentId = DocumentsContract.getDocumentId(documentUri)
+                                    val children = DocumentsContract.buildChildDocumentsUriUsingTree(uri, documentId)
+                                    val cursor = contentResolver.query(
+                                        children, arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID),
+                                        null, null, null
+                                    ) ?: throw IllegalStateException("Could not verify whether the folder is empty.")
+                                    cursor.use {
+                                        if (it.moveToFirst()) {
+                                            throw IllegalStateException("Folder contains files or subfolders and cannot be deleted.")
+                                        }
                                     }
                                 }
+                                result.success(DocumentsContract.deleteDocument(contentResolver, uri))
                             }
-                            result.success(DocumentsContract.deleteDocument(contentResolver, uri))
                             }
                             "openPdf" -> {
                                 val uri = Uri.parse(call.argument<String>("uri")!!)
@@ -352,6 +434,119 @@ class MainActivity : FlutterActivity() {
         } catch (_: Exception) {
             mapOf("status" to "revoked", "message" to "Folder access failed. Select the folder again; existing PDF records will be preserved.")
         }
+    }
+
+    private fun fileForUri(uri: Uri): java.io.File {
+        if (uri.scheme != "file") throw IllegalArgumentException("Expected a local file URI.")
+        if (android.os.Build.VERSION.SDK_INT >= 30 &&
+            !android.os.Environment.isExternalStorageManager()) {
+            throw SecurityException("Allow Full internal storage access in DocsGrid Settings.")
+        }
+        val file = java.io.File(uri.path ?: throw IllegalArgumentException("Invalid file URI."))
+        val root = android.os.Environment.getExternalStorageDirectory().canonicalFile
+        val canonical = file.canonicalFile
+        if (canonical.path != root.path && !canonical.path.startsWith(root.path + java.io.File.separator)) {
+            throw SecurityException("DocsGrid file access is limited to shared internal storage.")
+        }
+        return canonical
+    }
+
+    private fun listFileDirectory(uri: Uri): List<Map<String, Any>> {
+        val directory = fileForUri(uri)
+        if (!directory.exists()) throw java.io.FileNotFoundException("Missing directory: ${directory.path}")
+        if (!directory.isDirectory) throw IllegalStateException("The selected storage item is not a folder.")
+        // Android intentionally blocks some protected subtrees (notably
+        // Android/data and Android/obb) even with all-files access. Skip those
+        // inaccessible branches without aborting the scan of the rest of storage.
+        val children = try { directory.listFiles() } catch (_: SecurityException) { null }
+            ?: return emptyList()
+        return children.sortedBy { it.name.lowercase() }.map { child ->
+            mapOf(
+                "name" to child.name,
+                "uri" to Uri.fromFile(child).toString(),
+                "isDirectory" to child.isDirectory,
+                "size" to if (child.isFile) child.length() else 0L
+            )
+        }
+    }
+
+    private fun createFilePdf(parent: Uri, requestedName: String, bytes: ByteArray): Uri {
+        validateLeafName(requestedName)
+        val directory = fileForUri(parent)
+        val base = requestedName.removeSuffix(".pdf")
+        var candidate = "$base.pdf"
+        var suffix = 1
+        while (java.io.File(directory, candidate).exists()) {
+            candidate = "$base ($suffix).pdf"
+            suffix++
+        }
+        val target = java.io.File(directory, candidate)
+        target.outputStream().buffered().use { it.write(bytes); it.flush() }
+        if (!target.isFile || target.length() != bytes.size.toLong()) {
+            target.delete()
+            throw IllegalStateException("Could not verify the saved PDF.")
+        }
+        return Uri.fromFile(target)
+    }
+
+    private fun copyFilePdf(source: Uri, parent: Uri, requestedName: String): Uri {
+        validateLeafName(requestedName)
+        val sourceFile = fileForUri(source)
+        val destinationFolder = fileForUri(parent)
+        val base = requestedName.removeSuffix(".pdf")
+        var candidate = "$base.pdf"
+        var suffix = 1
+        while (java.io.File(destinationFolder, candidate).exists()) {
+            candidate = "$base ($suffix).pdf"
+            suffix++
+        }
+        val destination = java.io.File(destinationFolder, candidate)
+        val temporary = java.io.File(destinationFolder, ".docsgrid-${java.util.UUID.randomUUID()}.tmp")
+        try {
+            sourceFile.inputStream().buffered().use { input ->
+                temporary.outputStream().buffered().use { output -> input.copyTo(output, 64 * 1024); output.flush() }
+            }
+            if (!digest(Uri.fromFile(sourceFile)).contentEquals(digest(Uri.fromFile(temporary))) ||
+                !temporary.renameTo(destination)) {
+                throw IllegalStateException("PDF copy verification or publish failed.")
+            }
+            return Uri.fromFile(destination)
+        } finally {
+            if (temporary.exists()) temporary.delete()
+        }
+    }
+
+    private fun writeFileText(parent: Uri, name: String, contents: String): Uri {
+        validateLeafName(name)
+        val target = java.io.File(fileForUri(parent), name)
+        val temporary = java.io.File(target.parentFile, ".$name.tmp-${java.util.UUID.randomUUID()}")
+        try {
+            val bytes = contents.toByteArray(Charsets.UTF_8)
+            temporary.writeBytes(bytes)
+            if (!bytes.contentEquals(temporary.readBytes()) || !temporary.renameTo(target)) {
+                throw IllegalStateException("Could not safely publish metadata file.")
+            }
+            return Uri.fromFile(target)
+        } finally {
+            if (temporary.exists()) temporary.delete()
+        }
+    }
+
+    private fun findFileChild(parent: Uri, name: String): Uri {
+        validateLeafName(name)
+        val child = java.io.File(fileForUri(parent), name)
+        if (!child.exists()) throw MissingStorageChildException("Could not find '$name'.")
+        return Uri.fromFile(child)
+    }
+
+    private fun createFileDirectory(parent: Uri, name: String): Uri {
+        validateLeafName(name)
+        val directory = java.io.File(fileForUri(parent), name)
+        if (!directory.exists() && !directory.mkdirs()) {
+            throw IllegalStateException("Could not create folder in internal storage.")
+        }
+        if (!directory.isDirectory) throw IllegalStateException("A file with this folder name already exists.")
+        return Uri.fromFile(directory)
     }
 
     private fun resolveParentUri(uri: Uri): Uri {
@@ -512,14 +707,19 @@ class MainActivity : FlutterActivity() {
 
     private fun digest(uri: Uri): ByteArray {
         val md = MessageDigest.getInstance("SHA-256")
-        contentResolver.openInputStream(uri)?.use { input ->
+        val inputStream = if (uri.scheme == "file") {
+            fileForUri(uri).inputStream()
+        } else {
+            contentResolver.openInputStream(uri)
+        } ?: throw IllegalStateException("Could not read PDF for verification.")
+        inputStream.use { input ->
             val buffer = ByteArray(64 * 1024)
             while (true) {
                 val count = input.read(buffer)
                 if (count < 0) break
                 md.update(buffer, 0, count)
             }
-        } ?: throw IllegalStateException("Could not read PDF for verification.")
+        }
         return md.digest()
     }
 

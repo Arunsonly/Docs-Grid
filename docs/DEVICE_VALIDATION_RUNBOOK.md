@@ -98,3 +98,18 @@ Use a copy of real user data on a test device, never the only production copy.
 - Backup manifest/hash report and restore outcome from a real test backup.
 
 Hosted CI passing is necessary but does not replace these device and real-data checks.
+
+
+## Personal-use Android storage and complete recovery
+
+- On a personal-use sideloaded build, grant **Full internal storage access** from DocsGrid Settings. Android opens the app-specific All files access settings page; return to DocsGrid and the pending recovery scan resumes automatically.
+- With access granted, the Files dashboard browses shared internal storage from its root. Android-protected `Android/data` and `Android/obb` branches may remain inaccessible by OS design and are skipped without stopping the scan.
+- First-launch recovery checks the existing `Android/media/DocsGrid` tree (`Documents`, `Folders`, `Database`, and `Recovery`) and verifies a portable snapshot. It must not create a new empty tree or change the backup source into a new save location.
+- Portable recovery restores folder hierarchy, PDF metadata and SHA-256 relinks, categories, tags, document-tag links, reminders, activity/history, OCR text indexes and settings. It is additive and remaps conflicting IDs; missing PDFs retain their metadata and are reported for relinking.
+- Reminder records are durable rows in the app-private SQLite database `docs_grid.db`; they are not separate one-file-per-reminder records. When portable storage is configured, creating/updating/snoozing/enabling/disabling/completing/deleting a reminder refreshes a complete portable metadata snapshot containing `reminders.json`. Notification scheduling is reconciled separately from database persistence.
+- Verify on device: create a reminder, inspect the newest `Database/snapshot_*/reminders.json`, relaunch, restore to a clean app install, confirm reminder details and linked PDF IDs, and confirm notification scheduling when Android notification permission is granted.
+- Delete a folder externally in Samsung My Files / Android Files. Refresh DocsGrid; missing physical folder rows must be soft-deleted from the active folder list, while permission/provider errors must not be mistaken for deletion.
+- In a folder containing both subfolders and PDFs, folder drag handles remain visible and PDF long-press enters multi-select without opening a name tooltip.
+
+
+Implementation note: run the automated CI suite for this PR before merge; physical Android device validation remains a separate acceptance step.

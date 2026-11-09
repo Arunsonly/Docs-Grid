@@ -1,5 +1,7 @@
 import 'dart:io';
 
+import 'package:flutter/services.dart';
+
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart';
@@ -64,7 +66,46 @@ class FolderRepository {
       whereArgs: parentId == null ? null : [parentId],
       orderBy: 'sort_order ASC, name COLLATE NOCASE ASC',
     );
-    return rows.map(Folder.fromMap).toList();
+    final storage = StorageLocationService.instance;
+    final visible = <Folder>[];
+    final staleIds = <String>[];
+    for (final row in rows) {
+      final folder = Folder.fromMap(row);
+      final uri = folder.storageUri;
+      if (uri == null ||
+          (!uri.startsWith('content://') && !uri.startsWith('file://'))) {
+        visible.add(folder);
+        continue;
+      }
+      try {
+        // A folder can be deleted outside DocsGrid (for example in Samsung
+        // My Files). Do not keep showing its stale database row.
+        await storage.listDirectory(uri);
+        visible.add(folder);
+      } on PlatformException catch (error) {
+        final details = '${error.message ?? ''} ${error.details ?? ''}';
+        final missing = error.code == 'NOT_FOUND' ||
+            (error.code == 'STORAGE_ERROR' &&
+                (details.contains('FileNotFoundException') ||
+                 details.contains('Missing file')));
+        if (!missing) rethrow;
+        staleIds.add(folder.id);
+      }
+    }
+    if (staleIds.isNotEmpty) {
+      final now = DateTime.now().toUtc().toIso8601String();
+      await db.transaction((txn) async {
+        for (final staleId in staleIds) {
+          await txn.update(
+            'folders',
+            {'deleted_at': now, 'updated_at': now},
+            where: 'id = ? AND deleted_at IS NULL',
+            whereArgs: [staleId],
+          );
+        }
+      });
+    }
+    return visible;
   }
 
   /// Persists the visual order of the active children of one parent.

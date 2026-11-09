@@ -734,13 +734,12 @@ class _FoldersScreenState extends State<FoldersScreen> {
                     child: ListView(
                       padding: const EdgeInsets.fromLTRB(12, 8, 12, 24),
                       children: [
-                        if (folders.isNotEmpty && documents.isEmpty) ...[
+                        if (folders.isNotEmpty) ...[
                           Padding(
                             padding: const EdgeInsets.fromLTRB(4, 8, 4, 4),
                             child: Text('FOLDERS', style: Theme.of(context).textTheme.labelLarge),
                           ),
-                          if (documents.isEmpty)
-                            ReorderableListView.builder(
+                          ReorderableListView.builder(
                               shrinkWrap: true,
                               physics: const NeverScrollableScrollPhysics(),
                               buildDefaultDragHandles: false,
@@ -786,14 +785,6 @@ class _FoldersScreenState extends State<FoldersScreen> {
                                   ),
                                 );
                               },
-                            )
-                          else
-                            Padding(
-                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
-                              child: Text(
-                                'Subfolders are available from the folder menu above.',
-                                style: Theme.of(context).textTheme.bodySmall,
-                              ),
                             ),
                         ],
                         if (documents.isNotEmpty) ...[
@@ -808,13 +799,13 @@ class _FoldersScreenState extends State<FoldersScreen> {
                                 leading: _selectedDocumentIds.isNotEmpty
                                     ? Checkbox(value: _selectedDocumentIds.contains(document.id), onChanged: (_) => setState(() { if (!_selectedDocumentIds.add(document.id)) _selectedDocumentIds.remove(document.id); }))
                                     : const Icon(Icons.picture_as_pdf_outlined),
-                                title: Tooltip(
-                                  message: '${document.name}.pdf',
-                                  triggerMode: TooltipTriggerMode.longPress,
-                                  waitDuration: const Duration(milliseconds: 450),
-                                  child: Text('${document.name}.pdf', maxLines: 1, overflow: TextOverflow.ellipsis),
-                                ),
+                                title: Text('${document.name}.pdf', maxLines: 1, overflow: TextOverflow.ellipsis),
                                 subtitle: Text(_size(document.sizeBytes)),
+                                onLongPress: () {
+                                  setState(() {
+                                    _selectedDocumentIds.add(document.id);
+                                  });
+                                },
                                 onTap: () async {
                                   if (_selectedDocumentIds.isNotEmpty) {
                                     setState(() { if (!_selectedDocumentIds.add(document.id)) _selectedDocumentIds.remove(document.id); });

@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter/services.dart';
+import 'package:open_filex/open_filex.dart';
 
 class StorageLocationService {
   StorageLocationService._();
@@ -54,7 +55,23 @@ class StorageLocationService {
       'databaseUri': value['databaseUri'] as String,
       'recoveryUri': value['recoveryUri'] as String,
       'libraryUri': value['libraryUri'] as String,
+      if (value['documentsUri'] is String)
+        'documentsUri': value['documentsUri'] as String,
     };
+  }
+
+  Future<bool> hasAllFilesAccess() async {
+    if (!Platform.isAndroid) return false;
+    return await _channel.invokeMethod<bool>('hasAllFilesAccess') ?? false;
+  }
+
+  /// Opens Android's special app-specific all-files access settings page.
+  /// The user must explicitly enable the switch and return to DocsGrid.
+  Future<bool> requestAllFilesAccess() async {
+    if (!Platform.isAndroid) {
+      throw UnsupportedError('All-files access is available only on Android.');
+    }
+    return await _channel.invokeMethod<bool>('requestAllFilesAccess') ?? false;
   }
 
   Future<Map<String, String>?> selectedFolder() async {
@@ -186,6 +203,18 @@ class StorageLocationService {
   }
 
   Future<void> openPdf(String uri) async {
+    if (uri.startsWith('file://')) {
+      final result = await OpenFilex.open(
+        Uri.parse(uri).toFilePath(),
+        type: 'application/pdf',
+      );
+      if (result.type != ResultType.done) {
+        throw StateError(result.message.isEmpty
+            ? 'No PDF viewer is available.'
+            : result.message);
+      }
+      return;
+    }
     await _channel.invokeMethod<bool>('openPdf', {'uri': uri});
   }
 

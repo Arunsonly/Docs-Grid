@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
@@ -24,7 +25,8 @@ class DocumentToolsScreen extends StatefulWidget {
   State<DocumentToolsScreen> createState() => _DocumentToolsScreenState();
 }
 
-class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
+class _DocumentToolsScreenState extends State<DocumentToolsScreen>
+    with WidgetsBindingObserver {
   late final DocumentToolsService _tools;
   final _search = TextEditingController();
   bool _searching = false;
@@ -33,10 +35,12 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
   bool _busy = false;
   String? _message;
   bool _hasSearched = false;
+  bool _awaitingAllFilesPermission = false;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _tools = widget.service ?? DocumentToolsService();
     _busy = widget.quickAction == 'camera' || widget.quickAction == 'gallery';
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -45,6 +49,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
         case 'camera': _scan(camera: true); break;
         case 'gallery': _scan(); break;
         case 'backup': _backup(); break;
+        case 'restore_portable': _restorePortableSnapshot(autoDetect: true); break;
         case 'tools': break;
         case 'duplicates': _showDuplicates(); break;
       }
@@ -221,9 +226,25 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
     }
   });
 
-  Future<void> _restorePortableSnapshot() => _run(() async {
-    final selected = await StorageLocationService.instance.chooseRecoveryFolder();
-    if (selected == null) return;
+  Future<void> _restorePortableSnapshot({bool autoDetect = false}) => _run(() async {
+    final storage = StorageLocationService.instance;
+    if (autoDetect) {
+      // Find the existing Android/media/DocsGrid tree automatically. Android
+      // requires its special all-files access switch for this personal-use build.
+      if (Platform.isAndroid && !await storage.hasAllFilesAccess()) {
+        _awaitingAllFilesPermission = true;
+        await storage.requestAllFilesAccess();
+        if (mounted) {
+          setState(() => _message =
+              'Allow Full internal storage access for DocsGrid. Recovery will scan automatically when you return.');
+        }
+        return;
+      }
+      await storage.portableDataLocations();
+    } else {
+      final selected = await storage.chooseRecoveryFolder();
+      if (selected == null) return;
+    }
     final snapshot = await _tools.verifyLatestPortableMetadataSnapshot();
     if (snapshot == null) {
       throw StateError('No verified DocsGrid snapshot was found in the selected folder.');
@@ -254,10 +275,15 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
     final result = await _tools.restoreLatestPortableMetadataSnapshot();
     if (mounted) {
       setState(() => _message =
-        'Folder recovery complete. Added ${result['documentsAdded']} document records; '
-        '${result['documentsLinked']} PDFs linked; '
-        '${result['pdfsMissing']} PDF(s) need relinking. '
-        'Existing data was retained.');
+        'Recovery complete. '
+        'Folders: ${result['folders']}; PDFs added: ${result['documentsAdded']}; '
+        'PDFs linked: ${result['documentsLinked']}; missing PDFs: ${result['pdfsMissing']}.\n'
+        'Categories: ${result['categories']}; tags: ${result['tags']}; '
+        'PDF-tag links: ${result['documentTags']}; reminders: ${result['reminders']}; '
+        'activity/history: ${result['activity']}; OCR indexes: ${result['ocrIndexes']}; '
+        'settings: ${result['settings']}.\n'
+        'Existing data was retained. Reminder records are restored to the app database; '
+        'Android notification delivery is rescheduled separately.');
     }
   });
 
@@ -464,7 +490,23 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed || !_awaitingAllFilesPermission) return;
+    _awaitingAllFilesPermission = false;
+    unawaited(() async {
+      try {
+        if (await StorageLocationService.instance.hasAllFilesAccess() && mounted) {
+          await _restorePortableSnapshot(autoDetect: true);
+        }
+      } catch (error) {
+        if (mounted) setState(() => _message = 'Could not verify storage permission: $error');
+      }
+    }());
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     // Invalidate pending search completions before the route is deactivated.
     _searchGeneration++;
     _search.dispose();

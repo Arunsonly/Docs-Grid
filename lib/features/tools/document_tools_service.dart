@@ -1041,7 +1041,7 @@ class DocumentToolsService {
 
     final stamp = DateTime.now().toUtc().toIso8601String()
         .replaceAll(':', '-').replaceAll('.', '-');
-    final snapshotName = 'snapshot_$stamp';
+    final snapshotName = 'snapshot_${stamp}_${_uuid.v4()}';
     final snapshotUri = await StorageLocationService.instance.createDirectory(
       parentUri: locations['databaseUri']!,
       name: snapshotName,
@@ -1299,7 +1299,15 @@ class DocumentToolsService {
     }
 
     final pdfUris = <String, String>{};
-    final pending = <String>[locations['libraryUri']!];
+    // Portable snapshots keep folder metadata under Folders/ but the actual
+    // PDF payloads are stored under Documents/. Search both trees so a
+    // recovery import can relink the original PDFs instead of restoring only
+    // empty metadata records.
+    final pending = <String>[
+      locations['libraryUri']!,
+      if (locations['documentsUri'] != null)
+        locations['documentsUri']!,
+    ];
     final visited = <String>{};
     while (pending.isNotEmpty) {
       final directoryUri = pending.removeLast();
@@ -1376,6 +1384,19 @@ class DocumentToolsService {
     var addedDocuments = 0;
     var linkedDocuments = 0;
     var missingPdfs = 0;
+    // Metadata entities are restored from the same verified snapshot as PDFs.
+    // Report source record counts separately so the UI does not imply that
+    // reminders/tags/categories are physical files.
+    final recoveredCounts = <String, int>{
+      'folders': folderRows.length,
+      'categories': rowsByTable['categories']!.length,
+      'tags': rowsByTable['tags']!.length,
+      'documentTags': rowsByTable['document_tags']!.length,
+      'reminders': rowsByTable['reminders']!.length,
+      'activity': rowsByTable['history']!.length,
+      'ocrIndexes': rowsByTable['document_text_index']!.length,
+      'settings': rowsByTable['settings']!.length,
+    };
     Future<void> rollbackCreatedFolders() async {
       for (final uri in createdFolderUris.reversed) {
         try {
@@ -1582,6 +1603,7 @@ class DocumentToolsService {
       'documentsAdded': addedDocuments,
       'documentsLinked': linkedDocuments,
       'pdfsMissing': missingPdfs,
+      ...recoveredCounts,
     };
   }
 
