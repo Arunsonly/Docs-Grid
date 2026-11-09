@@ -94,7 +94,6 @@ class PortableSnapshotManifest {
 
   /// Validates folder identifiers, path components and the complete parent graph
   /// before restore code creates any provider directories.
-  @visibleForTesting
   static Map<String, Map<String, Object?>> validateFolderRows(
     List<Map<String, Object?>> rows,
   ) {
@@ -109,7 +108,7 @@ class PortableSnapshotManifest {
       }
       if (name is! String || name.trim().isEmpty || name != name.trim() ||
           name == '.' || name == '..' || name.contains('/') ||
-          name.contains(r'\\') || name.contains('\\u0000') ||
+          name.contains(String.fromCharCode(92)) || name.contains(String.fromCharCode(0)) ||
           name.length > 255 ||
           name.codeUnits.any((unit) => unit < 32 || unit == 127)) {
         throw const FormatException('Snapshot contains an unsafe folder name.');
@@ -128,21 +127,19 @@ class PortableSnapshotManifest {
       }
     }
 
-    final visiting = <String>{};
+    // Walk parent chains iteratively: a valid but deeply nested user folder
+    // tree must not overflow the Dart call stack during restore validation.
     final visited = <String>{};
-    void visit(String id) {
-      if (visiting.contains(id)) {
-        throw const FormatException('Snapshot folder hierarchy contains a cycle.');
-      }
-      if (!visited.add(id)) return;
-      visiting.add(id);
-      final parentId = byId[id]!['parent_id'] as String?;
-      if (parentId != null) visit(parentId);
-      visiting.remove(id);
-    }
-
     for (final id in byId.keys) {
-      visit(id);
+      final path = <String>{};
+      String? current = id;
+      while (current != null && !visited.contains(current)) {
+        if (!path.add(current)) {
+          throw const FormatException('Snapshot folder hierarchy contains a cycle.');
+        }
+        current = byId[current]!['parent_id'] as String?;
+      }
+      visited.addAll(path);
     }
     return Map.unmodifiable(byId);
   }
