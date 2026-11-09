@@ -126,6 +126,11 @@ class AppDatabase {
         });
       },
       onUpgrade: upgradeForTesting,
+      onDowngrade: (db, oldVersion, newVersion) async {
+        throw StateError(
+          'Database downgrade from $oldVersion to $newVersion is not supported',
+        );
+      },
     );
   }
 
