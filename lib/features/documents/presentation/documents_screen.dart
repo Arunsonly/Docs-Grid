@@ -1022,12 +1022,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
         leading: _selectionMode
             ? Checkbox(value: selected, onChanged: (_) => _toggleSelected(document))
             : const CircleAvatar(child: Icon(Icons.picture_as_pdf_outlined)),
-        title: Tooltip(
-          message: '${document.name}.pdf',
-          triggerMode: TooltipTriggerMode.longPress,
-          waitDuration: const Duration(milliseconds: 450),
-          child: Text('${document.name}.pdf', maxLines: 1, overflow: TextOverflow.ellipsis),
-        ),
+        title: Text('${document.name}.pdf', maxLines: 1, overflow: TextOverflow.ellipsis),
         subtitle: Text([
           _size(document.sizeBytes),
           document.categoryName ?? 'Uncategorised',
