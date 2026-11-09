@@ -236,11 +236,15 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
       );
       if (summary.added > 0) {
         final added = await _repository.listPage(query: fileName, pageSize: 10);
-        if (mounted) setState(() {
-          for (final item in added.items) {
-            if (!_documents.any((existing) => existing.id == item.id)) _documents.insert(0, item);
-          }
-        });
+        if (mounted) {
+          setState(() {
+            for (final item in added.items) {
+              if (!_documents.any((existing) => existing.id == item.id)) {
+                _documents.insert(0, item);
+              }
+            }
+          });
+        }
         await _refreshDashboardSummary();
       }
       if (summary.added > 0) {
