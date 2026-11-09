@@ -72,6 +72,12 @@ void main() {
             'id': 'doc-1', 'name': 'policy.pdf', 'created_at': '2024-01-01',
             'updated_at': '2024-01-01', 'folder_id': 'folder-1',
           });
+          await db.insert('reminders', {
+            'id': 'reminder-1', 'document_id': 'doc-1', 'title': 'Renew policy',
+            'remind_at_utc': '2025-01-01T09:00:00Z', 'timezone_id': 'UTC',
+            'next_fire_at_utc': '2025-01-01T09:00:00Z',
+            'created_at': '2024-01-01', 'updated_at': '2024-01-01',
+          });
           if (conflictingTags) {
             // Deliberately make the v2 migration fail after it has created
             // categories, proving SQLite rolls the whole upgrade back.
@@ -105,6 +111,7 @@ void main() {
       expect(await upgraded.getVersion(), 3);
       expect(await upgraded.query('folders', where: 'id = ?', whereArgs: ['folder-1']), hasLength(1));
       expect(await upgraded.query('documents', where: 'id = ?', whereArgs: ['doc-1']), hasLength(1));
+      expect(await upgraded.query('reminders', where: 'id = ?', whereArgs: ['reminder-1']), hasLength(1));
       expect(await upgraded.query('categories', where: 'name = ?', whereArgs: ['Insurance']), hasLength(1));
       expect(await upgraded.rawQuery("SELECT name FROM sqlite_master WHERE type='table' AND name='document_text_index'"), hasLength(1));
       expect(await upgraded.query('schema_migrations', orderBy: 'version'), hasLength(2));
