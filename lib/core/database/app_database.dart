@@ -125,7 +125,12 @@ class AppDatabase {
           'applied_at': DateTime.now().toUtc().toIso8601String(),
         });
       },
-      onUpgrade: (db, oldVersion, newVersion) async {
+      onUpgrade: upgradeForTesting,
+    );
+  }
+
+  @visibleForTesting
+  Future<void> upgradeForTesting(Database db, int oldVersion, int newVersion) async {
         // Databases created by the original v1 app predate schema_migrations.
         // Create the tracking table before recording the first upgrade so an
         // existing user's database can migrate without a missing-table crash.
@@ -149,8 +154,6 @@ class AppDatabase {
             'applied_at': DateTime.now().toUtc().toIso8601String(),
           });
         }
-      },
-    );
   }
 
   Future<void> _createV3Tables(DatabaseExecutor db) async {
