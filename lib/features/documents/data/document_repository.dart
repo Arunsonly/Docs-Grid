@@ -346,7 +346,9 @@ class DocumentRepository {
 
     String? destinationUri;
     if (folderId == null) {
-      destinationUri = (await storage.selectedFolder())?['uri'];
+      destinationUri = Platform.isAndroid
+          ? (await storage.portableDataLocations())['documentsUri']
+          : (await storage.selectedFolder())?['uri'];
     } else {
       final rows = await db.query(
         'folders',
@@ -507,10 +509,15 @@ class DocumentRepository {
   }) async {
     final storage = StorageLocationService.instance;
     final selected = await storage.selectedFolder();
-    if (selected == null) {
+    final portableLocations = Platform.isAndroid
+        ? await storage.portableDataLocations()
+        : const <String, String>{};
+    final rootUri = Platform.isAndroid
+        ? portableLocations['documentsUri']
+        : selected?['uri'];
+    if (rootUri == null) {
       throw StateError('Choose a storage folder before starting migration.');
     }
-    final rootUri = selected['uri']!;
     final db = await _database.database;
     final folderUris = <String, String>{};
     final pendingFolders = <(String?, String)>[(null, rootUri)];
@@ -949,6 +956,9 @@ class DocumentRepository {
 
     final storage = StorageLocationService.instance;
     final selectedFolder = await storage.selectedFolder();
+    final portableLocations = Platform.isAndroid
+        ? await storage.portableDataLocations()
+        : const <String, String>{};
     final db = await _database.database;
     var added = 0;
     var duplicates = 0;
@@ -1013,11 +1023,11 @@ class DocumentRepository {
         final effectiveTargetFolderId = review != null && pickedFiles.length == 1
             ? decision.targetFolderId
             : targetFolderId;
-        final destinationFolderUri = selectedFolder == null
-            ? null
-            : effectiveTargetFolderId == null
-                ? selectedFolder['uri']
-                : await FolderRepository().ensurePhysicalStorageUri(effectiveTargetFolderId);
+        final destinationFolderUri = effectiveTargetFolderId != null
+            ? await FolderRepository().ensurePhysicalStorageUri(effectiveTargetFolderId)
+            : (Platform.isAndroid
+                ? portableLocations['documentsUri']
+                : selectedFolder?['uri']);
         final library = selectedFolder == null
             ? await _privateFolderFor(effectiveTargetFolderId)
             : null;
