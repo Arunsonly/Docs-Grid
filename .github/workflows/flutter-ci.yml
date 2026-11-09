@@ -52,6 +52,18 @@ jobs:
             }
           }
           gradle.beforeSettings { settings ->
+            // The mirror is only a fallback for Kotlin artifacts. Flutter's
+            // Gradle plugin marker (org.gradle.kotlin.kotlin-dsl) is published
+            // through the Gradle Plugin Portal, not the WSO2 Maven mirror.
+            settings.pluginManagement.repositories {
+              gradlePluginPortal()
+              google()
+              mavenCentral()
+            }
+            settings.dependencyResolutionManagement.repositories {
+              google()
+              mavenCentral()
+            }
             addKotlinMirror(settings.pluginManagement.repositories)
             addKotlinMirror(settings.dependencyResolutionManagement.repositories)
           }
