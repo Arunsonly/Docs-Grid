@@ -92,7 +92,7 @@ void main() {
         ]),
         throwsFormatException,
       );
-      for (final unsafe in ['.', '..', 'a/b', r'a\\b', 'bad\u0000name']) {
+      for (final unsafe in ['.', '..', 'a/b', 'a${String.fromCharCode(92)}b', 'bad\u0000name']) {
         expect(
           () => PortableSnapshotManifest.validateFolderRows([
             {'id': 'x', 'name': unsafe, 'parent_id': null},
