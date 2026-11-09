@@ -20,6 +20,7 @@ import 'package:uuid/uuid.dart';
 import '../../core/database/app_database.dart';
 import '../../core/storage/storage_location_service.dart';
 import '../reminders/data/reminder_notifications.dart';
+import 'backup_archive_limits.dart';
 import 'backup_folder_graph_validator.dart';
 import 'document_crop_screen.dart';
 import 'portable_snapshot_manifest.dart';
@@ -33,6 +34,21 @@ class DocumentToolsService {
 
   final AppDatabase _database;
   static const _uuid = Uuid();
+
+  /// Hashes untrusted IDs before using them as restore path segments.
+  @visibleForTesting
+  static String safeRestorePathToken(String value) =>
+      sha256.convert(utf8.encode(value)).toString();
+
+  /// Escapes text for a literal SQLite LIKE substring query.
+  @visibleForTesting
+  static String escapeLikeQuery(String value) {
+    final slash = String.fromCharCode(92);
+    return value
+        .replaceAll(slash, '$slash$slash')
+        .replaceAll('%', '$slash%')
+        .replaceAll('_', '${slash}_');
+  }
   static final Set<String> _indexingDocumentIds = <String>{};
 
   /// Normalizes OCR text for exact-content duplicate comparison.
@@ -596,6 +612,7 @@ class DocumentToolsService {
       await addStoredFile(manifestFile, 'manifest.json');
       await encoder.close();
       encoderOpened = false;
+      await BackupArchiveLimits.validate(output);
       return output;
     } catch (_) {
       if (encoderOpened) {
@@ -1367,6 +1384,11 @@ class DocumentToolsService {
 
   Future<_ValidatedBackup> _decodeValidatedBackup(File zipFile) async {
     if (!await zipFile.exists()) throw StateError('Backup file not found.');
+    try {
+      await BackupArchiveLimits.validate(zipFile);
+    } on FormatException catch (error) {
+      throw StateError(error.message);
+    }
     final input = InputFileStream(zipFile.path);
     Directory? staging;
     try {
@@ -1407,7 +1429,7 @@ class DocumentToolsService {
         if (raw is! Map || raw['id'] is! String ||
             (raw['id'] as String).trim().isEmpty ||
             !documentIds.add(raw['id'] as String)) {
-          throw StateError('Backup contains an invalid or duplicate document ID.');
+          throw StateError('Backup contains duplicate document metadata IDs or an invalid document ID.');
         }
       }
 
@@ -1435,6 +1457,16 @@ class DocumentToolsService {
             .toList();
       }
       BackupFolderGraphValidator.validate(rowsByTable['folders']!);
+      try {
+        PortableSnapshotManifest.validateFolderRows(rowsByTable['folders']!);
+        PortableSnapshotManifest.validateRelations(rowsByTable);
+      } on FormatException catch (error) {
+        final message = error.message.toString();
+        if (message.contains('document tag')) {
+          throw StateError('Backup document-tag reference points to a missing record.');
+        }
+        throw StateError(message);
+      }
       PortableSnapshotRowsValidator.validate(rowsByTable);
 
       final rawFiles = manifest['files'];
@@ -1487,7 +1519,7 @@ class DocumentToolsService {
       }
       if (seenDocuments.length != documentIds.length ||
           !seenDocuments.containsAll(documentIds)) {
-        throw StateError('Backup is incomplete: every document must have exactly one PDF entry.');
+        throw StateError('Backup contains orphaned PDF entries: every document must have exactly one PDF entry.');
       }
       final expectedEntries = <String>{
         'manifest.json',

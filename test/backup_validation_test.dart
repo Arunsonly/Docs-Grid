@@ -37,11 +37,32 @@ void main() {
     ];
     final tableCounts = <String, int>{};
     for (final table in tableNames) {
+      const stamp = '2026-01-01T00:00:00.000Z';
+      final normalizedDocuments = documents.map((row) => <String, Object?>{
+        'id': '', 'name': '', 'original_name': null, 'storage_uri': null,
+        'relative_path': null, 'mime_type': 'application/pdf', 'size_bytes': 0,
+        'sha256': null, 'folder_id': null, 'category_id': null,
+        'extracted_text_status': 'pending', 'expiry_date': null,
+        'created_at': stamp, 'updated_at': stamp, 'last_opened_at': null,
+        'deleted_at': null, 'source': null, 'metadata_json': null, ...row,
+      }).toList();
+      final normalizedFolders = folders.map((row) => <String, Object?>{
+        'id': '', 'name': '', 'parent_id': null,
+        'storage_uri_or_relative_path': null, 'created_at': stamp,
+        'updated_at': stamp, 'deleted_at': null, ...row,
+      }).toList();
+      final normalizedCategories = categories.map((row) => <String, Object?>{
+        'id': '', 'name': '', 'icon_key': null, 'color_key': null,
+        'is_builtin': 0, 'created_at': stamp, ...row,
+      }).toList();
+      final normalizedTags = tags.map((row) => <String, Object?>{
+        'id': '', 'name': '', 'created_at': stamp, ...row,
+      }).toList();
       final rows = switch (table) {
-        'documents' => documents,
-        'folders' => folders,
-        'categories' => categories,
-        'tags' => tags,
+        'documents' => normalizedDocuments,
+        'folders' => normalizedFolders,
+        'categories' => normalizedCategories,
+        'tags' => normalizedTags,
         'document_tags' => documentTags,
         _ => <Map<String, Object?>>[],
       };
@@ -180,7 +201,7 @@ void main() {
       throwsA(isA<StateError>().having(
         (error) => error.message,
         'message',
-        contains('folder ID, name'),
+        contains('unsafe folder name'),
       )),
     );
   });
