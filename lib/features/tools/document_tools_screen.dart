@@ -45,6 +45,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
         case 'camera': _scan(camera: true); break;
         case 'gallery': _scan(); break;
         case 'backup': _backup(); break;
+        case 'restore_portable': _restorePortableSnapshot(autoDetect: true); break;
         case 'tools': break;
         case 'duplicates': _showDuplicates(); break;
       }
@@ -221,9 +222,21 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
     }
   });
 
-  Future<void> _restorePortableSnapshot() => _run(() async {
-    final selected = await StorageLocationService.instance.chooseRecoveryFolder();
-    if (selected == null) return;
+  Future<void> _restorePortableSnapshot({bool autoDetect = false}) => _run(() async {
+    final storage = StorageLocationService.instance;
+    if (autoDetect) {
+      // Reuse an already-granted DocsGrid tree on this device. Only ask the
+      // user to locate a folder when no portable recovery tree is configured.
+      try {
+        await storage.portableDataLocations();
+      } on StateError {
+        final selected = await storage.chooseRecoveryFolder();
+        if (selected == null) return;
+      }
+    } else {
+      final selected = await storage.chooseRecoveryFolder();
+      if (selected == null) return;
+    }
     final snapshot = await _tools.verifyLatestPortableMetadataSnapshot();
     if (snapshot == null) {
       throw StateError('No verified DocsGrid snapshot was found in the selected folder.');
