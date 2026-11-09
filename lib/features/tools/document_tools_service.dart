@@ -653,7 +653,10 @@ class DocumentToolsService {
     await SharePlus.instance.share(ShareParams(files: [XFile(path)], text: text));
   }
 
-  Future<File> createBackup({void Function(int, int)? onProgress}) async {
+  Future<File> createBackup({
+    void Function(int, int)? onProgress,
+    bool includePdfs = true,
+  }) async {
     final portableLocations = Platform.isAndroid
         ? await StorageLocationService.instance.portableDataLocations()
         : const <String, String>{};
@@ -663,7 +666,7 @@ class DocumentToolsService {
     final manifest = <String, Object?>{
       'format': 'DocsGridBackup',
       'version': 1,
-      'backupType': 'full',
+      'backupType': includePdfs ? 'full' : 'database',
       'createdAt': DateTime.now().toUtc().toIso8601String(),
       'tables': <String, int>{},
       'files': <Map<String, Object?>>[],
@@ -730,8 +733,18 @@ class DocumentToolsService {
             );
             if (rows.isEmpty) break;
             for (final row in rows) {
+              final portableRow = Map<String, Object?>.from(row);
+              if (table == 'documents') {
+                // Never export phone-specific absolute paths as backup
+                // references. Full archives map PDFs through manifest entries;
+                // database-only archives explicitly mark them as missing.
+                portableRow['storage_uri'] = includePdfs
+                    ? 'backup-pdf://${row['id']}'
+                    : 'missing://${row['id']}';
+                portableRow['relative_path'] = null;
+              }
               if (rowCount > 0) await outputFile.writeString(',');
-              await outputFile.writeString(jsonEncode(row), encoding: utf8);
+              await outputFile.writeString(jsonEncode(portableRow), encoding: utf8);
               rowCount++;
             }
             offset += rows.length;
@@ -745,64 +758,66 @@ class DocumentToolsService {
         await addStoredFile(metadataFile, '$table.json');
       }
 
-      final totalDocs = Sqflite.firstIntValue(
-        await db.rawQuery('SELECT COUNT(*) FROM documents'),
-      ) ?? 0;
-      var completed = 0;
-      var documentOffset = 0;
-      while (true) {
-        final docs = await db.query(
-          'documents',
-          columns: ['id', 'name', 'storage_uri', 'sha256'],
-          limit: 250,
-          offset: documentOffset,
-          orderBy: 'id',
-        );
-        if (docs.isEmpty) break;
-        for (final row in docs) {
-        final uri = row['storage_uri'] as String?;
-        if (uri == null || uri.isEmpty) {
-          throw StateError('Backup cannot be complete: "${row['name']}" has no storage reference.');
-        }
-        File? stagedProviderFile;
-        final File file;
-        if (uri.startsWith('content://')) {
-          stagedProviderFile = File(p.join(staging.path, 'source_${_uuid.v4()}.pdf'));
-          await StorageLocationService.instance.copyPdfToPath(
-            sourceUri: uri,
-            destinationPath: stagedProviderFile.path,
+      if (includePdfs) {
+        final totalDocs = Sqflite.firstIntValue(
+          await db.rawQuery('SELECT COUNT(*) FROM documents'),
+        ) ?? 0;
+        var completed = 0;
+        var documentOffset = 0;
+        while (true) {
+          final docs = await db.query(
+            'documents',
+            columns: ['id', 'name', 'storage_uri', 'sha256'],
+            limit: 250,
+            offset: documentOffset,
+            orderBy: 'id',
           );
-          file = stagedProviderFile;
-        } else {
-          file = File(uri.startsWith('file://') ? Uri.parse(uri).toFilePath() : uri);
-        }
-        try {
-          if (!await file.exists()) {
-            throw StateError('Backup cannot be complete: "${row['name']}" is unavailable. Repair storage access and retry.');
+          if (docs.isEmpty) break;
+          for (final row in docs) {
+          final uri = row['storage_uri'] as String?;
+          if (uri == null || uri.isEmpty) {
+            throw StateError('Backup cannot be complete: "${row['name']}" has no storage reference.');
           }
-          final digest = (await sha256.bind(file.openRead()).first).toString();
-          final expected = row['sha256'] as String?;
-          if (expected != null && expected.isNotEmpty && digest != expected) {
-            throw StateError('Backup stopped: "${row['name']}" failed SHA-256 verification.');
+          File? stagedProviderFile;
+          final File file;
+          if (uri.startsWith('content://')) {
+            stagedProviderFile = File(p.join(staging.path, 'source_${_uuid.v4()}.pdf'));
+            await StorageLocationService.instance.copyPdfToPath(
+              sourceUri: uri,
+              destinationPath: stagedProviderFile.path,
+            );
+            file = stagedProviderFile;
+          } else {
+            file = File(uri.startsWith('file://') ? Uri.parse(uri).toFilePath() : uri);
           }
-          // Never place imported database IDs in archive paths.
-          final entry = 'pdfs/${_uuid.v4()}.pdf';
-          // Stream already-compressed PDF bytes directly into the ZIP without
-          // allocating a second full-size buffer or recompressing the payload.
-          await addStoredFile(file, entry);
-          (manifest['files'] as List).add({
-            'documentId': row['id'], 'entry': entry, 'sha256': digest,
-            'originalName': row['name'],
-          });
-        } finally {
-          if (stagedProviderFile != null && await stagedProviderFile.exists()) {
-            await stagedProviderFile.delete();
+          try {
+            if (!await file.exists()) {
+              throw StateError('Backup cannot be complete: "${row['name']}" is unavailable. Repair storage access and retry.');
+            }
+            final digest = (await sha256.bind(file.openRead()).first).toString();
+            final expected = row['sha256'] as String?;
+            if (expected != null && expected.isNotEmpty && digest != expected) {
+              throw StateError('Backup stopped: "${row['name']}" failed SHA-256 verification.');
+            }
+            // Never place imported database IDs in archive paths.
+            final entry = 'pdfs/${_uuid.v4()}.pdf';
+            // Stream already-compressed PDF bytes directly into the ZIP without
+            // allocating a second full-size buffer or recompressing the payload.
+            await addStoredFile(file, entry);
+            (manifest['files'] as List).add({
+              'documentId': row['id'], 'entry': entry, 'sha256': digest,
+              'originalName': row['name'],
+            });
+          } finally {
+            if (stagedProviderFile != null && await stagedProviderFile.exists()) {
+              await stagedProviderFile.delete();
+            }
           }
+            completed++;
+            onProgress?.call(completed, totalDocs);
+          }
+          documentOffset += docs.length;
         }
-          completed++;
-          onProgress?.call(completed, totalDocs);
-        }
-        documentOffset += docs.length;
       }
 
       final manifestFile = File(p.join(staging.path, 'manifest.json'));
@@ -1058,8 +1073,14 @@ class DocumentToolsService {
           final oldCategoryId = row['category_id'] as String?;
           copy['category_id'] = oldCategoryId == null ? null : categoryIdMap[oldCategoryId];
           final restored = restoredPaths[row['id']];
-          if (restored == null) throw StateError('Backup is missing PDF bytes for "${row['name']}".');
-          copy['storage_uri'] = restored;
+          final isDatabaseOnly = manifest['backupType'] == 'database';
+          if (restored == null && !isDatabaseOnly) {
+            throw StateError('Backup is missing PDF bytes for "${row['name']}".');
+          }
+          // Database-only restores recover document metadata and relationships
+          // while marking unavailable PDF payloads for explicit relinking.
+          copy['storage_uri'] = restored ?? 'missing://${row['id']}';
+          copy['relative_path'] = null;
           queueInsert('documents', copy);
           if (pending >= 500) await flushBatch();
         }
