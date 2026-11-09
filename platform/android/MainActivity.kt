@@ -164,7 +164,15 @@ class MainActivity : FlutterActivity() {
                             "getSelectedFolder" -> {
                                 val prefs = getSharedPreferences("docsgrid_storage", MODE_PRIVATE)
                                 val uri = prefs.getString("folders_uri", null) ?: prefs.getString("my_files_uri", null)
-                                result.success(uri?.let { mapOf("uri" to it, "name" to "DocsGrid/Folders") })
+                                val selected = uri ?: if (
+                                    android.os.Build.VERSION.SDK_INT < 30 ||
+                                    android.os.Environment.isExternalStorageManager()
+                                ) {
+                                    Uri.fromFile(android.os.Environment.getExternalStorageDirectory()).toString()
+                                } else null
+                                result.success(selected?.let {
+                                    mapOf("uri" to it, "name" to if (uri == null) "Internal storage" else "DocsGrid/Folders")
+                                })
                             }
                             "consumeSharedPdfs" -> result.success(consumeSharedPdfs(incomingShareIntent))
                             "checkStorageAccess" -> result.success(checkStorageAccess())
@@ -189,7 +197,7 @@ class MainActivity : FlutterActivity() {
                                 val tree = Uri.parse(call.argument<String>("treeUri")!!)
                                 val name = call.argument<String>("name")!!
                                 val bytes = call.argument<ByteArray>("bytes")!!
-                                result.success(createPdf(tree, name, bytes).toString())
+                                result.success((if (tree.scheme == "file") createFilePdf(tree, name, bytes) else createPdf(tree, name, bytes)).toString())
                             }
                             "createDirectory" -> {
                                 val parent = Uri.parse(call.argument<String>("parentUri")!!)
@@ -200,7 +208,7 @@ class MainActivity : FlutterActivity() {
                                 val source = Uri.parse(call.argument<String>("sourceUri")!!)
                                 val parent = Uri.parse(call.argument<String>("parentUri")!!)
                                 val name = call.argument<String>("name")!!
-                                result.success(copyPdf(source, parent, name).toString())
+                                result.success((if (parent.scheme == "file") copyFilePdf(source, parent, name) else copyPdf(source, parent, name)).toString())
                             }
                             "copyPdfToPath" -> {
                                 val source = Uri.parse(call.argument<String>("sourceUri")!!)
@@ -242,7 +250,7 @@ class MainActivity : FlutterActivity() {
                                 val parent = Uri.parse(call.argument<String>("parentUri")!!)
                                 val name = call.argument<String>("name")!!
                                 val contents = call.argument<String>("contents")!!
-                                result.success(writeTextFile(parent, name, contents).toString())
+                                result.success((if (parent.scheme == "file") writeFileText(parent, name, contents) else writeTextFile(parent, name, contents)).toString())
                             }
                             "readTextFile" -> {
                                 val uri = Uri.parse(call.argument<String>("uri")!!)
@@ -455,6 +463,68 @@ class MainActivity : FlutterActivity() {
                 "size" to if (child.isFile) child.length() else 0L
             )
         } ?: throw IllegalStateException("Could not list the selected internal storage folder.")
+    }
+
+    private fun createFilePdf(parent: Uri, requestedName: String, bytes: ByteArray): Uri {
+        validateLeafName(requestedName)
+        val directory = fileForUri(parent)
+        val base = requestedName.removeSuffix(".pdf")
+        var candidate = "$base.pdf"
+        var suffix = 1
+        while (java.io.File(directory, candidate).exists()) {
+            candidate = "$base ($suffix).pdf"
+            suffix++
+        }
+        val target = java.io.File(directory, candidate)
+        target.outputStream().buffered().use { it.write(bytes); it.flush() }
+        if (!target.isFile || target.length() != bytes.size.toLong()) {
+            target.delete()
+            throw IllegalStateException("Could not verify the saved PDF.")
+        }
+        return Uri.fromFile(target)
+    }
+
+    private fun copyFilePdf(source: Uri, parent: Uri, requestedName: String): Uri {
+        validateLeafName(requestedName)
+        val sourceFile = fileForUri(source)
+        val destinationFolder = fileForUri(parent)
+        val base = requestedName.removeSuffix(".pdf")
+        var candidate = "$base.pdf"
+        var suffix = 1
+        while (java.io.File(destinationFolder, candidate).exists()) {
+            candidate = "$base ($suffix).pdf"
+            suffix++
+        }
+        val destination = java.io.File(destinationFolder, candidate)
+        val temporary = java.io.File(destinationFolder, ".docsgrid-${java.util.UUID.randomUUID()}.tmp")
+        try {
+            sourceFile.inputStream().buffered().use { input ->
+                temporary.outputStream().buffered().use { output -> input.copyTo(output, 64 * 1024); output.flush() }
+            }
+            if (!digest(Uri.fromFile(sourceFile)).contentEquals(digest(Uri.fromFile(temporary))) ||
+                !temporary.renameTo(destination)) {
+                throw IllegalStateException("PDF copy verification or publish failed.")
+            }
+            return Uri.fromFile(destination)
+        } finally {
+            if (temporary.exists()) temporary.delete()
+        }
+    }
+
+    private fun writeFileText(parent: Uri, name: String, contents: String): Uri {
+        validateLeafName(name)
+        val target = java.io.File(fileForUri(parent), name)
+        val temporary = java.io.File(target.parentFile, ".$name.tmp-${java.util.UUID.randomUUID()}")
+        try {
+            val bytes = contents.toByteArray(Charsets.UTF_8)
+            temporary.writeBytes(bytes)
+            if (!bytes.contentEquals(temporary.readBytes()) || !temporary.renameTo(target)) {
+                throw IllegalStateException("Could not safely publish metadata file.")
+            }
+            return Uri.fromFile(target)
+        } finally {
+            if (temporary.exists()) temporary.delete()
+        }
     }
 
     private fun findFileChild(parent: Uri, name: String): Uri {
