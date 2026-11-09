@@ -69,7 +69,7 @@ void main() {
       });
       await database.insert('document_text_index', {
         'document_id': item['id'],
-        'extracted_text': '--- Page 1 ---\nPolicy number 987654321\nRenewal date 2027-01-01',
+        'extracted_text': '--- Page 1 ---\nPolicy number 987654321\nRenewal date 2027-01-01\nInsured person and address details are included for the policy holder and the annual premium payment record.',
         'indexed_at': stamp, 'page_count': 1,
       });
     }
