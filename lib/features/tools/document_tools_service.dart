@@ -811,9 +811,14 @@ class DocumentToolsService {
 
   /// Additively restores a verified archive. Existing document/folder IDs are
   /// never overwritten; any collision aborts the database transaction.
-  Future<int> restoreBackup(File zipFile) async {
+  Future<int?> restoreBackup(
+    File zipFile, {
+    Future<bool> Function(int pdfCount)? confirm,
+  }) async {
     final backup = await _decodeValidatedBackup(zipFile);
     try {
+      final pdfCount = (backup.manifest['files'] as List<dynamic>).length;
+      if (confirm != null && !await confirm(pdfCount)) return null;
       return await _restoreValidatedBackup(backup);
     } finally {
       await backup.dispose();
