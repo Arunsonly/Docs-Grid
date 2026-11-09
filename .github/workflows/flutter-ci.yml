@@ -39,7 +39,7 @@ jobs:
           wrapper = Path('android/gradle/wrapper/gradle-wrapper.properties')
           if not wrapper.exists():
               raise SystemExit('Gradle wrapper properties were not generated')
-          text = wrapper.read_text()
+          content = wrapper.read_text()
           match = re.search(r'(?m)^distributionUrl=(.+)        run: |
           python3 - <<'PY'
           from pathlib import Path
@@ -231,17 +231,17 @@ jobs:
         run: flutter test
       - name: Build iOS without code signing
         run: flutter build ios --no-codesign
-, text)
+, content)
           if not match:
               raise SystemExit('Gradle distributionUrl is missing')
-          url = match.group(1).replace(r'\\:', ':')
+          url = match.group(1).replace(r'\:', ':')
           filename = url.rsplit('/', 1)[-1]
-          if not re.fullmatch(r'gradle-[0-9][A-Za-z0-9.+-]*-(?:all|bin)\\.zip', filename):
-              raise SystemExit(f'Unexpected Gradle distribution filename: {filename}')
-          direct_url = r'https\\://downloads.gradle.org/distributions/' + filename
-          text = text[:match.start(1)] + direct_url + text[match.end(1):]
-          wrapper.write_text(text)
-          print(f'Using official direct Gradle distribution: {direct_url}')
+          if not re.fullmatch(r'gradle-[0-9][A-Za-z0-9.+-]*-(?:all|bin)\.zip', filename):
+              raise SystemExit('Unexpected Gradle distribution filename: ' + filename)
+          direct_url = r'https\://downloads.gradle.org/distributions/' + filename
+          content = content[:match.start(1)] + direct_url + content[match.end(1):]
+          wrapper.write_text(content)
+          print('Using official direct Gradle distribution: ' + direct_url)
           PY
       - name: Set DocsGrid app display name on Android and iOS
         run: |
