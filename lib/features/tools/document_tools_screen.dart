@@ -337,7 +337,9 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
     }
   });
 
-  Future<void> _restoreNewestPortableBackup() => _run(() async {
+  Future<void> _restoreNewestPortableBackup() => _run(_restoreNewestPortableBackupBody);
+
+  Future<void> _restoreNewestPortableBackupBody() async {
     final candidates = await _tools.listPortableBackupArchives();
     if (candidates.isEmpty) {
       throw StateError('No portable DocsGrid backup ZIP was found.');
@@ -375,7 +377,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
       setState(() => _message =
           'Portable recovery completed: $restored PDF(s) restored from a verified backup.');
     }
-  });
+  }
 
   Future<void> _restorePortableSnapshot({bool autoDetect = false}) => _run(() async {
     final storage = StorageLocationService.instance;
@@ -392,6 +394,11 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
         return;
       }
       await storage.portableDataLocations();
+      final portableBackups = await _tools.listPortableBackupArchives();
+      if (portableBackups.isNotEmpty) {
+        await _restoreNewestPortableBackupBody();
+        return;
+      }
     } else {
       final selected = await storage.chooseRecoveryFolder();
       if (selected == null) return;
