@@ -1878,9 +1878,14 @@ class DocumentToolsService {
         }
         stagedPdfPaths[documentId] = stagedFile.path;
       }
-      if (seenDocuments.length != documentIds.length ||
-          !seenDocuments.containsAll(documentIds)) {
+      final databaseOnly = manifest['backupType'] == 'database';
+      if (!databaseOnly &&
+          (seenDocuments.length != documentIds.length ||
+           !seenDocuments.containsAll(documentIds))) {
         throw StateError('Backup contains orphaned PDF entries: every document must have exactly one PDF entry.');
+      }
+      if (databaseOnly && rawFiles.isNotEmpty) {
+        throw StateError('Database-only backup must not contain PDF payload entries.');
       }
       final expectedEntries = <String>{
         'manifest.json',
