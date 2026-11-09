@@ -1148,11 +1148,16 @@ class DocumentToolsService {
       return path;
     }
     final folderIdMap = <String, String>{};
+    final folderNameOverrides = <String, String>{};
     for (final row in folderRows) {
       final oldId = row['id'] as String;
-      final samePathId = existingFolderIdsByPath[backupFolderPath(oldId)];
-      folderIdMap[oldId] = samePathId ??
-          (existingFolderIds.contains(oldId) ? _uuid.v4() : oldId);
+      final samePathExists = existingFolderIdsByPath.containsKey(backupFolderPath(oldId));
+      folderIdMap[oldId] = existingFolderIds.contains(oldId) || samePathExists
+          ? _uuid.v4()
+          : oldId;
+      if (samePathExists) {
+        folderNameOverrides[oldId] = '${row['name']} (restored)';
+      }
     }
     final existingDocuments = replaceExisting
         ? <Map<String, Object?>>[]
@@ -1212,7 +1217,7 @@ class DocumentToolsService {
     final folderPaths = <String, String>{};
     final folderDirectoryNames = <String, String>{
       for (final row in folderRows)
-        (row['id'] as String): '${(row['name'] as String).replaceAll(RegExp(r'[^A-Za-z0-9 _.-]'), '_').trim()}_${safeRestorePathToken(row['id'] as String).substring(0, 8)}',
+        (row['id'] as String): '${(folderNameOverrides[row['id']] ?? row['name'] as String).replaceAll(RegExp(r'[^A-Za-z0-9 _.-]'), '_').trim()}_${safeRestorePathToken(row['id'] as String).substring(0, 8)}',
     };
     String folderPath(String id) {
       final known = folderPaths[id];
@@ -1301,6 +1306,7 @@ class DocumentToolsService {
           final oldId = row['id'] as String;
           final copy = Map<String, Object?>.from(row);
           copy['id'] = folderIdMap[oldId];
+          copy['name'] = folderNameOverrides[oldId] ?? row['name'];
           final oldParentId = row['parent_id'] as String?;
           copy['parent_id'] = oldParentId == null ? null : folderIdMap[oldParentId];
           copy['storage_uri_or_relative_path'] = folderPath(oldId);
