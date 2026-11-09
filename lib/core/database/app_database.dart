@@ -151,7 +151,7 @@ class AppDatabase {
       )
     ''');
     final applied = DateTime.now().toUtc().toIso8601String();
-    if (oldVersion < 1) {
+    if (oldVersion == 1) {
       await db.insert('schema_migrations', {'version': 1, 'applied_at': applied},
           conflictAlgorithm: ConflictAlgorithm.ignore);
     }
