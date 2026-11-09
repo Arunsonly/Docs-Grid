@@ -1008,7 +1008,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                     );
                   }
                 }
-                _starredCount = (_starredCount + (nextFavorite ? 1 : -1)).clamp(0, _totalDocumentCount);
+                _starredCount = (_starredCount + (nextFavorite ? 1 : -1)).clamp(0, _totalDocumentCount).toInt();
               });
             } else if (value == 'tags') {
               await _editTags(document);
