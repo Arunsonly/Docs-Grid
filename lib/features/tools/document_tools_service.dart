@@ -1293,8 +1293,15 @@ class DocumentToolsService {
       }
       return restoredPaths.length;
     } catch (_) {
-      if (!databaseCommitted && await restoreRoot.exists()) {
-        try { await restoreRoot.delete(recursive: true); } catch (_) {}
+      if (!databaseCommitted) {
+        try {
+          if (await restoreRoot.exists()) await restoreRoot.delete(recursive: true);
+        } catch (_) {}
+        try {
+          if (await folderRestoreRoot.exists()) {
+            await folderRestoreRoot.delete(recursive: true);
+          }
+        } catch (_) {}
       }
       rethrow;
     }
@@ -1969,7 +1976,32 @@ class DocumentToolsService {
         for (final raw in metadataFiles) {
           if (raw is! Map || raw['entry'] is! String ||
               raw['sizeBytes'] is! int || raw['sha256'] is! String ||
-              !RegExp(r'^[a-fA-F0-9]{64}
+              !RegExp(r'^[a-fA-F0-9]{64}' + r'$').hasMatch(raw['sha256'] as String)) {
+            throw StateError('Backup contains an invalid metadata checksum record.');
+          }
+          final name = raw['entry'] as String;
+          if (!seenMetadata.add(name) || !name.endsWith('.json') ||
+              name.contains('/') || name.contains('\\\\')) {
+            throw StateError('Backup contains an unsafe metadata checksum path.');
+          }
+          final entry = decoded.findFile(name);
+          if (entry == null || !entry.isFile || entry.isSymbolicLink) {
+            throw StateError('Backup metadata entry is missing: $name.');
+          }
+          final bytes = entry.content as List<int>;
+          if (bytes.length != raw['sizeBytes'] ||
+              sha256.convert(bytes).toString() != (raw['sha256'] as String).toLowerCase()) {
+            throw StateError('Backup metadata integrity check failed for $name.');
+          }
+        }
+        final declaredMetadataEntries = archiveNames
+            .where((name) => name.endsWith('.json') && name != 'manifest.json')
+            .toSet();
+        if (!seenMetadata.containsAll(declaredMetadataEntries) ||
+            !declaredMetadataEntries.containsAll(seenMetadata)) {
+          throw StateError('Backup is missing a metadata checksum or contains an unreferenced metadata checksum.');
+        }
+      }
       final rowsByTable = <String, List<Map<String, Object?>>>{};
       for (final table in tableNames) {
         final tableFile = decoded.findFile('$table.json');
