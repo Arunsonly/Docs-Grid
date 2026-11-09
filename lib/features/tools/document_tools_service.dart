@@ -166,7 +166,11 @@ class DocumentToolsService {
     throw StateError('Use Recycle Bin to remove reviewed copies individually. No file was deleted.');
   }
 
-  Future<int> indexPdfText(String documentId, String path) async {
+  Future<int> indexPdfText(
+    String documentId,
+    String path, {
+    bool Function()? shouldCancel,
+  }) async {
     if (!_indexingDocumentIds.add(documentId)) {
       throw StateError('This document is already being indexed.');
     }
@@ -186,7 +190,7 @@ class DocumentToolsService {
           where: 'id = ? AND deleted_at IS NULL',
           whereArgs: [documentId],
         );
-        return await _indexPdfTextInternal(documentId, path);
+        return await _indexPdfTextInternal(documentId, path, shouldCancel: shouldCancel);
       } catch (_) {
         // Keep an older successful index usable if a re-index attempt fails.
         try {
@@ -206,7 +210,11 @@ class DocumentToolsService {
     }
   }
 
-  Future<int> _indexPdfTextInternal(String documentId, String path) async {
+  Future<int> _indexPdfTextInternal(
+    String documentId,
+    String path, {
+    bool Function()? shouldCancel,
+  }) async {
     final db = await _database.database;
     final documentRows = await db.query(
       'documents',
@@ -224,14 +232,17 @@ class DocumentToolsService {
     }
     final document = await pdfx.PdfDocument.openFile(path);
     final pageCount = document.pagesCount;
-    final recognizer = TextRecognizer(script: TextRecognitionScript.latin);
+    TextRecognizer? recognizer;
     TextRecognizer? devanagariRecognizer;
     final pages = StringBuffer();
     try {
+      if (shouldCancel?.call() ?? false) throw const OcrIndexCancelled();
+      recognizer = TextRecognizer(script: TextRecognitionScript.latin);
       if (Platform.isAndroid) {
         devanagariRecognizer = TextRecognizer(script: TextRecognitionScript.devanagiri);
       }
       for (var pageNumber = 1; pageNumber <= document.pagesCount; pageNumber++) {
+        if (shouldCancel?.call() ?? false) throw const OcrIndexCancelled();
         final page = await document.getPage(pageNumber);
         try {
           final rendered = await page.render(
@@ -239,6 +250,7 @@ class DocumentToolsService {
             height: (page.height * 1.5).clamp(900, 2400).toDouble(),
             format: pdfx.PdfPageImageFormat.png,
           );
+          if (shouldCancel?.call() ?? false) throw const OcrIndexCancelled();
           if (rendered == null) continue;
           final temp = await getTemporaryDirectory();
           final image = File(p.join(temp.path, 'ocr_${_uuid.v4()}.png'));
@@ -246,9 +258,11 @@ class DocumentToolsService {
             await image.writeAsBytes(rendered.bytes, flush: true);
             final input = InputImage.fromFilePath(image.path);
             final latinResult = await recognizer.processImage(input);
+            if (shouldCancel?.call() ?? false) throw const OcrIndexCancelled();
             final extracted = <String>[latinResult.text];
             if (devanagariRecognizer != null) {
               final devanagariResult = await devanagariRecognizer.processImage(input);
+              if (shouldCancel?.call() ?? false) throw const OcrIndexCancelled();
               if (devanagariResult.text.isNotEmpty) extracted.add(devanagariResult.text);
             }
             final pageText = extracted.where((value) => value.trim().isNotEmpty).join('\n');
@@ -261,10 +275,19 @@ class DocumentToolsService {
         }
       }
     } finally {
-      await recognizer.close();
-      await devanagariRecognizer?.close();
-      await document.close();
+      // A failure while closing one native resource must never prevent the
+      // remaining recognizer/PDF handles from being released.
+      try {
+        await recognizer?.close();
+      } finally {
+        try {
+          await devanagariRecognizer?.close();
+        } finally {
+          await document.close();
+        }
+      }
     }
+    if (shouldCancel?.call() ?? false) throw const OcrIndexCancelled();
     final text = pages.toString().trim();
     await db.transaction((txn) async {
       await txn.insert('document_text_index', {
@@ -284,7 +307,11 @@ class DocumentToolsService {
   }
 
 
-  Future<int> indexPdfTextFromUri(String documentId, String storageUri) async {
+  Future<int> indexPdfTextFromUri(
+    String documentId,
+    String storageUri, {
+    bool Function()? shouldCancel,
+  }) async {
     if (storageUri.startsWith('content://') || storageUri.startsWith('file://')) {
       final temp = await getTemporaryDirectory();
       final file = File(p.join(temp.path, 'ocr_source_${_uuid.v4()}.pdf'));
@@ -293,7 +320,8 @@ class DocumentToolsService {
           sourceUri: storageUri,
           destinationPath: file.path,
         );
-        return await indexPdfText(documentId, file.path);
+        if (shouldCancel?.call() ?? false) throw const OcrIndexCancelled();
+        return await indexPdfText(documentId, file.path, shouldCancel: shouldCancel);
       } finally {
         if (await file.exists()) await file.delete();
       }
@@ -301,7 +329,7 @@ class DocumentToolsService {
     final path = storageUri.startsWith('file://')
         ? Uri.parse(storageUri).toFilePath()
         : storageUri;
-    return indexPdfText(documentId, path);
+    return indexPdfText(documentId, path, shouldCancel: shouldCancel);
   }
 
   Future<List<Map<String, Object?>>> searchText(String query) async {
@@ -1769,3 +1797,11 @@ class _ValidatedBackup {
   }
 }
 
+
+
+/// Raised when the OCR owner route is dismissed before indexing completes.
+class OcrIndexCancelled implements Exception {
+  const OcrIndexCancelled();
+  @override
+  String toString() => 'OCR indexing was cancelled because its screen was closed.';
+}

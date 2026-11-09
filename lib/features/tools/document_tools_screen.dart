@@ -295,12 +295,19 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
         continue;
       }
       try {
-        final characters = await _tools.indexPdfTextFromUri(row['id'] as String, uri);
+        final characters = await _tools.indexPdfTextFromUri(
+          row['id'] as String,
+          uri,
+          shouldCancel: () => !mounted,
+        );
         if (characters == 0) {
           noText++;
         } else {
           done++;
         }
+      } on OcrIndexCancelled {
+        // Route disposal is an expected cancellation, not a failed document.
+        return;
       } catch (error, stackTrace) {
         skipped++;
         debugPrint('DocsGrid OCR indexing failed for document ${row['id']}: $error');
