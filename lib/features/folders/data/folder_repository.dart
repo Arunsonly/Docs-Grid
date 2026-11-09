@@ -199,13 +199,28 @@ class FolderRepository {
       updatedAt: DateTime.parse(now),
     );
     try {
-      await db.insert('folders', {
-        'id': folder.id,
-        'name': folder.name,
-        'parent_id': folder.parentId,
-        'storage_uri_or_relative_path': physicalUri,
-        'created_at': now,
-        'updated_at': now,
+      await db.transaction((txn) async {
+        // Check sibling names inside the same write transaction as the insert.
+        // This closes the race where two callers both pass an earlier
+        // non-transactional check and create case-insensitive duplicates.
+        final duplicates = await txn.query(
+          'folders',
+          columns: ['id'],
+          where: 'parent_id IS ? AND name = ? COLLATE NOCASE AND deleted_at IS NULL',
+          whereArgs: [parentId, cleaned],
+          limit: 1,
+        );
+        if (duplicates.isNotEmpty) {
+          throw StateError('A folder with this name already exists here.');
+        }
+        await txn.insert('folders', {
+          'id': folder.id,
+          'name': folder.name,
+          'parent_id': folder.parentId,
+          'storage_uri_or_relative_path': physicalUri,
+          'created_at': now,
+          'updated_at': now,
+        });
       });
     } catch (_) {
       if (physicalUri != null) {
