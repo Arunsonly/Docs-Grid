@@ -1208,6 +1208,31 @@ class DocumentToolsService {
       }
     }
 
+    // Validate every remaining relation while the archive is still read-only.
+    // A broken tag/reminder/history/OCR reference must fail before restore
+    // creates the destination tree or starts its SQLite transaction.
+    final relationRows = <String, List<Map<String, Object?>>>{};
+    for (final table in [
+      'folders', 'documents', 'categories', 'tags', 'document_tags',
+      'reminders', 'history', 'settings', 'document_text_index',
+    ]) {
+      final entry = decoded.findFile('$table.json');
+      if (entry == null) {
+        if (table == 'document_text_index') {
+          relationRows[table] = <Map<String, Object?>>[];
+          continue;
+        }
+        throw StateError('Backup is incomplete: missing $table metadata.');
+      }
+      final rows = jsonDecode(utf8.decode(entry.content as List<int>));
+      if (rows is! List) throw StateError('Backup $table metadata is invalid.');
+      relationRows[table] = rows
+          .map((value) => Map<String, Object?>.from(value as Map))
+          .toList();
+    }
+    PortableSnapshotManifest.validateFolderRows(relationRows['folders']!);
+    PortableSnapshotManifest.validateRelations(relationRows);
+
     final files = manifest['files'];
     if (files is! List) throw StateError('Backup PDF manifest is invalid.');
     final seenDocumentIds = <String>{};
