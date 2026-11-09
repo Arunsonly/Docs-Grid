@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:crypto/crypto.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/services.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart';
@@ -346,7 +347,8 @@ class DocumentRepository {
         String childUri;
         try {
           childUri = await storage.findChildUri(parentUri: parentUri, name: name);
-        } catch (_) {
+        } on PlatformException catch (error) {
+          if (error.code != 'NOT_FOUND') rethrow;
           childUri = await storage.createDirectory(parentUri: parentUri, name: name);
         }
         folderUris[id] = childUri;
@@ -401,11 +403,16 @@ class DocumentRepository {
           parentUri: parentUri,
           name: '$name.pdf',
         );
-        if (await storage.sha256Pdf(existingUri) == sourceDigest) {
-          destinationUri = existingUri;
+        final existingDigest = await storage.sha256Pdf(existingUri);
+        if (existingDigest != sourceDigest) {
+          throw StateError(
+            'A different file named "$name.pdf" already exists in the destination. '
+            'It was not overwritten; resolve the name conflict before retrying migration.',
+          );
         }
-      } catch (_) {
-        // No verified matching file in the destination; create a new copy below.
+        destinationUri = existingUri;
+      } on PlatformException catch (error) {
+        if (error.code != 'NOT_FOUND') rethrow;
       }
 
       if (destinationUri == null) {
