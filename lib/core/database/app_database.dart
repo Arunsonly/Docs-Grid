@@ -42,7 +42,7 @@ class AppDatabase {
     final dbPath = p.join(directory.path, 'docs_grid.db');
     return openDatabase(
       dbPath,
-      version: 5,
+      version: 6,
       onConfigure: (db) async => db.execute('PRAGMA foreign_keys = ON'),
       onCreate: (db, version) async {
         await db.execute('''
@@ -116,6 +116,7 @@ class AppDatabase {
         await _createV3Tables(db);
         await _createV4PerformanceSchema(db);
         await _createV5SummaryInvalidation(db);
+        await _createV6NameSearchIndex(db);
         await db.insert('schema_migrations', {
           'version': 1,
           'applied_at': DateTime.now().toUtc().toIso8601String(),
@@ -136,6 +137,10 @@ class AppDatabase {
           'version': 5,
           'applied_at': DateTime.now().toUtc().toIso8601String(),
         });
+        await db.insert('schema_migrations', {
+          'version': 6,
+          'applied_at': DateTime.now().toUtc().toIso8601String(),
+        });
       },
       onUpgrade: upgradeForTesting,
       onDowngrade: (db, oldVersion, newVersion) async {
@@ -149,7 +154,7 @@ class AppDatabase {
   @visibleForTesting
   Future<void> upgradeForTesting(Database db, int oldVersion, int newVersion) async {
     if (newVersion <= oldVersion) return;
-    if (oldVersion < 1 || newVersion > 5) {
+    if (oldVersion < 1 || newVersion > 6) {
       throw StateError('Unsupported database migration: $oldVersion -> $newVersion');
     }
 
@@ -185,6 +190,11 @@ class AppDatabase {
     if (oldVersion < 5 && newVersion >= 5) {
       await _createV5SummaryInvalidation(db);
       await db.insert('schema_migrations', {'version': 5, 'applied_at': applied},
+          conflictAlgorithm: ConflictAlgorithm.ignore);
+    }
+    if (oldVersion < 6 && newVersion >= 6) {
+      await _createV6NameSearchIndex(db);
+      await db.insert('schema_migrations', {'version': 6, 'applied_at': applied},
           conflictAlgorithm: ConflictAlgorithm.ignore);
     }
   }
@@ -272,6 +282,40 @@ class AppDatabase {
         UPDATE document_summary_state SET revision = revision + 1 WHERE id = 1;
       END
     ''');
+  }
+
+  Future<void> _createV6NameSearchIndex(DatabaseExecutor db) async {
+    try {
+      await db.execute('''
+        CREATE VIRTUAL TABLE IF NOT EXISTS documents_name_fts
+        USING fts5(name, content='documents', content_rowid='rowid',
+                   tokenize='trigram')
+      ''');
+      await db.execute("INSERT INTO documents_name_fts(documents_name_fts) VALUES('rebuild')");
+      await db.execute('''
+        CREATE TRIGGER IF NOT EXISTS documents_name_fts_after_insert
+        AFTER INSERT ON documents BEGIN
+          INSERT INTO documents_name_fts(rowid, name) VALUES (new.rowid, new.name);
+        END
+      ''');
+      await db.execute('''
+        CREATE TRIGGER IF NOT EXISTS documents_name_fts_after_delete
+        AFTER DELETE ON documents BEGIN
+          INSERT INTO documents_name_fts(documents_name_fts, rowid, name)
+          VALUES ('delete', old.rowid, old.name);
+        END
+      ''');
+      await db.execute('''
+        CREATE TRIGGER IF NOT EXISTS documents_name_fts_after_update
+        AFTER UPDATE OF name ON documents BEGIN
+          INSERT INTO documents_name_fts(documents_name_fts, rowid, name)
+          VALUES ('delete', old.rowid, old.name);
+          INSERT INTO documents_name_fts(rowid, name) VALUES (new.rowid, new.name);
+        END
+      ''');
+    } catch (_) {
+      try { await db.execute('DROP TABLE IF EXISTS documents_name_fts'); } catch (_) {}
+    }
   }
 
   Future<void> _createV3Tables(DatabaseExecutor db) async {

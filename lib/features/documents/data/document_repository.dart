@@ -147,6 +147,7 @@ class DocumentRepository {
   static const _uuid = Uuid();
   DocumentLibrarySummary? _summaryCache;
   int? _summaryCacheRevision;
+  bool? _nameFtsAvailable;
 
   /// Returns compact dashboard metrics without materializing document rows.
   Future<DocumentLibrarySummary> dashboardSummary() async {
@@ -199,6 +200,17 @@ class DocumentRepository {
     if (favoritesOnly) where.add('d.is_favorite = 1');
     final normalizedQuery = query.trim();
     if (normalizedQuery.isNotEmpty) {
+      _nameFtsAvailable ??= (await db.rawQuery(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
+        ['documents_name_fts'],
+      )).isNotEmpty;
+      if (_nameFtsAvailable == true && normalizedQuery.runes.length >= 3) {
+        final phrase = normalizedQuery.replaceAll('"', '""');
+        where.add('d.rowid IN (SELECT rowid FROM documents_name_fts WHERE documents_name_fts MATCH ?)');
+        args.add('"$phrase"');
+      }
+      // Keep LIKE as the final predicate to preserve exact legacy substring
+      // matching and wildcard escaping on SQLite builds without FTS5.
       where.add("d.name LIKE ? ESCAPE '\\'");
       args.add('%${escapeLikeWildcards(normalizedQuery)}%');
     }

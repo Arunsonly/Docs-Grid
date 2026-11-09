@@ -201,6 +201,29 @@ void main() {
       await v5.close();
     });
 
+    test('v5 to v6 installs optional trigram search accelerator without changing migration safety', () async {
+      final fixture = await createV1Fixture('v5_to_v6');
+      final path = fixture.path;
+      await fixture.close();
+      final v5 = await migrateTo(path, 5);
+      await v5.close();
+      final v6 = await migrateTo(path, 6);
+      expect(await v6.getVersion(), 6);
+      final triggers = await v6.rawQuery(
+        "SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'documents_name_fts_after_%'",
+      );
+      if (triggers.isNotEmpty) {
+        expect(triggers.map((row) => row['name']), containsAll([
+          'documents_name_fts_after_insert',
+          'documents_name_fts_after_update',
+          'documents_name_fts_after_delete',
+        ]));
+      }
+      expect((await v6.query('schema_migrations', orderBy: 'version')).map((row) => row['version']), [1, 2, 3, 4, 5, 6]);
+      expect(await v6.rawQuery('PRAGMA foreign_key_check'), isEmpty);
+      await v6.close();
+    });
+
     test('refuses downgrade and leaves the v2 database and records intact', () async {
       final v1 = await createV1Fixture('downgrade');
       final path = v1.path;
