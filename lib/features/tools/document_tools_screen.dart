@@ -267,10 +267,15 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
     final result = await _tools.restoreLatestPortableMetadataSnapshot();
     if (mounted) {
       setState(() => _message =
-        'Folder recovery complete. Added ${result['documentsAdded']} document records; '
-        '${result['documentsLinked']} PDFs linked; '
-        '${result['pdfsMissing']} PDF(s) need relinking. '
-        'Existing data was retained.');
+        'Recovery complete. '
+        'Folders: ${result['folders']}; PDFs added: ${result['documentsAdded']}; '
+        'PDFs linked: ${result['documentsLinked']}; missing PDFs: ${result['pdfsMissing']}.\\n'
+        'Categories: ${result['categories']}; tags: ${result['tags']}; '
+        'PDF-tag links: ${result['documentTags']}; reminders: ${result['reminders']}; '
+        'activity/history: ${result['activity']}; OCR indexes: ${result['ocrIndexes']}; '
+        'settings: ${result['settings']}.\\n'
+        'Existing data was retained. Reminder records are restored to the app database; '
+        'Android notification delivery is rescheduled separately.');
     }
   });
 
