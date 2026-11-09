@@ -147,9 +147,14 @@ void main() {
       await expectLater(
         databaseFactoryFfi.openDatabase(
           path,
-          options: OpenDatabaseOptions(version: 1),
+          options: OpenDatabaseOptions(
+            version: 1,
+            onDowngrade: (db, oldVersion, newVersion) async {
+              throw StateError('Database downgrade is not supported');
+            },
+          ),
         ),
-        throwsA(isA<DatabaseException>()),
+        throwsA(isA<StateError>()),
       );
 
       final stillV2 = await databaseFactoryFfi.openDatabase(path);
