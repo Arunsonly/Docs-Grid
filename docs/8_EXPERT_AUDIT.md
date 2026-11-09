@@ -101,7 +101,7 @@ Status: **Eight engineering review lenses inspected; remediation committed for t
 - **Remediation committed:** a central-directory preflight rejects ZIP64/multi-disk, encrypted, duplicate/traversal names, excessive entry counts, per-entry/total expansion, oversized directories, and extreme compression ratios before the archive decoder runs.
 - Regression test added by mutating a ZIP central-directory size to exceed the per-entry limit. Streaming remains a future improvement.
 
-## Deferred validation (tracked in later project tasks)
+## Additional expert-audit execution (2026-11-09)\n\n- Added strict equality validation between each portable snapshot table count and its metadata file record count.\n- Added portable folder-graph validation before restore: duplicate IDs, missing parents, cycles, path separators, dot segments, control characters, and deep nesting are rejected. Parent-chain validation is iterative to avoid stack overflow on deeply nested libraries.\n- Added regression tests for the above conditions. The new commits are awaiting a fresh Android/iOS CI run; they are not counted as passed until that run completes.\n\n## Deferred validation (tracked in later project tasks)
 
 1. Database migration fixtures and repository-level concurrency/provider race tests are required for Task 2 sign-off; deeper migration/data-retention validation continues in Task 4.
 2. Physical Android SAF/Recovery and iOS Files/bookmark persistence checks remain for Tasks 5 and 6.
