@@ -303,17 +303,20 @@ class DocumentToolsService {
         AND instr(lower(i.extracted_text), lower(?)) > 0
       ORDER BY match_position ASC, d.name COLLATE NOCASE
     ''', [q, q]);
+    // sqflite may return immutable QueryRow instances. Copy each result before
+    // enriching it with the resolved OCR page number.
+    final results = rows.map((row) => Map<String, Object?>.from(row)).toList();
     // OCR stores an explicit page marker before every page. Resolve the page
     // containing the first match so search results are actionable, not just a
     // generic "text found" indication.
-    for (final row in rows) {
+    for (final row in results) {
       final text = row['extracted_text']?.toString() ?? '';
       final position = (row['match_position'] as int? ?? 1) - 1;
       final prefix = text.substring(0, position.clamp(0, text.length));
       final markers = RegExp(r'--- Page (\d+) ---').allMatches(prefix).toList();
       row['match_page'] = markers.isEmpty ? 1 : int.parse(markers.last.group(1)!);
     }
-    return rows;
+    return results;
   }
 
   Future<File?> scanToPdf({
