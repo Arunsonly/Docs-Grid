@@ -27,6 +27,24 @@ class PortableSnapshotRowsValidator {
       }
     }
 
+    void requiredDateTime(String table, String field) {
+      for (final row in tables[table] ?? const <Map<String, Object?>>[]) {
+        final value = row[field];
+        if (value is! String || DateTime.tryParse(value) == null) {
+          throw FormatException('Snapshot contains an invalid $table.$field timestamp.');
+        }
+      }
+    }
+
+    void optionalDateTime(String table, String field) {
+      for (final row in tables[table] ?? const <Map<String, Object?>>[]) {
+        final value = row[field];
+        if (value != null && (value is! String || DateTime.tryParse(value) == null)) {
+          throw FormatException('Snapshot contains an invalid $table.$field timestamp.');
+        }
+      }
+    }
+
     void optionalInt(String table, String field, {int? min}) {
       for (final row in tables[table] ?? const <Map<String, Object?>>[]) {
         final value = row[field];
@@ -104,24 +122,39 @@ class PortableSnapshotRowsValidator {
     requiredString('settings', 'updated_at');
     requiredString('document_text_index', 'extracted_text', nonEmpty: false);
     requiredString('document_text_index', 'indexed_at');
+    for (final (table, field) in <(String, String)>[
+      ('folders', 'created_at'), ('folders', 'updated_at'),
+      ('documents', 'created_at'), ('documents', 'updated_at'),
+      ('categories', 'created_at'), ('tags', 'created_at'),
+      ('reminders', 'remind_at_utc'), ('reminders', 'next_fire_at_utc'),
+      ('reminders', 'created_at'), ('reminders', 'updated_at'),
+      ('history', 'created_at'), ('settings', 'updated_at'),
+      ('document_text_index', 'indexed_at'),
+    ]) {
+      requiredDateTime(table, field);
+    }
+    for (final (table, field) in <(String, String)>[
+      ('documents', 'expiry_date'), ('documents', 'last_opened_at'),
+      ('documents', 'deleted_at'), ('folders', 'deleted_at'),
+      ('reminders', 'recurrence_end_at'), ('reminders', 'snoozed_until'),
+      ('reminders', 'completed_at'),
+    ]) {
+      optionalDateTime(table, field);
+    }
     requiredInt('documents', 'size_bytes', min: 0);
     requiredInt('reminders', 'enabled', min: 0);
     requiredInt('document_text_index', 'page_count', min: 0);
 
     for (final field in ['original_name', 'storage_uri', 'relative_path', 'sha256',
-      'expiry_date', 'last_opened_at', 'deleted_at', 'source', 'metadata_json']) {
+      'source', 'metadata_json']) {
       optionalString('documents', field);
     }
     optionalString('folders', 'storage_uri_or_relative_path');
-    optionalString('folders', 'deleted_at');
     optionalString('reminders', 'note');
     optionalString('reminders', 'recurrence_rule');
-    optionalString('reminders', 'recurrence_end_at');
     optionalInt('reminders', 'lead_days');
     optionalInt('reminders', 'notification_id');
     requiredInt('categories', 'is_builtin', min: 0);
-    optionalString('reminders', 'snoozed_until');
-    optionalString('reminders', 'completed_at');
     optionalString('history', 'details_json');
 
     optionalReference('folders', 'parent_id', folderIds);
