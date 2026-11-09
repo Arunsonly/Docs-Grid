@@ -11,6 +11,7 @@ import 'package:uuid/uuid.dart';
 import '../../../core/database/app_database.dart';
 import '../../../core/storage/storage_location_service.dart';
 import '../../folders/data/folder_repository.dart';
+import '../../reminders/data/reminder_notifications.dart';
 
 class DocumentRecord {
   const DocumentRecord({
@@ -145,7 +146,9 @@ class DocumentRepository {
         limit: 1,
       );
       if (rows.isEmpty) throw StateError('Destination folder no longer exists.');
-      segments.add(rows.first['name'] as String);
+      // Older databases may contain names that bypassed current validation.
+      // Never let a legacy dot-segment escape the private DocsGrid root.
+      segments.add(FolderRepository.validateFolderName(rows.first['name'] as String));
       currentId = rows.first['parent_id'] as String?;
     }
     var directory = root;
@@ -199,6 +202,20 @@ class DocumentRepository {
         );
       }
       copiedToNewLocation = newStorageUri != sourceUri;
+      if (copiedToNewLocation) {
+        try {
+          final sourceDigest = sourceIsShared
+              ? await storage.sha256Pdf(sourceUri)
+              : (await sha256.bind(File(sourceUri).openRead()).first).toString();
+          final copiedDigest = await storage.sha256Pdf(newStorageUri);
+          if (copiedDigest != sourceDigest) {
+            throw StateError('PDF copy failed SHA-256 verification; the original file was kept.');
+          }
+        } catch (_) {
+          try { await storage.deletePdf(newStorageUri); } catch (_) {}
+          rethrow;
+        }
+      }
     } else {
       // With no external folder selected, preserve the same folder hierarchy
       // inside the app-private PDF library rather than changing metadata only.
@@ -321,7 +338,9 @@ class DocumentRepository {
       );
       for (final row in rows) {
         final id = row['id'] as String;
-        final name = row['name'] as String;
+        // Legacy folder names must pass the same path-segment validation as
+        // newly created folders before they reach an external storage provider.
+        final name = FolderRepository.validateFolderName(row['name'] as String);
         String childUri;
         try {
           childUri = await storage.findChildUri(parentUri: parentUri, name: name);
@@ -359,6 +378,7 @@ class DocumentRepository {
         throw StateError('PDF "$name" has no saved storage location. Migration stopped without deleting it.');
       }
       final folderId = row['folder_id'] as String?;
+      final safePdfName = _safePdfName(name);
       final parentUri = folderId == null ? rootUri : folderUris[folderId];
       if (parentUri == null) {
         throw StateError('Destination folder for "$name" could not be prepared. Migration can be retried safely.');
@@ -378,7 +398,7 @@ class DocumentRepository {
       try {
         final existingUri = await storage.findChildUri(
           parentUri: parentUri,
-          name: '$name.pdf',
+          name: safePdfName,
         );
         if (await storage.sha256Pdf(existingUri) == sourceDigest) {
           destinationUri = existingUri;
@@ -391,9 +411,21 @@ class DocumentRepository {
         destinationUri = await storage.copyPdf(
           sourceUri: sourceLocation,
           parentUri: parentUri,
-          name: '$name.pdf',
+          name: safePdfName,
         );
         createdDestination = true;
+      }
+
+      try {
+        final destinationDigest = await storage.sha256Pdf(destinationUri);
+        if (destinationDigest != sourceDigest) {
+          throw StateError('Migration copy for "$name" failed SHA-256 verification. The original was kept.');
+        }
+      } catch (_) {
+        if (createdDestination) {
+          try { await storage.deletePdf(destinationUri); } catch (_) {}
+        }
+        rethrow;
       }
 
       try {
@@ -455,114 +487,142 @@ class DocumentRepository {
     );
     if (picked.isEmpty) return;
     final pickedFile = picked.single;
-    final sourcePath = pickedFile.path;
-    if (sourcePath == null || sourcePath.isEmpty) {
-      throw StateError('The selected PDF provider did not expose a readable file path. Save the PDF to device storage and select it again.');
-    }
+    File? stagedSource;
+    String? createdUri;
+    try {
+      late final File source;
+      final sourcePath = pickedFile.path;
+      if (sourcePath != null && sourcePath.isNotEmpty) {
+        source = File(sourcePath);
+      } else {
+        final temp = await getTemporaryDirectory();
+        stagedSource = File(p.join(temp.path, 'relink_${_uuid.v4()}.pdf'));
+        // file_picker 13.x exposes provider bytes rather than a read stream
+        // when no local path is available. Stage them immediately in cache.
+        await stagedSource.writeAsBytes(await pickedFile.readAsBytes(), flush: true);
+        source = stagedSource;
+      }
+      if (!await source.exists()) throw StateError('The selected PDF is no longer available.');
+      final header = await source.openRead(0, 5)
+          .fold<List<int>>(<int>[], (a, b) => a..addAll(b));
+      if (header.length < 5 || String.fromCharCodes(header) != '%PDF-') {
+        throw StateError('The selected file is not a valid PDF.');
+      }
+      final digest = (await sha256.bind(source.openRead()).first).toString();
+      final size = await source.length();
 
-    final source = File(sourcePath);
-    if (!await source.exists()) throw StateError('The selected PDF is no longer available.');
-    final header = await source.openRead(0, 5).fold<List<int>>(<int>[], (a, b) => a..addAll(b));
-    if (header.length < 5 || String.fromCharCodes(header) != '%PDF-') {
-      throw StateError('The selected file is not a valid PDF.');
-    }
-    final digest = (await sha256.bind(source.openRead()).first).toString();
-    final size = await source.length();
-
-    final db = await _database.database;
-    final rows = await db.query(
-      'documents',
-      columns: ['sha256', 'folder_id'],
-      where: 'id = ?',
-      whereArgs: [document.id],
-      limit: 1,
-    );
-    if (rows.isEmpty) throw StateError('PDF record no longer exists.');
-    final expected = rows.first['sha256'] as String?;
-    if (expected != null && expected.isNotEmpty && expected != digest) {
-      throw StateError('This PDF does not match the original document (SHA-256 mismatch).');
-    }
-
-    final storage = StorageLocationService.instance;
-    final folderId = rows.first['folder_id'] as String?;
-    String? destinationUri;
-    if (folderId == null) {
-      destinationUri = (await storage.selectedFolder())?['uri'];
-    } else {
-      final folderRows = await db.query(
-        'folders',
-        columns: ['storage_uri_or_relative_path'],
-        where: 'id = ? AND deleted_at IS NULL',
-        whereArgs: [folderId],
+      final db = await _database.database;
+      final rows = await db.query(
+        'documents',
+        columns: ['sha256', 'folder_id'],
+        where: 'id = ?',
+        whereArgs: [document.id],
         limit: 1,
       );
-      destinationUri = folderRows.isEmpty
-          ? null
-          : folderRows.first['storage_uri_or_relative_path'] as String?;
-      destinationUri ??= await FolderRepository().ensurePhysicalStorageUri(folderId);
-    }
-
-    late final String newUri;
-    String? relativePath;
-    if (destinationUri != null) {
-      newUri = await storage.copyPdf(
-        sourceUri: Uri.file(source.path).toString(),
-        parentUri: destinationUri,
-        name: '${document.name}.pdf',
-      );
-      final copiedDigest = await storage.sha256Pdf(newUri);
-      if (copiedDigest != digest) {
-        try { await storage.deletePdf(newUri); } catch (_) {}
-        throw StateError('Replacement PDF verification failed; the existing document reference was not changed.');
+      if (rows.isEmpty) throw StateError('PDF record no longer exists.');
+      final expected = rows.first['sha256'] as String?;
+      if (expected != null && expected.isNotEmpty && expected != digest) {
+        throw StateError('This PDF does not match the original document (SHA-256 mismatch).');
       }
-    } else {
-      final library = await _privateFolderFor(folderId);
-      final target = await _uniqueFile(library, '${document.name}.pdf');
-      await source.copy(target.path);
-      final copiedDigest = (await sha256.bind(target.openRead()).first).toString();
-      if (copiedDigest != digest) {
-        try { await target.delete(); } catch (_) {}
-        throw StateError('Replacement PDF verification failed; the existing document reference was not changed.');
-      }
-      newUri = target.path;
-      relativePath = p.relative(target.path, from: p.join(
-        (await getApplicationDocumentsDirectory()).path, 'DocsGrid', 'PDFs',
-      ));
-    }
 
-    try {
-      await db.transaction((txn) async {
-        final count = await txn.update(
-          'documents',
-          {
-            'storage_uri': newUri,
-            'relative_path': relativePath,
-            'size_bytes': size,
-            'sha256': digest,
-            'updated_at': DateTime.now().toUtc().toIso8601String(),
-          },
+      final storage = StorageLocationService.instance;
+      final folderId = rows.first['folder_id'] as String?;
+      String? destinationUri;
+      if (folderId == null) {
+        destinationUri = (await storage.selectedFolder())?['uri'];
+      } else {
+        final folderRows = await db.query(
+          'folders',
+          columns: ['storage_uri_or_relative_path'],
           where: 'id = ? AND deleted_at IS NULL',
-          whereArgs: [document.id],
+          whereArgs: [folderId],
+          limit: 1,
         );
-        if (count == 0) throw StateError('PDF record no longer exists.');
-        await _recordHistory(txn, document.id, 'relinked', {
-          'source_name': pickedFile.name,
-          'storage_uri': newUri,
-        });
-      });
-    } catch (_) {
-      try {
-        if (newUri.startsWith('content://') || newUri.startsWith('file://')) {
-          await storage.deletePdf(newUri);
-        } else {
-          final file = File(newUri);
-          if (await file.exists()) await file.delete();
+        destinationUri = folderRows.isEmpty
+            ? null
+            : folderRows.first['storage_uri_or_relative_path'] as String?;
+        destinationUri ??= await FolderRepository().ensurePhysicalStorageUri(folderId);
+      }
+
+      String? relativePath;
+      if (destinationUri != null) {
+        createdUri = await storage.copyPdf(
+          sourceUri: Uri.file(source.path).toString(),
+          parentUri: destinationUri,
+          name: '${document.name}.pdf',
+        );
+        final copiedDigest = await storage.sha256Pdf(createdUri);
+        if (copiedDigest != digest) {
+          throw StateError('Replacement PDF verification failed; the existing document reference was not changed.');
         }
-      } catch (_) {}
+      } else {
+        final library = await _privateFolderFor(folderId);
+        final target = await _uniqueFile(library, '${document.name}.pdf');
+        await source.copy(target.path);
+        final copiedDigest = (await sha256.bind(target.openRead()).first).toString();
+        if (copiedDigest != digest) {
+          await target.delete();
+          throw StateError('Replacement PDF verification failed; the existing document reference was not changed.');
+        }
+        createdUri = target.path;
+        relativePath = p.relative(target.path, from: p.join(
+          (await getApplicationDocumentsDirectory()).path, 'DocsGrid', 'PDFs',
+        ));
+      }
+
+      try {
+        await db.transaction((txn) async {
+          final count = await txn.update(
+            'documents',
+            {
+              'storage_uri': createdUri,
+              'relative_path': relativePath,
+              'size_bytes': size,
+              'sha256': digest,
+              'updated_at': DateTime.now().toUtc().toIso8601String(),
+            },
+            where: 'id = ? AND deleted_at IS NULL',
+            whereArgs: [document.id],
+          );
+          if (count == 0) throw StateError('PDF record no longer exists.');
+          await _recordHistory(txn, document.id, 'relinked', {
+            'source_name': pickedFile.name,
+            'storage_uri': createdUri,
+          });
+        });
+      } catch (_) {
+        try {
+          if (createdUri.startsWith('content://') || createdUri.startsWith('file://')) {
+            await storage.deletePdf(createdUri);
+          } else {
+            final file = File(createdUri);
+            if (await file.exists()) await file.delete();
+          }
+        } catch (_) {}
+        rethrow;
+      }
+    } catch (_) {
+      if (createdUri != null) {
+        try {
+          if (createdUri.startsWith('content://') || createdUri.startsWith('file://')) {
+            await StorageLocationService.instance.deletePdf(createdUri);
+          } else {
+            final file = File(createdUri);
+            if (await file.exists()) await file.delete();
+          }
+        } catch (_) {}
+      }
       rethrow;
+    } finally {
+      if (stagedSource != null) {
+        try {
+          if (await stagedSource.exists()) await stagedSource.delete();
+        } catch (_) {
+          // The source selection and saved document remain untouched.
+        }
+      }
     }
   }
-
 
   Future<ImportSummary> importScannedPdf(File source, {String? displayName, String? targetFolderUri, String? targetFolderId, String sourceType = 'scanner'}) async {
     if (!await source.exists()) throw StateError('Scanned PDF is not available.');
@@ -596,10 +656,19 @@ class DocumentRepository {
         parentUri: destinationUri,
         name: safeName,
       );
+      try {
+        final copiedDigest = await storage.sha256Pdf(uri);
+        if (copiedDigest != digest) {
+          throw StateError('Scanned PDF failed SHA-256 verification in selected storage.');
+        }
+      } catch (_) {
+        try { await storage.deletePdf(uri); } catch (_) {}
+        rethrow;
+      }
     } else {
-      final base = await getApplicationDocumentsDirectory();
-      final library = Directory(p.join(base.path, 'DocsGrid', 'PDFs'));
-      await library.create(recursive: true);
+      // Keep scanner imports in the same nested private-folder layout used by
+      // ordinary imports; metadata folder_id and the on-disk path must agree.
+      final library = await _privateFolderFor(targetFolderId);
       final target = await _uniqueFile(library, safeName);
       await source.copy(target.path);
       final copiedDigest = (await sha256.bind(target.openRead()).first).toString();
@@ -607,8 +676,12 @@ class DocumentRepository {
         await target.delete();
         throw StateError('Scanned PDF verification failed.');
       }
+      final base = await getApplicationDocumentsDirectory();
       uri = target.path;
-      relativePath = p.relative(target.path, from: library.path);
+      relativePath = p.relative(
+        target.path,
+        from: p.join(base.path, 'DocsGrid', 'PDFs'),
+      );
     }
 
     final now = DateTime.now().toUtc().toIso8601String();
@@ -679,26 +752,32 @@ class DocumentRepository {
 
     for (final picked in pickedFiles) {
       String? createdUri;
+      File? stagedSource;
       try {
         final sourcePath = picked.path;
-        final sourceFile = sourcePath == null ? null : File(sourcePath);
-        final fallbackBytes = sourceFile == null ? await picked.readAsBytes() : null;
-        if (sourceFile != null && !await sourceFile.exists()) {
-          throw StateError('The selected PDF is no longer accessible.');
+        late final File sourceFile;
+        if (sourcePath != null && sourcePath.isNotEmpty) {
+          sourceFile = File(sourcePath);
+          if (!await sourceFile.exists()) {
+            throw StateError('The selected PDF is no longer accessible.');
+          }
+        } else {
+          // file_picker 13.x provides bytes for providers without a local path.
+          // Stage them in cache immediately and remove the staged copy below.
+          final temp = await getTemporaryDirectory();
+          stagedSource = File(p.join(temp.path, 'import_${_uuid.v4()}.pdf'));
+          await stagedSource.writeAsBytes(await picked.readAsBytes(), flush: true);
+          sourceFile = stagedSource;
         }
-        final header = sourceFile != null
-            ? await sourceFile.openRead(0, 5).fold<List<int>>(<int>[], (a, b) => a..addAll(b))
-            : fallbackBytes!.take(5).toList();
+
+        final header = await sourceFile.openRead(0, 5)
+            .fold<List<int>>(<int>[], (a, b) => a..addAll(b));
         if (header.length < 5 || String.fromCharCodes(header) != '%PDF-') {
           failed++;
           continue;
         }
-        final digest = sourceFile != null
-            ? (await sha256.bind(sourceFile.openRead()).first).toString()
-            : sha256.convert(fallbackBytes!).toString();
-        final sizeBytes = sourceFile != null
-            ? await sourceFile.length()
-            : fallbackBytes!.length;
+        final digest = (await sha256.bind(sourceFile.openRead()).first).toString();
+        final sizeBytes = await sourceFile.length();
         final existing = await db.query(
           'documents',
           columns: ['id'],
@@ -727,17 +806,11 @@ class DocumentRepository {
         late final String storedName;
         late final String? relativePath;
         if (destinationFolderUri != null) {
-          createdUri = sourceFile != null
-              ? await storage.copyPdf(
-                  sourceUri: Uri.file(sourceFile.path).toString(),
-                  parentUri: destinationFolderUri,
-                  name: safeName,
-                )
-              : await storage.savePdf(
-                  treeUri: destinationFolderUri,
-                  name: safeName,
-                  bytes: fallbackBytes!,
-                );
+          createdUri = await storage.copyPdf(
+            sourceUri: Uri.file(sourceFile.path).toString(),
+            parentUri: destinationFolderUri,
+            name: safeName,
+          );
           final copiedDigest = await storage.sha256Pdf(createdUri);
           if (copiedDigest != digest) {
             throw StateError('Imported PDF failed SHA-256 verification in selected storage.');
@@ -746,11 +819,7 @@ class DocumentRepository {
           relativePath = null;
         } else {
           final target = await _uniqueFile(library!, safeName);
-          if (sourceFile != null) {
-            await sourceFile.copy(target.path);
-          } else {
-            await target.writeAsBytes(fallbackBytes!, flush: true);
-          }
+          await sourceFile.copy(target.path);
           final copiedDigest = (await sha256.bind(target.openRead()).first).toString();
           if (copiedDigest != digest) {
             await target.delete();
@@ -796,6 +865,14 @@ class DocumentRepository {
           } catch (_) {}
         }
         failed++;
+      } finally {
+        if (stagedSource != null) {
+          try {
+            if (await stagedSource.exists()) await stagedSource.delete();
+          } catch (_) {
+            // Never let cache cleanup affect the imported source or DB record.
+          }
+        }
       }
     }
     return ImportSummary(added: added, duplicates: duplicates, failed: failed, skipped: skipped);
@@ -855,6 +932,7 @@ class DocumentRepository {
         }
       }
     });
+    await _reconcileReminders();
   }
 
   /// Move several PDFs using the same verified copy/commit/cleanup path as a single move.
@@ -871,6 +949,25 @@ class DocumentRepository {
     }
     return {'moved': moved, 'failures': failures};
   }
+  Future<void> _reconcileReminders() async {
+    final db = await _database.database;
+    final rows = await db.rawQuery('''
+      SELECT r.*
+      FROM reminders r
+      LEFT JOIN documents d ON d.id = r.document_id
+      WHERE r.enabled = 1
+        AND r.status NOT IN (?, ?)
+        AND (r.document_id IS NULL OR d.deleted_at IS NULL)
+      ORDER BY r.remind_at_utc ASC
+    ''', ['completed', 'cancelled']);
+    try {
+      await ReminderNotifications.instance.reconcile(rows);
+    } catch (_) {
+      // Trash and restore are database/file operations; OS notification
+      // failures must not make a completed document action appear to fail.
+    }
+  }
+
   Future<void> setFavorite(DocumentRecord document, bool favorite) async {
     final db = await _database.database;
     final rows = await db.query(
@@ -894,6 +991,18 @@ class DocumentRepository {
       whereArgs: [document.id],
     );
     await _recordHistory(db, document.id, favorite ? 'favorited' : 'unfavorited', {});
+  }
+
+  Future<DocumentRecord?> getById(String id) async {
+    final db = await _database.database;
+    final rows = await db.query(
+      'documents',
+      where: 'id = ? AND deleted_at IS NULL',
+      whereArgs: [id],
+      limit: 1,
+    );
+    if (rows.isEmpty) return null;
+    return DocumentRecord.fromMap(rows.first);
   }
 
   Future<void> markOpened(DocumentRecord document) async {
@@ -921,20 +1030,28 @@ class DocumentRepository {
 
   Future<void> restoreFromTrash(DocumentRecord document) async {
     final db = await _database.database;
-    await db.update('documents', {
-      'deleted_at': null,
-      'updated_at': DateTime.now().toUtc().toIso8601String(),
-    }, where: 'id = ? AND deleted_at IS NOT NULL', whereArgs: [document.id]);
-    await _recordHistory(db, document.id, 'restored', {});
+    await db.transaction((txn) async {
+      final count = await txn.update('documents', {
+        'deleted_at': null,
+        'updated_at': DateTime.now().toUtc().toIso8601String(),
+      }, where: 'id = ? AND deleted_at IS NOT NULL', whereArgs: [document.id]);
+      if (count == 0) throw StateError('PDF is no longer in the Recycle Bin.');
+      await _recordHistory(txn, document.id, 'restored', {});
+    });
+    await _reconcileReminders();
   }
 
   Future<void> moveToTrash(DocumentRecord document) async {
     final db = await _database.database;
-    await db.update('documents', {
-      'deleted_at': DateTime.now().toUtc().toIso8601String(),
-      'updated_at': DateTime.now().toUtc().toIso8601String(),
-    }, where: 'id = ?', whereArgs: [document.id]);
-    await _recordHistory(db, document.id, 'moved_to_recycle_bin', {});
+    await db.transaction((txn) async {
+      final changed = await txn.update('documents', {
+        'deleted_at': DateTime.now().toUtc().toIso8601String(),
+        'updated_at': DateTime.now().toUtc().toIso8601String(),
+      }, where: 'id = ? AND deleted_at IS NULL', whereArgs: [document.id]);
+      if (changed == 0) throw StateError('PDF record is already in the Recycle Bin.');
+      await _recordHistory(txn, document.id, 'moved_to_recycle_bin', {});
+    });
+    await _reconcileReminders();
   }
 
   Future<void> rename(DocumentRecord document, String newName) async {
@@ -945,6 +1062,7 @@ class DocumentRepository {
         .trim();
     if (safeBase.isEmpty) throw ArgumentError('Name is not valid.');
     final safeName = '$safeBase.pdf';
+    if (safeBase == document.name) return;
     final isShared = document.storagePath.startsWith('content://') ||
         document.storagePath.startsWith('file://');
     late final String newStorageUri;
@@ -1008,16 +1126,67 @@ class DocumentRepository {
   }
 
   Future<void> permanentlyDelete(DocumentRecord document) async {
-    if (document.storagePath.startsWith('content://') ||
-        document.storagePath.startsWith('file://')) {
-      await StorageLocationService.instance.deletePdf(document.storagePath);
+    final db = await _database.database;
+    final trashed = await db.query(
+      'documents',
+      columns: ['storage_uri'],
+      where: 'id = ? AND deleted_at IS NOT NULL',
+      whereArgs: [document.id],
+      limit: 1,
+    );
+    if (trashed.isEmpty) {
+      throw StateError('Only documents in the Recycle Bin can be permanently deleted.');
+    }
+    final currentStoragePath = (trashed.first['storage_uri'] as String?)?.trim();
+    if (currentStoragePath == null || currentStoragePath.isEmpty) {
+      throw StateError('The PDF has no saved storage location; repair or relink it before permanent deletion.');
+    }
+    final reminderRows = await db.query(
+      'reminders',
+      columns: ['id'],
+      where: 'document_id = ?',
+      whereArgs: [document.id],
+    );
+
+    // Keep the database record until the physical delete succeeds. The
+    // Recycle Bin remains the recovery point if storage access is unavailable.
+    if (currentStoragePath.startsWith('content://') ||
+        currentStoragePath.startsWith('file://')) {
+      await StorageLocationService.instance.deletePdf(currentStoragePath);
     } else {
-      final file = File(document.storagePath);
+      final file = File(currentStoragePath);
       if (await file.exists()) await file.delete();
     }
-    final db = await _database.database;
-    await _recordHistory(db, null, 'permanently_deleted', {'document_id': document.id, 'name': document.name});
-    await db.delete('documents', where: 'id = ?', whereArgs: [document.id]);
+
+    await db.transaction((txn) async {
+      await _recordHistory(
+        txn,
+        null,
+        'permanently_deleted',
+        {'document_id': document.id, 'name': document.name},
+      );
+      await txn.delete(
+        'reminders',
+        where: 'document_id = ?',
+        whereArgs: [document.id],
+      );
+      final deleted = await txn.delete(
+        'documents',
+        where: 'id = ? AND deleted_at IS NOT NULL',
+        whereArgs: [document.id],
+      );
+      if (deleted == 0) {
+        throw StateError('The document is no longer in the Recycle Bin.');
+      }
+    });
+
+    // If OS cancellation fails, startup/resume reconciliation removes the
+    // orphaned pending notification because its reminder row no longer exists.
+    for (final row in reminderRows) {
+      try {
+        await ReminderNotifications.instance.cancel(row['id'] as String);
+      } catch (_) {}
+    }
   }
 
   Future<void> _recordHistory(

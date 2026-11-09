@@ -1,7 +1,7 @@
 name: Flutter CI
 
 concurrency:
-  group: docsgrid-${{ github.workflow }}-${{ github.ref }}-${{ github.sha }}
+  group: docsgrid-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 on:
@@ -30,6 +30,15 @@ jobs:
           cache: true
       - name: Generate native platform scaffolding
         run: flutter create --platforms=android,ios --org com.docsgrid .
+      - name: Cache Gradle distributions and dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('pubspec.lock') }}-9.3.1
+          restore-keys: |
+            gradle-${{ runner.os }}-
       - name: Use non-conflicting DocsGrid Android package ID
         run: |
           python3 - <<'PY'
@@ -127,9 +136,11 @@ jobs:
           p = Path('android/app/src/main/AndroidManifest.xml')
           s = p.read_text()
           marker = '<application'
-          permissions = '    <uses-permission android:name="android.permission.CAMERA"/>\n    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>\n    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM"/>\n    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>\n    '
+          permissions = '    <uses-permission android:name="android.permission.CAMERA"/>\n    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>\n    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>\n    '
           s = s.replace(marker, permissions + marker, 1)
           receivers = '''\n    <receiver android:exported="false" android:name="com.dexterous.flutterlocalnotifications.ScheduledNotificationReceiver"/>\n    <receiver android:enabled="true" android:exported="false" android:name="com.dexterous.flutterlocalnotifications.ScheduledNotificationBootReceiver">\n        <intent-filter>\n            <action android:name="android.intent.action.BOOT_COMPLETED"/>\n            <action android:name="android.intent.action.MY_PACKAGE_REPLACED"/>\n            <action android:name="android.intent.action.QUICKBOOT_POWERON"/>\n        </intent-filter>\n    </receiver>\n    '''
+          if 'ScheduledNotificationReceiver' not in s:
+              s = s.replace('</application>', receivers + '\n</application>', 1)
           # Make DocsGrid appear in Android's Share sheet for PDF attachments.
           # The incoming URI is granted by the sending app; users can then
           # choose DocsGrid and import the shared PDF from the picker.
@@ -168,7 +179,17 @@ jobs:
       - name: Widget and unit tests
         run: flutter test
       - name: Build debug APK
-        run: flutter build apk --debug
+        run: |
+          for attempt in 1 2 3; do
+            if flutter build apk --debug; then
+              exit 0
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              echo "Gradle distribution/build attempt $attempt failed; retrying after backoff."
+              sleep $((attempt * 20))
+            fi
+          done
+          exit 1
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
@@ -196,6 +217,25 @@ jobs:
           s = p.read_text()
           keys = '''\n          <key>NSCameraUsageDescription</key>\n          <string>DocsGrid uses the camera to scan document pages into PDFs.</string>\n          <key>NSPhotoLibraryUsageDescription</key>\n          <string>DocsGrid uses selected photos to create PDF documents.</string>\n          '''
           s = s.replace('</dict>', keys + '\n</dict>', 1)
+          if '<key>CFBundleDocumentTypes</key>' not in s:
+              document_types = '''
+              <key>CFBundleDocumentTypes</key>
+              <array>
+                <dict>
+                  <key>CFBundleTypeName</key>
+                  <string>PDF Document</string>
+                  <key>CFBundleTypeRole</key>
+                  <string>Viewer</string>
+                  <key>LSHandlerRank</key>
+                  <string>Alternate</string>
+                  <key>LSItemContentTypes</key>
+                  <array>
+                    <string>com.adobe.pdf</string>
+                  </array>
+                </dict>
+              </array>
+              '''
+              s = s.replace('</dict>', document_types + '\n</dict>', 1)
           p.write_text(s)
           PY
       - name: Install iOS Files host integration

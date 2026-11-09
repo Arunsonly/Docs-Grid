@@ -21,6 +21,29 @@ import CryptoKit
             channel.setMethodCallHandler { [weak self] call, result in
                 self?.handle(call, result: result)
             }
+            let notificationChannel = FlutterMethodChannel(
+                name: "docsgrid/notifications",
+                binaryMessenger: controller.binaryMessenger
+            )
+            notificationChannel.setMethodCallHandler { call, result in
+                guard call.method == "openSettings" else {
+                    result(FlutterMethodNotImplemented)
+                    return
+                }
+                guard let settingsURL = URL(string: UIApplication.openSettingsURLString) else {
+                    result(FlutterError(code: "SETTINGS_ERROR", message: "Notification settings URL is unavailable.", details: nil))
+                    return
+                }
+                DispatchQueue.main.async {
+                    UIApplication.shared.open(settingsURL, options: [:]) { opened in
+                        if opened {
+                            result(true)
+                        } else {
+                            result(FlutterError(code: "SETTINGS_ERROR", message: "Could not open iOS app settings.", details: nil))
+                        }
+                    }
+                }
+            }
         }
         return super.application(application, didFinishLaunchingWithOptions: launchOptions)
     }
@@ -56,6 +79,19 @@ import CryptoKit
                     "libraryUri": folders.absoluteString,
                     "documentsUri": documents.absoluteString
                 ])
+            case "consumeSharedPdfs":
+                let cache = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+                    .appendingPathComponent("DocsGrid", isDirectory: true)
+                    .appendingPathComponent("incoming_docs", isDirectory: true)
+                try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
+                let files = try FileManager.default.contentsOfDirectory(
+                    at: cache,
+                    includingPropertiesForKeys: [.isRegularFileKey],
+                    options: [.skipsHiddenFiles]
+                )
+                result(files.filter { $0.pathExtension.lowercased() == "pdf" }.map { file in
+                    ["path": file.path, "name": file.deletingPathExtension().lastPathComponent]
+                })
             case "getSelectedFolder":
                 guard let selected = try selectedFolder(), let root = URL(string: selected["uri"] ?? "") else {
                     result(nil)
@@ -89,23 +125,34 @@ import CryptoKit
                 try withAllBookmarkAccess {
                     let accessed = source.startAccessingSecurityScopedResource()
                     defer { if accessed { source.stopAccessingSecurityScopedResource() } }
+                    let parent = destination.deletingLastPathComponent()
                     try FileManager.default.createDirectory(
-                        at: destination.deletingLastPathComponent(),
+                        at: parent,
                         withIntermediateDirectories: true
                     )
-                    if FileManager.default.fileExists(atPath: destination.path) {
-                        try FileManager.default.removeItem(at: destination)
+                    // Never truncate or remove an existing destination. Stage in
+                    // the same directory, verify, then atomically publish.
+                    guard !FileManager.default.fileExists(atPath: destination.path) else {
+                        throw storageError("The destination file already exists.")
                     }
+                    let sourceDigest = try sha256Pdf(url: source)
+                    let temporary = parent.appendingPathComponent(".docsgrid-copy-\(UUID().uuidString).tmp")
+                    defer { try? FileManager.default.removeItem(at: temporary) }
+                    FileManager.default.createFile(atPath: temporary.path, contents: nil)
                     let input = try FileHandle(forReadingFrom: source)
                     defer { try? input.close() }
-                    FileManager.default.createFile(atPath: destination.path, contents: nil)
-                    let output = try FileHandle(forWritingTo: destination)
+                    let output = try FileHandle(forWritingTo: temporary)
                     defer { try? output.close() }
                     while true {
                         let chunk = try input.read(upToCount: 64 * 1024) ?? Data()
                         if chunk.isEmpty { break }
                         try output.write(contentsOf: chunk)
                     }
+                    try output.synchronize()
+                    guard sourceDigest == (try sha256Pdf(url: temporary)) else {
+                        throw storageError("The temporary PDF copy failed SHA-256 verification.")
+                    }
+                    try FileManager.default.moveItem(at: temporary, to: destination)
                 }
                 result(true)
             case "sha256Pdf":
@@ -155,6 +202,59 @@ import CryptoKit
             }
         } catch {
             result(FlutterError(code: "STORAGE_ERROR", message: error.localizedDescription, details: nil))
+        }
+    }
+
+    override func application(
+        _ app: UIApplication,
+        open url: URL,
+        options: [UIApplication.OpenURLOptionsKey: Any] = [:]
+    ) -> Bool {
+        guard url.isFileURL else { return false }
+        let accessed = url.startAccessingSecurityScopedResource()
+        defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+        guard accessed || isInsideAppContainer(url) else { return false }
+
+        do {
+            let values = try url.resourceValues(forKeys: [.isRegularFileKey])
+            guard values.isRegularFile == true else { return false }
+            let cache = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("DocsGrid", isDirectory: true)
+                .appendingPathComponent("incoming_docs", isDirectory: true)
+            try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
+            let rawName = url.deletingPathExtension().lastPathComponent
+            let safeName = rawName.replacingOccurrences(
+                of: "[^A-Za-z0-9._ -]",
+                with: "_",
+                options: .regularExpression
+            )
+            let target = cache.appendingPathComponent("\(UUID().uuidString)_\(safeName).pdf")
+            let coordinator = NSFileCoordinator(filePresenter: nil)
+            var coordinationError: NSError?
+            var copyError: Error?
+            coordinator.coordinate(
+                readingItemAt: url,
+                options: [],
+                error: &coordinationError
+            ) { coordinatedURL in
+                do {
+                    try FileManager.default.copyItem(at: coordinatedURL, to: target)
+                } catch {
+                    copyError = error
+                }
+            }
+            if let coordinationError { throw coordinationError }
+            if let copyError { throw copyError }
+            let handle = try FileHandle(forReadingFrom: target)
+            defer { try? handle.close() }
+            let header = try handle.read(upToCount: 5) ?? Data()
+            guard header == Data("%PDF-".utf8) else {
+                try? FileManager.default.removeItem(at: target)
+                return false
+            }
+            return true
+        } catch {
+            return false
         }
     }
 
@@ -220,8 +320,8 @@ import CryptoKit
             let root = try URL(resolvingBookmarkData: data, options: [], relativeTo: nil, bookmarkDataIsStale: &stale)
             let accessed = root.startAccessingSecurityScopedResource()
             defer { if accessed { root.stopAccessingSecurityScopedResource() } }
-            guard accessed || FileManager.default.fileExists(atPath: root.path) else {
-                return ["status": "revoked", "message": "iOS could not reopen the saved Files folder. Select it again; existing PDF records will be preserved."]
+            guard accessed || isInsideAppContainer(root) else {
+                return ["status": "revoked", "message": "iOS could not reopen the saved Files permission. Select the folder again; existing PDF records will be preserved."]
             }
             var isDirectory: ObjCBool = false
             guard FileManager.default.fileExists(atPath: root.path, isDirectory: &isDirectory), isDirectory.boolValue else {
@@ -233,10 +333,24 @@ import CryptoKit
         }
     }
 
+    private func isInsideAppContainer(_ url: URL) -> Bool {
+        let home = URL(fileURLWithPath: NSHomeDirectory()).standardizedFileURL.path
+        let path = url.standardizedFileURL.path
+        return path == home || path.hasPrefix(home + "/")
+    }
+
     private func selectedFolder() throws -> [String: String]? {
         guard let data = UserDefaults.standard.data(forKey: currentBookmarkKey) else { return nil }
         var stale = false
         let root = try URL(resolvingBookmarkData: data, options: [], relativeTo: nil, bookmarkDataIsStale: &stale)
+        let accessed = root.startAccessingSecurityScopedResource()
+        defer { if accessed { root.stopAccessingSecurityScopedResource() } }
+        guard accessed || isInsideAppContainer(root) else {
+            throw storageError("The saved Files permission is unavailable. Select the storage folder again.")
+        }
+        guard FileManager.default.fileExists(atPath: root.path) else {
+            throw storageError("The saved Files folder no longer exists. Select the folder again.")
+        }
         if stale {
             let refreshed = try root.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
             UserDefaults.standard.set(refreshed, forKey: currentBookmarkKey)

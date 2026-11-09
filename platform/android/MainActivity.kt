@@ -19,6 +19,29 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "docsgrid/notifications")
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "openSettings" -> {
+                        try {
+                            val settingsIntent = if (android.os.Build.VERSION.SDK_INT >= 26) {
+                                Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                                    putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, packageName)
+                                }
+                            } else {
+                                Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                                    data = Uri.parse("package:$packageName")
+                                }
+                            }
+                            startActivity(settingsIntent)
+                            result.success(true)
+                        } catch (error: Exception) {
+                            result.error("SETTINGS_ERROR", error.message ?: "Could not open notification settings.", null)
+                        }
+                    }
+                    else -> result.notImplemented()
+                }
+            }
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName)
             .setMethodCallHandler { call, result ->
                 try {
@@ -78,13 +101,32 @@ class MainActivity : FlutterActivity() {
                             val source = Uri.parse(call.argument<String>("sourceUri")!!)
                             val destinationPath = call.argument<String>("destinationPath")!!
                             val destination = java.io.File(destinationPath)
-                            destination.parentFile?.mkdirs()
-                            contentResolver.openInputStream(source)?.use { input ->
-                                destination.outputStream().buffered().use { output ->
-                                    input.copyTo(output, 64 * 1024)
-                                    output.flush()
+                            val parent = destination.parentFile
+                                ?: throw IllegalArgumentException("Destination folder is invalid.")
+                            if (!parent.exists() && !parent.mkdirs()) {
+                                throw IllegalStateException("Could not create the destination folder.")
+                            }
+                            if (destination.exists()) {
+                                throw IllegalStateException("The destination file already exists.")
+                            }
+                            val temporary = java.io.File(parent, ".docsgrid-copy-${java.util.UUID.randomUUID()}.tmp")
+                            try {
+                                val sourceDigest = digest(source)
+                                contentResolver.openInputStream(source)?.use { input ->
+                                    temporary.outputStream().buffered().use { output ->
+                                        input.copyTo(output, 64 * 1024)
+                                        output.flush()
+                                    }
+                                } ?: throw IllegalStateException("Could not read the source PDF.")
+                                if (!sourceDigest.contentEquals(digest(Uri.fromFile(temporary)))) {
+                                    throw IllegalStateException("The temporary PDF copy failed SHA-256 verification.")
                                 }
-                            } ?: throw IllegalStateException("Could not read the source PDF.")
+                                if (destination.exists() || !temporary.renameTo(destination)) {
+                                    throw IllegalStateException("Could not safely publish the copied PDF.")
+                                }
+                            } finally {
+                                if (temporary.exists()) temporary.delete()
+                            }
                             result.success(true)
                         }
                         "sha256Pdf" -> {
@@ -172,6 +214,9 @@ class MainActivity : FlutterActivity() {
         }
         val output = mutableListOf<Map<String, String>>()
         val shareDir = java.io.File(cacheDir, "incoming_docs").apply { mkdirs() }
+        // These files are only hand-off copies. Remove leftovers from a prior
+        // interrupted share/import before staging the current incoming items.
+        shareDir.listFiles()?.forEach { stale -> try { stale.delete() } catch (_: Exception) {} }
         uris.forEachIndexed { index, uri ->
             try {
                 val mime = contentResolver.getType(uri)
@@ -329,11 +374,38 @@ class MainActivity : FlutterActivity() {
             val check = contentResolver.openInputStream(temp)?.use { it.readBytes() }
                 ?: throw IllegalStateException("Could not verify metadata file.")
             if (!bytes.contentEquals(check)) throw IllegalStateException("Metadata verification failed.")
-            if (existing != null && !DocumentsContract.deleteDocument(contentResolver, existing)) {
-                throw IllegalStateException("Could not replace the previous metadata snapshot.")
+            var previousBackup: Uri? = null
+            var published = false
+            try {
+                if (existing != null) {
+                    previousBackup = DocumentsContract.renameDocument(
+                        contentResolver, existing,
+                        ".$name.previous-${java.util.UUID.randomUUID()}"
+                    ) ?: throw IllegalStateException("Could not safely stage the previous metadata snapshot.")
+                }
+                val result = DocumentsContract.renameDocument(contentResolver, temp, name)
+                    ?: throw IllegalStateException("Could not publish metadata file.")
+                published = true
+                if (previousBackup != null) {
+                    // The new snapshot is already published and verified. A
+                    // cleanup failure must not roll it back or risk old data.
+                    try { DocumentsContract.deleteDocument(contentResolver, previousBackup) }
+                    catch (_: Exception) {}
+                }
+                return result
+            } catch (error: Exception) {
+                if (!published && previousBackup != null) {
+                    try {
+                        DocumentsContract.renameDocument(contentResolver, previousBackup, name)
+                    } catch (_: Exception) {
+                        throw IllegalStateException(
+                            "Snapshot publication failed and the previous snapshot remains under its recovery filename.",
+                            error
+                        )
+                    }
+                }
+                throw error
             }
-            return DocumentsContract.renameDocument(contentResolver, temp, name)
-                ?: throw IllegalStateException("Could not publish metadata file.")
         } catch (error: Exception) {
             try { DocumentsContract.deleteDocument(contentResolver, temp) } catch (_: Exception) {}
             throw error
@@ -438,8 +510,13 @@ class MainActivity : FlutterActivity() {
             return
         }
         val uri = data.data!!
-        val flags = data.flags and
-            (Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+        val requiredFlags = Intent.FLAG_GRANT_READ_URI_PERMISSION or
+            Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+        val flags = data.flags and requiredFlags
+        if (flags != requiredFlags) {
+            callback?.error("PERMISSION", "The selected folder did not grant both read and write access.", null)
+            return
+        }
         try {
             contentResolver.takePersistableUriPermission(uri, flags)
         } catch (_: SecurityException) {

@@ -65,4 +65,78 @@ void main() {
     expect(() => PortableSnapshotManifest.parse(jsonEncode(value)),
       throwsFormatException);
   });
+
+  test('rejects table counts that disagree with the metadata file record', () {
+    final value = validManifest();
+    (value['tables'] as Map<String, int>)['tags'] = 99;
+    expect(() => PortableSnapshotManifest.parse(jsonEncode(value)),
+      throwsFormatException);
+  });
+
+
+  group('PortableSnapshotManifest.validateFolderRows', () {
+    List<Map<String, Object?>> safeFolders() => [
+      {'id': 'root', 'name': 'Insurance', 'parent_id': null},
+      {'id': 'child', 'name': 'Motor', 'parent_id': 'root'},
+    ];
+
+    test('accepts a valid nested folder hierarchy', () {
+      final folders = PortableSnapshotManifest.validateFolderRows(safeFolders());
+      expect(folders.keys.toSet(), {'root', 'child'});
+    });
+
+    test('rejects dot segments, separators and control characters', () {
+      for (final name in ['.', '..', 'a/b', r'a\b', 'bad\u0000name']) {
+        final rows = [
+          {'id': 'root', 'name': name, 'parent_id': null},
+        ];
+        expect(
+          () => PortableSnapshotManifest.validateFolderRows(rows),
+          throwsFormatException,
+          reason: 'Unsafe folder name should be rejected: $name',
+        );
+      }
+    });
+
+    test('rejects folder names with leading or trailing whitespace', () {
+      final rows = [
+        {'id': 'root', 'name': ' Insurance ', 'parent_id': null},
+      ];
+      expect(
+        () => PortableSnapshotManifest.validateFolderRows(rows),
+        throwsFormatException,
+      );
+    });
+
+    test('rejects duplicate IDs and missing parents', () {
+      final duplicate = [
+        {'id': 'same', 'name': 'First', 'parent_id': null},
+        {'id': 'same', 'name': 'Second', 'parent_id': null},
+      ];
+      expect(
+        () => PortableSnapshotManifest.validateFolderRows(duplicate),
+        throwsFormatException,
+      );
+
+      final missingParent = [
+        {'id': 'child', 'name': 'Motor', 'parent_id': 'missing'},
+      ];
+      expect(
+        () => PortableSnapshotManifest.validateFolderRows(missingParent),
+        throwsFormatException,
+      );
+    });
+
+    test('rejects cyclic folder parent references before restore', () {
+      final cyclic = [
+        {'id': 'a', 'name': 'A', 'parent_id': 'b'},
+        {'id': 'b', 'name': 'B', 'parent_id': 'a'},
+      ];
+      expect(
+        () => PortableSnapshotManifest.validateFolderRows(cyclic),
+        throwsFormatException,
+      );
+    });
+  });
+
 }

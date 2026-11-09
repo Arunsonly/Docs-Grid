@@ -158,9 +158,41 @@ class DocumentToolsService {
     bool useCamera = false,
   }) async {
     final picker = ImagePicker();
-    var selected = useCamera
-        ? _singleImage(await picker.pickImage(source: ImageSource.camera, imageQuality: 95))
-        : await picker.pickMultiImage(imageQuality: 95);
+    var selected = <XFile>[];
+    if (useCamera) {
+      // Capture a page at a time, allowing a multi-page document without
+      // requiring the user to leave the scanner and start a new PDF.
+      while (context.mounted) {
+        final image = await picker.pickImage(
+          source: ImageSource.camera,
+          imageQuality: 95,
+        );
+        if (image == null) break;
+        selected.add(image);
+        if (!context.mounted) return null;
+        final addAnother = await showDialog<bool>(
+          context: context,
+          builder: (dialogContext) => AlertDialog(
+            title: Text('Page ${selected.length} captured'),
+            content: const Text('Would you like to scan another page into this PDF?'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext, false),
+                child: const Text('Finish'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(dialogContext, true),
+                child: const Text('Scan next page'),
+              ),
+            ],
+          ),
+        );
+        if (!context.mounted) return null;
+        if (addAnother != true) break;
+      }
+    } else {
+      selected = await picker.pickMultiImage(imageQuality: 95);
+    }
     if (!context.mounted || selected.isEmpty) return null;
     if (selected.length > 1) {
       final ordered = List<XFile>.from(selected);
@@ -225,26 +257,37 @@ class DocumentToolsService {
     return file;
   }
 
-  List<XFile> _singleImage(XFile? image) => image == null ? <XFile>[] : <XFile>[image];
-
 
   Future<void> shareStoredPdf(String storageUri, String displayName) async {
-    String path;
-    if (storageUri.startsWith('content://')) {
-      final temp = await getTemporaryDirectory();
-      final safeName = p.basename(displayName).replaceAll(RegExp(r'[^A-Za-z0-9._ -]'), '_');
-      final target = File(p.join(temp.path, 'share_${DateTime.now().microsecondsSinceEpoch}_$safeName'));
-      await StorageLocationService.instance.copyPdfToPath(
-        sourceUri: storageUri,
-        destinationPath: target.path,
-      );
-      path = target.path;
-    } else {
-      path = storageUri.startsWith('file://') ? Uri.parse(storageUri).toFilePath() : storageUri;
+    File? stagedProviderFile;
+    try {
+      String path;
+      if (storageUri.startsWith('content://') || storageUri.startsWith('file://')) {
+        final temp = await getTemporaryDirectory();
+        final safeName = p.basename(displayName).replaceAll(RegExp(r'[^A-Za-z0-9._ -]'), '_');
+        stagedProviderFile = File(p.join(temp.path, 'share_${_uuid.v4()}_$safeName'));
+        await StorageLocationService.instance.copyPdfToPath(
+          sourceUri: storageUri,
+          destinationPath: stagedProviderFile.path,
+        );
+        path = stagedProviderFile.path;
+      } else {
+        path = storageUri.startsWith('file://') ? Uri.parse(storageUri).toFilePath() : storageUri;
+      }
+      final file = File(path);
+      if (!await file.exists()) throw StateError('PDF is no longer available to share.');
+      await SharePlus.instance.share(ShareParams(files: [XFile(path)], text: displayName));
+    } finally {
+      // Provider PDFs are copied into cache because share_plus needs a local
+      // path. Remove only that temporary copy after the native share sheet ends.
+      if (stagedProviderFile != null) {
+        try {
+          if (await stagedProviderFile.exists()) await stagedProviderFile.delete();
+        } catch (_) {
+          // Cache cleanup must not mask the share result or affect the source PDF.
+        }
+      }
     }
-    final file = File(path);
-    if (!await file.exists()) throw StateError('PDF is no longer available to share.');
-    await SharePlus.instance.share(ShareParams(files: [XFile(path)], text: displayName));
   }
 
   /// Shares several stored PDFs in one native share sheet.
@@ -254,21 +297,33 @@ class DocumentToolsService {
     }
     final temp = await getTemporaryDirectory();
     final files = <XFile>[];
-    for (var i = 0; i < storageUris.length; i++) {
-      final uri = storageUris[i];
-      final safeName = p.basename(displayNames[i]).replaceAll(RegExp(r'[^A-Za-z0-9._ -]'), '_');
-      String path;
-      if (uri.startsWith('content://')) {
-        final target = File(p.join(temp.path, 'share_${DateTime.now().microsecondsSinceEpoch}_${i}_$safeName'));
-        await StorageLocationService.instance.copyPdfToPath(sourceUri: uri, destinationPath: target.path);
-        path = target.path;
-      } else {
-        path = uri.startsWith('file://') ? Uri.parse(uri).toFilePath() : uri;
+    final stagedFiles = <File>[];
+    try {
+      for (var i = 0; i < storageUris.length; i++) {
+        final uri = storageUris[i];
+        final safeName = p.basename(displayNames[i]).replaceAll(RegExp(r'[^A-Za-z0-9._ -]'), '_');
+        String path;
+        if (uri.startsWith('content://') || uri.startsWith('file://')) {
+          final target = File(p.join(temp.path, 'share_${_uuid.v4()}_$safeName'));
+          stagedFiles.add(target);
+          await StorageLocationService.instance.copyPdfToPath(sourceUri: uri, destinationPath: target.path);
+          path = target.path;
+        } else {
+          path = uri.startsWith('file://') ? Uri.parse(uri).toFilePath() : uri;
+        }
+        if (!await File(path).exists()) throw StateError('PDF is unavailable: ${displayNames[i]}');
+        files.add(XFile(path, name: safeName));
       }
-      if (!await File(path).exists()) throw StateError('PDF is unavailable: ${displayNames[i]}');
-      files.add(XFile(path, name: safeName));
+      await SharePlus.instance.share(ShareParams(files: files, text: 'DocsGrid documents'));
+    } finally {
+      for (final file in stagedFiles) {
+        try {
+          if (await file.exists()) await file.delete();
+        } catch (_) {
+          // Temporary share copies are best-effort cleanup; originals are untouched.
+        }
+      }
     }
-    await SharePlus.instance.share(ShareParams(files: files, text: 'DocsGrid documents'));
   }
   Future<void> shareFile(String path, {String? text}) async {
     final file = File(path);
@@ -303,19 +358,19 @@ class DocumentToolsService {
         throw StateError('Backup cannot be complete: "${row['name']}" has no storage reference.');
       }
       File? stagedProviderFile;
-      final File file;
-      if (uri.startsWith('content://')) {
-        final temp = await getTemporaryDirectory();
-        stagedProviderFile = File(p.join(temp.path, 'backup_${_uuid.v4()}.pdf'));
-        await StorageLocationService.instance.copyPdfToPath(
-          sourceUri: uri,
-          destinationPath: stagedProviderFile.path,
-        );
-        file = stagedProviderFile;
-      } else {
-        file = File(uri.startsWith('file://') ? Uri.parse(uri).toFilePath() : uri);
-      }
       try {
+        late final File file;
+        if (uri.startsWith('content://') || uri.startsWith('file://')) {
+          final temp = await getTemporaryDirectory();
+          stagedProviderFile = File(p.join(temp.path, 'backup_${_uuid.v4()}.pdf'));
+          await StorageLocationService.instance.copyPdfToPath(
+            sourceUri: uri,
+            destinationPath: stagedProviderFile.path,
+          );
+          file = stagedProviderFile;
+        } else {
+          file = File(uri);
+        }
         if (!await file.exists()) {
           throw StateError('Backup cannot be complete: "${row['name']}" is unavailable. Repair storage access and retry.');
         }
@@ -332,8 +387,12 @@ class DocumentToolsService {
           'originalName': row['name'],
         });
       } finally {
-        if (stagedProviderFile != null && await stagedProviderFile.exists()) {
-          await stagedProviderFile.delete();
+        if (stagedProviderFile != null) {
+          try {
+            if (await stagedProviderFile.exists()) await stagedProviderFile.delete();
+          } catch (_) {
+            // Temporary cache cleanup must not mask a successful backup step.
+          }
         }
       }
       completed++;
@@ -375,24 +434,47 @@ class DocumentToolsService {
 
     final root = Directory(p.join((await getApplicationDocumentsDirectory()).path, 'DocsGrid', 'Restored'));
     final restoreRoot = Directory(p.join(root.path, DateTime.now().microsecondsSinceEpoch.toString()));
-    await restoreRoot.create(recursive: true);
     final fileRows = (manifest['files'] as List<dynamic>).cast<Map<String, dynamic>>();
     final restoredPaths = <String, String>{};
     final folderRows = rowsByTable['folders']!;
+    final folderRowsById = <String, Map<String, Object?>>{};
+    for (final row in folderRows) {
+      final id = row['id'];
+      if (id is! String || id.isEmpty || folderRowsById.containsKey(id)) {
+        throw StateError('Backup contains an invalid or duplicate folder ID.');
+      }
+      folderRowsById[id] = row;
+    }
     final folderPaths = <String, String>{};
+    final resolvingFolders = <String>{};
     String folderPath(String id) {
       final known = folderPaths[id];
       if (known != null) return known;
-      final row = folderRows.firstWhere((r) => r['id'] == id);
-      final parent = row['parent_id'] as String?;
-      final base = parent == null ? restoreRoot.path : folderPath(parent);
-      final path = p.join(base, 'folder_$id');
-      folderPaths[id] = path;
-      return path;
+      if (!resolvingFolders.add(id)) {
+        throw StateError('Backup folder hierarchy contains a cycle.');
+      }
+      try {
+        final row = folderRowsById[id];
+        if (row == null) throw StateError('Backup references a missing folder.');
+        final parent = row['parent_id'] as String?;
+        if (parent != null && !folderRowsById.containsKey(parent)) {
+          throw StateError('Backup references a missing parent folder.');
+        }
+        final base = parent == null ? restoreRoot.path : folderPath(parent);
+        // Never use untrusted archive IDs as filesystem path components.
+        final path = p.join(base, 'folder_${_uuid.v4()}');
+        folderPaths[id] = path;
+        return path;
+      } finally {
+        resolvingFolders.remove(id);
+      }
     }
 
     var databaseCommitted = false;
     try {
+      // Create staging storage only after all folder IDs have been checked.
+      // Invalid archives must fail before leaving any filesystem side effects.
+      await restoreRoot.create(recursive: true);
       for (final row in folderRows) {
         await Directory(folderPath(row['id'] as String)).create(recursive: true);
       }
@@ -403,7 +485,8 @@ class DocumentToolsService {
         final destinationDir = folderId == null ? restoreRoot : Directory(folderPath(folderId));
         await destinationDir.create(recursive: true);
         final safeName = p.basename((item['originalName'] as String?) ?? 'document.pdf');
-        final destination = File(p.join(destinationDir.path, '${id}_$safeName'));
+        // IDs come from the archive; use a generated filename to prevent path traversal.
+        final destination = File(p.join(destinationDir.path, '${_uuid.v4()}_$safeName'));
         final entry = decoded.findFile(item['entry'] as String)!;
         final bytes = entry.content as List<int>;
         final digest = sha256.convert(bytes).toString();
@@ -454,6 +537,7 @@ class DocumentToolsService {
             body: row['note'] as String?,
             at: at,
             recurrence: row['recurrence_rule'] as String?,
+            documentId: row['document_id'] as String?,
           );
         } catch (_) {
           // Imported records remain valid even if the OS declines a notification.
@@ -542,36 +626,144 @@ class DocumentToolsService {
     }
   }
 
-  Future<String?> verifyLatestPortableMetadataSnapshot() async {
-    final locations = await StorageLocationService.instance.portableDataLocations();
-    final children = await StorageLocationService.instance.listDirectory(locations['databaseUri']!);
+  /// Returns the newest fully verified snapshot, skipping incomplete or
+  /// damaged snapshots left by an interrupted export. A broken newest folder
+  /// must not hide an older recoverable snapshot.
+  Future<Map<String, Object?>?> _findLatestVerifiedPortableSnapshot() async {
+    final storage = StorageLocationService.instance;
+    final locations = await storage.portableDataLocations();
+    final children = await storage.listDirectory(locations['databaseUri']!);
     final snapshots = children
         .where((entry) => entry['isDirectory'] == true &&
+            entry['name'] is String &&
             (entry['name'] as String).startsWith('snapshot_'))
         .toList()
       ..sort((a, b) => (b['name'] as String).compareTo(a['name'] as String));
-    if (snapshots.isEmpty) return null;
 
-    final snapshot = snapshots.first;
-    final snapshotUri = snapshot['uri'] as String;
-    final manifestText = await StorageLocationService.instance.readTextFile(
-      await _findChildUri(snapshotUri, 'manifest.json'),
-    );
-    final manifest = PortableSnapshotManifest.parse(manifestText);
-    for (final record in manifest.files) {
-      final uri = await _findChildUri(snapshotUri, record.path);
-      final contents = await StorageLocationService.instance.readTextFile(uri);
-      final bytes = utf8.encode(contents);
-      if (bytes.length != record.sizeBytes ||
-          sha256.convert(bytes).toString() != record.sha256) {
-        throw StateError('Recovery snapshot verification failed for ${record.path}.');
-      }
-      final rows = jsonDecode(contents);
-      if (rows is! List || rows.length != record.recordCount) {
-        throw StateError('Recovery snapshot record count mismatch for ${record.path}.');
+    for (final snapshot in snapshots) {
+      try {
+        final snapshotUri = snapshot['uri'] as String;
+        final manifestText = await storage.readTextFile(
+          await _findChildUri(snapshotUri, 'manifest.json'),
+        );
+        final manifest = PortableSnapshotManifest.parse(manifestText);
+        final rowsByTable = <String, List<Map<String, Object?>>>{};
+        for (final record in manifest.files) {
+          final table = record.path.substring(0, record.path.length - 5);
+          if (!const {
+            'folders', 'documents', 'categories', 'tags', 'document_tags',
+            'reminders', 'history', 'settings', 'document_text_index',
+            'schema_migrations',
+          }.contains(table)) {
+            throw StateError('Snapshot contains unsupported table: $table.');
+          }
+          final uri = await _findChildUri(snapshotUri, record.path);
+          final contents = await storage.readTextFile(uri);
+          final bytes = utf8.encode(contents);
+          if (bytes.length != record.sizeBytes ||
+              sha256.convert(bytes).toString() != record.sha256) {
+            throw StateError('Recovery snapshot verification failed for ${record.path}.');
+          }
+          final decoded = jsonDecode(contents);
+          if (decoded is! List || decoded.length != record.recordCount ||
+              decoded.any((row) => row is! Map)) {
+            throw StateError('Recovery snapshot record count or row shape is invalid for ${record.path}.');
+          }
+          rowsByTable[table] = decoded
+              .map((row) => Map<String, Object?>.from(row as Map))
+              .toList();
+        }
+
+        final folderRows = rowsByTable['folders'];
+        final documentRows = rowsByTable['documents'];
+        if (folderRows == null || documentRows == null) {
+          throw StateError('Recovery snapshot is missing core metadata.');
+        }
+        final foldersById = PortableSnapshotManifest.validateFolderRows(folderRows);
+        final documentIds = <String>{};
+        for (final row in documentRows) {
+          final id = row['id'];
+          final folderId = row['folder_id'];
+          if (id is! String || id.trim().isEmpty || id != id.trim() ||
+              !documentIds.add(id)) {
+            throw StateError('Recovery snapshot contains an invalid or duplicate document ID.');
+          }
+          if (folderId != null &&
+              (folderId is! String || !foldersById.containsKey(folderId))) {
+            throw StateError('Recovery snapshot references a missing folder.');
+          }
+        }
+        Set<String> uniqueSnapshotIds(String table) {
+          final ids = <String>{};
+          for (final row in rowsByTable[table] ?? const <Map<String, Object?>>[]) {
+            final id = row['id'];
+            if (id is! String || id.trim().isEmpty || !ids.add(id)) {
+              throw StateError('Snapshot contains an invalid or duplicate $table ID.');
+            }
+          }
+          return ids;
+        }
+
+        final categoryIds = uniqueSnapshotIds('categories');
+        final tagIds = uniqueSnapshotIds('tags');
+        uniqueSnapshotIds('reminders');
+        uniqueSnapshotIds('history');
+        for (final row in documentRows) {
+          final categoryId = row['category_id'];
+          if (categoryId != null &&
+              (categoryId is! String || !categoryIds.contains(categoryId))) {
+            throw StateError('Snapshot document references a missing category.');
+          }
+        }
+        final tagLinks = <String>{};
+        for (final row in rowsByTable['document_tags'] ?? const <Map<String, Object?>>[]) {
+          final documentId = row['document_id'];
+          final tagId = row['tag_id'];
+          if (documentId is! String || !documentIds.contains(documentId) ||
+              tagId is! String || !tagIds.contains(tagId) ||
+              !tagLinks.add(jsonEncode([documentId, tagId]))) {
+            throw StateError('Snapshot contains an invalid or duplicate document-tag link.');
+          }
+        }
+        for (final table in ['reminders', 'history']) {
+          for (final row in rowsByTable[table] ?? const <Map<String, Object?>>[]) {
+            final documentId = row['document_id'];
+            if (documentId != null &&
+                (documentId is! String || !documentIds.contains(documentId))) {
+              throw StateError('Snapshot $table record references a missing document.');
+            }
+          }
+        }
+        for (final row in rowsByTable['document_text_index'] ?? const <Map<String, Object?>>[]) {
+          if (row['document_id'] is! String ||
+              !documentIds.contains(row['document_id'])) {
+            throw StateError('Snapshot text index references a missing document.');
+          }
+        }
+        final settingKeys = <String>{};
+        for (final row in rowsByTable['settings'] ?? const <Map<String, Object?>>[]) {
+          final key = row['key'];
+          if (key is! String || key.isEmpty || !settingKeys.add(key)) {
+            throw StateError('Snapshot contains an invalid or duplicate setting key.');
+          }
+        }
+
+        return {
+          'name': snapshot['name'] as String,
+          'uri': snapshotUri,
+          'manifestText': manifestText,
+          'manifest': manifest,
+        };
+      } catch (_) {
+        // Try the next older snapshot. Never mutate or delete a failed copy.
       }
     }
-    return snapshot['name'] as String;
+    return null;
+  }
+
+  Future<String?> verifyLatestPortableMetadataSnapshot() async {
+    final snapshot = await _findLatestVerifiedPortableSnapshot();
+    return snapshot?['name'] as String?;
   }
 
   /// Restores the newest portable snapshot additively. Existing records are
@@ -580,19 +772,12 @@ class DocumentToolsService {
   Future<Map<String, int>> restoreLatestPortableMetadataSnapshot() async {
     final storage = StorageLocationService.instance;
     final locations = await storage.portableDataLocations();
-    final children = await storage.listDirectory(locations['databaseUri']!);
-    final snapshots = children
-        .where((entry) => entry['isDirectory'] == true &&
-            (entry['name'] as String).startsWith('snapshot_'))
-        .toList()
-      ..sort((a, b) => (b['name'] as String).compareTo(a['name'] as String));
-    if (snapshots.isEmpty) throw StateError('No portable recovery snapshot was found.');
-
-    final snapshotUri = snapshots.first['uri'] as String;
-    final manifestText = await storage.readTextFile(
-      await _findChildUri(snapshotUri, 'manifest.json'),
-    );
-    final manifest = PortableSnapshotManifest.parse(manifestText);
+    final snapshot = await _findLatestVerifiedPortableSnapshot();
+    if (snapshot == null) {
+      throw StateError('No complete, verified portable recovery snapshot was found.');
+    }
+    final snapshotUri = snapshot['uri'] as String;
+    final manifest = snapshot['manifest'] as PortableSnapshotManifest;
     if (manifest.databaseSchemaVersion > 3) {
       throw StateError('This recovery snapshot was created by a newer DocsGrid database version. Update the app before restoring it.');
     }
@@ -625,6 +810,23 @@ class DocumentToolsService {
       'document_tags', 'reminders', 'history', 'settings', 'document_text_index']) {
       rowsByTable.putIfAbsent(required, () => <Map<String, Object?>>[]);
     }
+    // Validate every ID, parent reference, path component and cycle before
+    // creating any directory in the user's selected storage provider.
+    final folderRows = rowsByTable['folders']!;
+    final folderRowsById = PortableSnapshotManifest.validateFolderRows(folderRows);
+    final seenDocumentIds = <String>{};
+    for (final row in rowsByTable['documents']!) {
+      final id = row['id'];
+      final folderId = row['folder_id'];
+      if (id is! String || id.trim().isEmpty || id != id.trim() ||
+          !seenDocumentIds.add(id)) {
+        throw const FormatException('Snapshot contains an invalid or duplicate document ID.');
+      }
+      if (folderId != null &&
+          (folderId is! String || !folderRowsById.containsKey(folderId))) {
+        throw const FormatException('Snapshot document references a missing folder.');
+      }
+    }
 
     final pdfUris = <String, String>{};
     final pending = <String>[locations['libraryUri']!];
@@ -656,13 +858,10 @@ class DocumentToolsService {
     final existingDocuments = await db.query('documents');
     final existingReminders = await db.query('reminders');
     final existingHistory = await db.query('history');
-    final folderRows = rowsByTable['folders']!;
     final folderIdMap = <String, String>{};
     final folderUriMap = <String, String>{};
+    final createdFolderUris = <String>[];
     final matchedFolderIds = <String>{};
-    final folderRowsById = {
-      for (final row in folderRows) row['id'] as String: row,
-    };
     Future<String> ensureFolder(String oldId, Set<String> visiting) async {
       final known = folderUriMap[oldId];
       if (known != null) return known;
@@ -673,16 +872,16 @@ class DocumentToolsService {
       final parentUri = parentId == null
           ? locations['libraryUri']!
           : await ensureFolder(parentId, visiting);
+      // Folder names were validated as safe path components before storage access.
       final rawName = row['name'] as String;
-      if (rawName.trim().isEmpty || rawName.contains('/') || rawName.contains('\\')) {
-        throw StateError('Snapshot contains an invalid folder name.');
-      }
       final siblings = await storage.listDirectory(parentUri);
       final existing = siblings.where((entry) =>
           entry['isDirectory'] == true && entry['name'] == rawName);
-      final uri = existing.isNotEmpty
+      final alreadyExists = existing.isNotEmpty;
+      final uri = alreadyExists
           ? existing.first['uri'] as String
           : await storage.createDirectory(parentUri: parentUri, name: rawName);
+      if (!alreadyExists) createdFolderUris.add(uri);
       folderUriMap[oldId] = uri;
       final mappedParentId = parentId == null ? null : folderIdMap[parentId];
       final matchingFolder = existingFolders.where((candidate) =>
@@ -700,14 +899,32 @@ class DocumentToolsService {
       visiting.remove(oldId);
       return uri;
     }
-    for (final row in folderRows) {
-      await ensureFolder(row['id'] as String, <String>{});
+    final reminderIdMap = <String, String>{};
+    // Needed after the preflight/transaction block to attach notification
+    // payloads to the remapped document IDs.
+    final documentIdMap = <String, String>{};
+    var addedDocuments = 0;
+    var linkedDocuments = 0;
+    var missingPdfs = 0;
+    Future<void> rollbackCreatedFolders() async {
+      for (final uri in createdFolderUris.reversed) {
+        try {
+          // Never remove a folder that acquired user content during restore.
+          if ((await storage.listDirectory(uri)).isEmpty) {
+            await storage.deletePdf(uri);
+          }
+        } catch (_) {
+          // Keep any uncertain provider data rather than risking user files.
+        }
+      }
     }
+    try {
+      for (final row in folderRows) {
+        await ensureFolder(row['id'] as String, <String>{});
+      }
 
     final categoryIdMap = <String, String>{};
     final tagIdMap = <String, String>{};
-    final documentIdMap = <String, String>{};
-    final reminderIdMap = <String, String>{};
     final historyIdMap = <String, String>{};
     for (final row in rowsByTable['categories']!) {
       final oldId = row['id'] as String;
@@ -764,9 +981,6 @@ class DocumentToolsService {
           : (existingHistory.any((v) => v['id'] == oldId) ? _uuid.v4() : oldId);
     }
 
-    var addedDocuments = 0;
-    var linkedDocuments = 0;
-    var missingPdfs = 0;
     await db.transaction((txn) async {
       for (final row in rowsByTable['categories']!) {
         final copy = Map<String, Object?>.from(row)
@@ -872,6 +1086,10 @@ class DocumentToolsService {
         await txn.insert('settings', row, conflictAlgorithm: ConflictAlgorithm.ignore);
       }
     });
+    } catch (_) {
+      await rollbackCreatedFolders();
+      rethrow;
+    }
 
     for (final row in rowsByTable['reminders']!) {
       if ((row['enabled'] as int? ?? 0) != 1 || row['status'] == 'completed') continue;
@@ -882,6 +1100,9 @@ class DocumentToolsService {
           body: row['note'] as String?,
           at: DateTime.parse(row['remind_at_utc'] as String).toLocal(),
           recurrence: row['recurrence_rule'] as String?,
+          documentId: row['document_id'] == null
+              ? null
+              : documentIdMap[row['document_id']],
         );
       } catch (_) {
         // The reminder record is restored even if the OS blocks notifications.
@@ -912,20 +1133,247 @@ class DocumentToolsService {
   Future<int> validateBackup(File zipFile) async {
     if (!await zipFile.exists()) throw StateError('Backup file not found.');
     final decoded = ZipDecoder().decodeBytes(await zipFile.readAsBytes());
+    // ZIP readers may accept duplicate names and silently return one of them.
+    // Reject ambiguous or path-like entries before interpreting any metadata.
+    final archiveNames = <String>{};
+    for (final entry in decoded.files) {
+      final name = entry.name;
+      final segments = name.split('/');
+      if (!entry.isFile ||
+          name.isEmpty ||
+          name.startsWith('/') ||
+          name.contains(String.fromCharCode(92)) ||
+          name.codeUnits.any((unit) => unit < 32 || unit == 127) ||
+          segments.any((segment) => segment == '.' || segment == '..') ||
+          !archiveNames.add(name)) {
+        throw StateError('Backup contains an unsafe, duplicate, or unsupported ZIP entry.');
+      }
+    }
     final manifestFile = decoded.findFile('manifest.json');
-    if (manifestFile == null) throw StateError('This is not a DocsGrid backup.');
-    final manifest = jsonDecode(utf8.decode(manifestFile.content as List<int>)) as Map<String, dynamic>;
-    if (manifest['format'] != 'DocsGridBackup' || manifest['version'] != 1) {
+    if (manifestFile == null || !manifestFile.isFile) {
+      throw StateError('This is not a DocsGrid backup.');
+    }
+    final manifest = jsonDecode(utf8.decode(manifestFile.content as List<int>));
+    if (manifest is! Map<String, dynamic> ||
+        manifest['format'] != 'DocsGridBackup' || manifest['version'] != 1) {
       throw StateError('Unsupported backup format or version.');
     }
-    final files = (manifest['files'] as List<dynamic>? ?? []);
-    for (final raw in files) {
-      final item = raw as Map<String, dynamic>;
-      final entry = decoded.findFile(item['entry'] as String);
-      if (entry == null) throw StateError('Backup is incomplete: missing PDF entry.');
-      final digest = sha256.convert(entry.content as List<int>).toString();
-      if (digest != item['sha256']) throw StateError('Backup integrity check failed.');
+
+    final tableNames = <String>[
+      'folders', 'documents', 'categories', 'tags', 'document_tags',
+      'reminders', 'history', 'settings', 'document_text_index',
+    ];
+    final declaredTables = manifest['tables'];
+    if (declaredTables is! Map<String, dynamic>) {
+      throw StateError('Backup manifest is missing table counts.');
     }
-    return files.length;
+    if (declaredTables.keys.any((key) => !tableNames.contains(key))) {
+      throw StateError('Backup manifest contains an unsupported metadata table.');
+    }
+    final rowsByTable = <String, List<dynamic>>{};
+    for (final table in tableNames) {
+      final archiveEntry = decoded.findFile('$table.json');
+      if (archiveEntry == null && table == 'document_text_index' &&
+          declaredTables[table] == null) {
+        rowsByTable[table] = <dynamic>[];
+        continue;
+      }
+      if (archiveEntry == null || !archiveEntry.isFile) {
+        throw StateError('Backup is incomplete: missing $table metadata.');
+      }
+      final rows = jsonDecode(utf8.decode(archiveEntry.content as List<int>));
+      if (rows is! List) {
+        throw StateError('Backup contains invalid $table metadata.');
+      }
+      final declaredCount = declaredTables[table];
+      if (declaredCount is! int) {
+        throw StateError('Backup manifest has an invalid or missing count for $table.');
+      }
+      if (declaredCount != rows.length) {
+        throw StateError('Backup metadata count mismatch for $table.');
+      }
+      rowsByTable[table] = rows;
+    }
+
+    // Preflight the complete folder graph before restore creates any files.
+    final foldersById = <String, Map<String, dynamic>>{};
+    for (final raw in rowsByTable['folders']!) {
+      if (raw is! Map) {
+        throw StateError('Backup contains invalid folder metadata.');
+      }
+      final folder = Map<String, dynamic>.from(raw);
+      final id = folder['id'];
+      final name = folder['name'];
+      final parentId = folder['parent_id'];
+      if (id is! String || id.trim().isEmpty || id != id.trim() ||
+          foldersById.containsKey(id) ||
+          name is! String || name.trim().isEmpty || name != name.trim() ||
+          name.trim() == '.' || name.trim() == '..' ||
+          name.contains('/') || name.contains(String.fromCharCode(92)) ||
+          name.length > 255 ||
+          name.codeUnits.any((unit) => unit < 32 || unit == 127) ||
+          (parentId != null &&
+              (parentId is! String || parentId.trim().isEmpty || parentId != parentId.trim()))) {
+        throw StateError('Backup contains an invalid or duplicate folder ID, name, or parent reference.');
+      }
+      foldersById[id] = folder;
+    }
+    for (final folder in foldersById.values) {
+      final parentId = folder['parent_id'] as String?;
+      if (parentId != null && !foldersById.containsKey(parentId)) {
+        throw StateError('Backup references a missing parent folder.');
+      }
+    }
+    for (final raw in rowsByTable['documents']!) {
+      if (raw is! Map) throw StateError('Backup contains invalid document metadata.');
+      final folderId = raw['folder_id'];
+      if (folderId != null && (folderId is! String || !foldersById.containsKey(folderId))) {
+        throw StateError('Backup document references a missing folder.');
+      }
+    }
+    final visitingFolders = <String>{};
+    final visitedFolders = <String>{};
+    void visitFolder(String id) {
+      if (visitingFolders.contains(id)) {
+        throw StateError('Backup folder hierarchy contains a cycle.');
+      }
+      if (!visitedFolders.add(id)) return;
+      visitingFolders.add(id);
+      final parentId = foldersById[id]!['parent_id'] as String?;
+      if (parentId != null) visitFolder(parentId);
+      visitingFolders.remove(id);
+    }
+    for (final id in foldersById.keys) {
+      visitFolder(id);
+    }
+
+    final rawFiles = manifest['files'];
+    if (rawFiles is! List) {
+      throw StateError('Backup manifest has an invalid PDF list.');
+    }
+    final documentIds = <String>{};
+    final fileIds = <String>{};
+    for (final raw in rawFiles) {
+      if (raw is! Map<String, dynamic>) {
+        throw StateError('Backup manifest contains an invalid PDF record.');
+      }
+      final id = raw['documentId'];
+      final entryName = raw['entry'];
+      final expectedDigest = raw['sha256'];
+      if (id is! String ||
+          !RegExp(r'^[A-Za-z0-9_-]{1,128}$').hasMatch(id) ||
+          !fileIds.add(id)) {
+        throw StateError('Backup contains a missing or duplicate document reference.');
+      }
+      final digestIsValid = expectedDigest is String &&
+          expectedDigest.length == 64 &&
+          expectedDigest.codeUnits.every((unit) =>
+              (unit >= 48 && unit <= 57) ||
+              (unit >= 65 && unit <= 70) ||
+              (unit >= 97 && unit <= 102));
+      if (entryName != 'pdfs/$id.pdf' || !digestIsValid) {
+        throw StateError('Backup contains an invalid PDF entry reference.');
+      }
+      final entry = decoded.findFile(entryName as String);
+      if (entry == null || !entry.isFile) {
+        throw StateError('Backup is incomplete: missing PDF entry.');
+      }
+      final pdfBytes = entry.content as List<int>;
+      if (pdfBytes.length < 5 ||
+          String.fromCharCodes(pdfBytes.take(5)) != '%PDF-') {
+        throw StateError('Backup contains a file that is not a valid PDF.');
+      }
+      final digest = sha256.convert(pdfBytes).toString();
+      if (digest != expectedDigest) {
+        throw StateError('Backup integrity check failed.');
+      }
+      documentIds.add(id);
+    }
+
+    final metadataDocumentIds = <String>{};
+    for (final row in rowsByTable['documents']!) {
+      if (row is! Map || row['id'] is! String ||
+          !metadataDocumentIds.add(row['id'] as String)) {
+        throw StateError('Backup contains an invalid or duplicate document metadata record.');
+      }
+      if (!documentIds.contains(row['id'])) {
+        throw StateError('Backup metadata references a document with no PDF.');
+      }
+    }
+    if (metadataDocumentIds.length != documentIds.length ||
+        !metadataDocumentIds.containsAll(documentIds)) {
+      throw StateError('Backup contains orphaned PDF entries or missing document records.');
+    }
+    Set<String> uniqueIdsFor(String table) {
+      final ids = <String>{};
+      for (final raw in rowsByTable[table]!) {
+        if (raw is! Map || raw['id'] is! String ||
+            (raw['id'] as String).trim().isEmpty ||
+            !ids.add(raw['id'] as String)) {
+          throw StateError('Backup contains an invalid or duplicate $table ID.');
+        }
+      }
+      return ids;
+    }
+
+    final categoryIds = uniqueIdsFor('categories');
+    final tagIds = uniqueIdsFor('tags');
+    uniqueIdsFor('reminders');
+    uniqueIdsFor('history');
+    for (final row in rowsByTable['documents']!) {
+      final categoryId = (row as Map)['category_id'];
+      if (categoryId != null &&
+          (categoryId is! String || !categoryIds.contains(categoryId))) {
+        throw StateError('Backup document references a missing category.');
+      }
+    }
+    final tagLinks = <String>{};
+    for (final raw in rowsByTable['document_tags']!) {
+      if (raw is! Map) throw StateError('Backup contains an invalid document-tag link.');
+      final documentId = raw['document_id'];
+      final tagId = raw['tag_id'];
+      if (documentId is! String || !metadataDocumentIds.contains(documentId) ||
+          tagId is! String || !tagIds.contains(tagId) ||
+          !tagLinks.add('$documentId\u0000$tagId')) {
+        throw StateError('Backup contains a duplicate or invalid document-tag reference.');
+      }
+    }
+    for (final table in ['reminders', 'history']) {
+      for (final raw in rowsByTable[table]!) {
+        if (raw is! Map) throw StateError('Backup contains invalid $table metadata.');
+        final documentId = raw['document_id'];
+        if (documentId != null &&
+            (documentId is! String || !metadataDocumentIds.contains(documentId))) {
+          throw StateError('Backup $table record references a missing document.');
+        }
+      }
+    }
+    for (final raw in rowsByTable['document_text_index']!) {
+      if (raw is! Map || raw['document_id'] is! String ||
+          !metadataDocumentIds.contains(raw['document_id'])) {
+        throw StateError('Backup text index references a missing document.');
+      }
+    }
+    final settingKeys = <String>{};
+    for (final raw in rowsByTable['settings']!) {
+      if (raw is! Map || raw['key'] is! String ||
+          (raw['key'] as String).isEmpty ||
+          !settingKeys.add(raw['key'] as String)) {
+        throw StateError('Backup contains an invalid or duplicate setting key.');
+      }
+    }
+
+    final expectedEntries = <String>{
+      'manifest.json',
+      for (final table in tableNames)
+        if (table != 'document_text_index' || archiveNames.contains('$table.json'))
+          '$table.json',
+      for (final raw in rawFiles) (raw as Map<String, dynamic>)['entry'] as String,
+    };
+    if (archiveNames.length != expectedEntries.length ||
+        !archiveNames.containsAll(expectedEntries)) {
+      throw StateError('Backup contains unexpected or unreferenced ZIP entries.');
+    }
+    return rawFiles.length;
   }
 }

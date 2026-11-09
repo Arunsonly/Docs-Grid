@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import '../data/reminder_repository.dart';
 import '../data/reminder_notifications.dart';
@@ -8,19 +10,57 @@ class RemindersScreen extends StatefulWidget {
   State<RemindersScreen> createState() => _RemindersScreenState();
 }
 
-class _RemindersScreenState extends State<RemindersScreen> {
+class _RemindersScreenState extends State<RemindersScreen> with WidgetsBindingObserver {
   final _repository = ReminderRepository();
   late Future<List<ReminderRecord>> _future;
+  bool? _notificationsEnabled;
+
   @override
-  void initState() { super.initState(); _future = _repository.list(); }
-  Future<void> _refresh() async { final next = _repository.list(); setState(() => _future = next); await next; }
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _future = _repository.list();
+    unawaited(_refreshNotificationPermission());
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      unawaited(_refreshNotificationPermission());
+    }
+  }
+
+  Future<void> _refreshNotificationPermission() async {
+    try {
+      final enabled = await ReminderNotifications.instance.areNotificationsEnabled();
+      if (mounted) setState(() => _notificationsEnabled = enabled);
+    } catch (_) {
+      if (mounted) setState(() => _notificationsEnabled = false);
+    }
+  }
+
+  Future<void> _refresh() async {
+    final next = _repository.list();
+    if (mounted) setState(() => _future = next);
+    await next;
+    await _refreshNotificationPermission();
+  }
 
   Future<void> _requestNotificationPermission() async {
     try {
-      await ReminderNotifications.instance.requestPermission();
+      final granted = await ReminderNotifications.instance.requestPermission();
+      await _refreshNotificationPermission();
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Notification permission request completed. Check Android notification settings if reminders remain silent.')),
+          SnackBar(content: Text(granted
+              ? 'Notification permission request completed.'
+              : 'Notifications are off. Your reminders remain saved; enable alerts in app settings.')),
         );
       }
     } catch (error) {
@@ -51,6 +91,7 @@ class _RemindersScreenState extends State<RemindersScreen> {
                   DropdownMenuItem(value: 'none', child: Text('Does not repeat')),
                   DropdownMenuItem(value: 'daily', child: Text('Daily')),
                   DropdownMenuItem(value: 'weekly', child: Text('Weekly')),
+                  DropdownMenuItem(value: 'monthly', child: Text('Monthly (same date)')),
                 ],
                 onChanged: (value) => setDialogState(() => recurrence = value ?? 'none'),
               ),
@@ -112,6 +153,36 @@ class _RemindersScreenState extends State<RemindersScreen> {
           ]),
         ),
       ),
+      if (_notificationsEnabled == false)
+        Card(
+          margin: const EdgeInsets.fromLTRB(12, 4, 12, 8),
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              const Icon(Icons.notifications_off_outlined),
+              const SizedBox(width: 10),
+              Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                const Text('Notifications are disabled', style: TextStyle(fontWeight: FontWeight.w700)),
+                const SizedBox(height: 4),
+                const Text('Your reminder records are safe, but alerts may not appear until notification permission and the DocsGrid reminder channel are enabled.'),
+                Align(alignment: Alignment.centerRight, child: TextButton.icon(
+                  onPressed: () async {
+                    try {
+                      await ReminderNotifications.instance.openNotificationSettings();
+                    } catch (error) {
+                      if (!context.mounted) return;
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text('Could not open notification settings: $error')),
+                      );
+                    }
+                  },
+                  icon: const Icon(Icons.settings_outlined),
+                  label: const Text('Open settings'),
+                )),
+              ])),
+            ]),
+          ),
+        ),
       Expanded(child: FutureBuilder<List<ReminderRecord>>(future: _future, builder: (context, snapshot) {
       if (snapshot.connectionState == ConnectionState.waiting) return const Center(child: CircularProgressIndicator());
       if (snapshot.hasError) return Center(child: Text('Could not load reminders: ${snapshot.error}'));

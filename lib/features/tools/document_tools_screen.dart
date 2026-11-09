@@ -58,9 +58,11 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
 
   Future<void> _scan({bool camera = false}) => _run(() async {
     final file = await _tools.scanToPdf(context: context, useCamera: camera);
-    if (!mounted || file == null) return;
+    if (file == null) return;
+    try {
+      if (!mounted) return;
 
-    final nameController = TextEditingController();
+      final nameController = TextEditingController();
     final chosenName = await showDialog<String?>(
       context: context,
       builder: (dialogContext) => AlertDialog(
@@ -116,6 +118,11 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
       setState(() => _message = imported.added == 1
         ? 'PDF saved in DocsGrid: ${chosenName == null || chosenName.isEmpty ? p.basename(file.path) : chosenName}.pdf'
         : 'This PDF already exists. Duplicate was not added.');
+      }
+    } finally {
+      // Scanner output lives in the temporary directory. Always remove it
+      // after import, cancellation, navigation away, or an import failure.
+      if (await file.exists()) await file.delete();
     }
   });
 
@@ -191,15 +198,13 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
       throw StateError('No verified DocsGrid snapshot was found in the selected folder.');
     }
     if (!mounted) return;
-    final androidNote = Platform.isAndroid
-        ? 'Choose the parent folder that contains the existing DocsGrid folder.'
-        : 'Choose the existing DocsGrid data folder that contains System/Database.';
+    const folderSelectionNote = 'Choose the parent folder that contains the DocsGrid folder.';
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
         title: const Text('Restore DocsGrid folder data?'),
         content: Text(
-          'Verified snapshot: $snapshot\n\n$androidNote\n'
+          'Verified snapshot: $snapshot\n\n$folderSelectionNote\n'
           'Existing records will be retained. Imported IDs will be remapped if needed. '
           'PDFs will be matched by SHA-256; files not found will keep their metadata '
           'and be marked for relinking. No PDF file will be overwritten or deleted.',
@@ -401,7 +406,17 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
               return ListTile(
                 contentPadding: EdgeInsets.zero,
                 leading: Checkbox(value: selected.contains(doc.id), onChanged: (value) => refresh(() {
-                  if (value == true) { selected.add(doc.id); } else { selected.remove(doc.id); }
+                  if (value == true) {
+                    if (selected.length >= docs.length - 1) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('Keep at least one copy outside the Recycle Bin.')),
+                      );
+                      return;
+                    }
+                    selected.add(doc.id);
+                  } else {
+                    selected.remove(doc.id);
+                  }
                 })),
                 title: Text('${doc.name}.pdf', maxLines: 1, overflow: TextOverflow.ellipsis),
                 subtitle: Text(_formatSize(doc.sizeBytes)),
@@ -464,7 +479,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
               if (dialogContext.mounted) Navigator.pop(dialogContext);
               if (mounted) setState(() => _message = 'Moved ${targets.length} duplicate PDF(s) to Recycle Bin.');
             },
-            child: Text('Delete selected (${selected.length})'),
+            child: Text('Move selected to Recycle Bin (${selected.length})'),
           ),
         ],
       ),

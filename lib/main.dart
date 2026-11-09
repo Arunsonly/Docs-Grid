@@ -1,7 +1,9 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:open_filex/open_filex.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'features/documents/presentation/documents_screen.dart';
@@ -9,10 +11,14 @@ import 'features/documents/data/document_repository.dart';
 import 'features/categories/presentation/categories_screen.dart';
 import 'features/history/presentation/history_screen.dart';
 import 'features/reminders/presentation/reminders_screen.dart';
+import 'features/reminders/data/reminder_repository.dart';
+import 'features/reminders/data/reminder_notifications.dart';
 import 'features/folders/presentation/folders_screen.dart';
 import 'features/folders/data/folder_repository.dart';
 import 'core/storage/storage_location_service.dart';
 import 'features/tools/document_tools_screen.dart';
+
+final GlobalKey<NavigatorState> docsGridNavigatorKey = GlobalKey<NavigatorState>();
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -53,6 +59,7 @@ class _DocsGridAppState extends State<DocsGridApp> {
   Widget build(BuildContext context) {
     final scheme = ColorScheme.fromSeed(seedColor: const Color(0xFF2457C5));
     return MaterialApp(
+      navigatorKey: docsGridNavigatorKey,
       title: 'DocsGrid',
       debugShowCheckedModeBanner: false,
       themeMode: _themeMode,
@@ -95,7 +102,13 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    ReminderNotifications.onDocumentNotificationTap = (documentId) {
+      unawaited(_openReminderDocument(documentId));
+    };
     WidgetsBinding.instance.addPostFrameCallback((_) async {
+      await _refreshReminderSchedules();
+      final pendingDocumentId = ReminderNotifications.takePendingDocumentId();
+      if (pendingDocumentId != null) await _openReminderDocument(pendingDocumentId);
       await _consumeSharedPdfs();
       await _offerRestoreOnFirstLaunch();
     });
@@ -103,7 +116,56 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) _consumeSharedPdfs();
+    if (state == AppLifecycleState.resumed) {
+      unawaited(_refreshReminderSchedules());
+      unawaited(_consumeSharedPdfs());
+    }
+  }
+
+  Future<void> _openReminderDocument(String documentId) async {
+    try {
+      final document = await DocumentRepository().getById(documentId);
+      if (!mounted) {
+        ReminderNotifications.queueDocumentTap(documentId);
+        return;
+      }
+      if (document == null || document.storagePath.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('This reminder’s PDF is no longer in the library.')),
+        );
+        return;
+      }
+      await DocumentRepository().markOpened(document);
+      final isProviderUri = document.storagePath.startsWith('content://') ||
+          document.storagePath.startsWith('file://');
+      if (isProviderUri) {
+        await StorageLocationService.instance.openPdf(document.storagePath);
+      } else {
+        final file = File(document.storagePath);
+        if (!await file.exists()) {
+          throw StateError('The PDF file is missing from local storage.');
+        }
+        final result = await OpenFilex.open(document.storagePath);
+        if (result.type != ResultType.done) {
+          throw StateError(result.message.isEmpty ? 'No PDF viewer is available.' : result.message);
+        }
+      }
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not open reminder PDF: $error')),
+        );
+      }
+    }
+  }
+
+  Future<void> _refreshReminderSchedules() async {
+    try {
+      await ReminderRepository().rescheduleEnabled();
+    } catch (_) {
+      // Document access remains available even if the OS notification queue
+      // cannot be reconciled (for example, when notification permission is off).
+    }
   }
 
   @override
