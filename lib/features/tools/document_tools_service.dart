@@ -778,53 +778,61 @@ class DocumentToolsService {
     final existingReminders = await db.query('reminders');
     final existingHistory = await db.query('history');
     final folderRows = rowsByTable['folders']!;
+    // Validate the entire graph before creating even one provider directory.
+    // This rejects path traversal, duplicate IDs, missing parents and cycles.
+    final folderRowsById = PortableSnapshotManifest.validateFolderRows(folderRows);
     final folderIdMap = <String, String>{};
     final folderUriMap = <String, String>{};
     final matchedFolderIds = <String>{};
-    final folderRowsById = {
-      for (final row in folderRows) row['id'] as String: row,
-    };
-    Future<String> ensureFolder(String oldId, Set<String> visiting) async {
+
+    Future<String> ensureFolder(String oldId) async {
       final known = folderUriMap[oldId];
       if (known != null) return known;
-      if (!visiting.add(oldId)) throw StateError('Snapshot folder hierarchy contains a cycle.');
-      final row = folderRowsById[oldId];
-      if (row == null) throw StateError('Snapshot refers to a missing parent folder.');
-      final parentId = row['parent_id'] as String?;
-      final parentUri = parentId == null
-          ? locations['libraryUri']!
-          : await ensureFolder(parentId, visiting);
-      final rawName = row['name'] as String;
-      if (rawName.trim().isEmpty || rawName == '.' || rawName == '..' ||
-          rawName.contains('/') || rawName.contains('\\') ||
-          rawName.contains(String.fromCharCode(0))) {
-        throw StateError('Snapshot contains an invalid folder name.');
+
+      // Resolve ancestors iteratively so deeply nested valid libraries do not
+      // overflow the Dart call stack during recovery.
+      final chain = <String>[];
+      String? currentId = oldId;
+      while (currentId != null && !folderUriMap.containsKey(currentId)) {
+        final row = folderRowsById[currentId];
+        if (row == null) throw StateError('Snapshot refers to a missing parent folder.');
+        chain.add(currentId);
+        currentId = row['parent_id'] as String?;
       }
-      final siblings = await storage.listDirectory(parentUri);
-      final existing = siblings.where((entry) =>
-          entry['isDirectory'] == true && entry['name'] == rawName);
-      final uri = existing.isNotEmpty
-          ? existing.first['uri'] as String
-          : await storage.createDirectory(parentUri: parentUri, name: rawName);
-      folderUriMap[oldId] = uri;
-      final mappedParentId = parentId == null ? null : folderIdMap[parentId];
-      final matchingFolder = existingFolders.where((candidate) =>
-          candidate['name'] == rawName &&
-          candidate['parent_id'] == mappedParentId &&
-          candidate['deleted_at'] == null &&
-          !matchedFolderIds.contains(candidate['id']));
-      if (matchingFolder.isNotEmpty) {
-        final existing = matchingFolder.first;
-        folderIdMap[oldId] = existing['id'] as String;
-        matchedFolderIds.add(existing['id'] as String);
-      } else {
-        folderIdMap[oldId] = _uuid.v4();
+
+      for (final id in chain.reversed) {
+        final row = folderRowsById[id]!;
+        final parentId = row['parent_id'] as String?;
+        final parentUri = parentId == null
+            ? locations['libraryUri']!
+            : folderUriMap[parentId]!;
+        final rawName = row['name'] as String;
+        final siblings = await storage.listDirectory(parentUri);
+        final existing = siblings.where((entry) =>
+            entry['isDirectory'] == true && entry['name'] == rawName);
+        final uri = existing.isNotEmpty
+            ? existing.first['uri'] as String
+            : await storage.createDirectory(parentUri: parentUri, name: rawName);
+        folderUriMap[id] = uri;
+        final mappedParentId = parentId == null ? null : folderIdMap[parentId];
+        final matchingFolder = existingFolders.where((candidate) =>
+            candidate['name'] == rawName &&
+            candidate['parent_id'] == mappedParentId &&
+            candidate['deleted_at'] == null &&
+            !matchedFolderIds.contains(candidate['id']));
+        if (matchingFolder.isNotEmpty) {
+          final existingFolder = matchingFolder.first;
+          folderIdMap[id] = existingFolder['id'] as String;
+          matchedFolderIds.add(existingFolder['id'] as String);
+        } else {
+          folderIdMap[id] = _uuid.v4();
+        }
       }
-      visiting.remove(oldId);
-      return uri;
+      return folderUriMap[oldId]!;
     }
+
     for (final row in folderRows) {
-      await ensureFolder(row['id'] as String, <String>{});
+      await ensureFolder(row['id'] as String);
     }
 
     final categoryIdMap = <String, String>{};
@@ -903,24 +911,32 @@ class DocumentToolsService {
       }
       final insertedFolders = <String>{};
       Future<void> insertFolder(String oldId) async {
-        if (!insertedFolders.add(oldId)) return;
-        final row = folderRowsById[oldId];
-        if (row == null) throw StateError('Snapshot folder parent is missing.');
-        final parentId = row['parent_id'] as String?;
-        if (parentId != null) await insertFolder(parentId);
-        final mappedId = folderIdMap[oldId]!;
-        final values = {
-          ...row,
-          'id': mappedId,
-          'parent_id': parentId == null ? null : folderIdMap[parentId],
-          'storage_uri_or_relative_path': folderUriMap[oldId],
-        };
-        if (existingFolders.any((candidate) => candidate['id'] == mappedId)) {
-          await txn.update('folders', {
-            'storage_uri_or_relative_path': folderUriMap[oldId],
-          }, where: 'id = ?', whereArgs: [mappedId]);
-        } else {
-          await txn.insert('folders', values, conflictAlgorithm: ConflictAlgorithm.ignore);
+        final chain = <String>[];
+        String? currentId = oldId;
+        while (currentId != null && !insertedFolders.contains(currentId)) {
+          final row = folderRowsById[currentId];
+          if (row == null) throw StateError('Snapshot folder parent is missing.');
+          chain.add(currentId);
+          currentId = row['parent_id'] as String?;
+        }
+        for (final id in chain.reversed) {
+          if (!insertedFolders.add(id)) continue;
+          final row = folderRowsById[id]!;
+          final parentId = row['parent_id'] as String?;
+          final mappedId = folderIdMap[id]!;
+          final values = {
+            ...row,
+            'id': mappedId,
+            'parent_id': parentId == null ? null : folderIdMap[parentId],
+            'storage_uri_or_relative_path': folderUriMap[id],
+          };
+          if (existingFolders.any((candidate) => candidate['id'] == mappedId)) {
+            await txn.update('folders', {
+              'storage_uri_or_relative_path': folderUriMap[id],
+            }, where: 'id = ?', whereArgs: [mappedId]);
+          } else {
+            await txn.insert('folders', values, conflictAlgorithm: ConflictAlgorithm.ignore);
+          }
         }
       }
       for (final row in folderRows) {
