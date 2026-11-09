@@ -1067,8 +1067,17 @@ class DocumentToolsService {
         if (selection.contains(BackupRestoreSection.settings)) {
           rows['settings'] = backup.rowsByTable['settings']!;
         }
-        if (selection.contains(BackupRestoreSection.ocrIndexes) && includeDocuments) {
-          rows['document_text_index'] = backup.rowsByTable['document_text_index']!;
+        if (selection.contains(BackupRestoreSection.ocrIndexes)) {
+          if (includeDocuments) {
+            rows['document_text_index'] = backup.rowsByTable['document_text_index']!;
+          } else {
+            final liveDb = await _database.database;
+            final liveRows = await liveDb.query('documents', columns: ['id']);
+            final liveIds = liveRows.map((row) => row['id'] as String).toSet();
+            rows['document_text_index'] = backup.rowsByTable['document_text_index']!
+                .where((row) => liveIds.contains(row['document_id']))
+                .toList();
+          }
         }
         final selectiveBackup = _ValidatedBackup(
           manifest: backup.manifest,
