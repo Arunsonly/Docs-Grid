@@ -349,36 +349,69 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
       throw StateError('No portable DocsGrid backup ZIP was found.');
     }
     if (!mounted) return;
-    final restored = await _tools.restoreNewestPortableBackup(
-      confirm: (count) async {
-        if (!mounted) return false;
-        return await showDialog<bool>(
-              context: context,
-              builder: (context) => AlertDialog(
-                title: const Text('Restore latest verified backup?'),
-                content: Text(
-                  'The newest valid archive is checksum-validated before import. '
-                  'Existing records are preserved; documents are merged without overwriting current files. '
-                  'PDFs: $count.',
+    try {
+      final restored = await _tools.restoreNewestPortableBackup(
+        confirm: (count) async {
+          if (!mounted) return false;
+          return await showDialog<bool>(
+                context: context,
+                builder: (context) => AlertDialog(
+                  title: const Text('Restore latest verified backup?'),
+                  content: Text(
+                    'The newest valid archive is checksum-validated before import. '
+                    'Existing records are preserved; documents are merged without overwriting current files. '
+                    'PDFs: $count.',
+                  ),
+                  actions: [
+                    TextButton(
+                      onPressed: () => Navigator.pop(context, false),
+                      child: const Text('Cancel'),
+                    ),
+                    FilledButton(
+                      onPressed: () => Navigator.pop(context, true),
+                      child: const Text('Restore'),
+                    ),
+                  ],
                 ),
-                actions: [
-                  TextButton(
-                    onPressed: () => Navigator.pop(context, false),
-                    child: const Text('Cancel'),
-                  ),
-                  FilledButton(
-                    onPressed: () => Navigator.pop(context, true),
-                    child: const Text('Restore'),
-                  ),
-                ],
-              ),
-            ) ??
-            false;
-      },
-    );
-    if (restored != null && mounted) {
-      setState(() => _message =
-          'Portable recovery completed: $restored PDF(s) restored from a verified backup.');
+              ) ??
+              false;
+        },
+      );
+      if (restored != null && mounted) {
+        setState(() => _message =
+            'Portable recovery completed: $restored PDF(s) restored from a verified backup.');
+      }
+    } catch (error) {
+      if (!mounted) rethrow;
+      final useLoosePdfs = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('No valid backup ZIP found'),
+          content: Text(
+            'DocsGrid could not validate the available backup archives. '
+            'You can still discover surviving PDFs and rebuild the file list. '
+            'Categories, tags, reminders, history and settings cannot be recovered from PDFs alone.\n\n$error',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Find existing PDFs'),
+            ),
+          ],
+        ),
+      );
+      if (useLoosePdfs == true) {
+        final recovered = await _tools.recoverLoosePortablePdfs();
+        if (mounted) {
+          setState(() => _message =
+              'PDF discovery finished. Added: ${recovered['added']}; '
+              'duplicates: ${recovered['duplicates']}; failed: ${recovered['failed']}.');
+        }
+      }
     }
   }
 
