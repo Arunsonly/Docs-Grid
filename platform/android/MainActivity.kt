@@ -14,12 +14,15 @@ import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.common.MethodCall
-import java.util.concurrent.Executors
+import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 
 private class MissingStorageChildException(message: String) : IllegalStateException(message)
 
 class MainActivity : FlutterActivity() {
-    private val storageExecutor = Executors.newSingleThreadExecutor()
+    private val storageExecutor = ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS, ArrayBlockingQueue<Runnable>(64))
     private val mainHandler = Handler(Looper.getMainLooper())
     private val channelName = "docsgrid/storage"
     private val requestChooseFolder = 4817
@@ -56,19 +59,29 @@ class MainActivity : FlutterActivity() {
                 if (mainThreadOnly) {
                     handleStorageCall(call, result)
                 } else if (call.method == "consumeSharedPdfs") {
-                    // Capture and clear the Activity intent on the main thread,
-                    // then copy provider data on the storage worker.
+                    // Clear the Activity intent only after the bounded queue
+                    // accepts the work, so an incoming share is not discarded.
                     val incomingIntent = intent
-                    setIntent(Intent())
-                    storageExecutor.execute {
+                    val accepted = enqueueStorageCall(result) {
                         handleStorageCall(call, onMainThreadResult(result), incomingIntent)
                     }
+                    if (accepted) setIntent(Intent())
                 } else {
-                    storageExecutor.execute {
+                    enqueueStorageCall(result) {
                         handleStorageCall(call, onMainThreadResult(result))
                     }
                 }
             }
+    }
+
+    private fun enqueueStorageCall(result: MethodChannel.Result, task: () -> Unit): Boolean {
+        return try {
+            storageExecutor.execute(task)
+            true
+        } catch (_: RejectedExecutionException) {
+            result.error("BUSY", "DocsGrid storage is busy. Please retry after the current file operation finishes.", null)
+            false
+        }
     }
 
     private fun onMainThreadResult(result: MethodChannel.Result): MethodChannel.Result =
