@@ -20,6 +20,8 @@ import 'package:uuid/uuid.dart';
 
 import '../../core/database/app_database.dart';
 import '../../core/storage/storage_location_service.dart';
+import '../documents/data/document_repository.dart';
+import '../folders/data/folder_repository.dart';
 import '../reminders/data/reminder_notifications.dart';
 import 'backup_archive_limits.dart';
 import 'backup_folder_graph_validator.dart';
@@ -869,6 +871,78 @@ class DocumentToolsService {
         .toList();
     files.sort((a, b) => b.lastModifiedSync().compareTo(a.lastModifiedSync()));
     return files;
+  }
+
+  /// Rebuilds the library index from surviving shared PDFs after reinstall.
+  /// PDFs are registered in place; they are not duplicated or deleted. Folder
+  /// names are reconstructed, but categories/tags/reminders require a DB backup.
+  Future<Map<String, int>> recoverLoosePortablePdfs() async {
+    if (!Platform.isAndroid) {
+      throw UnsupportedError('Automatic shared-media recovery is currently Android-only.');
+    }
+    final storage = StorageLocationService.instance;
+    final locations = await storage.portableDataLocations();
+    final unfiledRoot = locations['documentsUri'];
+    final foldersRoot = locations['libraryUri'];
+    if (unfiledRoot == null || foldersRoot == null) {
+      throw StateError('DocsGrid portable PDF folders are unavailable.');
+    }
+    final folderRepository = FolderRepository();
+    final documentRepository = DocumentRepository();
+    final folderIdsByPath = <String, String>{};
+    var added = 0;
+    var duplicates = 0;
+    var failed = 0;
+
+    Future<String?> ensureFolderPath(String path) async {
+      if (path.isEmpty) return null;
+      var parentId = null as String?;
+      var currentPath = '';
+      for (final segment in path.split('/')) {
+        currentPath = currentPath.isEmpty ? segment : '$currentPath/$segment';
+        final cached = folderIdsByPath[currentPath];
+        if (cached != null) {
+          parentId = cached;
+          continue;
+        }
+        final created = await folderRepository.create(
+          name: FolderRepository.validateFolderName(segment),
+          parentId: parentId,
+        );
+        folderIdsByPath[currentPath] = created.id;
+        parentId = created.id;
+      }
+      return parentId;
+    }
+
+    final roots = <({String uri, bool preserveFolders})>[
+      (uri: unfiledRoot, preserveFolders: false),
+      (uri: foldersRoot, preserveFolders: true),
+    ];
+    for (final root in roots) {
+      final files = await storage.listPdfFilesRecursively(root.uri);
+      for (final item in files) {
+        try {
+          final folderPath = root.preserveFolders
+              ? item['folderPath'] as String
+              : '';
+          final folderId = await ensureFolderPath(folderPath);
+          final imported = await documentRepository.importExistingSharedPdf(
+            storageUri: item['uri'] as String,
+            displayName: item['name'] as String,
+            targetFolderId: folderId,
+          );
+          if (imported) {
+            added++;
+          } else {
+            duplicates++;
+          }
+        } catch (_) {
+          failed++;
+        }
+      }
+    }
+    return {'added': added, 'duplicates': duplicates, 'failed': failed};
   }
 
   /// Tries portable archives newest-first. A filename or timestamp is never
