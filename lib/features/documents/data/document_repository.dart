@@ -678,12 +678,11 @@ class DocumentRepository {
   /// Reconnects a missing or inaccessible PDF to a user-selected copy.
   /// If the record has a SHA-256 value, the replacement must match exactly.
   Future<void> relinkDocument(DocumentRecord document) async {
-    final picked = await FilePicker.pickFiles(
+    final pickedFile = await FilePicker.pickFile(
       type: FileType.custom,
       allowedExtensions: ['pdf'],
     );
-    if (picked.isEmpty) return;
-    final pickedFile = picked.single;
+    if (pickedFile == null) return;
     File? stagedSource;
     String? createdUri;
     try {
