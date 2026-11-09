@@ -131,6 +131,7 @@ class AppDatabase {
 
   @visibleForTesting
   Future<void> upgradeForTesting(Database db, int oldVersion, int newVersion) async {
+    if (newVersion <= oldVersion) return;
         // Databases created by the original v1 app predate schema_migrations.
         // Create the tracking table before recording the first upgrade so an
         // existing user's database can migrate without a missing-table crash.
