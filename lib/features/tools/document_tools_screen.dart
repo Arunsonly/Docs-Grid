@@ -422,7 +422,18 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
   }
 
   @override
-  Widget build(BuildContext context) => ListView(
+  Widget build(BuildContext context) {
+    // Capture actions must not flash the generic tools catalogue.
+    if (widget.quickAction == 'camera' || widget.quickAction == 'gallery') {
+      return Center(
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          const CircularProgressIndicator(),
+          const SizedBox(height: 16),
+          Text(widget.quickAction == 'camera' ? 'Opening camera…' : 'Opening photo gallery…'),
+        ]),
+      );
+    }
+    return ListView(
     padding: const EdgeInsets.all(16),
     children: [
       if (_busy) const LinearProgressIndicator(),
@@ -486,4 +497,5 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen> {
       ])),
     ],
   );
+  }
 }
