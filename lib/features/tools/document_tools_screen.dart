@@ -51,6 +51,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
         case 'backup': _backup(); break;
         case 'restore_portable': _restorePortableSnapshot(autoDetect: true); break;
         case 'restore_latest_backup': _restoreNewestPortableBackup(); break;
+        case 'recover_loose_pdfs': _recoverLoosePortablePdfs(); break;
         case 'tools': break;
         case 'duplicates': _showDuplicates(); break;
       }
@@ -322,6 +323,17 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
       }
     } finally {
       if (temporaryCopy && await file.exists()) await file.delete();
+    }
+  });
+
+  Future<void> _recoverLoosePortablePdfs() => _run(() async {
+    final recovered = await _tools.recoverLoosePortablePdfs();
+    if (mounted) {
+      setState(() => _message =
+          'PDF recovery finished. Added: ${recovered['added']}; '
+          'duplicates: ${recovered['duplicates']}; failed: ${recovered['failed']}. '
+          'PDF files and folder names were recovered. Categories, tags, reminders, '
+          'history and settings require a valid DocsGrid backup.');
     }
   });
 
