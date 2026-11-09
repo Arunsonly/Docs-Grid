@@ -26,6 +26,7 @@ void main() {
       path,
       options: OpenDatabaseOptions(
         version: 1,
+        onConfigure: (db) async => db.execute('PRAGMA foreign_keys = ON'),
         onCreate: (db, version) async {
           await db.execute('''
             CREATE TABLE folders (
@@ -94,6 +95,8 @@ void main() {
       expect(await upgraded.query('categories', where: 'name = ?', whereArgs: ['Insurance']), hasLength(1));
       expect(await upgraded.rawQuery("SELECT name FROM sqlite_master WHERE type='table' AND name='document_text_index'"), hasLength(1));
       expect(await upgraded.query('schema_migrations', orderBy: 'version'), hasLength(2));
+      expect(await upgraded.rawQuery('PRAGMA foreign_key_check'), isEmpty);
+      expect(await upgraded.rawQuery('PRAGMA foreign_keys'), isNotEmpty);
       await upgraded.close();
     });
 
@@ -104,6 +107,7 @@ void main() {
       final v2 = await migrateTo(path, 2);
       expect(await v2.getVersion(), 2);
       expect(await v2.query('categories'), isNotEmpty);
+      expect(await v2.rawQuery("SELECT name FROM sqlite_master WHERE type='table' AND name='document_text_index'"), isEmpty);
       await v2.close();
 
       final v3 = await migrateTo(path, 3);
