@@ -196,7 +196,7 @@ class FolderRepository {
       currentId = row['parent_id'] as String?;
     }
 
-    String? parentUri = defaultLibraryRoot ?? selectedRoot?['uri'];
+    String? parentUri = selectedRoot?['uri'] ?? defaultLibraryRoot;
     for (final folder in chain.reversed) {
       var childUri = folder.uri;
       if (childUri == null && parentUri != null) {
@@ -250,9 +250,10 @@ class FolderRepository {
       throw StateError('A folder with this name already exists here.');
     }
     final selectedRoot = await storage.selectedFolder();
-    final String? selectedRootUri = Platform.isAndroid
-        ? (await storage.portableDataLocations())['libraryUri']
-        : selectedRoot?['uri'];
+    final String? selectedRootUri = selectedRoot?['uri'] ??
+        (Platform.isAndroid
+            ? (await storage.portableDataLocations())['libraryUri']
+            : null);
     final String? parentStorageUri = parentId == null
         ? selectedRootUri
         : await ensurePhysicalStorageUri(parentId);

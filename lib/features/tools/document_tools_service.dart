@@ -820,6 +820,28 @@ class DocumentToolsService {
     }
   }
 
+  /// Lists portable ZIP archives without trusting their filenames as proof
+  /// of validity. The restore decoder performs the full manifest/checksum scan.
+  Future<List<File>> listPortableBackupArchives() async {
+    final locations = Platform.isAndroid
+        ? await StorageLocationService.instance.portableDataLocations()
+        : const <String, String>{};
+    final uri = locations['backupsUri'];
+    final directory = Directory(
+      uri != null && uri.startsWith('file://')
+          ? Uri.parse(uri).toFilePath()
+          : p.join((await getApplicationDocumentsDirectory()).path, 'DocsGrid', 'Backups'),
+    );
+    if (!await directory.exists()) return <File>[];
+    final files = await directory
+        .list(followLinks: false)
+        .where((entity) => entity is File && p.extension(entity.path).toLowerCase() == '.zip')
+        .cast<File>()
+        .toList();
+    files.sort((a, b) => b.lastModifiedSync().compareTo(a.lastModifiedSync()));
+    return files;
+  }
+
   /// Additively restores a verified archive. Existing document/folder IDs are
   /// never overwritten; any collision aborts the database transaction.
   Future<int?> restoreBackup(
