@@ -888,7 +888,7 @@ class DocumentRepository {
         if (existingNow.isNotEmpty) throw _DuplicatePdfException();
         if (targetFolderId != null) {
           final activeFolder = await txn.query('folders', columns: ['id'],
-            where: 'id = ? AND deleted_at IS NULL', whereArgs: [effectiveTargetFolderId], limit: 1);
+            where: 'id = ? AND deleted_at IS NULL', whereArgs: [targetFolderId], limit: 1);
           if (activeFolder.isEmpty) throw StateError('Destination folder no longer exists.');
         }
         await txn.insert('documents', {
@@ -900,7 +900,7 @@ class DocumentRepository {
           'mime_type': 'application/pdf',
           'size_bytes': await source.length(),
           'sha256': digest,
-          'folder_id': effectiveTargetFolderId,
+          'folder_id': targetFolderId,
           'extracted_text_status': 'pending',
           'created_at': now,
           'updated_at': now,
@@ -993,7 +993,7 @@ class DocumentRepository {
 
         final suggestedName = p.basenameWithoutExtension(picked.name);
         final suggestedCategoryId = _suggestCategoryId(picked.name, categoryOptions);
-        final decision = review == null || pickedFiles.files.length != 1
+        final decision = review == null || pickedFiles.length != 1
             ? ImportDecision(name: suggestedName, categoryId: suggestedCategoryId)
             : await review(suggestedName, suggestedCategoryId, categoryOptions);
         if (decision == null) {
