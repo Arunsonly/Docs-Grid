@@ -26,7 +26,7 @@ void main() {
       }
       return chunk;
     }, growable: false);
-    final expected = sha256.convert(chunks.expand((chunk) => chunk)).toString();
+    final expected = (await sha256.bind(Stream<List<int>>.fromIterable(chunks)).first).toString();
     final target = File('${temp.path}/large-provider.pdf');
 
     await writeByteStreamToFile(Stream<List<int>>.fromIterable(chunks), target);
