@@ -16,7 +16,7 @@ import 'features/reminders/data/reminder_notifications.dart';
 import 'features/folders/presentation/folders_screen.dart';
 import 'features/folders/data/folder_repository.dart';
 import 'core/storage/storage_location_service.dart';
-import 'features/tools/document_tools_screen.dart';
+import 'features/tools/document_tools_screen.dart' show DocumentToolsScreen;
 
 final GlobalKey<NavigatorState> docsGridNavigatorKey = GlobalKey<NavigatorState>();
 
