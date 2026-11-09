@@ -699,8 +699,11 @@ class DocumentRepository {
         await writeByteStreamToFile(pickedFile.readAsByteStream(), stagedSource);
         source = stagedSource;
       }
-      if (!await source.exists()) throw StateError('The selected PDF is no longer available.');
-      final header = await source.openRead(0, 5)
+      if (!await source.exists()) {
+        throw StateError('The selected PDF is no longer available.');
+      }
+      final header = await source
+          .openRead(0, 5)
           .fold<List<int>>(<int>[], (a, b) => a..addAll(b));
       if (header.length < 5 || String.fromCharCodes(header) != '%PDF-') {
         throw StateError('The selected file is not a valid PDF.');
