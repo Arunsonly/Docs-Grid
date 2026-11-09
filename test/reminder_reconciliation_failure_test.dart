@@ -21,30 +21,6 @@ class _ReminderRowsDatabase implements Database {
     }
     return super.noSuchMethod(invocation);
   }
-  test('create keeps the committed reminder when OS scheduling throws', () async {
-    final db = _ReminderRowsDatabase([]);
-    final gateway = _FailingNotificationGateway();
-    final repository = ReminderRepository(
-      database: AppDatabase.forTesting(() async => db),
-      notifications: gateway,
-    );
-
-    await expectLater(
-      repository.create(
-        title: 'Renew policy',
-        note: 'Call insurer',
-        remindAt: DateTime.now().add(const Duration(days: 3)),
-      ),
-      throwsStateError,
-    );
-
-    expect(db.rows, hasLength(1));
-    expect(db.rows.single['title'], 'Renew policy');
-    expect(db.rows.single['status'], 'scheduled');
-    expect(db.rows.single['enabled'], 1);
-    expect(gateway.scheduleCalls, 1);
-  });
-
 }
 
 class _FailingNotificationGateway implements ReminderNotificationGateway {
@@ -84,6 +60,30 @@ class _FailingNotificationGateway implements ReminderNotificationGateway {
 }
 
 void main() {
+  test('create keeps the committed reminder when OS scheduling throws', () async {
+    final db = _ReminderRowsDatabase([]);
+    final gateway = _FailingNotificationGateway();
+    final repository = ReminderRepository(
+      database: AppDatabase.forTesting(() async => db),
+      notifications: gateway,
+    );
+
+    await expectLater(
+      repository.create(
+        title: 'Renew policy',
+        note: 'Call insurer',
+        remindAt: DateTime.now().add(const Duration(days: 3)),
+      ),
+      throwsStateError,
+    );
+
+    expect(db.rows, hasLength(1));
+    expect(db.rows.single['title'], 'Renew policy');
+    expect(db.rows.single['status'], 'scheduled');
+    expect(db.rows.single['enabled'], 1);
+    expect(gateway.scheduleCalls, 1);
+  });
+
   test('scheduler failure is counted and persisted reminder is retained', () async {
     final row = <String, Object?>{
       'id': 'reminder-active',
