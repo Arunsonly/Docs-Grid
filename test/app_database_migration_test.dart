@@ -114,7 +114,8 @@ void main() {
       expect(await upgraded.query('reminders', where: 'id = ?', whereArgs: ['reminder-1']), hasLength(1));
       expect(await upgraded.query('categories', where: 'name = ?', whereArgs: ['Insurance']), hasLength(1));
       expect(await upgraded.rawQuery("SELECT name FROM sqlite_master WHERE type='table' AND name='document_text_index'"), hasLength(1));
-      expect(await upgraded.query('schema_migrations', orderBy: 'version'), hasLength(2));
+      expect(await upgraded.query('schema_migrations', orderBy: 'version'), hasLength(3));
+      expect((await upgraded.query('schema_migrations', orderBy: 'version')).map((row) => row['version']), [1, 2, 3]);
       expect(await upgraded.rawQuery('PRAGMA foreign_key_check'), isEmpty);
       expect(await upgraded.rawQuery('PRAGMA foreign_keys'), isNotEmpty);
       await upgraded.close();
