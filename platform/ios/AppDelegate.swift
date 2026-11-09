@@ -11,6 +11,7 @@ import CryptoKit
     private var pendingFolderResult: FlutterResult?
     private var documentController: UIDocumentInteractionController?
     private let storageQueue = DispatchQueue(label: "com.docsgrid.storage-io", qos: .userInitiated)
+    private let storageQueueSlots = DispatchSemaphore(value: 64)
 
     override func application(
         _ application: UIApplication,
@@ -27,7 +28,18 @@ import CryptoKit
                 if call.method == "chooseFolder" || call.method == "openPdf" {
                     self.handle(call, result: result)
                 } else {
+                    // Bound pending provider operations. Reject immediately on
+                    // the main thread rather than allowing an unbounded GCD backlog.
+                    guard self.storageQueueSlots.wait(timeout: .now()) == .success else {
+                        result(FlutterError(
+                            code: "BUSY",
+                            message: "DocsGrid storage is busy. Please retry after the current file operation finishes.",
+                            details: nil
+                        ))
+                        return
+                    }
                     self.storageQueue.async {
+                        defer { self.storageQueueSlots.signal() }
                         self.handle(call) { value in
                             DispatchQueue.main.async { result(value) }
                         }
