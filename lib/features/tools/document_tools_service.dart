@@ -682,6 +682,7 @@ class DocumentToolsService {
       'backupType': includePdfs ? 'full' : 'database',
       'createdAt': DateTime.now().toUtc().toIso8601String(),
       'tables': <String, int>{},
+      'metadataFiles': <Map<String, Object?>>[],
       'files': <Map<String, Object?>>[],
     };
 
@@ -768,6 +769,12 @@ class DocumentToolsService {
           await outputFile.close();
         }
         (manifest['tables'] as Map<String, int>)[table] = rowCount;
+        final metadataDigest = (await sha256.bind(metadataFile.openRead()).first).toString();
+        (manifest['metadataFiles'] as List).add({
+          'entry': '$table.json',
+          'sizeBytes': await metadataFile.length(),
+          'sha256': metadataDigest,
+        });
         await addStoredFile(metadataFile, '$table.json');
       }
 
@@ -1947,6 +1954,186 @@ class DocumentToolsService {
         }
       }
 
+      final metadataFiles = manifest['metadataFiles'];
+      if (metadataFiles != null) {
+        if (metadataFiles is! List) {
+          throw StateError('Backup metadata file checksums are invalid.');
+        }
+        final seenMetadata = <String>{};
+        for (final raw in metadataFiles) {
+          if (raw is! Map || raw['entry'] is! String ||
+              raw['sizeBytes'] is! int || raw['sha256'] is! String ||
+              !RegExp(r'^[a-fA-F0-9]{64}
+      final rowsByTable = <String, List<Map<String, Object?>>>{};
+      for (final table in tableNames) {
+        final tableFile = decoded.findFile('$table.json');
+        if (tableFile == null && table == 'document_text_index' &&
+            declaredTables[table] == null) {
+          rowsByTable[table] = <Map<String, Object?>>[];
+          continue;
+        }
+        if (tableFile == null) {
+          throw StateError('Backup is incomplete: missing $table metadata.');
+        }
+        final tableRows = jsonDecode(utf8.decode(tableFile.content as List<int>));
+        if (tableRows is! List) throw StateError('Backup contains invalid $table metadata.');
+        final declaredCount = declaredTables[table];
+        if (declaredCount is! int || declaredCount != tableRows.length) {
+          throw StateError('Backup metadata count mismatch for $table.');
+        }
+        rowsByTable[table] = tableRows
+            .map((value) => Map<String, Object?>.from(value as Map))
+            .toList();
+      }
+      BackupFolderGraphValidator.validate(rowsByTable['folders']!);
+      try {
+        PortableSnapshotManifest.validateFolderRows(rowsByTable['folders']!);
+        PortableSnapshotManifest.validateRelations(rowsByTable);
+      } on FormatException catch (error) {
+        final message = error.message.toString();
+        if (message.contains('document tag')) {
+          throw StateError('Backup document-tag reference points to a missing record.');
+        }
+        throw StateError(message);
+      }
+      PortableSnapshotRowsValidator.validate(rowsByTable);
+
+      final rawFiles = manifest['files'];
+      if (rawFiles is! List) throw StateError('Backup file manifest is invalid.');
+      staging = await Directory.systemTemp.createTemp('docsgrid_restore_');
+      final stagedPdfPaths = <String, String>{};
+      final seenDocuments = <String>{};
+      final seenEntries = <String>{};
+      for (final raw in rawFiles) {
+        if (raw is! Map ||
+            raw['documentId'] is! String ||
+            raw['entry'] is! String ||
+            raw['sha256'] is! String ||
+            !RegExp(r'^[a-fA-F0-9]{64}$').hasMatch(raw['sha256'] as String) ||
+            (raw['originalName'] != null && raw['originalName'] is! String)) {
+          throw StateError('Backup contains an invalid PDF manifest record.');
+        }
+        final documentId = raw['documentId'] as String;
+        final entryName = raw['entry'] as String;
+        if (!documentIds.contains(documentId)) {
+          throw StateError('Backup contains orphaned PDF entries that reference missing document metadata.');
+        }
+        if (!seenDocuments.add(documentId) || !seenEntries.add(entryName)) {
+          throw StateError('Backup contains duplicate PDF entries.');
+        }
+        if (!entryName.startsWith('pdfs/') ||
+            entryName.contains('\\') ||
+            entryName.split('/').any((part) => part.isEmpty || part == '.' || part == '..')) {
+          throw StateError('Backup contains an unsafe PDF entry path.');
+        }
+        final entry = decoded.findFile(entryName);
+        if (entry == null || !entry.isFile || entry.isSymbolicLink) {
+          throw StateError('Backup is incomplete or contains a non-file PDF entry.');
+        }
+        final stagedFile = File(p.join(staging.path, '${_uuid.v4()}.pdf'));
+        final output = OutputFileStream(stagedFile.path);
+        try {
+          entry.writeContent(output);
+        } finally {
+          output.closeSync();
+        }
+        final header = await stagedFile.openRead(0, 1024).fold<List<int>>(
+          <int>[], (bytes, chunk) => bytes..addAll(chunk),
+        );
+        if (!String.fromCharCodes(header).contains('%PDF-')) {
+          throw StateError('Backup contains a file that is not a valid PDF.');
+        }
+        final digest = (await sha256.bind(stagedFile.openRead()).first).toString();
+        if (digest != (raw['sha256'] as String).toLowerCase()) {
+          throw StateError('Backup integrity check failed.');
+        }
+        stagedPdfPaths[documentId] = stagedFile.path;
+      }
+      final databaseOnly = manifest['backupType'] == 'database';
+      if (!databaseOnly &&
+          (seenDocuments.length != documentIds.length ||
+           !seenDocuments.containsAll(documentIds))) {
+        throw StateError('Backup contains orphaned PDF entries: every document must have exactly one PDF entry.');
+      }
+      if (databaseOnly && rawFiles.isNotEmpty) {
+        throw StateError('Database-only backup must not contain PDF payload entries.');
+      }
+      final expectedEntries = <String>{
+        'manifest.json',
+        for (final table in tableNames)
+          if (archiveNames.contains('$table.json')) '$table.json',
+        for (final raw in rawFiles) (raw as Map)['entry'] as String,
+      };
+      if (archiveNames.length != expectedEntries.length ||
+          !archiveNames.containsAll(expectedEntries)) {
+        throw StateError('Backup contains unexpected or unreferenced ZIP entries.');
+      }
+      input.closeSync();
+      return _ValidatedBackup(
+        manifest: manifest,
+        rowsByTable: rowsByTable,
+        stagedPdfPaths: stagedPdfPaths,
+        stagingDirectory: staging,
+      );
+    } catch (_) {
+      try { input.closeSync(); } catch (_) {}
+      if (staging != null) {
+        try { if (await staging.exists()) await staging.delete(recursive: true); } catch (_) {}
+      }
+      rethrow;
+    }
+  }
+}
+
+class _ValidatedBackup {
+  const _ValidatedBackup({
+    required this.manifest,
+    required this.rowsByTable,
+    required this.stagedPdfPaths,
+    required this.stagingDirectory,
+  });
+
+  final Map<String, dynamic> manifest;
+  final Map<String, List<Map<String, Object?>>> rowsByTable;
+  final Map<String, String> stagedPdfPaths;
+  final Directory stagingDirectory;
+
+  Future<void> dispose() async {
+    try {
+      if (await stagingDirectory.exists()) {
+        await stagingDirectory.delete(recursive: true);
+      }
+    } catch (_) {}
+  }
+}
+
+
+
+/// Raised when the OCR owner route is dismissed before indexing completes.
+class OcrIndexCancelled implements Exception {
+  const OcrIndexCancelled();
+  @override
+  String toString() => 'OCR indexing was cancelled because its screen was closed.';
+}
+).hasMatch(raw['sha256'] as String)) {
+            throw StateError('Backup contains an invalid metadata checksum record.');
+          }
+          final name = raw['entry'] as String;
+          if (!seenMetadata.add(name) || !name.endsWith('.json') ||
+              name.contains('/') || name.contains('\\\\')) {
+            throw StateError('Backup contains an unsafe metadata checksum path.');
+          }
+          final entry = decoded.findFile(name);
+          if (entry == null || !entry.isFile || entry.isSymbolicLink) {
+            throw StateError('Backup metadata entry is missing: $name.');
+          }
+          final bytes = entry.content as List<int>;
+          if (bytes.length != raw['sizeBytes'] ||
+              sha256.convert(bytes).toString() != (raw['sha256'] as String).toLowerCase()) {
+            throw StateError('Backup metadata integrity check failed for $name.');
+          }
+        }
+      }
       final tableNames = ['folders', 'documents', 'categories', 'tags',
         'document_tags', 'reminders', 'history', 'settings', 'document_text_index'];
       final rowsByTable = <String, List<Map<String, Object?>>>{};
