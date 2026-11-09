@@ -102,8 +102,8 @@ class _DocumentCropScreenState extends State<DocumentCropScreen> {
     });
   }
 
-  Future<void> _transform(String operation, {List<num>? points}) async {
-    if (_processing || _completed) return;
+  Future<bool> _transform(String operation, {List<num>? points}) async {
+    if (_processing || _completed) return false;
     setState(() => _processing = true);
     try {
       final args = <String, Object>{
@@ -113,12 +113,14 @@ class _DocumentCropScreenState extends State<DocumentCropScreen> {
       };
       final bytes = await compute(transformDocumentImageForTesting, args);
       if (mounted) _replaceImage(bytes);
+      return mounted;
     } catch (error) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Image processing failed: $error')),
         );
       }
+      return false;
     } finally {
       if (mounted) setState(() => _processing = false);
     }
@@ -190,8 +192,8 @@ class _DocumentCropScreenState extends State<DocumentCropScreen> {
       _corners[2].dx * (width - 1), _corners[2].dy * (height - 1),
       _corners[3].dx * (width - 1), _corners[3].dy * (height - 1),
     ];
-    await _transform('perspective', points: points);
-    if (!mounted || _processing) return;
+    final succeeded = await _transform('perspective', points: points);
+    if (!mounted || !succeeded) return;
     if (!_completed) {
       _completed = true;
       Navigator.of(context).pop<Uint8List>(_workingImage);
