@@ -387,7 +387,18 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
     }
     final snapshot = await _tools.verifyLatestPortableMetadataSnapshot();
     if (snapshot == null) {
-      throw StateError('No verified DocsGrid snapshot was found in the selected folder.');
+      if (!Platform.isAndroid) {
+        throw StateError('No verified DocsGrid snapshot was found in the selected folder.');
+      }
+      final recovered = await _tools.recoverLoosePortablePdfs();
+      if (mounted) {
+        setState(() => _message =
+            'PDF discovery finished. Added: ${recovered['added']}; '
+            'duplicates: ${recovered['duplicates']}; failed: ${recovered['failed']}. '
+            'Only PDFs and their folder names can be reconstructed this way. '
+            'Categories, tags, reminders, history and settings need a valid backup.');
+      }
+      return;
     }
     if (!mounted) return;
     final androidNote = Platform.isAndroid
