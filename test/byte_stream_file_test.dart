@@ -40,6 +40,7 @@ void main() {
     final stream = Stream<List<int>>.multi((controller) {
       controller.add([37, 80, 68, 70]);
       controller.addError(StateError('provider read interrupted'));
+      controller.close();
     });
 
     await expectLater(
