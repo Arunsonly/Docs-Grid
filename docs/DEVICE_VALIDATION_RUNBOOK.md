@@ -112,4 +112,4 @@ Hosted CI passing is necessary but does not replace these device and real-data c
 - In a folder containing both subfolders and PDFs, folder drag handles remain visible and PDF long-press enters multi-select without opening a name tooltip.
 
 
-Implementation note: CI is intentionally deferred for this PR until the owner authorizes it; do not treat this as an automated green build.
+Implementation note: run the automated CI suite for this PR before merge; physical Android device validation remains a separate acceptance step.
