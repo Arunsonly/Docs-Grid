@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
@@ -40,7 +42,7 @@ class AppDatabase {
     final dbPath = p.join(directory.path, 'docs_grid.db');
     return openDatabase(
       dbPath,
-      version: 3,
+      version: 6,
       onConfigure: (db) async => db.execute('PRAGMA foreign_keys = ON'),
       onCreate: (db, version) async {
         await db.execute('''
@@ -112,6 +114,9 @@ class AppDatabase {
         ''');
         await _createV2Tables(db);
         await _createV3Tables(db);
+        await _createV4PerformanceSchema(db);
+        await _createV5SummaryInvalidation(db);
+        await _createV6NameSearchIndex(db);
         await db.insert('schema_migrations', {
           'version': 1,
           'applied_at': DateTime.now().toUtc().toIso8601String(),
@@ -122,6 +127,18 @@ class AppDatabase {
         });
         await db.insert('schema_migrations', {
           'version': 3,
+          'applied_at': DateTime.now().toUtc().toIso8601String(),
+        });
+        await db.insert('schema_migrations', {
+          'version': 4,
+          'applied_at': DateTime.now().toUtc().toIso8601String(),
+        });
+        await db.insert('schema_migrations', {
+          'version': 5,
+          'applied_at': DateTime.now().toUtc().toIso8601String(),
+        });
+        await db.insert('schema_migrations', {
+          'version': 6,
           'applied_at': DateTime.now().toUtc().toIso8601String(),
         });
       },
@@ -137,7 +154,7 @@ class AppDatabase {
   @visibleForTesting
   Future<void> upgradeForTesting(Database db, int oldVersion, int newVersion) async {
     if (newVersion <= oldVersion) return;
-    if (oldVersion < 1 || newVersion > 3) {
+    if (oldVersion < 1 || newVersion > 6) {
       throw StateError('Unsupported database migration: $oldVersion -> $newVersion');
     }
 
@@ -164,6 +181,147 @@ class AppDatabase {
       await _createV3Tables(db);
       await db.insert('schema_migrations', {'version': 3, 'applied_at': applied},
           conflictAlgorithm: ConflictAlgorithm.ignore);
+    }
+    if (oldVersion < 4 && newVersion >= 4) {
+      await _createV4PerformanceSchema(db);
+      await db.insert('schema_migrations', {'version': 4, 'applied_at': applied},
+          conflictAlgorithm: ConflictAlgorithm.ignore);
+    }
+    if (oldVersion < 5 && newVersion >= 5) {
+      await _createV5SummaryInvalidation(db);
+      await db.insert('schema_migrations', {'version': 5, 'applied_at': applied},
+          conflictAlgorithm: ConflictAlgorithm.ignore);
+    }
+    if (oldVersion < 6 && newVersion >= 6) {
+      await _createV6NameSearchIndex(db);
+      await db.insert('schema_migrations', {'version': 6, 'applied_at': applied},
+          conflictAlgorithm: ConflictAlgorithm.ignore);
+    }
+  }
+
+  Future<void> _createV4PerformanceSchema(DatabaseExecutor db) async {
+    final columns = await db.rawQuery('PRAGMA table_info(documents)');
+    final hasFavorite = columns.any((column) => column['name'] == 'is_favorite');
+    if (!hasFavorite) {
+      await db.execute(
+        'ALTER TABLE documents ADD COLUMN is_favorite INTEGER NOT NULL DEFAULT 0',
+      );
+      // Backfill legacy JSON metadata in Dart: SQLite JSON1 is not available
+      // on every Android/iOS SQLite build supported by this application.
+      final rows = await db.query(
+        'documents',
+        columns: ['id', 'metadata_json'],
+        where: 'metadata_json IS NOT NULL AND metadata_json != ?',
+        whereArgs: [''],
+      );
+      final batch = db.batch();
+      for (final row in rows) {
+        var favorite = false;
+        try {
+          final decoded = jsonDecode(row['metadata_json'] as String);
+          favorite = decoded is Map && decoded['favorite'] == true;
+        } catch (_) {
+          // Invalid optional metadata defaults to not-favorite; document data
+          // itself remains untouched and readable.
+        }
+        if (favorite) {
+          batch.update(
+            'documents',
+            {'is_favorite': 1},
+            where: 'id = ?',
+            whereArgs: [row['id']],
+          );
+        }
+      }
+      await batch.commit(noResult: true);
+    }
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_documents_active_recent ON documents(deleted_at, last_opened_at DESC, name COLLATE NOCASE, id)',
+    );
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_documents_active_favorite_recent ON documents(deleted_at, is_favorite, last_opened_at DESC, name COLLATE NOCASE, id)',
+    );
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_documents_active_folder_name ON documents(deleted_at, folder_id, name COLLATE NOCASE, id)',
+    );
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_documents_active_category ON documents(deleted_at, category_id)',
+    );
+  }
+
+  Future<void> _createV5SummaryInvalidation(DatabaseExecutor db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS document_summary_state (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        revision INTEGER NOT NULL DEFAULT 0
+      )
+    ''');
+    await db.insert(
+      'document_summary_state',
+      {'id': 1, 'revision': 0},
+      conflictAlgorithm: ConflictAlgorithm.ignore,
+    );
+    // Triggers cover every writer: repository methods, imports, restores,
+    // backup recovery, and future code paths. The cache is valid only while
+    // this monotonic revision remains unchanged.
+    await db.execute('''
+      CREATE TRIGGER IF NOT EXISTS documents_summary_after_insert
+      AFTER INSERT ON documents BEGIN
+        UPDATE document_summary_state SET revision = revision + 1 WHERE id = 1;
+      END
+    ''');
+    await db.execute('''
+      CREATE TRIGGER IF NOT EXISTS documents_summary_after_update
+      AFTER UPDATE ON documents BEGIN
+        UPDATE document_summary_state SET revision = revision + 1 WHERE id = 1;
+      END
+    ''');
+    await db.execute('''
+      CREATE TRIGGER IF NOT EXISTS documents_summary_after_delete
+      AFTER DELETE ON documents BEGIN
+        UPDATE document_summary_state SET revision = revision + 1 WHERE id = 1;
+      END
+    ''');
+  }
+
+  Future<void> _createV6NameSearchIndex(DatabaseExecutor db) async {
+    try {
+      await db.execute('''
+        CREATE VIRTUAL TABLE IF NOT EXISTS documents_name_fts
+        USING fts5(name, content='documents', content_rowid='rowid',
+                   tokenize='trigram')
+      ''');
+      await db.execute("INSERT INTO documents_name_fts(documents_name_fts) VALUES('rebuild')");
+      await db.execute('''
+        CREATE TRIGGER IF NOT EXISTS documents_name_fts_after_insert
+        AFTER INSERT ON documents BEGIN
+          INSERT INTO documents_name_fts(rowid, name) VALUES (new.rowid, new.name);
+        END
+      ''');
+      await db.execute('''
+        CREATE TRIGGER IF NOT EXISTS documents_name_fts_after_delete
+        AFTER DELETE ON documents BEGIN
+          INSERT INTO documents_name_fts(documents_name_fts, rowid, name)
+          VALUES ('delete', old.rowid, old.name);
+        END
+      ''');
+      await db.execute('''
+        CREATE TRIGGER IF NOT EXISTS documents_name_fts_after_update
+        AFTER UPDATE OF name ON documents BEGIN
+          INSERT INTO documents_name_fts(documents_name_fts, rowid, name)
+          VALUES ('delete', old.rowid, old.name);
+          INSERT INTO documents_name_fts(rowid, name) VALUES (new.rowid, new.name);
+        END
+      ''');
+    } catch (_) {
+      for (final trigger in [
+        'documents_name_fts_after_insert',
+        'documents_name_fts_after_update',
+        'documents_name_fts_after_delete',
+      ]) {
+        try { await db.execute('DROP TRIGGER IF EXISTS $trigger'); } catch (_) {}
+      }
+      try { await db.execute('DROP TABLE IF EXISTS documents_name_fts'); } catch (_) {}
     }
   }
 

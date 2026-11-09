@@ -29,6 +29,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   final _folderRepository = FolderRepository();
   final _tools = DocumentToolsService();
   final _search = TextEditingController();
+  final _scrollController = ScrollController();
   List<DocumentRecord> _documents = [];
   bool _loading = true;
   final bool _importing = false;
@@ -40,12 +41,21 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   int _loadGeneration = 0;
   Timer? _searchDebounce;
   String? _error;
+  DocumentPageCursor? _nextCursor;
+  bool _hasMore = false;
+  bool _loadingMore = false;
 
   @override
   void initState() {
     super.initState();
     _load();
     _search.addListener(_onSearchChanged);
+    _scrollController.addListener(_onScroll);
+  }
+
+  void _onScroll() {
+    if (!_scrollController.hasClients || _loadingMore || !_hasMore) return;
+    if (_scrollController.position.extentAfter < 600) _loadMore();
   }
 
   void _onSearchChanged() {
@@ -59,34 +69,53 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   void dispose() {
     _searchDebounce?.cancel();
     _search.removeListener(_onSearchChanged);
+    _scrollController.removeListener(_onScroll);
+    _scrollController.dispose();
     _search.dispose();
     super.dispose();
   }
 
   Future<void> _load() async {
     final generation = ++_loadGeneration;
+    if (mounted) setState(() { _loading = true; _loadingMore = false; });
     try {
-      // Read the library once. The previous implementation loaded every row
-      // for dashboard totals and then queried the same table again for the
-      // visible list on every search keystroke.
-      final allDocs = await _repository.list(recentOnly: widget.recentOnly);
-      final query = _searchInsideText ? '' : _search.text.trim().toLowerCase();
-      var docs = allDocs.where((document) {
-        if (widget.favoritesOnly && !document.isFavorite) return false;
-        if (query.isNotEmpty && !document.name.toLowerCase().contains(query)) return false;
-        return true;
-      }).toList();
+      final summary = await _repository.dashboardSummary();
       if (_searchInsideText && _search.text.trim().isNotEmpty) {
+        // OCR content search is still a distinct indexed-text workflow. Keep
+        // its current result semantics while the name-search path is paged.
+        final allDocs = await _repository.list(recentOnly: widget.recentOnly);
         final matches = await _tools.searchText(_search.text);
         final matchedIds = matches.map((row) => row['id'] as String).toSet();
-        docs = docs.where((document) => matchedIds.contains(document.id)).toList();
+        final docs = allDocs.where((document) =>
+          (!widget.favoritesOnly || document.isFavorite) &&
+          matchedIds.contains(document.id)).toList();
+        if (!mounted || generation != _loadGeneration) return;
+        setState(() {
+          _documents = docs;
+          _nextCursor = null;
+          _hasMore = false;
+          _totalStorageBytes = summary.totalBytes;
+          _totalDocumentCount = summary.documentCount;
+          _starredCount = summary.favoriteCount;
+          _loading = false;
+          _error = null;
+        });
+        return;
       }
+      final page = await _repository.listPage(
+        query: _search.text,
+        favoritesOnly: widget.favoritesOnly,
+        recentOnly: widget.recentOnly,
+        pageSize: 40,
+      );
       if (!mounted || generation != _loadGeneration) return;
       setState(() {
-        _documents = docs;
-        _totalStorageBytes = allDocs.fold<int>(0, (total, document) => total + document.sizeBytes);
-        _totalDocumentCount = allDocs.length;
-        _starredCount = allDocs.where((document) => document.isFavorite).length;
+        _documents = page.items;
+        _nextCursor = page.nextCursor;
+        _hasMore = page.hasMore;
+        _totalStorageBytes = summary.totalBytes;
+        _totalDocumentCount = summary.documentCount;
+        _starredCount = summary.favoriteCount;
         _loading = false;
         _error = null;
       });
@@ -97,6 +126,73 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
         _error = error.toString();
       });
     }
+  }
+
+  Future<void> _loadMore() async {
+    final cursor = _nextCursor;
+    if (cursor == null || !_hasMore || _loadingMore || _loading) return;
+    setState(() => _loadingMore = true);
+    try {
+      final page = await _repository.listPage(
+        query: _search.text,
+        favoritesOnly: widget.favoritesOnly,
+        recentOnly: widget.recentOnly,
+        pageSize: 40,
+        cursor: cursor,
+      );
+      if (!mounted) return;
+      setState(() {
+        final known = _documents.map((document) => document.id).toSet();
+        _documents.addAll(page.items.where((document) => !known.contains(document.id)));
+        _nextCursor = page.nextCursor;
+        _hasMore = page.hasMore;
+        _loadingMore = false;
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _loadingMore = false);
+      _message('Could not load more documents: $error');
+    }
+  }
+
+  Future<void> _patchDocument(String id, {bool removeIfMissing = true}) async {
+    final updated = await _repository.getById(id);
+    if (!mounted) return;
+    setState(() {
+      final index = _documents.indexWhere((item) => item.id == id);
+      if (updated == null) {
+        if (removeIfMissing && index >= 0) _documents.removeAt(index);
+        return;
+      }
+      if (index >= 0) {
+        _documents[index] = updated;
+      } else if (_search.text.trim().isEmpty ||
+          updated.name.toLowerCase().contains(_search.text.trim().toLowerCase())) {
+        _documents.add(updated);
+      }
+      _documents.sort((a, b) {
+        final aOpened = a.lastOpenedAt;
+        final bOpened = b.lastOpenedAt;
+        if (aOpened != null && bOpened == null) return -1;
+        if (aOpened == null && bOpened != null) return 1;
+        final recent = (bOpened ?? DateTime.fromMillisecondsSinceEpoch(0))
+            .compareTo(aOpened ?? DateTime.fromMillisecondsSinceEpoch(0));
+        if (recent != 0) return recent;
+        final byName = a.name.toLowerCase().compareTo(b.name.toLowerCase());
+        return byName != 0 ? byName : a.id.compareTo(b.id);
+      });
+    });
+  }
+
+  Future<void> _refreshDashboardSummary() async {
+    if (widget.favoritesOnly || widget.recentOnly) return;
+    final summary = await _repository.dashboardSummary();
+    if (!mounted) return;
+    setState(() {
+      _totalStorageBytes = summary.totalBytes;
+      _totalDocumentCount = summary.documentCount;
+      _starredCount = summary.favoriteCount;
+    });
   }
 
   void _message(String message) {
@@ -138,7 +234,19 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
         targetFolderUri: targetFolderUri,
         sourceType: 'storage_browser',
       );
-      await _load();
+      if (summary.added > 0) {
+        final added = await _repository.listPage(query: fileName, pageSize: 10);
+        if (mounted) {
+          setState(() {
+            for (final item in added.items) {
+              if (!_documents.any((existing) => existing.id == item.id)) {
+                _documents.insert(0, item);
+              }
+            }
+          });
+        }
+        await _refreshDashboardSummary();
+      }
       if (summary.added > 0) {
         _message('Imported $fileName successfully.');
       } else if (summary.duplicates > 0) {
@@ -233,8 +341,11 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     if (confirmed != true) return;
     await _repository.moveManyToTrash(selected);
     if (!mounted) return;
-    setState(_selectedIds.clear);
-    await _load();
+    setState(() {
+      _selectedIds.clear();
+      _documents.removeWhere((document) => selected.any((item) => item.id == document.id));
+    });
+    await _refreshDashboardSummary();
   }
 
   Future<void> _bulkShare() async {
@@ -275,7 +386,10 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     final result = await _repository.moveManyToFolder(selected, destination.isEmpty ? null : destination);
     if (!mounted) return;
     setState(_selectedIds.clear);
-    await _load();
+    for (final document in selected) {
+      await _patchDocument(document.id);
+    }
+    await _refreshDashboardSummary();
     if (!mounted) return;
     final failures = result['failures'] as List<String>;
     final failureSummary = failures.isEmpty ? '' : ' · ${failures.length} failed';
@@ -315,7 +429,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
         );
       }
     }
-    await _load();
+    await _patchDocument(document.id);
   }
 
 
@@ -334,7 +448,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   Future<void> _relink(DocumentRecord document) async {
     try {
       await _repository.relinkDocument(document);
-      await _load();
+      await _patchDocument(document.id);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('PDF relinked and verified successfully.')),
@@ -370,7 +484,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     if (value == null) return;
     try {
       await _repository.rename(document, value);
-      await _load();
+      await _patchDocument(document.id);
     } catch (error) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$error')));
     }
@@ -547,7 +661,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
       document.id,
       selected.isEmpty ? null : selected,
     );
-    await _load();
+    await _patchDocument(document.id);
   }
 
   Future<void> _editTags(DocumentRecord document) async {
@@ -615,7 +729,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     );
     if (result == null) return;
     await _categoryRepository.setDocumentTags(document.id, result.toList());
-    await _load();
+    await _patchDocument(document.id);
   }
 
   Future<void> _moveToFolder(DocumentRecord document) async {
@@ -653,7 +767,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     );
     if (selected == null) return;
     await _repository.moveToFolder(document, selected.isEmpty ? null : selected);
-    await _load();
+    await _patchDocument(document.id);
   }
 
   Future<void> _trash(DocumentRecord document) async {
@@ -670,7 +784,12 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     );
     if (confirmed != true) return;
     await _repository.moveToTrash(document);
-    await _load();
+    if (!mounted) return;
+    setState(() {
+      _documents.removeWhere((item) => item.id == document.id);
+      _selectedIds.remove(document.id);
+    });
+    await _refreshDashboardSummary();
   }
 
   @override
@@ -751,7 +870,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                       ),
                       suffixIcon: _search.text.isEmpty
                           ? null
-                          : IconButton(onPressed: _search.clear, icon: const Icon(Icons.close)),
+                          : IconButton(tooltip: 'Clear search', onPressed: _search.clear, icon: const Icon(Icons.close)),
                       border: OutlineInputBorder(borderRadius: BorderRadius.circular(16)),
                     ),
                   ),
@@ -827,10 +946,16 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                       : RefreshIndicator(
                           onRefresh: _load,
                           child: ListView.separated(
+                            controller: _scrollController,
                             padding: const EdgeInsets.fromLTRB(12, 8, 12, 100),
-                            itemCount: _documents.length,
+                            itemCount: _documents.length + (_loadingMore ? 1 : 0),
                             separatorBuilder: (_, _) => const SizedBox(height: 6),
-                            itemBuilder: (context, index) => _documentTile(_documents[index]),
+                            itemBuilder: (context, index) => index >= _documents.length
+                                ? const Padding(
+                                    padding: EdgeInsets.all(18),
+                                    child: Center(child: CircularProgressIndicator()),
+                                  )
+                                : _documentTile(_documents[index]),
                           ),
                         ),
         ),
@@ -886,7 +1011,11 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     final selected = _selectedIds.contains(document.id);
     return Card(
       elevation: 0,
-      child: ListTile(
+      child: Semantics(
+        explicitChildNodes: true,
+        label: '${document.name}.pdf, ${_size(document.sizeBytes)}, ${document.isFavorite ? 'starred' : 'not starred'}',
+        child: ListTile(
+        key: ValueKey(document.id),
         onLongPress: () => _toggleSelected(document),
         onTap: () => _selectedIds.isNotEmpty ? _toggleSelected(document) : _open(document),
         leading: _selectedIds.isNotEmpty
@@ -900,10 +1029,36 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
           (document.storagePath.startsWith('content://') || document.storagePath.startsWith('file://') || document.storagePath.isNotEmpty) ? 'On this device' : 'File missing',
         ].join(' · ')),
         trailing: PopupMenuButton<String>(
+          tooltip: 'Actions for ${document.name}',
           onSelected: (value) async {
             if (value == 'favorite') {
-              await _repository.setFavorite(document, !document.isFavorite);
-              await _load();
+              final nextFavorite = !document.isFavorite;
+              await _repository.setFavorite(document, nextFavorite);
+              if (!mounted) return;
+              setState(() {
+                if (widget.favoritesOnly && !nextFavorite) {
+                  _documents.removeWhere((item) => item.id == document.id);
+                } else {
+                  final index = _documents.indexWhere((item) => item.id == document.id);
+                  if (index >= 0) {
+                    final current = _documents[index];
+                    _documents[index] = DocumentRecord(
+                      id: current.id,
+                      name: current.name,
+                      storagePath: current.storagePath,
+                      sizeBytes: current.sizeBytes,
+                      createdAt: current.createdAt,
+                      isFavorite: nextFavorite,
+                      categoryId: current.categoryId,
+                      categoryName: current.categoryName,
+                      tagNames: current.tagNames,
+                      folderId: current.folderId,
+                      lastOpenedAt: current.lastOpenedAt,
+                    );
+                  }
+                }
+                _starredCount = (_starredCount + (nextFavorite ? 1 : -1)).clamp(0, _totalDocumentCount).toInt();
+              });
             } else if (value == 'tags') {
               await _editTags(document);
             } else if (value == 'move') {
@@ -935,6 +1090,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
             const PopupMenuItem(value: 'trash', child: Text('Move to Recycle Bin')),
           ],
         ),
+      ),
       ),
     );
   }

@@ -71,6 +71,7 @@ void main() {
           await db.insert('documents', {
             'id': 'doc-1', 'name': 'policy.pdf', 'created_at': '2024-01-01',
             'updated_at': '2024-01-01', 'folder_id': 'folder-1',
+            'metadata_json': '{"favorite":true}',
           });
           await db.insert('reminders', {
             'id': 'reminder-1', 'document_id': 'doc-1', 'title': 'Renew policy',
@@ -136,6 +137,91 @@ void main() {
       expect(await v3.rawQuery("SELECT name FROM sqlite_master WHERE type='table' AND name='document_text_index'"), hasLength(1));
       expect(await v3.query('categories', where: 'name = ?', whereArgs: ['Insurance']), hasLength(1));
       await v3.close();
+    });
+
+    test('v3 to v4 adds indexed favorite flag and preserves legacy favorite metadata', () async {
+      final v1 = await createV1Fixture('v3_to_v4');
+      final path = v1.path;
+      await v1.close();
+
+      final v3 = await migrateTo(path, 3);
+      expect(await v3.getVersion(), 3);
+      await v3.close();
+
+      final v4 = await migrateTo(path, 4);
+      expect(await v4.getVersion(), 4);
+      final document = (await v4.query('documents', where: 'id = ?', whereArgs: ['doc-1'])).single;
+      expect(document['is_favorite'], 1);
+      final indexes = await v4.rawQuery(
+        "SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'idx_documents_active_%'",
+      );
+      expect(indexes.map((row) => row['name']), containsAll([
+        'idx_documents_active_recent',
+        'idx_documents_active_favorite_recent',
+        'idx_documents_active_folder_name',
+        'idx_documents_active_category',
+      ]));
+      expect((await v4.query('schema_migrations', orderBy: 'version')).map((row) => row['version']), [1, 2, 3, 4]);
+      expect(await v4.rawQuery('PRAGMA foreign_key_check'), isEmpty);
+      await v4.close();
+    });
+
+    test('v4 to v5 invalidates cached summary through insert update and delete triggers', () async {
+      final fixture = await createV1Fixture('v4_to_v5');
+      final path = fixture.path;
+      await fixture.close();
+      final v4 = await migrateTo(path, 4);
+      await v4.close();
+      final v5 = await migrateTo(path, 5);
+      expect(await v5.getVersion(), 5);
+      final state = await v5.query('document_summary_state', where: 'id = ?', whereArgs: [1]);
+      expect(state, hasLength(1));
+      final triggers = await v5.rawQuery(
+        "SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'documents_summary_after_%'",
+      );
+      expect(triggers.map((row) => row['name']), containsAll([
+        'documents_summary_after_insert',
+        'documents_summary_after_update',
+        'documents_summary_after_delete',
+      ]));
+      final before = state.single['revision'] as int;
+      await v5.insert('documents', {
+        'id': 'doc-2', 'name': 'second.pdf', 'created_at': '2024-01-02',
+        'updated_at': '2024-01-02', 'size_bytes': 512,
+      });
+      final afterInsert = (await v5.query('document_summary_state')).single['revision'] as int;
+      expect(afterInsert, before + 1);
+      await v5.update('documents', {'deleted_at': '2024-01-03'}, where: 'id = ?', whereArgs: ['doc-2']);
+      final afterUpdate = (await v5.query('document_summary_state')).single['revision'] as int;
+      expect(afterUpdate, afterInsert + 1);
+      await v5.delete('documents', where: 'id = ?', whereArgs: ['doc-2']);
+      final afterDelete = (await v5.query('document_summary_state')).single['revision'] as int;
+      expect(afterDelete, afterUpdate + 1);
+      expect((await v5.query('schema_migrations', orderBy: 'version')).map((row) => row['version']), [1, 2, 3, 4, 5]);
+      await v5.close();
+    });
+
+    test('v5 to v6 installs optional trigram search accelerator without changing migration safety', () async {
+      final fixture = await createV1Fixture('v5_to_v6');
+      final path = fixture.path;
+      await fixture.close();
+      final v5 = await migrateTo(path, 5);
+      await v5.close();
+      final v6 = await migrateTo(path, 6);
+      expect(await v6.getVersion(), 6);
+      final triggers = await v6.rawQuery(
+        "SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'documents_name_fts_after_%'",
+      );
+      if (triggers.isNotEmpty) {
+        expect(triggers.map((row) => row['name']), containsAll([
+          'documents_name_fts_after_insert',
+          'documents_name_fts_after_update',
+          'documents_name_fts_after_delete',
+        ]));
+      }
+      expect((await v6.query('schema_migrations', orderBy: 'version')).map((row) => row['version']), [1, 2, 3, 4, 5, 6]);
+      expect(await v6.rawQuery('PRAGMA foreign_key_check'), isEmpty);
+      await v6.close();
     });
 
     test('refuses downgrade and leaves the v2 database and records intact', () async {
