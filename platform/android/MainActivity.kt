@@ -362,6 +362,12 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun createDirectory(parentUri: Uri, name: String): Uri {
+        try {
+            findChildUri(parentUri, name)
+            throw IllegalStateException("A folder with this name already exists in the selected storage location.")
+        } catch (_: MissingStorageChildException) {
+            // Only an explicit missing-child result permits creation.
+        }
         return DocumentsContract.createDocument(
             contentResolver, resolveParentUri(parentUri),
             DocumentsContract.Document.MIME_TYPE_DIR, name
