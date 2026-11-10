@@ -229,19 +229,22 @@ class DocumentRepository {
     if (favoritesOnly) where.add('d.is_favorite = 1');
     final normalizedQuery = query.trim();
     if (normalizedQuery.isNotEmpty) {
-      _nameFtsAvailable ??= (await db.rawQuery(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
-        ['documents_name_fts'],
-      )).isNotEmpty;
-      if (_nameFtsAvailable == true && normalizedQuery.runes.length >= 3) {
-        final phrase = normalizedQuery.replaceAll('"', '""');
-        where.add('d.rowid IN (SELECT rowid FROM documents_name_fts WHERE documents_name_fts MATCH ?)');
-        args.add('"$phrase"');
-      }
-      // Keep LIKE as the final predicate to preserve exact legacy substring
-      // matching and wildcard escaping on SQLite builds without FTS5.
-      where.add("d.name LIKE ? ESCAPE '\\'");
-      args.add('%${escapeLikeWildcards(normalizedQuery)}%');
+      // Search metadata and folder labels alongside filenames. The tag EXISTS
+      // predicate avoids duplicate document rows when a PDF has many tags.
+      final pattern = '%${escapeLikeWildcards(normalizedQuery)}%';
+      where.add("""
+        (
+          d.name LIKE ? ESCAPE '\\'
+          OR c.name LIKE ? ESCAPE '\\'
+          OR f.name LIKE ? ESCAPE '\\'
+          OR EXISTS (
+            SELECT 1 FROM document_tags dt
+            INNER JOIN tags t ON t.id = dt.tag_id
+            WHERE dt.document_id = d.id AND t.name LIKE ? ESCAPE '\\'
+          )
+        )
+      """);
+      args.addAll([pattern, pattern, pattern, pattern]);
     }
     if (cursor != null) {
       where.add('''
@@ -270,6 +273,7 @@ class DocumentRepository {
           INNER JOIN tags t ON t.id = dt.tag_id WHERE dt.document_id = d.id) AS tag_names
       FROM documents d
       LEFT JOIN categories c ON c.id = d.category_id
+      LEFT JOIN folders f ON f.id = d.folder_id
       WHERE ${where.join(' AND ')}
       ORDER BY COALESCE(d.last_opened_at, '') DESC,
                d.name COLLATE NOCASE ASC, d.id ASC
@@ -294,6 +298,28 @@ class DocumentRepository {
 
   Future<List<DocumentRecord>> list({String query = '', bool favoritesOnly = false, bool recentOnly = false}) async {
     final db = await _database.database;
+    final normalizedQuery = query.trim();
+    final where = <String>[
+      'd.deleted_at IS NULL',
+      if (recentOnly) 'd.last_opened_at IS NOT NULL',
+    ];
+    final args = <Object?>[];
+    if (normalizedQuery.isNotEmpty) {
+      final pattern = '%${escapeLikeWildcards(normalizedQuery)}%';
+      where.add("""
+        (
+          d.name LIKE ? ESCAPE '\\'
+          OR c.name LIKE ? ESCAPE '\\'
+          OR f.name LIKE ? ESCAPE '\\'
+          OR EXISTS (
+            SELECT 1 FROM document_tags dt
+            INNER JOIN tags t ON t.id = dt.tag_id
+            WHERE dt.document_id = d.id AND t.name LIKE ? ESCAPE '\\'
+          )
+        )
+      """);
+      args.addAll([pattern, pattern, pattern, pattern]);
+    }
     final rows = await db.rawQuery(
       '''
       SELECT d.*, c.name AS category_name,
@@ -301,12 +327,11 @@ class DocumentRepository {
           INNER JOIN tags t ON t.id = dt.tag_id WHERE dt.document_id = d.id) AS tag_names
       FROM documents d
       LEFT JOIN categories c ON c.id = d.category_id
-      WHERE d.deleted_at IS NULL
-        AND (? = 0 OR d.last_opened_at IS NOT NULL)
-        AND d.name LIKE ? ESCAPE '\\'
+      LEFT JOIN folders f ON f.id = d.folder_id
+      WHERE ${where.join(' AND ')}
       ORDER BY d.last_opened_at DESC, d.name COLLATE NOCASE ASC
       ''',
-      [recentOnly ? 1 : 0, '%${escapeLikeWildcards(query.trim())}%'],
+      args,
     );
     // Avoid SQLite JSON1 dependency: several Android SQLite builds do not
     // expose json_extract(). Favorite metadata is decoded in Dart instead.
