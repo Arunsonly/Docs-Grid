@@ -182,7 +182,10 @@ void main() {
     final imported = documents.singleWhere((row) => row['id'] != 'document-1');
     final restoredFile = File(imported['storage_uri'] as String);
     expect(await restoredFile.exists(), isTrue);
-    expect(await sha256.bind(restoredFile.openRead()).first, _pdfHash);
+    expect(
+      await sha256.bind(restoredFile.openRead()).first.then((digest) => digest.toString()),
+      _pdfHash,
+    );
   });
 
   test('Full Replacement removes nested old folders child-first and restores backup', () async {
