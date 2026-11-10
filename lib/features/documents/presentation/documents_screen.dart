@@ -352,9 +352,10 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
           }
         } catch (_) {}
       }
-      final bytes = _phoneEntries.where((entry) => entry['uri'] == uri)
-          .map((entry) => (entry['sizeBytes'] as num?)?.toInt() ?? 0)
-          .firstOrNull ?? 0;
+      final matchingEntries = _phoneEntries.where((entry) => entry['uri'] == uri).toList();
+      final bytes = matchingEntries.isEmpty
+          ? 0
+          : (matchingEntries.first['sizeBytes'] as num?)?.toInt() ?? 0;
       recent.insert(0, {
         'uri': uri,
         'name': name,
