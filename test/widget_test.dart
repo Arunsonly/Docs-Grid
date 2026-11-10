@@ -15,8 +15,6 @@ void main() {
     expect(find.text('Home'), findsOneWidget);
     expect(find.text('Grid'), findsAtLeastNWidgets(1));
     expect(find.text('Phone'), findsAtLeastNWidgets(1));
-    expect(find.text('Home'), findsOneWidget);
-    expect(find.text('Grid'), findsOneWidget);
   });
 
 }
