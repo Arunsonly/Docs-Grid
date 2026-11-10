@@ -13,7 +13,7 @@ void main() {
 
     expect(find.text('DocsGrid'), findsOneWidget);
     expect(find.text('Dashboard'), findsOneWidget);
-    expect(find.text('Folders'), findsWidgets);
+    expect(find.text('Grid'), findsOneWidget);
     expect(find.text('Star'), findsOneWidget);
     expect(find.text('Settings'), findsOneWidget);
   });
