@@ -96,7 +96,7 @@ class DocsGridHome extends StatefulWidget {
 }
 
 class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver {
-  int _selectedIndex = 0;
+  int _selectedIndex = 1;
   bool _checkingIncomingShare = false;
   static const MethodChannel _storageChannel = MethodChannel('docsgrid/storage');
 
@@ -426,7 +426,21 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
           ),
           IconButton(
             tooltip: 'Settings',
-            onPressed: () => setState(() => _selectedIndex = 3),
+            onPressed: () => Navigator.of(context).push(MaterialPageRoute(
+              builder: (_) => Scaffold(
+                appBar: AppBar(title: const Text('Settings')),
+                body: _SettingsScreen(
+                  darkMode: widget.darkMode,
+                  onDarkModeChanged: widget.onDarkModeChanged,
+                  onOpenStarred: () {
+                    Navigator.of(context).pop();
+                    Navigator.of(context).push(MaterialPageRoute(
+                      builder: (_) => const DocumentsScreen(favoritesOnly: true),
+                    ));
+                  },
+                ),
+              ),
+            )),
             icon: const Icon(Icons.settings_outlined),
           ),
           const SizedBox(width: 6),
@@ -434,20 +448,18 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
       ),
       body: SafeArea(
         child: switch (_selectedIndex) {
-          0 => const DocumentsScreen(),
-          1 => const FoldersScreen(),
-          2 => const DocumentsScreen(favoritesOnly: true),
-          _ => _SettingsScreen(darkMode: widget.darkMode, onDarkModeChanged: widget.onDarkModeChanged),
+          0 => const DocumentsScreen(phoneOnly: true),
+          1 => const DocumentsScreen(),
+          _ => const FoldersScreen(),
         },
       ),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _selectedIndex,
         onDestinationSelected: (index) => setState(() => _selectedIndex = index),
         destinations: const [
+          NavigationDestination(icon: Icon(Icons.phone_android_outlined), label: 'Phone'),
           NavigationDestination(icon: Icon(Icons.dashboard_outlined), label: 'Home'),
           NavigationDestination(icon: Icon(Icons.folder_outlined), label: 'Grid'),
-          NavigationDestination(icon: Icon(Icons.star_border), label: 'Star'),
-          NavigationDestination(icon: Icon(Icons.settings_outlined), label: 'Settings'),
         ],
       ),
     );
@@ -455,9 +467,10 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
 }
 
 class _SettingsScreen extends StatefulWidget {
-  const _SettingsScreen({required this.darkMode, required this.onDarkModeChanged});
+  const _SettingsScreen({required this.darkMode, required this.onDarkModeChanged, required this.onOpenStarred});
   final bool darkMode;
   final ValueChanged<bool> onDarkModeChanged;
+  final VoidCallback onOpenStarred;
 
   @override
   State<_SettingsScreen> createState() => _SettingsScreenState();
