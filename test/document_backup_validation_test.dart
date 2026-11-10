@@ -7,7 +7,7 @@ import 'package:crypto/crypto.dart';
 import 'package:docs_grid/features/tools/document_tools_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-Map<String, List<Map<String, Object?>>> _validRows() => {
+Map<String, List<Map<String, Object?>>> _validRows({bool databaseOnly = false}) => {
   'folders': <Map<String, Object?>>[],
   'categories': <Map<String, Object?>>[],
   'tags': <Map<String, Object?>>[],
@@ -39,7 +39,7 @@ Future<File> _makeBackup(
   final bytes = pdfBytes ?? utf8.encode('%PDF-1.7\nDocsGrid test PDF');
   final archive = Archive();
   final metadataFiles = <Map<String, Object?>>[];
-  for (final table in _validRows().entries) {
+  for (final table in _validRows(databaseOnly: databaseOnly).entries) {
     final json = Uint8List.fromList(utf8.encode(jsonEncode(table.value)));
     archive.addFile(ArchiveFile('${table.key}.json', json.length, json));
     metadataFiles.add({
