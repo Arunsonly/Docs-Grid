@@ -251,12 +251,23 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
     }
 
     if (!mounted) return;
-    await Navigator.of(context).push(MaterialPageRoute(builder: (_) => Scaffold(
-      appBar: AppBar(title: const Text('Recover DocsGrid')),
-      body: DocumentToolsScreen(
-        quickAction: hasPortableBackups ? 'restore_latest_backup' : 'restore_portable',
+    await Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => Stack(
+        fit: StackFit.expand,
+        children: [
+          DocsGridHome(
+            darkMode: widget.darkMode,
+            onDarkModeChanged: widget.onDarkModeChanged,
+          ),
+          Offstage(
+            offstage: true,
+            child: DocumentToolsScreen(
+              quickAction: hasPortableBackups ? 'restore_latest_backup' : 'restore_portable',
+            ),
+          ),
+        ],
       ),
-    )));
+    ));
   }
 
   Future<void> _consumeSharedPdfs() async {
