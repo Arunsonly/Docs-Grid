@@ -328,7 +328,10 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
         }
       }
       final pdfs=entries.where((e)=>e['isDirectory']!=true).toList();
-      final bytes=pdfs.fold<int>(0,(sum,e)=>sum+(((e['sizeBytes'] as num?)?.toInt() ?? 0).clamp(0, 1 << 62)));
+      final bytes=pdfs.fold<int>(0,(sum,e) {
+        final size = (e['sizeBytes'] as num?)?.toInt() ?? 0;
+        return sum + (size < 0 ? 0 : size);
+      });
       final unknownSizes = pdfs.where((entry) => entry['sizeKnown'] == false).length;
       if(!mounted)return;
       setState(() {
