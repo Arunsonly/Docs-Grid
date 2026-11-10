@@ -37,19 +37,22 @@ class _PhoneStorageBrowserScreenState
     _currentPath = widget.initialPath;
   }
 
-  late final Set<String> _folderPaths = widget.entries
-      .where((entry) => entry['isDirectory'] == true &&
+  // Derive these from the current widget input rather than caching a snapshot.
+  // The browser can be rebuilt after a storage rescan or refreshed test fixture.
+  Set<String> get _folderPaths => widget.entries
+      .where((entry) =>
+          entry['isDirectory'] == true &&
           entry['isInaccessible'] != true &&
           entry['isInaccessibleSummary'] != true &&
           entry['path'] is String)
       .map((entry) => entry['path'] as String)
       .toSet();
 
-  late final List<Map<String, Object?>> _inaccessible = widget.entries
+  List<Map<String, Object?>> get _inaccessible => widget.entries
       .where((entry) => entry['isInaccessible'] == true)
       .toList(growable: false);
 
-  late final List<Map<String, Object?>> _pdfs = widget.entries
+  List<Map<String, Object?>> get _pdfs => widget.entries
       .where((entry) => entry['isDirectory'] != true)
       .toList(growable: false);
 
