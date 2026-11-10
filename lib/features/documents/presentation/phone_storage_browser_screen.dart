@@ -40,7 +40,13 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
   }
 
   String _normalizedFolderPath(Map<String, Object?> entry) {
-    final rawValue = entry['folderPath'] ?? entry['path'] ?? '';
+    // Some storage providers include folderPath as an empty string even when
+    // path contains the actual parent directory. Treat blank as missing.
+    final folderPath = entry['folderPath'];
+    final path = entry['path'];
+    final rawValue = folderPath is String && folderPath.trim().isNotEmpty
+        ? folderPath
+        : path ?? folderPath ?? '';
     if (rawValue is! String) return '';
     final raw = _normalizePath(rawValue);
     final root = _normalizePath(widget.rootName);
