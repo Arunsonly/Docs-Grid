@@ -229,8 +229,25 @@ class MainActivity : FlutterActivity() {
                                 val hasAllFiles = android.os.Build.VERSION.SDK_INT < 30 ||
                                     android.os.Environment.isExternalStorageManager()
                                 if (hasAllFiles) {
-                                    val primary = android.os.Environment.getExternalStorageDirectory()
-                                    roots[primary.canonicalPath] = mapOf("uri" to Uri.fromFile(primary).toString(), "name" to "Internal storage")
+                                    // getExternalFilesDirs exposes the app-specific directory on
+                                    // each mounted shared-storage volume. Walk back to each volume
+                                    // root so removable SD cards are included when Android grants
+                                    // MANAGE_EXTERNAL_STORAGE.
+                                    getExternalFilesDirs(null).filterNotNull().forEachIndexed { index, appDirectory ->
+                                        val appPath = appDirectory.canonicalPath
+                                        val marker = "/Android/data/$packageName"
+                                        val markerIndex = appPath.indexOf(marker)
+                                        if (markerIndex >= 0) {
+                                            val volumeRoot = java.io.File(appPath.substring(0, markerIndex))
+                                            if (volumeRoot.isDirectory && volumeRoot.canRead()) {
+                                                val label = if (index == 0) "Internal storage" else "External storage $index"
+                                                roots[volumeRoot.canonicalPath] = mapOf(
+                                                    "uri" to Uri.fromFile(volumeRoot).toString(),
+                                                    "name" to label
+                                                )
+                                            }
+                                        }
+                                    }
                                 }
                                 val prefs = getSharedPreferences("docsgrid_storage", MODE_PRIVATE)
                                 val docsGridRoots = listOfNotNull(
