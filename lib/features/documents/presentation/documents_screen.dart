@@ -1663,38 +1663,6 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     ),
   );
 
-  Widget _storageSummaryCard({
-    required IconData icon,
-    required String title,
-    required String value,
-    required String detail,
-    required VoidCallback onTap,
-  }) => Card(
-    elevation: 0,
-    child: InkWell(
-      borderRadius: BorderRadius.circular(16),
-      onTap: onTap,
-      child: Padding(
-        padding: const EdgeInsets.all(14),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Icon(icon, size: 22, color: Theme.of(context).colorScheme.primary),
-            const SizedBox(height: 10),
-            Text(title, style: const TextStyle(fontWeight: FontWeight.w700)),
-            const SizedBox(height: 4),
-            Text(value, maxLines: 1, overflow: TextOverflow.ellipsis,
-              style: Theme.of(context).textTheme.titleMedium),
-            const SizedBox(height: 3),
-            if (detail.trim().isNotEmpty)
-              Text(detail, maxLines: 2, overflow: TextOverflow.ellipsis,
-                style: Theme.of(context).textTheme.bodySmall),
-          ],
-        ),
-      ),
-    ),
-  );
-
   String _normaliseSearchLocation(String value) {
     try {
       return Uri.decodeFull(value).trim().toLowerCase();
