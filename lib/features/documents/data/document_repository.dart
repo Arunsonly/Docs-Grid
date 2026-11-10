@@ -211,6 +211,27 @@ class DocumentRepository {
     return summary;
   }
 
+  /// Returns the latest document activity: opened PDFs use last_opened_at;
+  /// never-opened PDFs use created_at so recently added files also appear.
+  Future<List<DocumentRecord>> recentActivity({int limit = 20}) async {
+    if (limit < 1 || limit > 100) {
+      throw ArgumentError.value(limit, 'limit', 'Must be between 1 and 100.');
+    }
+    final db = await _database.database;
+    final rows = await db.rawQuery('''
+      SELECT d.*, c.name AS category_name,
+        (SELECT GROUP_CONCAT(t.name, ', ') FROM document_tags dt
+          INNER JOIN tags t ON t.id = dt.tag_id WHERE dt.document_id = d.id) AS tag_names
+      FROM documents d
+      LEFT JOIN categories c ON c.id = d.category_id
+      WHERE d.deleted_at IS NULL
+      ORDER BY COALESCE(d.last_opened_at, d.created_at) DESC,
+               d.name COLLATE NOCASE ASC, d.id ASC
+      LIMIT ?
+    ''', [limit]);
+    return rows.map(DocumentRecord.fromMap).toList(growable: false);
+  }
+
   /// Fetches a bounded keyset page in the same order as the library screen.
   /// The cursor includes a unique id tie-breaker so equal names/timestamps
   /// cannot cause a row to repeat or disappear between pages.
