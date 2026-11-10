@@ -1527,6 +1527,111 @@ class DocumentRepository {
     return DocumentRecord.fromMap(rows.first);
   }
 
+  Future<List<DocumentRecord>> listAllStarred() async {
+    final db = await _database.database;
+    final rows = await db.rawQuery('''
+      SELECT d.*, c.name AS category_name,
+        (SELECT GROUP_CONCAT(t.name, ', ') FROM document_tags dt
+          INNER JOIN tags t ON t.id = dt.tag_id WHERE dt.document_id = d.id) AS tag_names
+      FROM documents d
+      LEFT JOIN categories c ON c.id = d.category_id
+      WHERE d.deleted_at IS NULL AND d.is_favorite = 1
+      ORDER BY COALESCE(d.last_opened_at, d.created_at) DESC,
+               d.name COLLATE NOCASE ASC, d.id ASC
+    ''');
+    return rows.map(DocumentRecord.fromMap).toList(growable: false);
+  }
+
+  Future<void> clearOpenedHistory() async {
+    final db = await _database.database;
+    await db.transaction((txn) async {
+      final rows = await txn.query(
+        'documents',
+        columns: ['id'],
+        where: 'deleted_at IS NULL AND last_opened_at IS NOT NULL',
+      );
+      await txn.update(
+        'documents',
+        {'last_opened_at': null},
+        where: 'deleted_at IS NULL',
+      );
+      for (final row in rows) {
+        await _recordHistory(txn, row['id'] as String, 'recent_cleared', {});
+      }
+    });
+  }
+
+  Future<DocumentRecord> copyDocument(
+    DocumentRecord document, {String? targetFolderId}
+  ) async {
+    final sourceUri = document.storagePath;
+    final storage = StorageLocationService.instance;
+    final baseName = document.name;
+    final db = await _database.database;
+    final newId = _uuid.v4();
+    final newName = '$baseName copy';
+    String newUri;
+    if (sourceUri.startsWith('content://') || sourceUri.startsWith('file://')) {
+      final parent = targetFolderId == null
+          ? (Platform.isAndroid
+              ? (await storage.portableDataLocationsIfAvailable())['documentsUri']
+              : (await storage.selectedFolder())?['uri'])
+          : await FolderRepository().ensurePhysicalStorageUri(targetFolderId);
+      if (parent == null) throw StateError('No writable destination is available for this PDF.');
+      newUri = await storage.copyPdf(
+        sourceUri: sourceUri,
+        parentUri: parent,
+        name: '$newName.pdf',
+      );
+    } else {
+      final source = File(sourceUri);
+      if (!await source.exists()) throw StateError('Original PDF is missing.');
+      final folder = await _privateFolderFor(targetFolderId);
+      final target = await _uniqueFile(folder, '$newName.pdf');
+      await source.copy(target.path);
+      newUri = target.path;
+    }
+    final digest = newUri.startsWith('content://') || newUri.startsWith('file://')
+        ? await storage.sha256Pdf(newUri)
+        : (await sha256.bind(File(newUri).openRead()).first).toString();
+    final now = DateTime.now().toUtc().toIso8601String();
+    try {
+      await db.insert('documents', {
+        'id': newId,
+        'name': newName,
+        'original_name': '$newName.pdf',
+        'storage_uri': newUri,
+        'relative_path': null,
+        'mime_type': 'application/pdf',
+        'size_bytes': document.sizeBytes,
+        'sha256': digest,
+        'folder_id': targetFolderId,
+        'category_id': document.categoryId,
+        'extracted_text_status': 'pending',
+        'created_at': now,
+        'updated_at': now,
+        'last_opened_at': null,
+        'deleted_at': null,
+        'source': 'copy',
+        'metadata_json': jsonEncode({'favorite': false}),
+        'is_favorite': 0,
+      });
+    } catch (_) {
+      try {
+        if (newUri.startsWith('content://') || newUri.startsWith('file://')) {
+          await storage.deletePdf(newUri);
+        } else {
+          await File(newUri).delete();
+        }
+      } catch (_) {}
+      rethrow;
+    }
+    final created = await getById(newId);
+    if (created == null) throw StateError('Copied PDF was not saved in the library.');
+    await _recordRepositoryEvent(newId, 'copied', {'from': document.id});
+    return created;
+  }
+
   Future<void> markOpened(DocumentRecord document) async {
     final db = await _database.database;
     await db.transaction((txn) async {
