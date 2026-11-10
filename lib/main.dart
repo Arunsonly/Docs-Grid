@@ -200,13 +200,6 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Recover your DocsGrid data?'),
-        content: const Text(
-          'After reinstall, DocsGrid can look for portable backup ZIPs and existing PDFs '
-          'in Android/media/com.docsgrid. A backup ZIP can recover documents, folders, '
-          'categories, tags, reminders, history and settings. PDFs found without a backup '
-          'can be imported, but their old categories and reminders cannot be reconstructed '
-          'from PDF files alone. Nothing is restored or deleted without your confirmation.',
-        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx, 'later'),
