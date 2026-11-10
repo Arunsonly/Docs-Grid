@@ -298,8 +298,7 @@ void main() {
     expect(rows.any((row) => row['isInaccessibleSummary'] == true), isTrue);
     expect(rows.where((row) => row['isDirectory'] != true).map((row) => row['uri']),
       contains('content://pdf'));
-    expect(rows.where((row) => row['isDirectory'] == true && row['path'] == 'Protected'),
-      isEmpty);
+    expect(rows.singleWhere((row) => row['path'] == 'Protected')['isInaccessible'], isTrue);
   });
 
   test('root permission failure is propagated and is not reported as empty storage', () async {
