@@ -117,7 +117,33 @@ class MainActivity : FlutterActivity() {
                                 }
                             }
                             "getPortableDataLocations" -> {
-                                // Initialize the portable tree independently of backup discovery.
+                                // A user-selected SAF recovery tree remains usable without
+                                // MANAGE_EXTERNAL_STORAGE. Return its persisted opaque URIs
+                                // before attempting the automatic Android/media layout.
+                                val saved = getSharedPreferences("docsgrid_storage", MODE_PRIVATE)
+                                val savedRoot = saved.getString("docsgrid_uri", null)
+                                val savedDatabase = saved.getString("database_uri", null)
+                                val savedRecovery = saved.getString("recovery_uri", null)
+                                val savedLibrary = saved.getString("folders_uri", null)
+                                    ?: saved.getString("my_files_uri", null)
+                                val savedDocuments = saved.getString("documents_uri", null)
+                                if (savedRoot?.startsWith("content://") == true &&
+                                    savedDatabase?.startsWith("content://") == true &&
+                                    savedRecovery?.startsWith("content://") == true &&
+                                    savedLibrary?.startsWith("content://") == true) {
+                                    val selectedLocations = mutableMapOf<String, String>(
+                                        "rootUri" to savedRoot,
+                                        "databaseUri" to savedDatabase,
+                                        "recoveryUri" to savedRecovery,
+                                        "libraryUri" to savedLibrary
+                                    )
+                                    if (savedDocuments?.startsWith("content://") == true) {
+                                        selectedLocations["documentsUri"] = savedDocuments
+                                    }
+                                    result.success(selectedLocations)
+                                    return
+                                }
+                                // Initialize the automatic portable tree independently of backup discovery.
                                 // A fresh install must never require an old snapshot to create storage.
                                 if (android.os.Build.VERSION.SDK_INT >= 30 &&
                                     !android.os.Environment.isExternalStorageManager()) {
