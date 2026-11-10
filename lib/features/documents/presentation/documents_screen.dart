@@ -336,6 +336,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
         onMovePdf: _movePhonePdfToGrid,
         onRenamePdf: _renamePhonePdf,
         onSharePdf: _sharePhonePdf,
+        onTrashPdf: _trashPhonePdf,
         initialPath: initialPath,
       ),
     ));
@@ -883,6 +884,40 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     if (result == null) return;
     await _categoryRepository.setDocumentTags(document.id, result.toList());
     await _patchDocument(document.id);
+  }
+
+  Future<void> _trashPhonePdf(String uri, String name) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Move PDF to Recycle Bin?'),
+        content: Text('$name will be copied into DocsGrid Recycle Bin. The Phone original is removed only after the archive succeeds.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Move')),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    try {
+      final moved = await _repository.moveExternalPdfToTrash(
+        sourceUri: uri,
+        displayName: name,
+      );
+      if (!mounted) return;
+      if (moved) {
+        _message('PDF moved to Recycle Bin.');
+      } else {
+        _message('A matching PDF already exists in Grid. The Phone original was kept.');
+      }
+      await _scanPhoneStorage(openBrowser: false);
+      await _loadTrashSummary();
+      await _refreshDashboardSummary();
+    } catch (error) {
+      if (mounted) {
+        _message('Could not safely move PDF to Recycle Bin. The Phone original was kept: $error');
+      }
+    }
   }
 
   Future<void> _renamePhonePdf(String uri, String currentName) async {
