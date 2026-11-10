@@ -224,6 +224,21 @@ class MainActivity : FlutterActivity() {
                                     mapOf("uri" to it, "name" to if (hasAllFiles) "Internal storage" else "DocsGrid/Folders")
                                 })
                             }
+                            "getAccessibleScanRoots" -> {
+                                val roots = linkedMapOf<String, Map<String, String>>()
+                                val hasAllFiles = android.os.Build.VERSION.SDK_INT < 30 ||
+                                    android.os.Environment.isExternalStorageManager()
+                                if (hasAllFiles) {
+                                    val primary = android.os.Environment.getExternalStorageDirectory()
+                                    roots[primary.canonicalPath] = mapOf("uri" to Uri.fromFile(primary).toString(), "name" to "Internal storage")
+                                }
+                                contentResolver.persistedUriPermissions.filter { it.isReadPermission }
+                                    .forEachIndexed { index, permission ->
+                                        val uri = permission.uri
+                                        roots.putIfAbsent(uri.toString(), mapOf("uri" to uri.toString(), "name" to "Granted folder ${index + 1}"))
+                                    }
+                                result.success(roots.values.toList())
+                            }
                             "consumeSharedPdfs" -> result.success(consumeSharedPdfs(incomingShareIntent))
                             "checkStorageAccess" -> result.success(checkStorageAccess())
                             "hasAllFilesAccess" -> result.success(
@@ -506,11 +521,9 @@ class MainActivity : FlutterActivity() {
         val directory = fileForUri(uri)
         if (!directory.exists()) throw java.io.FileNotFoundException("Missing directory: ${directory.path}")
         if (!directory.isDirectory) throw IllegalStateException("The selected storage item is not a folder.")
-        // Android intentionally blocks some protected subtrees (notably
-        // Android/data and Android/obb) even with all-files access. Skip those
-        // inaccessible branches without aborting the scan of the rest of storage.
-        val children = try { directory.listFiles() } catch (_: SecurityException) { null }
-            ?: return emptyList()
+        // Do not disguise inaccessible directories as empty.
+        val children = directory.listFiles()
+            ?: throw SecurityException("Android could not enumerate this directory: ${directory.name}")
         return children.sortedBy { it.name.lowercase() }.map { child ->
             mapOf(
                 "name" to child.name,

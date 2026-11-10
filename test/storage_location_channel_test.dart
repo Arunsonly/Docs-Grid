@@ -276,4 +276,43 @@ void main() {
     );
   });
 
+  test('accessibleStorageRoots returns native-granted roots without a picker', () async {
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      expect(call.method, 'getAccessibleScanRoots');
+      return [
+        {'uri':'file:///storage/emulated/0','name':'Internal storage'},
+        {'uri':'content://tree/removable','name':'Granted folder'},
+        {'uri':'content://tree/removable','name':'Duplicate grant'},
+      ];
+    });
+    final roots=await StorageLocationService.instance.accessibleStorageRoots();
+    expect(roots,hasLength(2));
+    expect(roots.first['name'],'Internal storage');
+  });
+
+  test('recursive scan hides empty folders and aggregates nested PDFs case-insensitively', () async {
+    final tree=<String,List<Map<String,Object?>>{
+      'content://root':[
+        {'name':'Empty','uri':'content://empty','isDirectory':true,'sizeBytes':0},
+        {'name':'Policies','uri':'content://policies','isDirectory':true,'sizeBytes':0},
+      ],
+      'content://empty':[],
+      'content://policies':[
+        {'name':'A.pdf','uri':'content://a','isDirectory':false,'sizeBytes':100},
+        {'name':'Nested','uri':'content://nested','isDirectory':true,'sizeBytes':0},
+      ],
+      'content://nested':[
+        {'name':'B.PDF','uri':'content://b','isDirectory':false,'sizeBytes':250},
+      ],
+    };
+    messenger.setMockMethodCallHandler(channel,(call) async=>tree[call.arguments['uri']]??<Map<String,Object?>>[]);
+    final rows=await StorageLocationService.instance.listStorageTreeRecursively('content://root');
+    final folders=rows.where((r)=>r['isDirectory']==true).toList();
+    expect(folders.map((r)=>r['path']),containsAll(['Policies','Policies/Nested']));
+    expect(folders.map((r)=>r['path']),isNot(contains('Empty')));
+    final parent=folders.singleWhere((r)=>r['path']=='Policies');
+    final nested=folders.singleWhere((r)=>r['path']=='Policies/Nested');
+    expect(parent['pdfCount'],2); expect(parent['sizeBytes'],350);
+    expect(nested['pdfCount'],1); expect(nested['sizeBytes'],250);
+  });
 }

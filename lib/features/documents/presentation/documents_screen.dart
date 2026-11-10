@@ -56,6 +56,9 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     _load();
     _search.addListener(_onSearchChanged);
     _scrollController.addListener(_onScroll);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && !widget.favoritesOnly && !widget.recentOnly) _scanPhoneStorage(openBrowser: false);
+    });
   }
 
   void _onScroll() {
@@ -216,37 +219,52 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
   }
 
-  Future<void> _browsePhoneStorage() async {
+  Future<void> _browsePhoneStorage() => _scanPhoneStorage(openBrowser: true);
+
+  Future<void> _scanPhoneStorage({required bool openBrowser}) async {
     final storage = StorageLocationService.instance;
     try {
-      // Personal-use builds request Android's one-time special access once,
-      // then browse shared internal storage directly without a SAF folder picker.
       if (Platform.isAndroid && !await storage.hasAllFilesAccess()) {
-        await storage.requestAllFilesAccess();
-        if (mounted) {
-          _message('Allow “Full internal storage access” in Android Settings, return to DocsGrid, and tap Browse again.');
+        final granted = await storage.accessibleStorageRoots();
+        if (granted.isEmpty) {
+          if (mounted) setState(() { _phonePdfCount = null; _phoneStorageBytes = null; });
+          if (openBrowser && mounted) {
+            await storage.requestAllFilesAccess();
+            _message('Grant Android storage access or a SAF location. No folder picker was opened.');
+          }
+          return;
         }
+      }
+      final roots = await storage.accessibleStorageRoots();
+      if (roots.isEmpty) {
+        if (mounted) setState(() { _phonePdfCount = null; _phoneStorageBytes = null; });
         return;
       }
-      final selected = await storage.selectedFolder() ?? await storage.chooseFolder();
-      if (!mounted || selected == null) return;
-      _message('Finding PDFs in ${selected['name']}…');
-      final files = await storage.listStorageTreeRecursively(
-        selected['uri']!, includeEmptyFolders: true,
-      );
-      final pdfEntries = files.where((entry) => entry['isDirectory'] != true).toList();
-      final phoneBytes = pdfEntries.fold<int>(
-        0,
-        (total, entry) => total + ((entry['sizeBytes'] as num?)?.toInt() ?? 0),
-      );
-      if (!mounted) return;
-      setState(() {
-        _phonePdfCount = pdfEntries.length;
-        _phoneStorageBytes = phoneBytes;
-      });
-      await _showRecursiveStoragePdfs(selected['name']!, files);
-    } catch (error) {
-      if (mounted) _message('Could not index the selected folder. Check its storage permission and try again: $error');
+      final entries = <Map<String,Object?>>[], seen = <String>{};
+      var inaccessibleRoots=0;
+      for(final root in roots) {
+        try {
+          final found=await storage.listStorageTreeRecursively(root['uri']!,
+            rootLabel:root['name']!, includeEmptyFolders:false);
+          for(final item in found) {
+            final uri=item['uri'] as String? ?? '';
+            if(item['isDirectory']!=true && uri.isNotEmpty && !seen.add(uri)) continue;
+            entries.add(item);
+          }
+        } catch(error) {
+          inaccessibleRoots++;
+          entries.add({'name':root['name']!,'uri':root['uri']!,'folderPath':'',
+            'isDirectory':true,'isInaccessible':true,'accessError':error.toString()});
+        }
+      }
+      final pdfs=entries.where((e)=>e['isDirectory']!=true).toList();
+      final bytes=pdfs.fold<int>(0,(sum,e)=>sum+((e['sizeBytes'] as num?)?.toInt()??0));
+      if(!mounted)return;
+      setState(() { _phonePdfCount=pdfs.length; _phoneStorageBytes=bytes; });
+      if(openBrowser) await _showRecursiveStoragePdfs('Phone Storage',entries);
+      if(inaccessibleRoots>0 && mounted) _message('$inaccessibleRoots granted location(s) could not be read; they were not marked empty.');
+    } catch(error) {
+      if(mounted)_message('Phone Storage scan failed; inaccessible locations were not marked empty: $error');
     }
   }
 
@@ -837,8 +855,8 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                   child: _storageSummaryCard(
                     icon: Icons.phone_android,
                     title: 'Internal Storage',
-                    value: _phonePdfCount == null ? 'Not scanned' : '$_phonePdfCount PDFs',
-                    detail: _phoneStorageBytes == null ? 'Tap to scan accessible phone PDFs' : '${_size(_phoneStorageBytes!)} used by PDFs',
+                    value: _phonePdfCount == null ? 'Permission needed' : '$_phonePdfCount PDFs',
+                    detail: _phoneStorageBytes == null ? 'Accessible locations not yet available' : '${_size(_phoneStorageBytes!)} used by PDFs',
                     onTap: _browsePhoneStorage,
                   ),
                 ),

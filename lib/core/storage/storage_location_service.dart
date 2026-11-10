@@ -110,6 +110,21 @@ class StorageLocationService {
     return {'uri': value['uri'] as String, 'name': (value['name'] as String?) ?? 'Selected folder'};
   }
 
+  /// OS-exposed shared storage and all persisted SAF read grants. No picker.
+  Future<List<Map<String, String>>> accessibleStorageRoots() async {
+    if (!Platform.isAndroid) return const [];
+    final values = await _channel.invokeListMethod<dynamic>('getAccessibleScanRoots') ?? const [];
+    final roots = <Map<String, String>>[];
+    final seen = <String>{};
+    for (final value in values) {
+      if (value is! Map) continue;
+      final uri = value['uri'], name = value['name'];
+      if (uri is! String || uri.isEmpty || !seen.add(uri)) continue;
+      roots.add({'uri': uri, 'name': name is String && name.isNotEmpty ? name : 'Granted folder'});
+    }
+    return roots;
+  }
+
   /// Checks whether the OS still grants access to the saved external folder.
   /// This does not modify the selected folder or any document record.
   Future<Map<String, String>> checkStorageAccess() async {
@@ -327,71 +342,81 @@ class StorageLocationService {
   /// Lists PDFs and only folders that contain PDFs somewhere below them,
   /// within the explicitly granted SAF root. Empty folder branches are omitted.
   Future<List<Map<String, Object?>>> listStorageTreeRecursively(
-    String rootUri, {
-    int maxEntries = 50000,
-    int maxDepth = 64,
-    bool includeEmptyFolders = false,
-  }) async {
-    final pending = <({String uri, String path, int depth})>[
-      (uri: rootUri, path: '', depth: 0),
-    ];
+    String rootUri, {int maxEntries = 50000, int maxDepth = 64,
+    bool includeEmptyFolders = false, String rootLabel = ''}) async {
+    final pending = <({String uri, String path, int depth})>[(uri: rootUri, path: '', depth: 0)];
     final visited = <String>{};
     final entries = <Map<String, Object?>>[];
-    final foldersWithPdfs = <String>{};
-    final allFolders = <String>{};
+    final counts = <String, int>{}, sizes = <String, int>{};
+    final withPdfs = <String>{}, allFolders = <String>{}, inaccessible = <String>[];
     var visitedEntries = 0;
     while (pending.isNotEmpty) {
       final current = pending.removeLast();
       if (!visited.add(current.uri)) continue;
-      if (current.depth > maxDepth) {
-        throw StateError('The selected folder is nested too deeply to browse safely.');
+      if (current.depth > maxDepth) throw StateError('Storage is nested too deeply to scan safely.');
+      List<Map<String, Object?>> children;
+      try { children = await listDirectory(current.uri); }
+      catch (error) {
+        if (current.depth == 0) rethrow;
+        inaccessible.add(current.path);
+        entries.add({'name': current.path.split('/').last, 'uri': current.uri,
+          'folderPath': current.path.contains('/') ? current.path.substring(0,current.path.lastIndexOf('/')) : '',
+          'path': current.path, 'isDirectory': true, 'isInaccessible': true, 'accessError': error.toString()});
+        continue;
       }
-      final children = await listDirectory(current.uri);
       for (final child in children) {
-        visitedEntries++;
-        if (visitedEntries > maxEntries) {
-          throw StateError('The selected folder contains more than $maxEntries entries. Choose a smaller folder.');
-        }
-        final name = child['name'] as String;
-        final uri = child['uri'] as String;
+        if (++visitedEntries > maxEntries) throw StateError('Storage exceeds $maxEntries entries; scan stopped safely.');
+        final name = child['name'] as String, uri = child['uri'] as String;
         if (child['isDirectory'] == true) {
           final path = current.path.isEmpty ? name : '${current.path}/$name';
           allFolders.add(path);
+          if (path == 'Android/media/com.docsgrid' || path.startsWith('Android/media/com.docsgrid/')) continue;
           pending.add((uri: uri, path: path, depth: current.depth + 1));
         } else if (name.toLowerCase().endsWith('.pdf')) {
-          entries.add(<String, Object?>{
-            'name': name, 'uri': uri, 'folderPath': current.path,
-            'sizeBytes': (child['size'] as num?)?.toInt() ?? 0,
-            'isDirectory': false,
-          });
+          final size = (child['sizeBytes'] as num?)?.toInt() ?? (child['size'] as num?)?.toInt() ?? 0;
+          entries.add({'name': name, 'uri': uri, 'folderPath': current.path, 'sizeBytes': size, 'isDirectory': false});
           var ancestor = current.path;
           while (ancestor.isNotEmpty) {
-            foldersWithPdfs.add(ancestor);
-            final separator = ancestor.lastIndexOf('/');
-            ancestor = separator < 0 ? '' : ancestor.substring(0, separator);
+            withPdfs.add(ancestor); counts[ancestor] = (counts[ancestor] ?? 0) + 1;
+            sizes[ancestor] = (sizes[ancestor] ?? 0) + size;
+            final slash = ancestor.lastIndexOf('/'); ancestor = slash < 0 ? '' : ancestor.substring(0,slash);
           }
         }
       }
     }
-    // Keep only folders on a path to at least one PDF. Root-level PDFs remain
-    // visible without creating a synthetic empty-folder row.
-    final visibleFolders = includeEmptyFolders ? allFolders : foldersWithPdfs;
-    entries.addAll(visibleFolders.map((path) {
-      final segments = path.split('/');
-      return <String, Object?>{
-        'name': segments.last,
-        'uri': '',
-        'folderPath': segments.length == 1 ? '' : segments.sublist(0, segments.length - 1).join('/'),
-        'path': path,
-        'isDirectory': true,
-      };
+    final folders = includeEmptyFolders ? allFolders : withPdfs;
+    entries.addAll(folders.map((path) {
+      final parts = path.split('/');
+      return <String,Object?>{'name':parts.last,'uri':'',
+        'folderPath':parts.length == 1 ? '' : parts.sublist(0,parts.length-1).join('/'),
+        'path':path,'isDirectory':true,'pdfCount':counts[path] ?? 0,'sizeBytes':sizes[path] ?? 0};
     }));
-    entries.sort((a, b) {
-      final path = (a['folderPath'] as String).compareTo(b['folderPath'] as String);
-      if (path != 0) return path;
-      if (a['isDirectory'] != b['isDirectory']) return a['isDirectory'] == true ? -1 : 1;
+    entries.sort((a,b) {
+      final pth=(a['folderPath'] as String).compareTo(b['folderPath'] as String);
+      if(pth!=0)return pth;
+      if(a['isDirectory']!=b['isDirectory'])return a['isDirectory']==true?-1:1;
       return (a['name'] as String).toLowerCase().compareTo((b['name'] as String).toLowerCase());
     });
+    if(rootLabel.isNotEmpty) {
+      var totalCount=0,totalBytes=0;
+      for(final entry in entries) {
+        if(entry['isDirectory']!=true) {
+          totalCount++; totalBytes+=(entry['sizeBytes'] as num?)?.toInt() ?? 0;
+          final folder=entry['folderPath'] as String? ?? '';
+          entry['folderPath']=folder.isEmpty?rootLabel:'$rootLabel/$folder';
+        } else {
+          final path=entry['path'] as String? ?? '';
+          if(path.isNotEmpty) {
+            entry['path']='$rootLabel/$path';
+            entry['folderPath']=path.contains('/')?'$rootLabel/${path.substring(0,path.lastIndexOf('/'))}':rootLabel;
+          }
+        }
+      }
+      entries.add({'name':rootLabel,'uri':rootUri,'folderPath':'','path':rootLabel,
+        'isDirectory':true,'pdfCount':totalCount,'sizeBytes':totalBytes});
+    }
+    if(inaccessible.isNotEmpty) entries.add({'name':'${inaccessible.length} inaccessible folder(s)',
+      'uri':'','folderPath':'','isDirectory':true,'isInaccessibleSummary':true,'inaccessibleCount':inaccessible.length});
     return entries;
   }
 
