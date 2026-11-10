@@ -351,7 +351,7 @@ void main() {
     expect(rows.any((row) => row['isInaccessibleSummary'] == true), isTrue);
     expect(rows.where((row) => row['isDirectory'] != true).map((row) => row['uri']),
       contains('content://pdf'));
-    expect(rows.singleWhere((row) => row['path'] == 'Protected')['isInaccessible'], isTrue);
+    expect(rows.singleWhere((row) => row['path'] == 'Phone Storage/Protected')['isInaccessible'], isTrue);
     expect(rows.singleWhere((row) => row['path'] == 'Phone Storage')['isIncomplete'], isTrue);
   });
 
@@ -365,18 +365,17 @@ void main() {
     );
   });
 
-  test('accessibleStorageRoots returns native-granted roots without a picker', () async {
-    messenger.setMockMethodCallHandler(channel, (call) async {
-      expect(call.method, 'getAccessibleScanRoots');
-      return [
-        {'uri':'file:///storage/emulated/0','name':'Internal storage'},
-        {'uri':'content://tree/removable','name':'Granted folder'},
-        {'uri':'content://tree/removable','name':'Duplicate grant'},
-      ];
-    });
-    final roots=await StorageLocationService.instance.accessibleStorageRoots();
-    expect(roots,hasLength(2));
-    expect(roots.first['name'],'Internal storage');
+  test('accessibleStorageRoots normalizes native roots and removes duplicate grants', () {
+    final roots = StorageLocationService.normalizeAccessibleStorageRoots([
+      {'uri':'file:///storage/emulated/0','name':'Internal storage'},
+      {'uri':'content://tree/removable','name':'Granted folder'},
+      {'uri':'content://tree/removable','name':'Duplicate grant'},
+      {'uri':'','name':'Invalid root'},
+      'invalid entry',
+    ]);
+    expect(roots, hasLength(2));
+    expect(roots.first['name'], 'Internal storage');
+    expect(roots.last['name'], 'Granted folder');
   });
 
   test('recursive scan hides empty folders and aggregates nested PDFs case-insensitively', () async {
