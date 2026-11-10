@@ -24,6 +24,7 @@ import '../documents/data/document_repository.dart';
 import '../folders/data/folder_repository.dart';
 import '../reminders/data/reminder_notifications.dart';
 import 'backup_archive_limits.dart';
+import 'backup_schema_compatibility.dart';
 import 'backup_folder_graph_validator.dart';
 import 'document_crop_screen.dart';
 import 'portable_snapshot_manifest.dart';
@@ -1762,7 +1763,7 @@ class DocumentToolsService {
     }
     final snapshotUri = snapshot['uri'] as String;
     final manifest = snapshot['manifest'] as PortableSnapshotManifest;
-    if (manifest.databaseSchemaVersion > 3) {
+    if (manifest.databaseSchemaVersion > BackupSchemaCompatibility.currentVersion) {
       throw StateError('This recovery snapshot was created by a newer DocsGrid database version. Update the app before restoring it.');
     }
     final rowsByTable = <String, List<Map<String, Object?>>>{};
@@ -2178,7 +2179,7 @@ class DocumentToolsService {
       }
       final manifest = manifestValue;
       final schemaVersion = manifest['databaseSchemaVersion'];
-      if (schemaVersion is int && schemaVersion > 3) {
+      if (schemaVersion is int && schemaVersion > BackupSchemaCompatibility.currentVersion) {
         throw StateError('This backup was created by a newer DocsGrid database version. Update the app before restoring it.');
       }
       final declaredTables = manifest['tables'];
