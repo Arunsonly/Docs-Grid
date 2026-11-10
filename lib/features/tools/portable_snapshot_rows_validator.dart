@@ -12,6 +12,7 @@ class PortableSnapshotRowsValidator {
     final tagIds = _ids(tables, 'tags');
     _ids(tables, 'reminders');
     _ids(tables, 'history');
+    _ids(tables, 'smart_collections');
 
     void requiredString(String table, String field, {bool nonEmpty = true}) {
       for (final row in tables[table] ?? const <Map<String, Object?>>[]) {
@@ -123,6 +124,10 @@ class PortableSnapshotRowsValidator {
     requiredString('settings', 'key');
     requiredString('settings', 'value_json', nonEmpty: false);
     requiredString('settings', 'updated_at');
+    requiredString('smart_collections', 'name');
+    requiredString('smart_collections', 'query_text', nonEmpty: false);
+    requiredString('smart_collections', 'created_at');
+    requiredString('smart_collections', 'updated_at');
     requiredString('document_text_index', 'extracted_text', nonEmpty: false);
     requiredString('document_text_index', 'indexed_at');
     for (final (table, field) in <(String, String)>[
@@ -132,6 +137,7 @@ class PortableSnapshotRowsValidator {
       ('reminders', 'remind_at_utc'), ('reminders', 'next_fire_at_utc'),
       ('reminders', 'created_at'), ('reminders', 'updated_at'),
       ('history', 'created_at'), ('settings', 'updated_at'),
+      ('smart_collections', 'created_at'), ('smart_collections', 'updated_at'),
       ('document_text_index', 'indexed_at'),
     ]) {
       requiredDateTime(table, field);
@@ -146,6 +152,8 @@ class PortableSnapshotRowsValidator {
     }
     requiredInt('documents', 'size_bytes', min: 0);
     requiredInt('reminders', 'enabled', min: 0);
+    requiredInt('smart_collections', 'favorites_only', min: 0);
+    requiredInt('smart_collections', 'recent_only', min: 0);
     requiredInt('document_text_index', 'page_count', min: 0);
 
     for (final field in ['original_name', 'storage_uri', 'relative_path', 'sha256',
@@ -173,6 +181,7 @@ class PortableSnapshotRowsValidator {
     uniqueText('categories', 'name', caseInsensitive: true);
     uniqueText('tags', 'name', caseInsensitive: true);
     uniqueText('settings', 'key');
+    uniqueText('smart_collections', 'name', caseInsensitive: true);
 
     final pairs = <String>{};
     for (final row in tables['document_tags'] ?? const <Map<String, Object?>>[]) {
