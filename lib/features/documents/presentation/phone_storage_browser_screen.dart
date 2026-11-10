@@ -16,10 +16,10 @@ class PhoneStorageBrowserScreen extends StatefulWidget {
   final String rootName;
   final List<Map<String, Object?>> entries;
   final Future<void> Function(String uri, String name) onOpenPdf;
-  final Future<void> Function(String uri, String name)? onMovePdf;
-  final Future<void> Function(String uri, String name)? onRenamePdf;
+  final Future<bool> Function(String uri, String name)? onMovePdf;
+  final Future<bool> Function(String uri, String name)? onRenamePdf;
   final Future<void> Function(String uri, String name)? onSharePdf;
-  final Future<void> Function(String uri, String name)? onTrashPdf;
+  final Future<bool> Function(String uri, String name)? onTrashPdf;
   final String initialPath;
 
   @override
@@ -205,10 +205,23 @@ class _PhoneStorageBrowserScreenState
                               onSelected: (action) async {
                                 final uri = entry['uri'] as String;
                                 final name = entry['name'] as String;
-                                if (action == 'move') await widget.onMovePdf?.call(uri, name);
-                                if (action == 'rename') await widget.onRenamePdf?.call(uri, name);
-                                if (action == 'share') await widget.onSharePdf?.call(uri, name);
-                                if (action == 'trash') await widget.onTrashPdf?.call(uri, name);
+                                var sourceChanged = false;
+                                if (action == 'move') {
+                                  sourceChanged = await widget.onMovePdf?.call(uri, name) ?? false;
+                                }
+                                if (action == 'rename') {
+                                  sourceChanged = await widget.onRenamePdf?.call(uri, name) ?? false;
+                                }
+                                if (action == 'share') {
+                                  await widget.onSharePdf?.call(uri, name);
+                                }
+                                if (action == 'trash') {
+                                  sourceChanged = await widget.onTrashPdf?.call(uri, name) ?? false;
+                                }
+                                // The parent rescans Phone Storage after a successful
+                                // mutation. Close this snapshot-based browser so stale
+                                // document URIs cannot be acted on again.
+                                if (sourceChanged && mounted) Navigator.of(context).pop();
                               },
                               itemBuilder: (_) => [
                                 if (widget.onMovePdf != null)
