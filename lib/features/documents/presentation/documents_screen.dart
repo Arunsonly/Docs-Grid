@@ -683,120 +683,6 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   }
 
 
-class _PhoneRecentSelectionScreen extends StatefulWidget {
-  const _PhoneRecentSelectionScreen({
-    required this.items,
-    required this.initialUri,
-    required this.onOpen,
-    required this.onShare,
-    required this.onDelete,
-  });
-
-  final List<Map<String, Object?>> items;
-  final String initialUri;
-  final Future<void> Function(Map<String, Object?>) onOpen;
-  final Future<void> Function(List<Map<String, Object?>>) onShare;
-  final Future<void> Function(List<Map<String, Object?>>) onDelete;
-
-  @override
-  State<_PhoneRecentSelectionScreen> createState() => _PhoneRecentSelectionScreenState();
-}
-
-class _PhoneRecentSelectionScreenState extends State<_PhoneRecentSelectionScreen> {
-  late final Set<String> _selected = {widget.initialUri};
-  bool _busy = false;
-
-  List<Map<String, Object?>> get _chosen => widget.items
-      .where((item) => _selected.contains(item['uri']))
-      .toList(growable: false);
-
-  Future<void> _run(Future<void> Function(List<Map<String, Object?>>) action) async {
-    if (_busy || _chosen.isEmpty) return;
-    setState(() => _busy = true);
-    try {
-      await action(_chosen);
-      if (mounted) Navigator.of(context).pop();
-    } catch (error) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Action failed: $error')),
-      );
-    } finally {
-      if (mounted) setState(() => _busy = false);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(
-      title: Text('${_selected.length} selected'),
-      leading: IconButton(
-        icon: const Icon(Icons.close),
-        onPressed: () => Navigator.of(context).pop(),
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => setState(() {
-            if (_selected.length == widget.items.length) {
-              _selected.clear();
-            } else {
-              _selected.addAll(widget.items.map((item) => item['uri'] as String));
-            }
-          }),
-          child: const Text('Select all'),
-        ),
-      ],
-    ),
-    body: ListView.separated(
-      itemCount: widget.items.length,
-      separatorBuilder: (_, _) => const Divider(height: 1),
-      itemBuilder: (context, index) {
-        final item = widget.items[index];
-        final uri = item['uri'] as String;
-        return CheckboxListTile(
-          value: _selected.contains(uri),
-          onChanged: (value) => setState(() {
-            if (value == true) { _selected.add(uri); } else { _selected.remove(uri); }
-          }),
-          title: Text(item['name'] as String? ?? 'PDF'),
-          subtitle: Text('Phone · ${item['openedAt'] ?? ''}'),
-          secondary: const Icon(Icons.picture_as_pdf_outlined),
-        );
-      },
-    ),
-    bottomNavigationBar: SafeArea(
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.spaceAround,
-          children: [
-            TextButton.icon(onPressed: _busy ? null : () => _messageDisabled(),
-              icon: const Icon(Icons.drive_file_move_outline), label: const Text('Move')),
-            TextButton.icon(onPressed: _busy ? null : () => _messageDisabled(),
-              icon: const Icon(Icons.copy_outlined), label: const Text('Copy')),
-            TextButton.icon(onPressed: _busy ? null : () => _run(widget.onDelete),
-              icon: const Icon(Icons.delete_outline), label: const Text('Delete')),
-            TextButton.icon(onPressed: _busy ? null : () => _run(widget.onShare),
-              icon: const Icon(Icons.share_outlined), label: const Text('Share')),
-            PopupMenuButton<String>(
-              tooltip: 'More actions',
-              onSelected: (value) { if (value == 'rename') _messageDisabled(); },
-              itemBuilder: (_) => const [
-                PopupMenuItem(value: 'rename', child: Text('Rename')),
-              ],
-            ),
-          ],
-        ),
-      ),
-    ),
-  );
-
-  void _messageDisabled() {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Use the Phone folder browser for file-management actions.')),
-    );
-  }
-}
-
 
   void _startSelection(DocumentRecord document) {
     if (!mounted) return;
@@ -2415,5 +2301,121 @@ class _RecentSelectionScreenState extends State<_RecentSelectionScreen> {
         ]),
       );
 }
+
+class _PhoneRecentSelectionScreen extends StatefulWidget {
+  const _PhoneRecentSelectionScreen({
+    required this.items,
+    required this.initialUri,
+    required this.onOpen,
+    required this.onShare,
+    required this.onDelete,
+  });
+
+  final List<Map<String, Object?>> items;
+  final String initialUri;
+  final Future<void> Function(Map<String, Object?>) onOpen;
+  final Future<void> Function(List<Map<String, Object?>>) onShare;
+  final Future<void> Function(List<Map<String, Object?>>) onDelete;
+
+  @override
+  State<_PhoneRecentSelectionScreen> createState() => _PhoneRecentSelectionScreenState();
+}
+
+class _PhoneRecentSelectionScreenState extends State<_PhoneRecentSelectionScreen> {
+  late final Set<String> _selected = {widget.initialUri};
+  bool _busy = false;
+
+  List<Map<String, Object?>> get _chosen => widget.items
+      .where((item) => _selected.contains(item['uri']))
+      .toList(growable: false);
+
+  Future<void> _run(Future<void> Function(List<Map<String, Object?>>) action) async {
+    if (_busy || _chosen.isEmpty) return;
+    setState(() => _busy = true);
+    try {
+      await action(_chosen);
+      if (mounted) Navigator.of(context).pop();
+    } catch (error) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Action failed: $error')),
+      );
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(
+      title: Text('${_selected.length} selected'),
+      leading: IconButton(
+        icon: const Icon(Icons.close),
+        onPressed: () => Navigator.of(context).pop(),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => setState(() {
+            if (_selected.length == widget.items.length) {
+              _selected.clear();
+            } else {
+              _selected.addAll(widget.items.map((item) => item['uri'] as String));
+            }
+          }),
+          child: const Text('Select all'),
+        ),
+      ],
+    ),
+    body: ListView.separated(
+      itemCount: widget.items.length,
+      separatorBuilder: (_, _) => const Divider(height: 1),
+      itemBuilder: (context, index) {
+        final item = widget.items[index];
+        final uri = item['uri'] as String;
+        return CheckboxListTile(
+          value: _selected.contains(uri),
+          onChanged: (value) => setState(() {
+            if (value == true) { _selected.add(uri); } else { _selected.remove(uri); }
+          }),
+          title: Text(item['name'] as String? ?? 'PDF'),
+          subtitle: Text('Phone · ${item['openedAt'] ?? ''}'),
+          secondary: const Icon(Icons.picture_as_pdf_outlined),
+        );
+      },
+    ),
+    bottomNavigationBar: SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceAround,
+          children: [
+            TextButton.icon(onPressed: _busy ? null : () => _messageDisabled(),
+              icon: const Icon(Icons.drive_file_move_outline), label: const Text('Move')),
+            TextButton.icon(onPressed: _busy ? null : () => _messageDisabled(),
+              icon: const Icon(Icons.copy_outlined), label: const Text('Copy')),
+            TextButton.icon(onPressed: _busy ? null : () => _run(widget.onDelete),
+              icon: const Icon(Icons.delete_outline), label: const Text('Delete')),
+            TextButton.icon(onPressed: _busy ? null : () => _run(widget.onShare),
+              icon: const Icon(Icons.share_outlined), label: const Text('Share')),
+            PopupMenuButton<String>(
+              tooltip: 'More actions',
+              onSelected: (value) { if (value == 'rename') _messageDisabled(); },
+              itemBuilder: (_) => const [
+                PopupMenuItem(value: 'rename', child: Text('Rename')),
+              ],
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+
+  void _messageDisabled() {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Use the Phone folder browser for file-management actions.')),
+    );
+  }
+}
+
+
 
 
