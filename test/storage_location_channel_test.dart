@@ -293,12 +293,15 @@ void main() {
       }
       return <Map<String,Object?>>[];
     });
-    final rows = await StorageLocationService.instance.listStorageTreeRecursively('content://root');
+    final rows = await StorageLocationService.instance.listStorageTreeRecursively(
+      'content://root', rootLabel: 'Phone Storage',
+    );
     expect(rows.any((row) => row['isInaccessible'] == true), isTrue);
     expect(rows.any((row) => row['isInaccessibleSummary'] == true), isTrue);
     expect(rows.where((row) => row['isDirectory'] != true).map((row) => row['uri']),
       contains('content://pdf'));
     expect(rows.singleWhere((row) => row['path'] == 'Protected')['isInaccessible'], isTrue);
+    expect(rows.singleWhere((row) => row['path'] == 'Phone Storage')['isIncomplete'], isTrue);
   });
 
   test('root permission failure is propagated and is not reported as empty storage', () async {
@@ -349,5 +352,33 @@ void main() {
     final nested=folders.singleWhere((r)=>r['path']=='Policies/Nested');
     expect(parent['pdfCount'],2); expect(parent['sizeBytes'],350);
     expect(nested['pdfCount'],1); expect(nested['sizeBytes'],250);
+  });
+
+  test('recursive scan flags folder and root size totals when provider sizes are unavailable', () async {
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      final uri = call.arguments['uri'] as String;
+      if (uri == 'content://root') {
+        return [{'name':'Policies','uri':'content://policies','isDirectory':true}];
+      }
+      if (uri == 'content://policies') {
+        return [
+          {'name':'Known.pdf','uri':'content://known','isDirectory':false,'sizeBytes':120,'sizeKnown':true},
+          {'name':'Unknown.pdf','uri':'content://unknown','isDirectory':false,'sizeBytes':0,'sizeKnown':false},
+        ];
+      }
+      return <Map<String,Object?>>[];
+    });
+
+    final rows = await StorageLocationService.instance.listStorageTreeRecursively(
+      'content://root', rootLabel: 'Phone Storage',
+    );
+    final folder = rows.singleWhere((row) => row['path'] == 'Phone Storage/Policies');
+    final root = rows.singleWhere((row) => row['path'] == 'Phone Storage');
+    expect(folder['pdfCount'], 2);
+    expect(folder['sizeBytes'], 120);
+    expect(folder['unknownSizeCount'], 1);
+    expect(folder['isSizeIncomplete'], isTrue);
+    expect(root['unknownSizeCount'], 1);
+    expect(root['isSizeIncomplete'], isTrue);
   });
 }
