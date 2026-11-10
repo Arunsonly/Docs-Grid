@@ -156,7 +156,7 @@ void main() {
   testWidgets('failed Rename keeps the selected folder browser open', (tester) async {
     await openActionBrowser(tester, onRename: (_, __) async => false);
     await selectAction(tester, 'Rename');
-    expect(find.text('Phone Storage'), findsOneWidget);
+    expect(find.text('Personal Documents'), findsOneWidget);
     expect(find.text('Policy.pdf'), findsOneWidget);
   });
 
@@ -170,7 +170,7 @@ void main() {
   testWidgets('Share does not close the selected folder browser', (tester) async {
     await openActionBrowser(tester, onShare: (_, __) async {});
     await selectAction(tester, 'Share');
-    expect(find.text('Phone Storage'), findsOneWidget);
+    expect(find.text('Personal Documents'), findsOneWidget);
     expect(find.text('Policy.pdf'), findsOneWidget);
   });
 }
