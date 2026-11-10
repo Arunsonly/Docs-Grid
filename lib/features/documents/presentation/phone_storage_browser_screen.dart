@@ -9,6 +9,7 @@ class PhoneStorageBrowserScreen extends StatefulWidget {
     this.onMovePdf,
     this.onRenamePdf,
     this.onSharePdf,
+    this.onTrashPdf,
     this.initialPath = '',
   });
 
@@ -18,6 +19,7 @@ class PhoneStorageBrowserScreen extends StatefulWidget {
   final Future<void> Function(String uri, String name)? onMovePdf;
   final Future<void> Function(String uri, String name)? onRenamePdf;
   final Future<void> Function(String uri, String name)? onSharePdf;
+  final Future<void> Function(String uri, String name)? onTrashPdf;
   final String initialPath;
 
   @override
@@ -206,6 +208,7 @@ class _PhoneStorageBrowserScreenState
                                 if (action == 'move') await widget.onMovePdf?.call(uri, name);
                                 if (action == 'rename') await widget.onRenamePdf?.call(uri, name);
                                 if (action == 'share') await widget.onSharePdf?.call(uri, name);
+                                if (action == 'trash') await widget.onTrashPdf?.call(uri, name);
                               },
                               itemBuilder: (_) => [
                                 if (widget.onMovePdf != null)
@@ -214,6 +217,8 @@ class _PhoneStorageBrowserScreenState
                                   const PopupMenuItem(value: 'rename', child: Text('Rename')),
                                 if (widget.onSharePdf != null)
                                   const PopupMenuItem(value: 'share', child: Text('Share')),
+                                if (widget.onTrashPdf != null)
+                                  const PopupMenuItem(value: 'trash', child: Text('Move to Recycle Bin')),
                               ],
                             ),
                             onTap: () => widget.onOpenPdf(
