@@ -927,7 +927,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     await _patchDocument(document.id);
   }
 
-  Future<void> _trashPhonePdf(String uri, String name) async {
+  Future<bool> _trashPhonePdf(String uri, String name) async {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
@@ -939,13 +939,13 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
         ],
       ),
     );
-    if (confirmed != true) return;
+    if (confirmed != true) return false;
     try {
       final moved = await _repository.moveExternalPdfToTrash(
         sourceUri: uri,
         displayName: name,
       );
-      if (!mounted) return;
+      if (!mounted) return false;
       if (moved) {
         _message('PDF moved to Recycle Bin.');
       } else {
@@ -954,14 +954,16 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
       await _scanPhoneStorage(openBrowser: false);
       await _loadTrashSummary();
       await _refreshDashboardSummary();
+      return moved;
     } catch (error) {
       if (mounted) {
         _message('Could not safely move PDF to Recycle Bin. The Phone original was kept: $error');
       }
+      return false;
     }
   }
 
-  Future<void> _renamePhonePdf(String uri, String currentName) async {
+  Future<bool> _renamePhonePdf(String uri, String currentName) async {
     final controller = TextEditingController(
       text: currentName.toLowerCase().endsWith('.pdf')
           ? currentName.substring(0, currentName.length - 4)
@@ -987,11 +989,11 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
       ),
     );
     controller.dispose();
-    if (requested == null) return;
+    if (requested == null) return false;
     final clean = requested.trim();
     if (clean.isEmpty || clean.contains('/') || clean.contains('\\') || clean == '.' || clean == '..') {
       _message('Enter a valid file name.');
-      return;
+      return false;
     }
     try {
       await StorageLocationService.instance.renamePdf(
@@ -1002,8 +1004,10 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
       _message('PDF renamed.');
       await _scanPhoneStorage(openBrowser: false);
       await _refreshDashboardSummary();
+      return true;
     } catch (error) {
       if (mounted) _message('Could not rename PDF: $error');
+      return false;
     }
   }
 
@@ -1015,7 +1019,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     }
   }
 
-  Future<void> _movePhonePdfToGrid(String uri, String name) async {
+  Future<bool> _movePhonePdfToGrid(String uri, String name) async {
     var folders = await _folderRepository.allFoldersWithPaths();
     var selectedFolderId = '';
     final destination = await showDialog<String?>(
@@ -1098,14 +1102,14 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
         ),
       ),
     );
-    if (destination == null) return;
+    if (destination == null) return false;
     try {
       final result = await _repository.moveExternalPdfToGrid(
         sourceUri: uri,
         displayName: name,
         targetFolderId: destination.isEmpty ? null : destination,
       );
-      if (!mounted) return;
+      if (!mounted) return false;
       if (result.added == 1) {
         _message('Moved $name to Grid.');
       } else if (result.duplicates > 0) {
@@ -1114,8 +1118,10 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
       await _scanPhoneStorage(openBrowser: false);
       await _load();
       await _refreshDashboardSummary();
+      return result.added == 1;
     } catch (error) {
       if (mounted) _message('Could not move $name. The Phone original was kept: $error');
+      return false;
     }
   }
 
