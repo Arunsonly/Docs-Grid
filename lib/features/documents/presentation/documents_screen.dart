@@ -541,7 +541,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   }
 
   Future<void> _openRecentSelection(DocumentRecord first) async {
-    await Navigator.of(context).push<void>(MaterialPageRoute(
+    final action = await Navigator.of(context).push<String>(MaterialPageRoute(
       builder: (_) => _RecentSelectionScreen(
         initialDocument: first,
         loadItems: _showStarredRecent ? _repository.listAllStarred : _loadAllRecentGrid,
@@ -555,6 +555,9 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     ));
     await _loadRecentDocuments();
     await _loadAllStarred();
+    if (action == 'rename' && mounted) {
+      _message('Rename completed.');
+    }
   }
 
   Future<void> _bulkMoveDocuments(List<DocumentRecord> selected) async {
@@ -2197,7 +2200,7 @@ class _RecentSelectionScreenState extends State<_RecentSelectionScreen> {
     try {
       await action(_selectedItems);
       if (mounted) {
-        Navigator.of(context).pop(_selectedItems);
+        Navigator.of(context).pop();
       }
     } catch (error) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(
@@ -2220,7 +2223,7 @@ class _RecentSelectionScreenState extends State<_RecentSelectionScreen> {
     );
     if (choice == 'rename' && _selectedItems.length == 1 && mounted) {
       final renamed = await widget.onRename(_selectedItems.single);
-      if (renamed && mounted) Navigator.of(context).pop(_selectedItems);
+      if (renamed && mounted) Navigator.of(context).pop('rename');
     }
   }
 
