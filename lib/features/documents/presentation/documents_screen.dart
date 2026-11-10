@@ -1129,7 +1129,6 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     final storage = StorageLocationService.instance;
     final gridFolders = await _folderRepository.allFoldersWithPaths();
     final roots = await storage.accessibleStorageRoots();
-    final portable = await storage.portableDataLocationsIfAvailable();
     if (!mounted) return;
     final phoneRoot = roots.isEmpty ? null : roots.first['uri'];
     var location = 'grid';
@@ -1681,19 +1680,6 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
         ),
       ),
     ),
-  );
-
-  Widget _dashboardMetric(IconData icon, String value, String label) => Row(
-    children: [
-      Icon(icon, color: Colors.white, size: 20),
-      const SizedBox(width: 6),
-      Flexible(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text(value, maxLines: 1, overflow: TextOverflow.ellipsis,
-          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800, fontSize: 15)),
-        Text(label, maxLines: 1, overflow: TextOverflow.ellipsis,
-          style: const TextStyle(color: Colors.white70, fontSize: 10)),
-      ])),
-    ],
   );
 
   String _normaliseSearchLocation(String value) {
