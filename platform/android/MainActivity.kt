@@ -536,6 +536,20 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    private fun sharedStorageVolumeRoots(): List<java.io.File> {
+        val marker = "/Android/data/$packageName"
+        return getExternalFilesDirs(null).filterNotNull().mapNotNull { appDirectory ->
+            try {
+                val path = appDirectory.canonicalPath
+                val markerIndex = path.indexOf(marker)
+                if (markerIndex < 0) null
+                else java.io.File(path.substring(0, markerIndex)).canonicalFile
+            } catch (_: Exception) {
+                null
+            }
+        }.distinctBy { it.path }
+    }
+
     private fun fileForUri(uri: Uri): java.io.File {
         if (uri.scheme != "file") throw IllegalArgumentException("Expected a local file URI.")
         if (android.os.Build.VERSION.SDK_INT >= 30 &&
@@ -543,10 +557,13 @@ class MainActivity : FlutterActivity() {
             throw SecurityException("Allow Full internal storage access in DocsGrid Settings.")
         }
         val file = java.io.File(uri.path ?: throw IllegalArgumentException("Invalid file URI."))
-        val root = android.os.Environment.getExternalStorageDirectory().canonicalFile
         val canonical = file.canonicalFile
-        if (canonical.path != root.path && !canonical.path.startsWith(root.path + java.io.File.separator)) {
-            throw SecurityException("DocsGrid file access is limited to shared internal storage.")
+        val separator = java.io.File.separator
+        val allowed = sharedStorageVolumeRoots().any { root ->
+            canonical.path == root.path || canonical.path.startsWith(root.path + separator)
+        }
+        if (!allowed) {
+            throw SecurityException("DocsGrid file access is limited to Android shared-storage volumes.")
         }
         return canonical
     }
