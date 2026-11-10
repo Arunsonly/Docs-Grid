@@ -1294,138 +1294,6 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
               ]),
             ),
           ),
-        if (!widget.favoritesOnly && !widget.recentOnly)
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 10, 16, 8),
-            child: Row(
-              children: [
-                Expanded(
-                  child: _storageSummaryCard(
-                    icon: Icons.phone_android,
-                    title: 'Internal Storage',
-                    value: _phonePdfCount == null
-                        ? 'Permission needed'
-                        : '${_phoneScanIncomplete ? 'At least ' : ''}$_phonePdfCount PDFs',
-                    detail: _phoneStorageBytes == null
-                        ? 'Accessible locations not yet available'
-                        : '${_phoneScanIncomplete || _phoneUnknownSizeCount > 0 ? 'At least ' : ''}${_size(_phoneStorageBytes!)} used by PDFs${_phoneUnknownSizeCount > 0 ? ' · size unavailable for $_phoneUnknownSizeCount PDFs' : ''}${_phoneInaccessibleCount > 0 ? ' · $_phoneInaccessibleCount inaccessible' : ''}',
-                    onTap: _browsePhoneStorage,
-                  ),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: _storageSummaryCard(
-                    icon: Icons.folder_copy_outlined,
-                    title: 'Grid Storage',
-                    value: '$_totalDocumentCount PDFs',
-                    detail: '${_size(_totalStorageBytes)} used · $_starredCount starred',
-                    onTap: () => Navigator.of(context).push(
-                      MaterialPageRoute(builder: (_) => const FoldersScreen()),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        if (!widget.favoritesOnly && !widget.recentOnly)
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-            child: _storageSummaryCard(
-              icon: Icons.delete_outline,
-              title: 'Recycle Bin',
-              value: '$_trashCount PDFs',
-              detail: '${_size(_trashBytes)} · Restore or permanently delete',
-              onTap: _showTrash,
-            ),
-          ),
-        if (!widget.favoritesOnly && !widget.recentOnly)
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-            child: Card(
-              child: Padding(
-                padding: const EdgeInsets.all(12),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text('Recent Documents', style: TextStyle(fontWeight: FontWeight.w700)),
-                    const SizedBox(height: 8),
-                    SegmentedButton<String>(
-                      segments: const [
-                        ButtonSegment(value: 'phone', label: Text('Phone Recent')),
-                        ButtonSegment(value: 'grid', label: Text('Grid Recent')),
-                      ],
-                      selected: {_recentFilter},
-                      onSelectionChanged: (selection) =>
-                          setState(() => _recentFilter = selection.first),
-                    ),
-                    const SizedBox(height: 6),
-                    if (_recentFilter == 'phone')
-                      if (_phoneRecent.isEmpty)
-                        const ListTile(title: Text('No recently opened phone PDFs'))
-                      else
-                        for (final item in _phoneRecent)
-                          ListTile(
-                            dense: true,
-                            leading: const Icon(Icons.picture_as_pdf_outlined),
-                            title: Text(item['name'] as String? ?? 'PDF',
-                                maxLines: 1, overflow: TextOverflow.ellipsis),
-                            subtitle: Text(_size((item['sizeBytes'] as num?)?.toInt() ?? 0)),
-                            onTap: () => _openExternalStoragePdf(
-                              item['uri'] as String, item['name'] as String? ?? 'PDF',
-                            ),
-                          )
-                    else
-                      if (_gridRecent.isEmpty)
-                        const ListTile(title: Text('No recently opened Grid PDFs'))
-                      else
-                        for (final document in _gridRecent)
-                          ListTile(
-                            dense: true,
-                            leading: const Icon(Icons.picture_as_pdf_outlined),
-                            title: Text('${document.name}.pdf',
-                                maxLines: 1, overflow: TextOverflow.ellipsis),
-                            subtitle: Text(_size(document.sizeBytes)),
-                            onTap: () => _open(document),
-                          ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-        if (!widget.favoritesOnly && !widget.recentOnly && _phoneFolders.isNotEmpty)
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-            child: Card(
-              child: ExpansionTile(
-                leading: const Icon(Icons.folder_open_outlined),
-                title: Text('Phone folders containing PDFs (${_phoneFolders.length})'),
-                subtitle: const Text('Only folders with one or more PDFs'),
-                children: [
-                  SizedBox(
-                    height: 260,
-                    child: ListView.builder(
-                      itemCount: _phoneFolders.length,
-                      itemBuilder: (context, index) {
-                        final folder = _phoneFolders[index];
-                        final path = folder['path'] as String;
-                        final count = (folder['pdfCount'] as num?)?.toInt() ?? 0;
-                        final bytes = (folder['sizeBytes'] as num?)?.toInt() ?? 0;
-                        return ListTile(
-                          dense: true,
-                          leading: const Icon(Icons.folder_outlined),
-                          title: Text(path, maxLines: 1, overflow: TextOverflow.ellipsis),
-                          subtitle: Text('${folder['isIncomplete'] == true ? 'At least ' : ''}$count PDFs · ${folder['isSizeIncomplete'] == true ? 'at least ' : ''}${_size(bytes)}${((folder['unknownSizeCount'] as num?)?.toInt() ?? 0) > 0 ? ' · size unavailable for ${folder['unknownSizeCount']} PDFs' : ''}'),
-                          onTap: () => _showRecursiveStoragePdfs(
-                            'Phone Storage', _phoneEntries, initialPath: path,
-                          ),
-                        );
-                      },
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
         if (!widget.favoritesOnly)
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
@@ -1503,6 +1371,128 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                   ],
                 ),
               ],
+            ),
+          ),
+        if (!widget.favoritesOnly && !widget.recentOnly)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 10, 16, 8),
+            child: Row(
+              children: [
+                Expanded(
+                  child: _storageSummaryCard(
+                    icon: Icons.phone_android,
+                    title: 'Internal Storage',
+                    value: _phonePdfCount == null
+                        ? 'Permission needed'
+                        : '${_phoneScanIncomplete ? 'At least ' : ''}$_phonePdfCount PDFs',
+                    detail: _phoneStorageBytes == null
+                        ? 'Accessible locations not yet available'
+                        : '${_phoneScanIncomplete || _phoneUnknownSizeCount > 0 ? 'At least ' : ''}${_size(_phoneStorageBytes!)} used by PDFs${_phoneUnknownSizeCount > 0 ? ' · size unavailable for $_phoneUnknownSizeCount PDFs' : ''}${_phoneInaccessibleCount > 0 ? ' · $_phoneInaccessibleCount inaccessible' : ''}',
+                    onTap: _browsePhoneStorage,
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: _storageSummaryCard(
+                    icon: Icons.folder_copy_outlined,
+                    title: 'Grid Storage',
+                    value: '$_totalDocumentCount PDFs',
+                    detail: '${_size(_totalStorageBytes)} used · $_starredCount starred',
+                    onTap: () => Navigator.of(context).push(
+                      MaterialPageRoute(builder: (_) => const FoldersScreen()),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        if (!widget.favoritesOnly && !widget.recentOnly)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+            child: Card(
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('Recent Documents', style: TextStyle(fontWeight: FontWeight.w700)),
+                    const SizedBox(height: 8),
+                    SegmentedButton<String>(
+                      segments: const [
+                        ButtonSegment(value: 'phone', label: Text('Phone Recent')),
+                        ButtonSegment(value: 'grid', label: Text('Grid Recent')),
+                      ],
+                      selected: {_recentFilter},
+                      onSelectionChanged: (selection) =>
+                          setState(() => _recentFilter = selection.first),
+                    ),
+                    const SizedBox(height: 6),
+                    if (_recentFilter == 'phone')
+                      if (_phoneRecent.isEmpty)
+                        const ListTile(title: Text('No recently opened phone PDFs'))
+                      else
+                        for (final item in _phoneRecent)
+                          ListTile(
+                            dense: true,
+                            leading: const Icon(Icons.picture_as_pdf_outlined),
+                            title: Text(item['name'] as String? ?? 'PDF',
+                                maxLines: 1, overflow: TextOverflow.ellipsis),
+                            subtitle: Text(_size((item['sizeBytes'] as num?)?.toInt() ?? 0)),
+                            onTap: () => _openExternalStoragePdf(
+                              item['uri'] as String, item['name'] as String? ?? 'PDF',
+                            ),
+                          )
+                    else
+                      if (_gridRecent.isEmpty)
+                        const ListTile(title: Text('No recently opened Grid PDFs'))
+                      else
+                        for (final document in _gridRecent)
+                          ListTile(
+                            dense: true,
+                            leading: const Icon(Icons.picture_as_pdf_outlined),
+                            title: Text('${document.name}.pdf',
+                                maxLines: 1, overflow: TextOverflow.ellipsis),
+                            subtitle: Text(_size(document.sizeBytes)),
+                            onTap: () => _open(document),
+                          ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        if (!widget.favoritesOnly && !widget.recentOnly)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+            child: Card(
+              elevation: 0,
+              child: InkWell(
+                borderRadius: BorderRadius.circular(16),
+                onTap: _showTrash,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                  child: Row(
+                    children: [
+                      Icon(Icons.delete_outline, color: Theme.of(context).colorScheme.primary),
+                      const SizedBox(width: 14),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Text('Recycle Bin', style: TextStyle(fontWeight: FontWeight.w700)),
+                            Text('${_size(_trashBytes)} · Restore or permanently delete',
+                              maxLines: 1, overflow: TextOverflow.ellipsis,
+                              style: Theme.of(context).textTheme.bodySmall),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Text('$_trashCount PDFs', style: Theme.of(context).textTheme.titleMedium),
+                      const Icon(Icons.chevron_right),
+                    ],
+                  ),
+                ),
+              ),
             ),
           ),
         if (!widget.favoritesOnly && !_searchInsideText && _search.text.trim().isNotEmpty)
