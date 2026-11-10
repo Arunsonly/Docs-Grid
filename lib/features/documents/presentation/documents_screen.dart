@@ -7,6 +7,7 @@ import 'package:open_filex/open_filex.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:share_plus/share_plus.dart';
 
 import '../data/document_repository.dart';
 import '../../../core/storage/storage_location_service.dart';
@@ -334,6 +335,8 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
       builder: (_) => PhoneStorageBrowserScreen(
         rootName: rootName, entries: entries, onOpenPdf: _openExternalStoragePdf,
         onMovePdf: _movePhonePdfToGrid,
+        onRenamePdf: _renamePhonePdf,
+        onSharePdf: _sharePhonePdf,
         initialPath: initialPath,
       ),
     ));
@@ -881,6 +884,63 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     if (result == null) return;
     await _categoryRepository.setDocumentTags(document.id, result.toList());
     await _patchDocument(document.id);
+  }
+
+  Future<void> _renamePhonePdf(String uri, String currentName) async {
+    final controller = TextEditingController(
+      text: currentName.toLowerCase().endsWith('.pdf')
+          ? currentName.substring(0, currentName.length - 4)
+          : currentName,
+    );
+    final requested = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Rename PDF'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          textCapitalization: TextCapitalization.sentences,
+          decoration: const InputDecoration(labelText: 'File name', suffixText: '.pdf'),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Cancel')),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, controller.text.trim()),
+            child: const Text('Rename'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (requested == null) return;
+    final clean = requested.trim();
+    if (clean.isEmpty || clean.contains('/') || clean.contains('\\') || clean == '.' || clean == '..') {
+      _message('Enter a valid file name.');
+      return;
+    }
+    try {
+      await StorageLocationService.instance.renamePdf(
+        uri: uri,
+        name: clean.toLowerCase().endsWith('.pdf') ? clean : '$clean.pdf',
+      );
+      if (!mounted) return;
+      _message('PDF renamed.');
+      await _scanPhoneStorage(openBrowser: false);
+      await _refreshDashboardSummary();
+    } catch (error) {
+      if (mounted) _message('Could not rename PDF: $error');
+    }
+  }
+
+  Future<void> _sharePhonePdf(String uri, String name) async {
+    try {
+      await SharePlus.instance.share(ShareParams(
+        files: [XFile(uri, name: name, mimeType: 'application/pdf')],
+        subject: name,
+      ));
+    } catch (error) {
+      if (mounted) _message('Could not share PDF: $error');
+    }
   }
 
   Future<void> _movePhonePdfToGrid(String uri, String name) async {
