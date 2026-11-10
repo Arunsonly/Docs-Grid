@@ -169,9 +169,10 @@ class FolderRepository {
     final db = await _database.database;
     final storage = StorageLocationService.instance;
     final selectedRoot = await storage.selectedFolder();
-    final defaultLibraryRoot = Platform.isAndroid
-        ? (await storage.portableDataLocations())['libraryUri']
-        : null;
+    final portableLocations = Platform.isAndroid
+        ? await storage.portableDataLocationsIfAvailable()
+        : const <String, String>{};
+    final defaultLibraryRoot = portableLocations['libraryUri'];
 
     final chain = <({String id, String name, String? parentId, String? uri})>[];
     final visited = <String>{};
@@ -250,9 +251,11 @@ class FolderRepository {
       throw StateError('A folder with this name already exists here.');
     }
     final selectedRoot = await storage.selectedFolder();
-    final String? selectedRootUri = Platform.isAndroid
-        ? (await storage.portableDataLocations())['libraryUri']
-        : selectedRoot?['uri'];
+    final portableLocations = Platform.isAndroid
+        ? await storage.portableDataLocationsIfAvailable()
+        : const <String, String>{};
+    final String? selectedRootUri =
+        portableLocations['libraryUri'] ?? selectedRoot?['uri'];
     final String? parentStorageUri = parentId == null
         ? selectedRootUri
         : await ensurePhysicalStorageUri(parentId);
