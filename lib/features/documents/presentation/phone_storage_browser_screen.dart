@@ -129,6 +129,17 @@ class _PhoneStorageBrowserScreenState
             ),
           ],
         ),
+        bottomNavigationBar: SafeArea(
+          top: false,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Text('${folders.length} folders · ${files.length} PDFs',
+                style: Theme.of(context).textTheme.bodySmall),
+            ),
+          ),
+        ),
         body: Column(
           children: [
             if (_inaccessible.isNotEmpty)
