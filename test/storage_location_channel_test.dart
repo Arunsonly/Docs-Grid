@@ -96,6 +96,57 @@ void main() {
     expect(entries.single['sizeBytes'], 1024);
   });
 
+  test('renamePdf forwards the original URI and returns the renamed URI', () async {
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      expect(call.method, 'renamePdf');
+      expect(call.arguments, {
+        'uri': 'content://tree/original-policy',
+        'name': 'Renewed Policy.pdf',
+      });
+      return 'content://tree/renamed-policy';
+    });
+
+    expect(
+      await StorageLocationService.instance.renamePdf(
+        uri: 'content://tree/original-policy',
+        name: 'Renewed Policy.pdf',
+      ),
+      'content://tree/renamed-policy',
+    );
+  });
+
+  test('renamePdf fails closed when Android returns no renamed URI', () async {
+    messenger.setMockMethodCallHandler(channel, (_) async => null);
+    await expectLater(
+      StorageLocationService.instance.renamePdf(
+        uri: 'content://tree/original-policy',
+        name: 'Renewed Policy.pdf',
+      ),
+      throwsStateError,
+    );
+  });
+
+  test('deletePdf forwards the exact source URI and requires confirmed deletion', () async {
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      expect(call.method, 'deletePdf');
+      expect(call.arguments, {'uri': 'content://tree/policy'});
+      return true;
+    });
+
+    await expectLater(
+      StorageLocationService.instance.deletePdf('content://tree/policy'),
+      completes,
+    );
+  });
+
+  test('deletePdf fails closed when Android cannot confirm deletion', () async {
+    messenger.setMockMethodCallHandler(channel, (_) async => false);
+    await expectLater(
+      StorageLocationService.instance.deletePdf('content://tree/policy'),
+      throwsStateError,
+    );
+  });
+
   test('createDirectory forwards parent and name and returns opaque URI', () async {
     messenger.setMockMethodCallHandler(channel, (call) async {
       expect(call.method, 'createDirectory');
