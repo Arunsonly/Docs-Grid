@@ -78,7 +78,18 @@ class StorageLocationService {
   /// Other platform/storage errors still propagate and are not silently hidden.
   Future<Map<String, String>> portableDataLocationsIfAvailable() async {
     if (Platform.isAndroid && !await hasAllFilesAccess()) {
-      return const <String, String>{};
+      // A previously selected SAF recovery tree is valid without all-files
+      // access. Only fall back when the native layer reports that no
+      // accessible portable tree exists because the special permission is off.
+      try {
+        return await portableDataLocations();
+      } on PlatformException catch (error) {
+        if (error.code == 'STORAGE_ERROR' &&
+            (error.message ?? '').contains('Allow Full internal storage access')) {
+          return const <String, String>{};
+        }
+        rethrow;
+      }
     }
     return portableDataLocations();
   }
