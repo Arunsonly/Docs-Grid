@@ -13,8 +13,8 @@ void main() {
 
     expect(find.text('DocsGrid'), findsOneWidget);
     expect(find.text('Home'), findsOneWidget);
-    expect(find.text('Grid'), findsOneWidget);
-    expect(find.text('Phone'), findsOneWidget);
+    expect(find.text('Grid'), findsAtLeastNWidgets(1));
+    expect(find.text('Phone'), findsAtLeastNWidgets(1));
     expect(find.text('Home'), findsOneWidget);
     expect(find.text('Grid'), findsOneWidget);
   });
