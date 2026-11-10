@@ -44,6 +44,8 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   int? _phoneStorageBytes;
   int _trashCount = 0;
   int _trashBytes = 0;
+  List<Map<String, Object?>> _phoneFolders = [];
+  List<Map<String, Object?>> _phoneEntries = [];
   final Set<String> _selectedIds = <String>{};
   bool _selectionMode = false;
   int _loadGeneration = 0;
@@ -277,7 +279,18 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
       final pdfs=entries.where((e)=>e['isDirectory']!=true).toList();
       final bytes=pdfs.fold<int>(0,(sum,e)=>sum+((e['sizeBytes'] as num?)?.toInt()??0));
       if(!mounted)return;
-      setState(() { _phonePdfCount=pdfs.length; _phoneStorageBytes=bytes; });
+      setState(() {
+        _phonePdfCount=pdfs.length;
+        _phoneStorageBytes=bytes;
+        _phoneEntries=entries;
+        _phoneFolders=entries.where((entry) =>
+          entry['isDirectory']==true &&
+          entry['isInaccessible']!=true &&
+          entry['isInaccessibleSummary']!=true &&
+          entry['path'] is String &&
+          ((entry['pdfCount'] as num?)?.toInt() ?? 0)>0
+        ).toList(growable:false);
+      });
       if(openBrowser) await _showRecursiveStoragePdfs('Phone Storage',entries);
       if(inaccessibleRoots>0 && mounted) _message('$inaccessibleRoots granted location(s) could not be read; they were not marked empty.');
     } catch(error) {
@@ -285,11 +298,12 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     }
   }
 
-  Future<void> _showRecursiveStoragePdfs(String rootName, List<Map<String, Object?>> entries) async {
+  Future<void> _showRecursiveStoragePdfs(String rootName, List<Map<String, Object?>> entries, {String initialPath = ''}) async {
     if (!mounted) return;
     await Navigator.of(context).push<void>(MaterialPageRoute(
       builder: (_) => PhoneStorageBrowserScreen(
         rootName: rootName, entries: entries, onOpenPdf: _openExternalStoragePdf,
+        initialPath: initialPath,
       ),
     ));
   }
@@ -901,6 +915,40 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
               value: '$_trashCount PDFs',
               detail: '${_size(_trashBytes)} · Restore or permanently delete',
               onTap: _showTrash,
+            ),
+          ),
+        if (!widget.favoritesOnly && !widget.recentOnly && _phoneFolders.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+            child: Card(
+              child: ExpansionTile(
+                leading: const Icon(Icons.folder_open_outlined),
+                title: Text('Phone folders containing PDFs (${_phoneFolders.length})'),
+                subtitle: const Text('Only folders with one or more PDFs'),
+                children: [
+                  SizedBox(
+                    height: 260,
+                    child: ListView.builder(
+                      itemCount: _phoneFolders.length,
+                      itemBuilder: (context, index) {
+                        final folder = _phoneFolders[index];
+                        final path = folder['path'] as String;
+                        final count = (folder['pdfCount'] as num?)?.toInt() ?? 0;
+                        final bytes = (folder['sizeBytes'] as num?)?.toInt() ?? 0;
+                        return ListTile(
+                          dense: true,
+                          leading: const Icon(Icons.folder_outlined),
+                          title: Text(path, maxLines: 1, overflow: TextOverflow.ellipsis),
+                          subtitle: Text('$count PDFs · ${_size(bytes)}'),
+                          onTap: () => _showRecursiveStoragePdfs(
+                            'Phone Storage', _phoneEntries, initialPath: path,
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
         if (!widget.favoritesOnly)

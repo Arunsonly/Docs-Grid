@@ -6,11 +6,13 @@ class PhoneStorageBrowserScreen extends StatefulWidget {
     required this.rootName,
     required this.entries,
     required this.onOpenPdf,
+    this.initialPath = '',
   });
 
   final String rootName;
   final List<Map<String, Object?>> entries;
   final Future<void> Function(String uri, String name) onOpenPdf;
+  final String initialPath;
 
   @override
   State<PhoneStorageBrowserScreen> createState() =>
@@ -19,7 +21,13 @@ class PhoneStorageBrowserScreen extends StatefulWidget {
 
 class _PhoneStorageBrowserScreenState
     extends State<PhoneStorageBrowserScreen> {
-  String _currentPath = '';
+  late String _currentPath;
+
+  @override
+  void initState() {
+    super.initState();
+    _currentPath = widget.initialPath;
+  }
 
   late final Set<String> _folderPaths = widget.entries
       .where((entry) => entry['isDirectory'] == true &&
