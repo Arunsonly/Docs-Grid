@@ -672,7 +672,7 @@ class DocumentToolsService {
     bool includePdfs = true,
   }) async {
     final portableLocations = Platform.isAndroid
-        ? await StorageLocationService.instance.portableDataLocations()
+        ? await StorageLocationService.instance.portableDataLocationsIfAvailable()
         : const <String, String>{};
     final db = await _database.database;
     final databaseSchemaVersion =
@@ -876,7 +876,7 @@ class DocumentToolsService {
   /// of validity. The restore decoder performs the full manifest/checksum scan.
   Future<List<File>> listPortableBackupArchives() async {
     final locations = Platform.isAndroid
-        ? await StorageLocationService.instance.portableDataLocations()
+        ? await StorageLocationService.instance.portableDataLocationsIfAvailable()
         : const <String, String>{};
     final directories = <Directory>[];
     final uri = locations['backupsUri'];
@@ -1205,7 +1205,7 @@ class DocumentToolsService {
       allowedExternalDocumentIds: externalDocumentIds,
     );
     final portableLocations = Platform.isAndroid
-        ? await StorageLocationService.instance.portableDataLocations()
+        ? await StorageLocationService.instance.portableDataLocationsIfAvailable()
         : const <String, String>{};
     final portableUnfiledUri = portableLocations['documentsUri'];
     final portableFoldersUri = portableLocations['libraryUri'];
@@ -2287,7 +2287,7 @@ class DocumentToolsService {
       final rawFiles = manifest['files'];
       if (rawFiles is! List) throw StateError('Backup file manifest is invalid.');
       final locations = Platform.isAndroid
-          ? await StorageLocationService.instance.portableDataLocations()
+          ? await StorageLocationService.instance.portableDataLocationsIfAvailable()
           : const <String, String>{};
       final temporaryUri = locations['tempUri'];
       final temporaryDirectory = temporaryUri != null && temporaryUri.startsWith('file://')
@@ -2476,7 +2476,7 @@ class OcrIndexCancelled implements Exception {
       final rawFiles = manifest['files'];
       if (rawFiles is! List) throw StateError('Backup file manifest is invalid.');
       final locations = Platform.isAndroid
-          ? await StorageLocationService.instance.portableDataLocations()
+          ? await StorageLocationService.instance.portableDataLocationsIfAvailable()
           : const <String, String>{};
       final temporaryUri = locations['tempUri'];
       final temporaryDirectory = temporaryUri != null && temporaryUri.startsWith('file://')
