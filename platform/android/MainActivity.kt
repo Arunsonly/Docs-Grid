@@ -233,14 +233,14 @@ class MainActivity : FlutterActivity() {
                                     roots[primary.canonicalPath] = mapOf("uri" to Uri.fromFile(primary).toString(), "name" to "Internal storage")
                                 }
                                 val prefs = getSharedPreferences("docsgrid_storage", MODE_PRIVATE)
-                                val docsGridRoots = setOfNotNull(
+                                val docsGridRoots = listOfNotNull(
                                     prefs.getString("docsgrid_uri", null),
                                     prefs.getString("folders_uri", null),
                                     prefs.getString("my_files_uri", null),
                                     prefs.getString("documents_uri", null),
                                     prefs.getString("database_uri", null),
                                     prefs.getString("recovery_uri", null)
-                                )
+                                ).toSet()
                                 contentResolver.persistedUriPermissions.filter { it.isReadPermission }
                                     .forEachIndexed { index, permission ->
                                         val uri = permission.uri
