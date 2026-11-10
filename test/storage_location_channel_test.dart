@@ -380,7 +380,7 @@ void main() {
   });
 
   test('recursive scan hides empty folders and aggregates nested PDFs case-insensitively', () async {
-    final tree=<String,List<Map<String,Object?>>{
+    final tree = <String, List<Map<String, Object?>>>{
       'content://root':[
         {'name':'Empty','uri':'content://empty','isDirectory':true,'sizeBytes':0},
         {'name':'Policies','uri':'content://policies','isDirectory':true,'sizeBytes':0},
