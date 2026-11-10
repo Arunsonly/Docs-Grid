@@ -361,6 +361,7 @@ class StorageLocationService {
         } else if (name.toLowerCase().endsWith('.pdf')) {
           entries.add(<String, Object?>{
             'name': name, 'uri': uri, 'folderPath': current.path,
+            'sizeBytes': (child['size'] as num?)?.toInt() ?? 0,
             'isDirectory': false,
           });
           var ancestor = current.path;
