@@ -15,13 +15,19 @@ final _pdfHash = sha256.convert(_pdfBytes).toString();
 
 Map<String, List<Map<String, Object?>>> _backupRows({
   bool withReminder = false,
+  bool withFolder = false,
 }) => {
-  'folders': <Map<String, Object?>>[],
+  'folders': withFolder ? [{
+    'id': 'folder-1', 'name': 'Insurance', 'parent_id': null,
+    'storage_uri_or_relative_path': null,
+    'created_at': '2026-01-01T00:00:00Z',
+    'updated_at': '2026-01-01T00:00:00Z', 'deleted_at': null,
+  }] : <Map<String, Object?>>[],
   'documents': [{
     'id': 'document-1', 'name': 'Policy', 'original_name': 'Policy.pdf',
     'storage_uri': 'backup-pdf://document-1', 'relative_path': null,
     'mime_type': 'application/pdf', 'size_bytes': _pdfBytes.length,
-    'sha256': _pdfHash, 'folder_id': null, 'category_id': null,
+    'sha256': _pdfHash, 'folder_id': withFolder ? 'folder-1' : null, 'category_id': null,
     'extracted_text_status': 'pending', 'expiry_date': null,
     'created_at': '2026-01-01T00:00:00Z', 'updated_at': '2026-01-01T00:00:00Z',
     'last_opened_at': null, 'deleted_at': null, 'source': null, 'metadata_json': null,
@@ -43,9 +49,9 @@ Map<String, List<Map<String, Object?>>> _backupRows({
   'document_text_index': <Map<String, Object?>>[],
 };
 
-Future<File> _makeBackup(Directory directory, {bool withReminder = false}) async {
+Future<File> _makeBackup(Directory directory, {bool withReminder = false, bool withFolder = false}) async {
   final archive = Archive();
-  final rows = _backupRows(withReminder: withReminder);
+  final rows = _backupRows(withReminder: withReminder, withFolder: withFolder);
   final metadataFiles = <Map<String, Object?>>[];
   for (final entry in rows.entries) {
     final bytes = Uint8List.fromList(utf8.encode(jsonEncode(entry.value)));
@@ -184,6 +190,31 @@ void main() {
       await sha256.bind(restoredFile.openRead()).first.then((digest) => digest.toString()),
       _pdfHash,
     );
+  });
+
+  test('Merge remaps a folder ID already owned by a soft-deleted folder', () async {
+    await db.insert('folders', {
+      'id': 'folder-1', 'name': 'Old folder',
+      'created_at': '2025-01-01T00:00:00Z',
+      'updated_at': '2025-01-01T00:00:00Z',
+      'deleted_at': '2025-02-01T00:00:00Z',
+    });
+    final backup = await _makeBackup(temp, withFolder: true);
+    final restored = await service.restoreBackup(
+      backup, confirm: (_) async => true, mode: BackupRestoreMode.merge,
+    );
+    expect(restored, 1);
+    final folders = await db.query('folders', orderBy: 'id');
+    expect(folders, hasLength(2));
+    expect(
+      folders.where((row) => row['id'] == 'folder-1' && row['deleted_at'] != null),
+      hasLength(1),
+    );
+    final activeFolders = folders.where((row) => row['deleted_at'] == null).toList();
+    expect(activeFolders, hasLength(1));
+    expect(activeFolders.single['id'], isNot('folder-1'));
+    final documents = await db.query('documents');
+    expect(documents.single['folder_id'], activeFolders.single['id']);
   });
 
   test('Full Replacement removes nested old folders child-first and restores backup', () async {
