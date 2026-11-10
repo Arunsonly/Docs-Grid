@@ -30,17 +30,36 @@ class PhoneStorageBrowserScreen extends StatefulWidget {
 class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
   String? _selectedFolderPath;
 
-  List<Map<String, Object?>> get _pdfs => widget.entries
-      .where((entry) =>
-          entry['isDirectory'] != true &&
-          entry['isInaccessible'] != true &&
-          entry['isInaccessibleSummary'] != true)
-      .toList(growable: false);
+  String _normalizedFolderPath(Map<String, Object?> entry) {
+    final raw = (entry['folderPath'] as String? ?? '').replaceAll('\\\\', '/');
+    final root = widget.rootName.replaceAll('\\\\', '/').replaceAll(RegExp(r'/+$'), '');
+    if (raw == root) return '';
+    if (raw.startsWith('$root/')) return raw.substring(root.length + 1);
+    return raw.replaceAll(RegExp(r'^/+|/+$'), '');
+  }
+
+  bool _isPdfFile(Map<String, Object?> entry) {
+    if (entry['isDirectory'] == true ||
+        entry['isInaccessible'] == true ||
+        entry['isInaccessibleSummary'] == true) {
+      return false;
+    }
+    final name = entry['name'];
+    final uri = entry['uri'];
+    return name is String &&
+        name.toLowerCase().endsWith('.pdf') &&
+        uri is String &&
+        uri.isNotEmpty;
+  }
+
+  List<Map<String, Object?>> get _pdfs =>
+      widget.entries.where(_isPdfFile).toList(growable: false);
 
   Map<String, List<Map<String, Object?>>> get _directPdfFolders {
     final grouped = <String, List<Map<String, Object?>>>{};
     for (final pdf in _pdfs) {
-      final path = pdf['folderPath'] as String? ?? '';
+      final path = _normalizedFolderPath(pdf);
+      // PDFs located directly in the storage root are not folders.
       if (path.isEmpty) continue;
       (grouped[path] ??= <Map<String, Object?>>[]).add(pdf);
     }
@@ -48,9 +67,10 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
       ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
     return {
       for (final path in sorted)
-        path: grouped[path]!..sort((a, b) =>
-            (a['name'] as String).toLowerCase().compareTo(
-                (b['name'] as String).toLowerCase())),
+        path: grouped[path]!
+          ..sort((a, b) => (a['name'] as String)
+              .toLowerCase()
+              .compareTo((b['name'] as String).toLowerCase())),
     };
   }
 
