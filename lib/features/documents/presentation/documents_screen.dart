@@ -74,7 +74,10 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     _search.addListener(_onSearchChanged);
     _scrollController.addListener(_onScroll);
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted && !widget.favoritesOnly && !widget.recentOnly && !widget.phoneOnly) {
+      if (!mounted) return;
+      if (widget.phoneOnly) {
+        _scanPhoneStorage(openBrowser: true);
+      } else if (!widget.favoritesOnly && !widget.recentOnly) {
         _scanPhoneStorage(openBrowser: false);
       }
     });
@@ -1271,25 +1274,17 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   Widget build(BuildContext context) {
     if (widget.phoneOnly) {
       return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(Icons.phone_android_outlined, size: 52),
-              const SizedBox(height: 12),
-              const Text('Phone storage', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700)),
-              const SizedBox(height: 8),
-              const Text('Browse folders on your device that contain PDF files.', textAlign: TextAlign.center),
-              const SizedBox(height: 16),
-              FilledButton.icon(
+        child: _phoneScanLoading
+            ? const Column(mainAxisSize: MainAxisSize.min, children: [
+                CircularProgressIndicator(),
+                SizedBox(height: 12),
+                Text('Loading Phone storage…'),
+              ])
+            : FilledButton.icon(
                 onPressed: _browsePhoneStorage,
                 icon: const Icon(Icons.folder_open_outlined),
                 label: const Text('Open Phone storage'),
               ),
-            ],
-          ),
-        ),
       );
     }
     return PopScope<void>(
