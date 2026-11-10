@@ -5,6 +5,14 @@ import 'backup_schema_compatibility.dart';
 /// Strict, side-effect-free validation for portable DocsGrid snapshot manifests.
 /// File contents are verified separately before any restore operation.
 class PortableSnapshotManifest {
+  /// Durable tables included in portable recovery snapshots. Derived FTS and
+  /// cache tables are intentionally excluded and rebuilt by the app.
+  static const List<String> supportedTableNames = [
+    'folders', 'documents', 'categories', 'tags', 'document_tags',
+    'reminders', 'history', 'settings', 'document_text_index',
+    'schema_migrations',
+  ];
+
   PortableSnapshotManifest._({
     required this.snapshotId,
     required this.formatVersion,

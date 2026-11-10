@@ -1522,13 +1522,9 @@ class DocumentToolsService {
   Future<String> createPortableMetadataSnapshot() async {
     final locations = await StorageLocationService.instance.portableDataLocations();
     final db = await _database.database;
-    final tableRows = await db.rawQuery(
-      "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
-    );
-    final tableNames = tableRows
-        .map((row) => row['name'] as String)
-        .where((name) => name != 'android_metadata')
-        .toList(growable: false);
+    // Export only durable app data. FTS virtual/shadow tables and summary
+    // cache tables are derived state and must not invalidate recovery snapshots.
+    final tableNames = PortableSnapshotManifest.supportedTableNames;
     if (!tableNames.contains('documents') || !tableNames.contains('folders')) {
       throw StateError('The DocsGrid database is incomplete; no snapshot was written.');
     }
@@ -1635,11 +1631,7 @@ class DocumentToolsService {
         final rowsByTable = <String, List<Map<String, Object?>>>{};
         for (final record in manifest.files) {
           final table = record.path.substring(0, record.path.length - 5);
-          if (!const {
-            'folders', 'documents', 'categories', 'tags', 'document_tags',
-            'reminders', 'history', 'settings', 'document_text_index',
-            'schema_migrations',
-          }.contains(table)) {
+          if (!PortableSnapshotManifest.supportedTableNames.contains(table)) {
             throw StateError('Snapshot contains unsupported table: $table.');
           }
           final uri = await _findChildUri(snapshotUri, record.path);
@@ -1781,10 +1773,7 @@ class DocumentToolsService {
         throw StateError('Snapshot record count mismatch for ${file.path}.');
       }
       final table = file.path.substring(0, file.path.length - 5);
-      if (!const {
-        'folders', 'documents', 'categories', 'tags', 'document_tags',
-        'reminders', 'history', 'settings', 'document_text_index', 'schema_migrations',
-      }.contains(table)) {
+      if (!PortableSnapshotManifest.supportedTableNames.contains(table)) {
         throw StateError('Snapshot contains unsupported table: $table.');
       }
       rowsByTable[table] = decoded
