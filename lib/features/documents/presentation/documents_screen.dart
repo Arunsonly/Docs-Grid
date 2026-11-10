@@ -1684,7 +1684,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   }
 
   List<Map<String, Object?>> _phoneStorageSearchMatches(String rawQuery) {
-    final terms = rawQuery.trim().toLowerCase().split(RegExp(r'\\s+'))
+    final terms = rawQuery.trim().toLowerCase().split(RegExp(r'\s+'))
         .where((term) => term.isNotEmpty).toList(growable: false);
     if (terms.isEmpty) return const [];
 
