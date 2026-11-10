@@ -1111,6 +1111,51 @@ class DocumentRepository {
     }
   }
 
+  /// Archives an external PDF in the app's Recycle Bin before deleting its
+  /// original. Existing Grid duplicates are deliberately left untouched.
+  Future<bool> moveExternalPdfToTrash({
+    required String sourceUri,
+    required String displayName,
+  }) async {
+    final storage = StorageLocationService.instance;
+    final temp = await getTemporaryDirectory();
+    final staged = File(p.join(
+      temp.path,
+      'docsgrid_trash_${DateTime.now().microsecondsSinceEpoch}.pdf',
+    ));
+    try {
+      await storage.copyPdfToPath(
+        sourceUri: sourceUri,
+        destinationPath: staged.path,
+      );
+      final imported = await importScannedPdf(
+        staged,
+        displayName: displayName,
+        sourceType: 'phone_storage_recycle_bin',
+      );
+      if (imported.added != 1) return false;
+      final digest = (await sha256.bind(staged.openRead()).first).toString();
+      final db = await _database.database;
+      final rows = await db.query(
+        'documents',
+        where: 'sha256 = ? AND deleted_at IS NULL',
+        whereArgs: [digest],
+        limit: 1,
+      );
+      if (rows.isEmpty) {
+        throw StateError('The archived PDF record could not be found; original kept.');
+      }
+      await moveToTrash(DocumentRecord.fromMap(rows.first));
+      // Delete only after a verified Grid copy is safely present in Recycle Bin.
+      await storage.deletePdf(sourceUri);
+      return true;
+    } finally {
+      try {
+        if (await staged.exists()) await staged.delete();
+      } catch (_) {}
+    }
+  }
+
   Future<ImportSummary> importPdfs({
     Future<ImportDecision?> Function(String suggestedName, String? suggestedCategoryId, List<ImportCategoryOption> categories)? review,
     String? targetFolderId,
