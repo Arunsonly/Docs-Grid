@@ -68,6 +68,7 @@ enum BackupRestoreSection {
   reminders,
   history,
   settings,
+  smartCollections,
   ocrIndexes,
 }
 
@@ -678,7 +679,8 @@ class DocumentToolsService {
     final databaseSchemaVersion =
         Sqflite.firstIntValue(await db.rawQuery('PRAGMA user_version')) ?? 3;
     final tables = ['folders', 'documents', 'categories', 'tags',
-      'document_tags', 'reminders', 'history', 'settings', 'document_text_index'];
+      'document_tags', 'reminders', 'history', 'settings', 'document_text_index',
+      'smart_collections'];
     final manifest = <String, Object?>{
       'format': 'DocsGridBackup',
       'version': 1,
@@ -740,6 +742,7 @@ class DocumentToolsService {
         'history': 'id',
         'settings': 'key',
         'document_text_index': 'document_id',
+        'smart_collections': 'name COLLATE NOCASE, id',
       };
       // Hold a read transaction across metadata and PDF enumeration so
       // the archive represents one consistent database state.
@@ -1077,6 +1080,9 @@ class DocumentToolsService {
         if (selection.contains(BackupRestoreSection.settings)) {
           rows['settings'] = backup.rowsByTable['settings']!;
         }
+        if (selection.contains(BackupRestoreSection.smartCollections)) {
+          rows['smart_collections'] = backup.rowsByTable['smart_collections']!;
+        }
         if (selection.contains(BackupRestoreSection.ocrIndexes)) {
           if (includeDocuments) {
             rows['document_text_index'] = backup.rowsByTable['document_text_index']!;
@@ -1306,7 +1312,7 @@ class DocumentToolsService {
           // complete replacement back if any insert or constraint fails.
           for (final table in [
             'document_tags', 'reminders', 'history', 'document_text_index',
-            'documents', 'categories', 'tags', 'settings',
+            'documents', 'categories', 'tags', 'settings', 'smart_collections',
           ]) {
             await txn.delete(table);
           }
@@ -1467,6 +1473,27 @@ class DocumentToolsService {
             ...row,
             'document_id': mappedDocumentId,
           }, conflictAlgorithm: ConflictAlgorithm.ignore);
+          if (pending >= 500) await flushBatch();
+        }
+        // Collections are user-authored saved views. Keep an existing same-name
+        // collection during merge; otherwise remap an ID collision instead of
+        // allowing one saved collection to overwrite another.
+        final existingCollections = await txn.query(
+          'smart_collections', columns: ['id', 'name'],
+        );
+        final existingCollectionIds = existingCollections
+            .map((row) => row['id'] as String).toSet();
+        final existingCollectionNames = existingCollections
+            .map((row) => (row['name'] as String).toLowerCase()).toSet();
+        for (final row in rowsByTable['smart_collections']!) {
+          final name = row['name'] as String;
+          if (existingCollectionNames.contains(name.toLowerCase())) continue;
+          final oldId = row['id'] as String;
+          final copy = Map<String, Object?>.from(row)
+            ..['id'] = existingCollectionIds.contains(oldId) ? _uuid.v4() : oldId;
+          queueInsert('smart_collections', copy);
+          existingCollectionIds.add(copy['id'] as String);
+          existingCollectionNames.add(name.toLowerCase());
           if (pending >= 500) await flushBatch();
         }
         // Preferences are additive: never overwrite settings already configured
@@ -1810,7 +1837,8 @@ class DocumentToolsService {
           .toList();
     }
     for (final required in ['folders', 'documents', 'categories', 'tags',
-      'document_tags', 'reminders', 'history', 'settings', 'document_text_index']) {
+      'document_tags', 'reminders', 'history', 'settings', 'document_text_index',
+      'smart_collections']) {
       rowsByTable.putIfAbsent(required, () => <Map<String, Object?>>[]);
     }
     // Validate every ID, parent reference, path component and cycle before
@@ -2106,6 +2134,22 @@ class DocumentToolsService {
           ...row, 'document_id': documentId,
         }, conflictAlgorithm: ConflictAlgorithm.ignore);
       }
+      final existingCollectionNames = (await txn.query(
+        'smart_collections', columns: ['name'],
+      )).map((row) => (row['name'] as String).toLowerCase()).toSet();
+      final existingCollectionIds = (await txn.query(
+        'smart_collections', columns: ['id'],
+      )).map((row) => row['id'] as String).toSet();
+      for (final row in rowsByTable['smart_collections']!) {
+        final name = row['name'] as String;
+        if (existingCollectionNames.contains(name.toLowerCase())) continue;
+        final id = row['id'] as String;
+        await txn.insert('smart_collections', {
+          ...row,
+          'id': existingCollectionIds.contains(id) ? _uuid.v4() : id,
+        }, conflictAlgorithm: ConflictAlgorithm.ignore);
+        existingCollectionNames.add(name.toLowerCase());
+      }
       for (final row in rowsByTable['settings']!) {
         await txn.insert('settings', row, conflictAlgorithm: ConflictAlgorithm.ignore);
       }
@@ -2264,11 +2308,13 @@ class DocumentToolsService {
       const tableNames = <String>[
         'folders', 'documents', 'categories', 'tags', 'document_tags',
         'reminders', 'history', 'settings', 'document_text_index',
+        'smart_collections',
       ];
       final rowsByTable = <String, List<Map<String, Object?>>>{};
       for (final table in tableNames) {
         final tableFile = decoded.findFile('$table.json');
-        if (tableFile == null && table == 'document_text_index' &&
+        if (tableFile == null &&
+            (table == 'document_text_index' || table == 'smart_collections') &&
             declaredTables[table] == null) {
           rowsByTable[table] = <Map<String, Object?>>[];
           continue;
