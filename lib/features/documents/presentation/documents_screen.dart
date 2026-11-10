@@ -1483,9 +1483,6 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                           mainAxisSize: MainAxisSize.min,
                           children: [
                             const Text('Recycle Bin', style: TextStyle(fontWeight: FontWeight.w700)),
-                            Text('${_size(_trashBytes)} · Restore or permanently delete',
-                              maxLines: 1, overflow: TextOverflow.ellipsis,
-                              style: Theme.of(context).textTheme.bodySmall),
                           ],
                         ),
                       ),
