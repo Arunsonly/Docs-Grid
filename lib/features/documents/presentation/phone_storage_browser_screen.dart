@@ -30,6 +30,18 @@ class PhoneStorageBrowserScreen extends StatefulWidget {
 class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
   String? _selectedFolderPath;
 
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        debugPrint('PHONE_STORAGE_DIAG widget tree follows');
+        debugDumpApp();
+        debugDumpRenderTree();
+      }
+    });
+  }
+
   String _normalizePath(String value) {
     final separator = String.fromCharCode(92);
     return value
