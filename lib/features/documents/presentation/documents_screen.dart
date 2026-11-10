@@ -344,7 +344,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
         _phoneEntries=entries;
         _phoneScanCompleted = true;
       });
-      if(openBrowser) await _showRecursiveStoragePdfs('Phone Storage',entries);
+      if(openBrowser) await _showRecursiveStoragePdfs('Internal Storage',entries);
       if(inaccessibleRoots>0 && mounted) _message('$inaccessibleRoots granted location(s) could not be read; they were not marked empty.');
     } catch(error) {
       if (mounted) {
