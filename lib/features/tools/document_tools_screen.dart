@@ -363,12 +363,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
           return await showDialog<bool>(
                 context: context,
                 builder: (context) => AlertDialog(
-                  title: const Text('Restore latest verified backup?'),
-                  content: Text(
-                    'The newest valid archive is checksum-validated before import. '
-                    'Existing records are preserved; documents are merged without overwriting current files. '
-                    'PDFs: $count.',
-                  ),
+                  title: const Text('Restore latest backup?'),
                   actions: [
                     TextButton(
                       onPressed: () => Navigator.pop(context, false),
