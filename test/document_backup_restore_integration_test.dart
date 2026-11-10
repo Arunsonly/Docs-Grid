@@ -174,6 +174,23 @@ void main() {
     if (await temp.exists()) await temp.delete(recursive: true);
   });
 
+  test('schema upgrade creates the Smart Collections table and index', () async {
+    final tables = await db.query(
+      'sqlite_master',
+      columns: ['name'],
+      where: "type = 'table' AND name = ?",
+      whereArgs: ['smart_collections'],
+    );
+    expect(tables, hasLength(1));
+    final indexes = await db.query(
+      'sqlite_master',
+      columns: ['name'],
+      where: "type = 'index' AND name = ?",
+      whereArgs: ['idx_smart_collections_name'],
+    );
+    expect(indexes, hasLength(1));
+  });
+
   test('Merge restores PDFs and remaps an existing document ID collision', () async {
     await _insertExistingDocument(db);
     final backup = await _makeBackup(temp);
