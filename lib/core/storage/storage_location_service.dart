@@ -73,6 +73,16 @@ class StorageLocationService {
     return await _channel.invokeMethod<bool>('hasAllFilesAccess') ?? false;
   }
 
+  /// Returns an empty map when Android's optional all-files permission is not granted.
+  /// This lets ordinary imports and folder operations retain their SAF/private fallback.
+  /// Other platform/storage errors still propagate and are not silently hidden.
+  Future<Map<String, String>> portableDataLocationsIfAvailable() async {
+    if (Platform.isAndroid && !await hasAllFilesAccess()) {
+      return const <String, String>{};
+    }
+    return portableDataLocations();
+  }
+
   /// Opens Android's special app-specific all-files access settings page.
   /// The user must explicitly enable the switch and return to DocsGrid.
   Future<bool> requestAllFilesAccess() async {
