@@ -410,8 +410,12 @@ class DocumentRepository {
         limit: 1,
       );
       if (rows.isEmpty) throw StateError('Destination folder no longer exists.');
+      final targetFolderId = folderId;
+      if (targetFolderId == null) {
+        throw StateError('A destination folder is required.');
+      }
       destinationUri = rows.first['storage_uri_or_relative_path'] as String?;
-      destinationUri ??= await FolderRepository().ensurePhysicalStorageUri(folderId);
+      destinationUri ??= await FolderRepository().ensurePhysicalStorageUri(targetFolderId);
     }
 
     final sourceUri = document.storagePath;
