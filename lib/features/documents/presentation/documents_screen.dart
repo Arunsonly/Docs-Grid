@@ -47,6 +47,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   int? _phonePdfCount;
   int? _phoneStorageBytes;
   int _phoneInaccessibleCount = 0;
+  bool _phoneScanIncomplete = false;
   bool _phoneScanLoading = false;
   int _trashCount = 0;
   int _trashBytes = 0;
@@ -284,6 +285,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
             _phonePdfCount = null;
             _phoneStorageBytes = null;
             _phoneInaccessibleCount = 0;
+            _phoneScanIncomplete = false;
             _phoneFolders = [];
             _phoneEntries = [];
           });
@@ -328,7 +330,8 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
       setState(() {
         _phonePdfCount = inaccessibleRoots == roots.length ? null : pdfs.length;
         _phoneStorageBytes = inaccessibleRoots == roots.length ? null : bytes;
-        _phoneInaccessibleCount = entries.where((entry) => entry['isInaccessible'] == true).length;
+        _phoneInaccessibleCount = inaccessibleRoots + entries.where((entry) => entry['isInaccessible'] == true).length;
+        _phoneScanIncomplete = _phoneInaccessibleCount > 0;
         _phoneEntries=entries;
         _phoneFolders=entries.where((entry) =>
           entry['isDirectory']==true &&
@@ -346,6 +349,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
           _phonePdfCount = null;
           _phoneStorageBytes = null;
           _phoneInaccessibleCount = 0;
+          _phoneScanIncomplete = true;
           _phoneFolders = [];
           _phoneEntries = [];
         });
@@ -1285,10 +1289,12 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                   child: _storageSummaryCard(
                     icon: Icons.phone_android,
                     title: 'Internal Storage',
-                    value: _phonePdfCount == null ? 'Permission needed' : '$_phonePdfCount PDFs',
+                    value: _phonePdfCount == null
+                        ? 'Permission needed'
+                        : '${_phoneScanIncomplete ? 'At least ' : ''}$_phonePdfCount PDFs',
                     detail: _phoneStorageBytes == null
                         ? 'Accessible locations not yet available'
-                        : '${_size(_phoneStorageBytes!)} used by PDFs${_phoneInaccessibleCount > 0 ? ' · $_phoneInaccessibleCount inaccessible' : ''}',
+                        : '${_phoneScanIncomplete ? 'At least ' : ''}${_size(_phoneStorageBytes!)} used by PDFs${_phoneInaccessibleCount > 0 ? ' · $_phoneInaccessibleCount inaccessible' : ''}',
                     onTap: _browsePhoneStorage,
                   ),
                 ),
@@ -1394,7 +1400,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                           dense: true,
                           leading: const Icon(Icons.folder_outlined),
                           title: Text(path, maxLines: 1, overflow: TextOverflow.ellipsis),
-                          subtitle: Text('$count PDFs · ${_size(bytes)}'),
+                          subtitle: Text('${folder['isIncomplete'] == true ? 'At least ' : ''}$count PDFs · ${folder['isIncomplete'] == true ? 'at least ' : ''}${_size(bytes)}'),
                           onTap: () => _showRecursiveStoragePdfs(
                             'Phone Storage', _phoneEntries, initialPath: path,
                           ),
