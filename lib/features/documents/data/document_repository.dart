@@ -1628,7 +1628,9 @@ class DocumentRepository {
     }
     final created = await getById(newId);
     if (created == null) throw StateError('Copied PDF was not saved in the library.');
-    await _recordRepositoryEvent(newId, 'copied', {'from': document.id});
+    await db.transaction((txn) async {
+      await _recordHistory(txn, newId, 'copied', {'from': document.id});
+    });
     return created;
   }
 
