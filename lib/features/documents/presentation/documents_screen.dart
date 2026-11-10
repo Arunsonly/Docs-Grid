@@ -1438,7 +1438,11 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                                     return ListTile(
                                       dense: true,
                                       leading: const Icon(Icons.picture_as_pdf_outlined),
-                                      title: Text(name, maxLines: 1, overflow: TextOverflow.ellipsis),
+                                      title: Row(mainAxisSize: MainAxisSize.min, children: [
+                                        Flexible(child: Text(name, maxLines: 1, overflow: TextOverflow.ellipsis)),
+                                        const SizedBox(width: 6),
+                                        _recentSourceTag('Phone'),
+                                      ]),
                                       subtitle: Text('Opened · ${_recentDateLabel(openedAt ?? DateTime.now())}'),
                                       onTap: () => _openExternalStoragePdf(
                                         item['uri'] as String, name,
@@ -1463,8 +1467,12 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                                     return ListTile(
                                       dense: true,
                                       leading: const Icon(Icons.picture_as_pdf_outlined),
-                                      title: Text('${document.name}.pdf',
-                                          maxLines: 1, overflow: TextOverflow.ellipsis),
+                                      title: Row(mainAxisSize: MainAxisSize.min, children: [
+                                        Flexible(child: Text('${document.name}.pdf',
+                                            maxLines: 1, overflow: TextOverflow.ellipsis)),
+                                        const SizedBox(width: 6),
+                                        _recentSourceTag('Grid'),
+                                      ]),
                                       subtitle: Text('$activity · ${_recentDateLabel(activityAt)}'),
                                       onTap: () => _open(document),
                                     );
@@ -1849,6 +1857,17 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     ),
     );
   }
+
+  Widget _recentSourceTag(String label) => DecoratedBox(
+    decoration: BoxDecoration(
+      color: Theme.of(context).colorScheme.secondaryContainer,
+      borderRadius: BorderRadius.circular(6),
+    ),
+    child: Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+      child: Text(label, style: Theme.of(context).textTheme.labelSmall),
+    ),
+  );
 
   String _recentDateLabel(DateTime value) {
     final local = value.toLocal();
