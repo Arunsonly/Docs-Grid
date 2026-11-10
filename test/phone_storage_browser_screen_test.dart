@@ -1,19 +1,28 @@
+import 'dart:ui' show Size;
 import 'package:docs_grid/features/documents/presentation/phone_storage_browser_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  testWidgets('lists only folders with direct PDFs and opens that folder PDFs',
+  void setTestViewport(WidgetTester tester) {
+    tester.view.physicalSize = const Size(800, 600);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+  }
+  
+    testWidgets('lists only folders with direct PDFs and opens that folder PDFs',
       (tester) async {
+    setTestViewport(tester);
     String? openedUri;
     String? openedName;
     final entries = <Map<String, Object?>>[
       {'name': 'Work Files', 'uri': '', 'folderPath': '', 'path': 'Work Files', 'isDirectory': true},
       {'name': 'Archived Files', 'uri': '', 'folderPath': 'Work Files', 'path': 'Work Files/Archived Files', 'isDirectory': true},
       {'name': 'Empty Folder', 'uri': '', 'folderPath': '', 'path': 'Empty Folder', 'isDirectory': true},
-      {'name': 'Policy.pdf', 'uri': 'content://policy', 'folderPath': 'Work Files', 'isDirectory': false, 'sizeBytes': 128},
-      {'name': 'Archived Filesd.pdf', 'uri': 'content://archive', 'folderPath': 'Work Files/Archived Files', 'isDirectory': false, 'sizeBytes': 256},
-      {'name': 'Root.pdf', 'uri': 'content://root', 'folderPath': '', 'isDirectory': false},
+      {'name': 'Policy.pdf', 'uri': 'content://policy', 'folderPath': '', 'path': 'Work Files', 'isDirectory': false, 'sizeBytes': 128},
+      {'name': 'Archived Filesd.pdf', 'uri': 'content://archive', 'folderPath': '', 'path': 'Work Files/Archived Files', 'isDirectory': false, 'sizeBytes': 256},
+      {'name': 'Root.pdf', 'uri': 'content://root', 'folderPath': '', 'path': '', 'isDirectory': false},
     ];
 
     await tester.pumpWidget(MaterialApp(
@@ -46,11 +55,12 @@ void main() {
 
   testWidgets('folder menu shows folder name and full path above its action',
       (tester) async {
+    setTestViewport(tester);
     await tester.pumpWidget(MaterialApp(
       home: PhoneStorageBrowserScreen(
         rootName: 'Internal Storage',
         entries: const [
-          {'name': 'Policy.pdf', 'uri': 'content://policy', 'folderPath': 'Documents/Work Files', 'isDirectory': false},
+          {'name': 'Policy.pdf', 'uri': 'content://policy', 'folderPath': '', 'path': 'Documents/Work Files', 'isDirectory': false},
         ],
         onOpenPdf: (_, __) async {},
       ),
@@ -67,7 +77,8 @@ void main() {
     {
       'name': 'Policy.pdf',
       'uri': 'content://document/policy',
-      'folderPath': 'Personal Documents',
+      'folderPath': '',
+      'path': 'Personal Documents',
       'isDirectory': false,
       'sizeBytes': 128,
     },
@@ -80,6 +91,7 @@ void main() {
     Future<bool> Function(String, String)? onTrash,
     Future<void> Function(String, String)? onShare,
   }) async {
+    setTestViewport(tester);
     await tester.pumpWidget(MaterialApp(
       home: Scaffold(
         body: Builder(
