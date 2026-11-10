@@ -379,7 +379,9 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
 
   Future<void> _loadRecentDocuments() async {
     try {
-      final page = await _repository.listPage(recentOnly: true, pageSize: 5);
+      // Include both opened documents and newly added documents. The list
+      // is capped at 20 so the dashboard's Recent panel can scroll independently.
+      final page = await _repository.listPage(pageSize: 20);
       final prefs = await SharedPreferences.getInstance();
       final saved = prefs.getStringList('docsgrid_phone_recent_v1') ?? const <String>[];
       final phone = <Map<String, Object?>>[];
@@ -395,8 +397,8 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
       }
       if (!mounted) return;
       setState(() {
-        _gridRecent = page.items.take(5).toList(growable: false);
-        _phoneRecent = phone.take(5).toList(growable: false);
+        _gridRecent = page.items.take(20).toList(growable: false);
+        _phoneRecent = phone.take(20).toList(growable: false);
       });
     } catch (_) {
       // Recent metadata is optional and must not block the dashboard.
@@ -1384,34 +1386,55 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                           setState(() => _recentFilter = selection.first),
                     ),
                     const SizedBox(height: 6),
-                    if (_recentFilter == 'phone')
-                      if (_phoneRecent.isEmpty)
-                        const ListTile(title: Text('No recently opened phone PDFs'))
-                      else
-                        for (final item in _phoneRecent)
-                          ListTile(
-                            dense: true,
-                            leading: const Icon(Icons.picture_as_pdf_outlined),
-                            title: Text(item['name'] as String? ?? 'PDF',
-                                maxLines: 1, overflow: TextOverflow.ellipsis),
-                            subtitle: Text(_size((item['sizeBytes'] as num?)?.toInt() ?? 0)),
-                            onTap: () => _openExternalStoragePdf(
-                              item['uri'] as String, item['name'] as String? ?? 'PDF',
-                            ),
-                          )
-                    else
-                      if (_gridRecent.isEmpty)
-                        const ListTile(title: Text('No recently opened Grid PDFs'))
-                      else
-                        for (final document in _gridRecent)
-                          ListTile(
-                            dense: true,
-                            leading: const Icon(Icons.picture_as_pdf_outlined),
-                            title: Text('${document.name}.pdf',
-                                maxLines: 1, overflow: TextOverflow.ellipsis),
-                            subtitle: Text(_size(document.sizeBytes)),
-                            onTap: () => _open(document),
-                          ),
+                    SizedBox(
+                      height: 320,
+                      child: _recentFilter == 'phone'
+                          ? _phoneRecent.isEmpty
+                              ? const Center(child: Text('No recent Phone PDFs'))
+                              : ListView.separated(
+                                  primary: false,
+                                  itemCount: _phoneRecent.length,
+                                  separatorBuilder: (_, _) => const Divider(height: 1),
+                                  itemBuilder: (context, index) {
+                                    final item = _phoneRecent[index];
+                                    final name = item['name'] as String? ?? 'PDF';
+                                    final opened = item['openedAt']?.toString();
+                                    return ListTile(
+                                      dense: true,
+                                      leading: const Icon(Icons.picture_as_pdf_outlined),
+                                      title: Text(name, maxLines: 1, overflow: TextOverflow.ellipsis),
+                                      subtitle: Text('Opened · ${opened ?? 'Recently'}'),
+                                      onTap: () => _openExternalStoragePdf(
+                                        item['uri'] as String, name,
+                                      ),
+                                    );
+                                  },
+                                )
+                          : _gridRecent.isEmpty
+                              ? const Center(child: Text('No recent Grid PDFs'))
+                              : ListView.separated(
+                                  primary: false,
+                                  itemCount: _gridRecent.length,
+                                  separatorBuilder: (_, _) => const Divider(height: 1),
+                                  itemBuilder: (context, index) {
+                                    final document = _gridRecent[index];
+                                    final activityAt = document.lastOpenedAt ?? document.createdAt;
+                                    final activity = document.lastOpenedAt != null
+                                        ? 'Opened'
+                                        : document.source == 'download'
+                                            ? 'Downloaded'
+                                            : 'Added';
+                                    return ListTile(
+                                      dense: true,
+                                      leading: const Icon(Icons.picture_as_pdf_outlined),
+                                      title: Text('${document.name}.pdf',
+                                          maxLines: 1, overflow: TextOverflow.ellipsis),
+                                      subtitle: Text('$activity · ${_recentDateLabel(activityAt)}'),
+                                      onTap: () => _open(document),
+                                    );
+                                  },
+                                ),
+                    ),
                   ],
                 ),
               ),
@@ -1793,6 +1816,18 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
       ),
     ),
     );
+  }
+
+  String _recentDateLabel(DateTime value) {
+    final local = value.toLocal();
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final day = DateTime(local.year, local.month, local.day);
+    final difference = today.difference(day).inDays;
+    final time = '${local.hour.toString().padLeft(2, '0')}:${local.minute.toString().padLeft(2, '0')}';
+    if (difference == 0) return 'Today, $time';
+    if (difference == 1) return 'Yesterday, $time';
+    return '${local.day.toString().padLeft(2, '0')}-${local.month.toString().padLeft(2, '0')}-${local.year}';
   }
 
   String _size(int bytes) {
