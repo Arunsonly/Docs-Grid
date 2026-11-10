@@ -163,6 +163,19 @@ class _SmartCollectionsScreenState extends State<SmartCollectionsScreen> {
     try {
       final db = await _db;
       await _ensureTable(db);
+      final duplicates = await db.query(
+        'smart_collections',
+        columns: ['id'],
+        where: 'name = ?',
+        whereArgs: [label],
+        limit: 1,
+      );
+      if (duplicates.isNotEmpty) {
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('A Smart Collection with this name already exists.')),
+        );
+        return;
+      }
       final now = DateTime.now().toUtc().toIso8601String();
       await db.insert('smart_collections', {
         'id': '${DateTime.now().microsecondsSinceEpoch}',
@@ -194,7 +207,9 @@ class _SmartCollectionsScreenState extends State<SmartCollectionsScreen> {
     String selectedCategory = categories.any((category) => category.id == savedCategory)
         ? savedCategory
         : '';
-    final selectedTags = _tagIds(item['tag_ids_json']).toSet();
+    final selectedTags = _tagIds(item['tag_ids_json'])
+        .where((id) => tags.any((tag) => tag.id == id))
+        .toSet();
     final saved = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => StatefulBuilder(
@@ -261,6 +276,19 @@ class _SmartCollectionsScreenState extends State<SmartCollectionsScreen> {
     }
     try {
       final db = await _db;
+      final duplicates = await db.query(
+        'smart_collections',
+        columns: ['id'],
+        where: 'name = ? AND id != ?',
+        whereArgs: [label, item['id']],
+        limit: 1,
+      );
+      if (duplicates.isNotEmpty) {
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('A Smart Collection with this name already exists.')),
+        );
+        return;
+      }
       await db.update('smart_collections', {
         'name': label,
         'query_text': search,
