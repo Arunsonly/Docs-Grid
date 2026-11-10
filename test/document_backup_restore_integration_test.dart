@@ -263,7 +263,11 @@ void main() {
     final restoreRoot = Directory('${appDocuments.path}/DocsGrid/Restored');
     if (await restoreRoot.exists()) {
       final remaining = await restoreRoot.list().toList();
-      expect(remaining, isEmpty);
+      expect(
+        remaining,
+        isEmpty,
+        reason: 'Failed restores must remove empty fallback parent directories as well as staged files.',
+      );
     }
   });
 }
