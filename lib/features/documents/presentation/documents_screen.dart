@@ -647,8 +647,11 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     final name = item['name'] as String? ?? 'PDF';
     if (action == 'share') {
       await _sharePhonePdf(uri, name);
+    } else if (action == 'rename') {
+      final renamed = await _renamePhonePdf(uri, name);
+      if (renamed) await _loadRecentDocuments();
     } else {
-      _message('Phone PDF management actions are available from the Phone folder browser.');
+      _message('Import this Phone PDF into Grid to manage its Star, category, tags and Recycle Bin record.');
     }
   }
 
