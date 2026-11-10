@@ -412,8 +412,10 @@ class StorageLocationService {
           }
         }
       }
-      entries.add({'name':rootLabel,'uri':rootUri,'folderPath':'','path':rootLabel,
-        'isDirectory':true,'pdfCount':totalCount,'sizeBytes':totalBytes});
+      if (totalCount > 0) {
+        entries.add({'name':rootLabel,'uri':rootUri,'folderPath':'','path':rootLabel,
+          'isDirectory':true,'pdfCount':totalCount,'sizeBytes':totalBytes});
+      }
     }
     if(inaccessible.isNotEmpty) entries.add({'name':'${inaccessible.length} inaccessible folder(s)',
       'uri':'','folderPath':'','isDirectory':true,'isInaccessibleSummary':true,'inaccessibleCount':inaccessible.length});
