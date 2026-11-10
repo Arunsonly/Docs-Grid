@@ -1410,17 +1410,30 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text('Recent', style: TextStyle(fontWeight: FontWeight.w700)),
+                    Row(children: [
+                      const Text('Recent', style: TextStyle(fontWeight: FontWeight.w700)),
+                      const Spacer(),
+                      SegmentedButton<String>(
+                        showSelectedIcon: false,
+                        segments: const [
+                          ButtonSegment(value: 'phone', label: Text('Phone')),
+                          ButtonSegment(value: 'grid', label: Text('Grid')),
+                        ],
+                        selected: {_recentFilter},
+                        onSelectionChanged: (selection) =>
+                            setState(() => _recentFilter = selection.first),
+                      ),
+                      PopupMenuButton<String>(
+                        tooltip: 'Recent options',
+                        onSelected: (value) {
+                          if (value == 'refresh') _loadRecentDocuments();
+                        },
+                        itemBuilder: (_) => const [
+                          PopupMenuItem(value: 'refresh', child: Text('Refresh recent')),
+                        ],
+                      ),
+                    ]),
                     const SizedBox(height: 8),
-                    SegmentedButton<String>(
-                      segments: const [
-                        ButtonSegment(value: 'phone', label: Text('Phone')),
-                        ButtonSegment(value: 'grid', label: Text('Grid')),
-                      ],
-                      selected: {_recentFilter},
-                      onSelectionChanged: (selection) =>
-                          setState(() => _recentFilter = selection.first),
-                    ),
                     const SizedBox(height: 6),
                     SizedBox(
                       height: 320,
