@@ -343,12 +343,14 @@ class DocumentRepository {
     if (document.folderId == folderId) return;
     final db = await _database.database;
     final storage = StorageLocationService.instance;
+    final portableLocations = Platform.isAndroid
+        ? await storage.portableDataLocationsIfAvailable()
+        : const <String, String>{};
+    final selectedRoot = await storage.selectedFolder();
 
     String? destinationUri;
     if (folderId == null) {
-      destinationUri = Platform.isAndroid
-          ? (await storage.portableDataLocations())['documentsUri']
-          : (await storage.selectedFolder())?['uri'];
+      destinationUri = portableLocations['documentsUri'] ?? selectedRoot?['uri'];
     } else {
       final rows = await db.query(
         'folders',
@@ -510,14 +512,10 @@ class DocumentRepository {
     final storage = StorageLocationService.instance;
     final selected = await storage.selectedFolder();
     final portableLocations = Platform.isAndroid
-        ? await storage.portableDataLocations()
+        ? await storage.portableDataLocationsIfAvailable()
         : const <String, String>{};
-    final rootUri = Platform.isAndroid
-        ? portableLocations['documentsUri']
-        : selected?['uri'];
-    final folderRootUri = Platform.isAndroid
-        ? portableLocations['libraryUri']
-        : selected?['uri'];
+    final rootUri = portableLocations['documentsUri'] ?? selected?['uri'];
+    final folderRootUri = portableLocations['libraryUri'] ?? selected?['uri'];
     if (rootUri == null || folderRootUri == null) {
       throw StateError('Choose a storage folder before starting migration.');
     }
@@ -736,12 +734,14 @@ class DocumentRepository {
       }
 
       final storage = StorageLocationService.instance;
+      final portableLocations = Platform.isAndroid
+          ? await storage.portableDataLocationsIfAvailable()
+          : const <String, String>{};
+      final selectedRoot = await storage.selectedFolder();
       final folderId = rows.first['folder_id'] as String?;
       String? destinationUri;
       if (folderId == null) {
-        destinationUri = Platform.isAndroid
-            ? (await storage.portableDataLocations())['documentsUri']
-            : (await storage.selectedFolder())?['uri'];
+        destinationUri = portableLocations['documentsUri'] ?? selectedRoot?['uri'];
       } else {
         final folderRows = await db.query(
           'folders',
@@ -926,7 +926,7 @@ class DocumentRepository {
     final storage = StorageLocationService.instance;
     final selected = await storage.selectedFolder();
     final portableLocations = Platform.isAndroid
-        ? await storage.portableDataLocations()
+        ? await storage.portableDataLocationsIfAvailable()
         : const <String, String>{};
     final requestedName = displayName?.trim();
     final safeName = _safePdfName(requestedName == null || requestedName.isEmpty
@@ -1036,7 +1036,7 @@ class DocumentRepository {
     final storage = StorageLocationService.instance;
     final selectedFolder = await storage.selectedFolder();
     final portableLocations = Platform.isAndroid
-        ? await storage.portableDataLocations()
+        ? await storage.portableDataLocationsIfAvailable()
         : const <String, String>{};
     final db = await _database.database;
     var added = 0;
