@@ -97,6 +97,10 @@ class _SmartCollectionsScreenState extends State<SmartCollectionsScreen> {
     final query = TextEditingController();
     var starred = false;
     var recent = false;
+    final categories = await _categoryRepository.listCategories();
+    final tags = await _categoryRepository.listTags();
+    String selectedCategory = '';
+    final selectedTags = <String>{};
     final saved = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => StatefulBuilder(
@@ -107,6 +111,40 @@ class _SmartCollectionsScreenState extends State<SmartCollectionsScreen> {
             TextField(controller: query, decoration: const InputDecoration(labelText: 'PDF name contains (optional)')),
             CheckboxListTile(contentPadding: EdgeInsets.zero, value: starred, title: const Text('Starred PDFs only'), onChanged: (v) => refresh(() => starred = v ?? false)),
             CheckboxListTile(contentPadding: EdgeInsets.zero, value: recent, title: const Text('Recently opened only'), onChanged: (v) => refresh(() => recent = v ?? false)),
+            DropdownButtonFormField<String>(
+              value: selectedCategory,
+              decoration: const InputDecoration(labelText: 'Category'),
+              items: [
+                const DropdownMenuItem(value: '', child: Text('Any category')),
+                for (final category in categories)
+                  DropdownMenuItem(value: category.id, child: Text(category.name)),
+              ],
+              onChanged: (value) => refresh(() => selectedCategory = value ?? ''),
+            ),
+            if (tags.isNotEmpty)
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Padding(
+                  padding: const EdgeInsets.only(top: 12),
+                  child: Wrap(
+                    spacing: 6,
+                    children: [
+                      for (final tag in tags)
+                        FilterChip(
+                          label: Text(tag.name),
+                          selected: selectedTags.contains(tag.id),
+                          onSelected: (value) => refresh(() {
+                            if (value) {
+                              selectedTags.add(tag.id);
+                            } else {
+                              selectedTags.remove(tag.id);
+                            }
+                          }),
+                        ),
+                    ],
+                  ),
+                ),
+              ),
           ])),
           actions: [
             TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')),
@@ -132,6 +170,8 @@ class _SmartCollectionsScreenState extends State<SmartCollectionsScreen> {
         'query_text': query.text.trim(),
         'favorites_only': starred ? 1 : 0,
         'recent_only': recent ? 1 : 0,
+        'category_id': selectedCategory.isEmpty ? null : selectedCategory,
+        'tag_ids_json': jsonEncode(selectedTags.toList()..sort()),
         'created_at': now,
         'updated_at': now,
       });
@@ -148,6 +188,10 @@ class _SmartCollectionsScreenState extends State<SmartCollectionsScreen> {
     final query = TextEditingController(text: item['query_text'] as String? ?? '');
     var starred = item['favorites_only'] == 1;
     var recent = item['recent_only'] == 1;
+    final categories = await _categoryRepository.listCategories();
+    final tags = await _categoryRepository.listTags();
+    String selectedCategory = item['category_id'] as String? ?? '';
+    final selectedTags = _tagIds(item['tag_ids_json']).toSet();
     final saved = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => StatefulBuilder(
@@ -185,6 +229,8 @@ class _SmartCollectionsScreenState extends State<SmartCollectionsScreen> {
         'query_text': search,
         'favorites_only': starred ? 1 : 0,
         'recent_only': recent ? 1 : 0,
+        'category_id': selectedCategory.isEmpty ? null : selectedCategory,
+        'tag_ids_json': jsonEncode(selectedTags.toList()..sort()),
         'updated_at': DateTime.now().toUtc().toIso8601String(),
       }, where: 'id = ?', whereArgs: [item['id']]);
       await _load();
@@ -236,6 +282,8 @@ class _SmartCollectionsScreenState extends State<SmartCollectionsScreen> {
                     if ((item['query_text'] as String).isNotEmpty) 'Name: ${item['query_text']}',
                     if (item['favorites_only'] == 1) 'Starred',
                     if (item['recent_only'] == 1) 'Recent',
+                    if ((item['category_id'] as String? ?? '').isNotEmpty) 'Category',
+                    if (_tagIds(item['tag_ids_json']).isNotEmpty) '${_tagIds(item['tag_ids_json']).length} tags',
                     'Dynamic filter · no file copies',
                   ].join(' · ')),
                   trailing: Row(mainAxisSize: MainAxisSize.min, children: [
