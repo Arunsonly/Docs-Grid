@@ -1439,12 +1439,12 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                                   itemBuilder: (context, index) {
                                     final item = _phoneRecent[index];
                                     final name = item['name'] as String? ?? 'PDF';
-                                    final opened = item['openedAt']?.toString();
+                                    final openedAt = DateTime.tryParse(item['openedAt']?.toString() ?? '');
                                     return ListTile(
                                       dense: true,
                                       leading: const Icon(Icons.picture_as_pdf_outlined),
                                       title: Text(name, maxLines: 1, overflow: TextOverflow.ellipsis),
-                                      subtitle: Text('Opened · ${opened ?? 'Recently'}'),
+                                      subtitle: Text('Opened · ${_recentDateLabel(openedAt ?? DateTime.now())}'),
                                       onTap: () => _openExternalStoragePdf(
                                         item['uri'] as String, name,
                                       ),
