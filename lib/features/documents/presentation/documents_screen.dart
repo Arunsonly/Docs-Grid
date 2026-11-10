@@ -231,6 +231,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
       _totalDocumentCount = summary.documentCount;
       _starredCount = summary.favoriteCount;
     });
+    await _loadTrashSummary();
   }
 
   void _message(String message) {
@@ -280,8 +281,8 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
       final bytes=pdfs.fold<int>(0,(sum,e)=>sum+((e['sizeBytes'] as num?)?.toInt()??0));
       if(!mounted)return;
       setState(() {
-        _phonePdfCount=pdfs.length;
-        _phoneStorageBytes=bytes;
+        _phonePdfCount = inaccessibleRoots == roots.length ? null : pdfs.length;
+        _phoneStorageBytes = inaccessibleRoots == roots.length ? null : bytes;
         _phoneEntries=entries;
         _phoneFolders=entries.where((entry) =>
           entry['isDirectory']==true &&

@@ -232,9 +232,26 @@ class MainActivity : FlutterActivity() {
                                     val primary = android.os.Environment.getExternalStorageDirectory()
                                     roots[primary.canonicalPath] = mapOf("uri" to Uri.fromFile(primary).toString(), "name" to "Internal storage")
                                 }
+                                val prefs = getSharedPreferences("docsgrid_storage", MODE_PRIVATE)
+                                val docsGridRoots = setOfNotNull(
+                                    prefs.getString("docsgrid_uri", null),
+                                    prefs.getString("folders_uri", null),
+                                    prefs.getString("my_files_uri", null),
+                                    prefs.getString("documents_uri", null),
+                                    prefs.getString("database_uri", null),
+                                    prefs.getString("recovery_uri", null)
+                                )
                                 contentResolver.persistedUriPermissions.filter { it.isReadPermission }
                                     .forEachIndexed { index, permission ->
                                         val uri = permission.uri
+                                        if (uri.toString() in docsGridRoots) return@forEachIndexed
+                                        // When full shared-storage access is already available, the
+                                        // primary: SAF subtree is covered by the file root. Keep
+                                        // non-primary/removable SAF roots as independent locations.
+                                        if (hasAllFiles) {
+                                            val treeId = try { DocumentsContract.getTreeDocumentId(uri) } catch (_: Exception) { "" }
+                                            if (treeId.startsWith("primary:")) return@forEachIndexed
+                                        }
                                         roots.putIfAbsent(uri.toString(), mapOf("uri" to uri.toString(), "name" to "Granted folder ${index + 1}"))
                                     }
                                 result.success(roots.values.toList())
