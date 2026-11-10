@@ -10,7 +10,7 @@ class PortableSnapshotManifest {
   static const List<String> supportedTableNames = [
     'folders', 'documents', 'categories', 'tags', 'document_tags',
     'reminders', 'history', 'settings', 'document_text_index',
-    'schema_migrations',
+    'smart_collections', 'schema_migrations',
   ];
 
   PortableSnapshotManifest._({
