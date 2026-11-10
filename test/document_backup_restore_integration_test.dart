@@ -73,7 +73,7 @@ Future<File> _makeBackup(Directory directory, {bool withReminder = false, bool w
   archive.addFile(ArchiveFile('pdfs/policy.pdf', _pdfBytes.length, _pdfBytes));
   final manifest = {
     'format': 'DocsGridBackup', 'version': 1, 'backupType': 'full',
-    'backupId': 'restore-test', 'databaseSchemaVersion': 8,
+    'backupId': 'restore-test', 'databaseSchemaVersion': 9,
     'createdAt': '2026-01-01T00:00:00Z',
     'tables': {for (final entry in rows.entries) entry.key: entry.value.length},
     'metadataFiles': metadataFiles,
