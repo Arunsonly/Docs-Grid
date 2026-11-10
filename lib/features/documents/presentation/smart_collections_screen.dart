@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:open_filex/open_filex.dart';
 import 'package:sqflite/sqflite.dart';
@@ -5,6 +7,7 @@ import 'package:sqflite/sqflite.dart';
 import '../../../core/database/app_database.dart';
 import '../../../core/storage/storage_location_service.dart';
 import '../data/document_repository.dart';
+import '../../categories/data/category_repository.dart';
 
 class SmartCollectionsScreen extends StatefulWidget {
   const SmartCollectionsScreen({super.key});
@@ -17,6 +20,7 @@ class _SmartCollectionsScreenState extends State<SmartCollectionsScreen> {
   Future<Database> get _db => AppDatabase.instance.database;
   List<Map<String, Object?>> _collections = [];
   bool _loading = true;
+  final _categoryRepository = CategoryRepository();
 
   @override
   void initState() {
@@ -32,11 +36,18 @@ class _SmartCollectionsScreenState extends State<SmartCollectionsScreen> {
         query_text TEXT NOT NULL DEFAULT '',
         favorites_only INTEGER NOT NULL DEFAULT 0,
         recent_only INTEGER NOT NULL DEFAULT 0,
+        category_id TEXT,
+        tag_ids_json TEXT NOT NULL DEFAULT '[]',
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       )
     ''');
+    final columns = await db.rawQuery('PRAGMA table_info(smart_collections)');
+    final names = columns.map((row) => row['name']).toSet();
+    if (!names.contains('category_id')) await db.execute('ALTER TABLE smart_collections ADD COLUMN category_id TEXT');
+    if (!names.contains('tag_ids_json')) await db.execute("ALTER TABLE smart_collections ADD COLUMN tag_ids_json TEXT NOT NULL DEFAULT '[]'");
     await db.execute('CREATE INDEX IF NOT EXISTS idx_smart_collections_name ON smart_collections(name COLLATE NOCASE)');
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_smart_collections_category ON smart_collections(category_id)');
   }
 
   Future<void> _load() async {
@@ -53,6 +64,13 @@ class _SmartCollectionsScreenState extends State<SmartCollectionsScreen> {
     }
   }
 
+  List<String> _tagIds(Object? raw) {
+    try {
+      final decoded = jsonDecode(raw as String? ?? '[]');
+      return decoded is List ? decoded.whereType<String>().toSet().toList() : const [];
+    } catch (_) { return const []; }
+  }
+
   Future<int> _count(Map<String, Object?> collection) async {
     final db = await _db;
     final where = <String>['deleted_at IS NULL'];
@@ -63,6 +81,12 @@ class _SmartCollectionsScreenState extends State<SmartCollectionsScreen> {
     if (query.isNotEmpty) {
       where.add("name LIKE ? ESCAPE '\\'");
       args.add('%${query.replaceAll('\\', '\\\\').replaceAll('%', r'\%').replaceAll('_', r'\_')}%');
+    }
+    final categoryId = collection['category_id'] as String?;
+    if (categoryId != null && categoryId.isNotEmpty) { where.add('category_id = ?'); args.add(categoryId); }
+    for (final tagId in _tagIds(collection['tag_ids_json'])) {
+      where.add('EXISTS (SELECT 1 FROM document_tags dt WHERE dt.document_id = documents.id AND dt.tag_id = ?)');
+      args.add(tagId);
     }
     final rows = await db.rawQuery('SELECT COUNT(*) AS total FROM documents WHERE ${where.join(' AND ')}', args);
     return (rows.first['total'] as int?) ?? 0;
@@ -261,6 +285,12 @@ class _SmartCollectionResultsState extends State<_SmartCollectionResults> {
     if (query.isNotEmpty) {
       where.add("d.name LIKE ? ESCAPE '\\'");
       args.add('%${query.replaceAll('\\', '\\\\').replaceAll('%', r'\%').replaceAll('_', r'\_')}%');
+    }
+    final categoryId = widget.collection['category_id'] as String?;
+    if (categoryId != null && categoryId.isNotEmpty) { where.add('d.category_id = ?'); args.add(categoryId); }
+    for (final tagId in _tagIds(widget.collection['tag_ids_json'])) {
+      where.add('EXISTS (SELECT 1 FROM document_tags dt WHERE dt.document_id = d.id AND dt.tag_id = ?)');
+      args.add(tagId);
     }
     final rows = await db.rawQuery('SELECT d.id, d.name, d.storage_uri, d.size_bytes, d.is_favorite, d.last_opened_at FROM documents d WHERE ${where.join(' AND ')} ORDER BY d.last_opened_at DESC, d.name COLLATE NOCASE', args);
     if (!mounted) return;
