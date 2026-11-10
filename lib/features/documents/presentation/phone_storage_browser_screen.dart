@@ -259,6 +259,7 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
           padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
           child: Align(
             alignment: Alignment.centerLeft,
+            heightFactor: 1,
             child: Text(
               selectedPath == null
                   ? '${folders.length} folders'
