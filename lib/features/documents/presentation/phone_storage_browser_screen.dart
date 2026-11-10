@@ -6,12 +6,14 @@ class PhoneStorageBrowserScreen extends StatefulWidget {
     required this.rootName,
     required this.entries,
     required this.onOpenPdf,
+    this.onMovePdf,
     this.initialPath = '',
   });
 
   final String rootName;
   final List<Map<String, Object?>> entries;
   final Future<void> Function(String uri, String name) onOpenPdf;
+  final Future<void> Function(String uri, String name)? onMovePdf;
   final String initialPath;
 
   @override
@@ -193,6 +195,16 @@ class _PhoneStorageBrowserScreenState
                               overflow: TextOverflow.ellipsis,
                             ),
                             subtitle: const Text('PDF document'),
+                            trailing: widget.onMovePdf == null
+                                ? null
+                                : IconButton(
+                                    tooltip: 'Move to Grid',
+                                    icon: const Icon(Icons.drive_file_move_outline),
+                                    onPressed: () => widget.onMovePdf!(
+                                      entry['uri'] as String,
+                                      entry['name'] as String,
+                                    ),
+                                  ),
                             onTap: () => widget.onOpenPdf(
                               entry['uri'] as String,
                               entry['name'] as String,
