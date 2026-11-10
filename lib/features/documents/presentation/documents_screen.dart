@@ -797,165 +797,6 @@ class _PhoneRecentSelectionScreenState extends State<_PhoneRecentSelectionScreen
   }
 }
 
-class _RecentSelectionScreen extends StatefulWidget {
-  const _RecentSelectionScreen({
-    required this.initialDocument,
-    required this.loadItems,
-    required this.onOpen,
-    required this.onMove,
-    required this.onCopy,
-    required this.onDelete,
-    required this.onShare,
-    required this.onRename,
-  });
-
-  final DocumentRecord initialDocument;
-  final Future<List<DocumentRecord>> Function() loadItems;
-  final Future<void> Function(DocumentRecord) onOpen;
-  final Future<void> Function(List<DocumentRecord>) onMove;
-  final Future<void> Function(List<DocumentRecord>) onCopy;
-  final Future<void> Function(List<DocumentRecord>) onDelete;
-  final Future<void> Function(List<DocumentRecord>) onShare;
-  final Future<bool> Function(DocumentRecord) onRename;
-
-  @override
-  State<_RecentSelectionScreen> createState() => _RecentSelectionScreenState();
-}
-
-class _RecentSelectionScreenState extends State<_RecentSelectionScreen> {
-  late final Set<String> _selected = {widget.initialDocument.id};
-  List<DocumentRecord> _items = [];
-  bool _loading = true;
-  bool _busy = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _load();
-  }
-
-  Future<void> _load() async {
-    try {
-      final items = await widget.loadItems();
-      if (mounted) setState(() { _items = items; _loading = false; });
-    } catch (_) {
-      if (mounted) setState(() => _loading = false);
-    }
-  }
-
-  List<DocumentRecord> get _selectedItems =>
-      _items.where((item) => _selected.contains(item.id)).toList(growable: false);
-
-  Future<void> _run(Future<void> Function(List<DocumentRecord>) action) async {
-    if (_busy || _selectedItems.isEmpty) return;
-    setState(() => _busy = true);
-    try {
-      await action(_selectedItems);
-      if (mounted) {
-        Navigator.of(context).pop(_selectedItems);
-      }
-    } catch (error) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Action failed: $error')),
-      );
-    } finally {
-      if (mounted) setState(() => _busy = false);
-    }
-  }
-
-  Future<void> _more() async {
-    final choice = await showModalBottomSheet<String>(
-      context: context,
-      showDragHandle: true,
-      builder: (ctx) => SafeArea(child: ListView(shrinkWrap: true, children: [
-        const ListTile(title: Text('More actions')),
-        ListTile(leading: const Icon(Icons.drive_file_rename_outline),
-          title: const Text('Rename'), onTap: () => Navigator.pop(ctx, 'rename')),
-      ])),
-    );
-    if (choice == 'rename' && _selectedItems.length == 1 && mounted) {
-      final renamed = await widget.onRename(_selectedItems.single);
-      if (renamed && mounted) Navigator.of(context).pop(_selectedItems);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final selected = _selectedItems;
-    return Scaffold(
-      appBar: AppBar(
-        title: Text('${_selected.length} selected'),
-        leading: IconButton(
-          icon: const Icon(Icons.close),
-          onPressed: () => Navigator.of(context).pop(),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => setState(() {
-              if (_selected.length == _items.length) {
-                _selected.clear();
-              } else {
-                _selected.addAll(_items.map((item) => item.id));
-              }
-            }),
-            child: const Text('Select all'),
-          ),
-        ],
-      ),
-      body: _loading
-          ? const Center(child: CircularProgressIndicator())
-          : ListView.separated(
-              itemCount: _items.length,
-              separatorBuilder: (_, _) => const Divider(height: 1),
-              itemBuilder: (context, index) {
-                final item = _items[index];
-                return CheckboxListTile(
-                  value: _selected.contains(item.id),
-                  onChanged: (value) => setState(() {
-                    if (value == true) {
-                      _selected.add(item.id);
-                    } else {
-                      _selected.remove(item.id);
-                    }
-                  }),
-                  secondary: const Icon(Icons.picture_as_pdf_outlined),
-                  title: Text('${item.name}.pdf',
-                    maxLines: 1, overflow: TextOverflow.ellipsis),
-                  subtitle: Text('${(item.sizeBytes / (1024 * 1024)).toStringAsFixed(1)} MB'),
-                );
-              },
-            ),
-      bottomNavigationBar: SafeArea(
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-          decoration: BoxDecoration(
-            color: Theme.of(context).colorScheme.surface,
-            border: Border(top: BorderSide(color: Theme.of(context).dividerColor)),
-          ),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceAround,
-            children: [
-              _actionButton(Icons.drive_file_move_outline, 'Move', () => _run(widget.onMove)),
-              _actionButton(Icons.copy_outlined, 'Copy', () => _run(widget.onCopy)),
-              _actionButton(Icons.delete_outline, 'Delete', () => _run(widget.onDelete)),
-              _actionButton(Icons.share_outlined, 'Share', () => _run(widget.onShare)),
-              _actionButton(Icons.more_vert, 'More', _more),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _actionButton(IconData icon, String label, VoidCallback onPressed) =>
-      TextButton(
-        onPressed: _busy || _selected.isEmpty ? null : onPressed,
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          Icon(icon),
-          Text(label, style: const TextStyle(fontSize: 11)),
-        ]),
-      );
-}
 
   void _startSelection(DocumentRecord document) {
     if (!mounted) return;
@@ -2414,3 +2255,165 @@ class _RecentSelectionScreenState extends State<_RecentSelectionScreen> {
     return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
   }
 }
+
+class _RecentSelectionScreen extends StatefulWidget {
+  const _RecentSelectionScreen({
+    required this.initialDocument,
+    required this.loadItems,
+    required this.onOpen,
+    required this.onMove,
+    required this.onCopy,
+    required this.onDelete,
+    required this.onShare,
+    required this.onRename,
+  });
+
+  final DocumentRecord initialDocument;
+  final Future<List<DocumentRecord>> Function() loadItems;
+  final Future<void> Function(DocumentRecord) onOpen;
+  final Future<void> Function(List<DocumentRecord>) onMove;
+  final Future<void> Function(List<DocumentRecord>) onCopy;
+  final Future<void> Function(List<DocumentRecord>) onDelete;
+  final Future<void> Function(List<DocumentRecord>) onShare;
+  final Future<bool> Function(DocumentRecord) onRename;
+
+  @override
+  State<_RecentSelectionScreen> createState() => _RecentSelectionScreenState();
+}
+
+class _RecentSelectionScreenState extends State<_RecentSelectionScreen> {
+  late final Set<String> _selected = {widget.initialDocument.id};
+  List<DocumentRecord> _items = [];
+  bool _loading = true;
+  bool _busy = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    try {
+      final items = await widget.loadItems();
+      if (mounted) setState(() { _items = items; _loading = false; });
+    } catch (_) {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  List<DocumentRecord> get _selectedItems =>
+      _items.where((item) => _selected.contains(item.id)).toList(growable: false);
+
+  Future<void> _run(Future<void> Function(List<DocumentRecord>) action) async {
+    if (_busy || _selectedItems.isEmpty) return;
+    setState(() => _busy = true);
+    try {
+      await action(_selectedItems);
+      if (mounted) {
+        Navigator.of(context).pop(_selectedItems);
+      }
+    } catch (error) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Action failed: $error')),
+      );
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _more() async {
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) => SafeArea(child: ListView(shrinkWrap: true, children: [
+        const ListTile(title: Text('More actions')),
+        ListTile(leading: const Icon(Icons.drive_file_rename_outline),
+          title: const Text('Rename'), onTap: () => Navigator.pop(ctx, 'rename')),
+      ])),
+    );
+    if (choice == 'rename' && _selectedItems.length == 1 && mounted) {
+      final renamed = await widget.onRename(_selectedItems.single);
+      if (renamed && mounted) Navigator.of(context).pop(_selectedItems);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final selected = _selectedItems;
+    return Scaffold(
+      appBar: AppBar(
+        title: Text('${_selected.length} selected'),
+        leading: IconButton(
+          icon: const Icon(Icons.close),
+          onPressed: () => Navigator.of(context).pop(),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => setState(() {
+              if (_selected.length == _items.length) {
+                _selected.clear();
+              } else {
+                _selected.addAll(_items.map((item) => item.id));
+              }
+            }),
+            child: const Text('Select all'),
+          ),
+        ],
+      ),
+      body: _loading
+          ? const Center(child: CircularProgressIndicator())
+          : ListView.separated(
+              itemCount: _items.length,
+              separatorBuilder: (_, _) => const Divider(height: 1),
+              itemBuilder: (context, index) {
+                final item = _items[index];
+                return CheckboxListTile(
+                  value: _selected.contains(item.id),
+                  onChanged: (value) => setState(() {
+                    if (value == true) {
+                      _selected.add(item.id);
+                    } else {
+                      _selected.remove(item.id);
+                    }
+                  }),
+                  secondary: const Icon(Icons.picture_as_pdf_outlined),
+                  title: Text('${item.name}.pdf',
+                    maxLines: 1, overflow: TextOverflow.ellipsis),
+                  subtitle: Text('${(item.sizeBytes / (1024 * 1024)).toStringAsFixed(1)} MB'),
+                );
+              },
+            ),
+      bottomNavigationBar: SafeArea(
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+          decoration: BoxDecoration(
+            color: Theme.of(context).colorScheme.surface,
+            border: Border(top: BorderSide(color: Theme.of(context).dividerColor)),
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceAround,
+            children: [
+              _actionButton(Icons.drive_file_move_outline, 'Move', () => _run(widget.onMove)),
+              _actionButton(Icons.copy_outlined, 'Copy', () => _run(widget.onCopy)),
+              _actionButton(Icons.delete_outline, 'Delete', () => _run(widget.onDelete)),
+              _actionButton(Icons.share_outlined, 'Share', () => _run(widget.onShare)),
+              _actionButton(Icons.more_vert, 'More', _more),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _actionButton(IconData icon, String label, VoidCallback onPressed) =>
+      TextButton(
+        onPressed: _busy || _selected.isEmpty ? null : onPressed,
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Icon(icon),
+          Text(label, style: const TextStyle(fontSize: 11)),
+        ]),
+      );
+}
+
+
