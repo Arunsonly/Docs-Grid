@@ -13,7 +13,6 @@ import '../../../core/storage/storage_location_service.dart';
 import '../../categories/data/category_repository.dart';
 import '../../folders/data/folder_repository.dart';
 import '../../tools/document_tools_service.dart';
-import '../../tools/document_tools_screen.dart' show DocumentToolsScreen;
 import 'document_pdf_viewer_screen.dart';
 import 'document_thumbnail.dart';
 import 'phone_storage_browser_screen.dart';
@@ -44,15 +43,12 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   int _totalStorageBytes = 0;
   int _totalDocumentCount = 0;
   int _starredCount = 0;
-  int? _phonePdfCount;
   int? _phoneStorageBytes;
   int _phoneInaccessibleCount = 0;
   bool _phoneScanIncomplete = false;
   int _phoneUnknownSizeCount = 0;
   bool _phoneScanLoading = false;
   int _trashCount = 0;
-  int _trashBytes = 0;
-  List<Map<String, Object?>> _phoneFolders = [];
   List<Map<String, Object?>> _phoneRecent = [];
   List<DocumentRecord> _gridRecent = [];
   String _recentFilter = 'grid';
@@ -249,7 +245,6 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
       if (!mounted) return;
       setState(() {
         _trashCount = trashed.length;
-        _trashBytes = trashed.fold<int>(0, (sum, item) => sum + item.sizeBytes);
       });
     } catch (_) {
       // Keep the dashboard usable; the Recycle Bin screen reports its own error.
@@ -283,11 +278,9 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
         final granted = await storage.accessibleStorageRoots();
         if (granted.isEmpty) {
           if (mounted) setState(() {
-            _phonePdfCount = null;
             _phoneStorageBytes = null;
             _phoneInaccessibleCount = 0;
             _phoneScanIncomplete = false;
-            _phoneFolders = [];
             _phoneEntries = [];
           });
           if (openBrowser && mounted) {
@@ -300,13 +293,11 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
       final roots = await storage.accessibleStorageRoots();
       if (roots.isEmpty) {
         if (mounted) setState(() {
-            _phonePdfCount = null;
-            _phoneStorageBytes = null;
+              _phoneStorageBytes = null;
             _phoneInaccessibleCount = 0;
             _phoneScanIncomplete = false;
             _phoneUnknownSizeCount = 0;
-            _phoneFolders = [];
-            _phoneEntries = [];
+              _phoneEntries = [];
           });
         return;
       }
@@ -335,19 +326,11 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
       final unknownSizes = pdfs.where((entry) => entry['sizeKnown'] == false).length;
       if(!mounted)return;
       setState(() {
-        _phonePdfCount = inaccessibleRoots == roots.length ? null : pdfs.length;
         _phoneStorageBytes = inaccessibleRoots == roots.length ? null : bytes;
         _phoneInaccessibleCount = entries.where((entry) => entry['isInaccessible'] == true).length;
         _phoneUnknownSizeCount = unknownSizes;
         _phoneScanIncomplete = _phoneInaccessibleCount > 0;
         _phoneEntries=entries;
-        _phoneFolders=entries.where((entry) =>
-          entry['isDirectory']==true &&
-          entry['isInaccessible']!=true &&
-          entry['isInaccessibleSummary']!=true &&
-          entry['path'] is String &&
-          ((entry['pdfCount'] as num?)?.toInt() ?? 0)>0
-        ).toList(growable:false);
       });
       if(openBrowser) await _showRecursiveStoragePdfs('Phone Storage',entries);
       if(inaccessibleRoots>0 && mounted) _message('$inaccessibleRoots granted location(s) could not be read; they were not marked empty.');
