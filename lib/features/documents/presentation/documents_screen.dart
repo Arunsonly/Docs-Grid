@@ -337,12 +337,10 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     } catch(error) {
       if (mounted) {
         setState(() {
-          _phonePdfCount = null;
           _phoneStorageBytes = null;
           _phoneInaccessibleCount = 0;
           _phoneUnknownSizeCount = 0;
           _phoneScanIncomplete = true;
-          _phoneFolders = [];
           _phoneEntries = [];
         });
         _message('Phone Storage scan failed; inaccessible locations were not marked empty: $error');
