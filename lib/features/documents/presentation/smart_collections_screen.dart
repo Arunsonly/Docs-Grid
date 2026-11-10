@@ -1,7 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:open_filex/open_filex.dart';
 import 'package:sqflite/sqflite.dart';
 
 import '../../../core/database/app_database.dart';
+import '../../../core/storage/storage_location_service.dart';
+import '../data/document_repository.dart';
 
 class SmartCollectionsScreen extends StatefulWidget {
   const SmartCollectionsScreen({super.key});
@@ -198,7 +201,7 @@ class _SmartCollectionResultsState extends State<_SmartCollectionResults> {
       where.add("d.name LIKE ? ESCAPE '\\'");
       args.add('%${query.replaceAll('\\', '\\\\').replaceAll('%', r'\%').replaceAll('_', r'\_')}%');
     }
-    final rows = await db.rawQuery('SELECT d.name, d.size_bytes, d.is_favorite, d.last_opened_at FROM documents d WHERE ${where.join(' AND ')} ORDER BY d.last_opened_at DESC, d.name COLLATE NOCASE', args);
+    final rows = await db.rawQuery('SELECT d.id, d.name, d.storage_uri, d.size_bytes, d.is_favorite, d.last_opened_at FROM documents d WHERE ${where.join(' AND ')} ORDER BY d.last_opened_at DESC, d.name COLLATE NOCASE', args);
     if (!mounted) return;
     setState(() { _rows = rows; _loading = false; });
   }
