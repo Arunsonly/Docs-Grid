@@ -2179,8 +2179,15 @@ class DocumentToolsService {
       }
       final manifest = manifestValue;
       final schemaVersion = manifest['databaseSchemaVersion'];
-      if (schemaVersion is int && schemaVersion > BackupSchemaCompatibility.currentVersion) {
-        throw StateError('This backup was created by a newer DocsGrid database version. Update the app before restoring it.');
+      if (schemaVersion != null) {
+        if (schemaVersion is! int) {
+          throw StateError('Backup database schema version is invalid.');
+        }
+        try {
+          BackupSchemaCompatibility.requireSupported(schemaVersion);
+        } on FormatException catch (error) {
+          throw StateError(error.message);
+        }
       }
       final declaredTables = manifest['tables'];
       if (declaredTables is! Map<String, dynamic>) {

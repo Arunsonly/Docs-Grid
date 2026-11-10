@@ -1,5 +1,7 @@
 import 'dart:convert';
 
+import 'backup_schema_compatibility.dart';
+
 /// Strict, side-effect-free validation for portable DocsGrid snapshot manifests.
 /// File contents are verified separately before any restore operation.
 class PortableSnapshotManifest {
@@ -35,6 +37,7 @@ class PortableSnapshotManifest {
         rawFiles is! List || rawTables is! Map) {
       throw const FormatException('Snapshot manifest is missing required fields.');
     }
+    BackupSchemaCompatibility.requireSupported(schemaVersion);
 
     final tables = <String, int>{};
     for (final entry in rawTables.entries) {
