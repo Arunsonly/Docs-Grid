@@ -513,7 +513,14 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
       await _repository.setFavorite(document, !document.isFavorite);
       await _loadAllStarred();
       await _loadRecentDocuments();
-      if (mounted) await _refreshDashboardSummary();
+      if (mounted) {
+        setState(() {
+          if (_showStarredRecent && !document.isFavorite) {
+            _starredRecent.removeWhere((item) => item.id == document.id);
+          }
+        });
+        await _refreshDashboardSummary();
+      }
       return;
     }
     if (action == 'share') {
