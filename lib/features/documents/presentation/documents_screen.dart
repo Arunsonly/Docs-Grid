@@ -74,7 +74,9 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     _search.addListener(_onSearchChanged);
     _scrollController.addListener(_onScroll);
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted && !widget.favoritesOnly && !widget.recentOnly) _scanPhoneStorage(openBrowser: false);
+      if (mounted && !widget.favoritesOnly && !widget.recentOnly && !widget.phoneOnly) {
+        _scanPhoneStorage(openBrowser: false);
+      }
     });
   }
 
