@@ -176,7 +176,6 @@ class DocumentRepository {
   static const _uuid = Uuid();
   DocumentLibrarySummary? _summaryCache;
   int? _summaryCacheRevision;
-  bool? _nameFtsAvailable;
 
   /// Returns compact dashboard metrics without materializing document rows.
   Future<DocumentLibrarySummary> dashboardSummary() async {
