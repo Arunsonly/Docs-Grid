@@ -39,6 +39,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   bool _loading = true;
   final bool _importing = false;
   bool _searchInsideText = false;
+  bool _gridView = false;
   int _totalStorageBytes = 0;
   int _totalDocumentCount = 0;
   int _starredCount = 0;
@@ -65,6 +66,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   void initState() {
     super.initState();
     _load();
+    _loadViewPreference();
     _loadTrashSummary();
     _loadRecentDocuments();
     _search.addListener(_onSearchChanged);
@@ -72,6 +74,27 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted && !widget.favoritesOnly && !widget.recentOnly) _scanPhoneStorage(openBrowser: false);
     });
+  }
+
+  Future<void> _loadViewPreference() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final saved = prefs.getBool('docsgrid_document_grid_view_v1') ?? false;
+      if (mounted) setState(() => _gridView = saved);
+    } catch (_) {
+      // View preference is optional; default to the compact list.
+    }
+  }
+
+  Future<void> _toggleDocumentView() async {
+    final next = !_gridView;
+    setState(() => _gridView = next);
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool('docsgrid_document_grid_view_v1', next);
+    } catch (_) {
+      // Keep the in-memory selection even if preference storage is unavailable.
+    }
   }
 
   void _onScroll() {
@@ -1408,6 +1431,11 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                   ),
                 ),
                 const SizedBox(width: 4),
+                IconButton(
+                  tooltip: _gridView ? 'Switch to list view' : 'Switch to grid view',
+                  onPressed: _toggleDocumentView,
+                  icon: Icon(_gridView ? Icons.view_list_outlined : Icons.grid_view_outlined),
+                ),
                 PopupMenuButton<String>(
                   tooltip: 'More document actions',
                   icon: const Icon(Icons.more_vert),
@@ -1532,18 +1560,38 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                       ? _emptyState()
                       : RefreshIndicator(
                           onRefresh: _load,
-                          child: ListView.separated(
-                            controller: _scrollController,
-                            padding: const EdgeInsets.fromLTRB(12, 8, 12, 100),
-                            itemCount: _documents.length + (_loadingMore ? 1 : 0),
-                            separatorBuilder: (_, _) => const SizedBox(height: 6),
-                            itemBuilder: (context, index) => index >= _documents.length
-                                ? const Padding(
-                                    padding: EdgeInsets.all(18),
-                                    child: Center(child: CircularProgressIndicator()),
-                                  )
-                                : _documentTile(_documents[index]),
-                          ),
+                          child: _gridView
+                              ? LayoutBuilder(
+                                  builder: (context, constraints) {
+                                    final columns = constraints.maxWidth >= 600 ? 3 : 2;
+                                    return GridView.builder(
+                                      controller: _scrollController,
+                                      padding: const EdgeInsets.fromLTRB(12, 8, 12, 100),
+                                      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                                        crossAxisCount: columns,
+                                        crossAxisSpacing: 6,
+                                        mainAxisSpacing: 6,
+                                        childAspectRatio: 1.65,
+                                      ),
+                                      itemCount: _documents.length + (_loadingMore ? 1 : 0),
+                                      itemBuilder: (context, index) => index >= _documents.length
+                                          ? const Center(child: CircularProgressIndicator())
+                                          : _documentTile(_documents[index]),
+                                    );
+                                  },
+                                )
+                              : ListView.separated(
+                                  controller: _scrollController,
+                                  padding: const EdgeInsets.fromLTRB(12, 8, 12, 100),
+                                  itemCount: _documents.length + (_loadingMore ? 1 : 0),
+                                  separatorBuilder: (_, _) => const SizedBox(height: 6),
+                                  itemBuilder: (context, index) => index >= _documents.length
+                                      ? const Padding(
+                                          padding: EdgeInsets.all(18),
+                                          child: Center(child: CircularProgressIndicator()),
+                                        )
+                                      : _documentTile(_documents[index]),
+                                ),
                         ),
         ),
       ],
