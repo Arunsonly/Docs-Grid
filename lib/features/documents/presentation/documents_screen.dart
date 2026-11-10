@@ -2168,11 +2168,13 @@ class _RecentSelectionScreenState extends State<_RecentSelectionScreen> {
                       tagNames: current.tagNames,
                       folderId: current.folderId,
                       lastOpenedAt: current.lastOpenedAt,
+                      source: current.source,
                     );
                   }
                 }
                 _starredCount = (_starredCount + (nextFavorite ? 1 : -1)).clamp(0, _totalDocumentCount).toInt();
               });
+              await _loadAllStarred();
             } else if (value == 'tags') {
               await _editTags(document);
             } else if (value == 'move') {
@@ -2198,8 +2200,7 @@ class _RecentSelectionScreenState extends State<_RecentSelectionScreen> {
             const PopupMenuItem(value: 'category', child: Text('Set category')),
             const PopupMenuItem(value: 'tags', child: Text('Edit tags')),
             const PopupMenuItem(value: 'rename', child: Text('Rename')),
-            const PopupMenuItem(value: 'move', child: Text('Move')),
-            const PopupMenuItem(value: 'reminder', child: Text('Add to reminder')),
+            const PopupMenuItem(value: 'move', child: Text('Move to folder')),
             const PopupMenuItem(value: 'trash', child: Text('Move to Recycle Bin')),
           ],
         ),
