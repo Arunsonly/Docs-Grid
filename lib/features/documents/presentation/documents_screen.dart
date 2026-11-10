@@ -20,9 +20,10 @@ import '../../folders/presentation/folders_screen.dart';
 import '../../reminders/data/reminder_repository.dart';
 
 class DocumentsScreen extends StatefulWidget {
-  const DocumentsScreen({super.key, this.favoritesOnly = false, this.recentOnly = false});
+  const DocumentsScreen({super.key, this.favoritesOnly = false, this.recentOnly = false, this.phoneOnly = false});
   final bool favoritesOnly;
   final bool recentOnly;
+  final bool phoneOnly;
 
   @override
   State<DocumentsScreen> createState() => _DocumentsScreenState();
@@ -1266,6 +1267,29 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
 
   @override
   Widget build(BuildContext context) {
+    if (widget.phoneOnly) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.phone_android_outlined, size: 52),
+              const SizedBox(height: 12),
+              const Text('Phone storage', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700)),
+              const SizedBox(height: 8),
+              const Text('Browse folders on your device that contain PDF files.', textAlign: TextAlign.center),
+              const SizedBox(height: 16),
+              FilledButton.icon(
+                onPressed: _browsePhoneStorage,
+                icon: const Icon(Icons.folder_open_outlined),
+                label: const Text('Open Phone storage'),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
     return PopScope<void>(
       canPop: !_selectionMode,
       onPopInvokedWithResult: (didPop, result) {
