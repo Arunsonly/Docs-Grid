@@ -381,7 +381,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     try {
       // Include both opened documents and newly added documents. The list
       // is capped at 20 so the dashboard's Recent panel can scroll independently.
-      final page = await _repository.listPage(pageSize: 20);
+      final recentDocuments = await _repository.recentActivity(limit: 20);
       final prefs = await SharedPreferences.getInstance();
       final saved = prefs.getStringList('docsgrid_phone_recent_v1') ?? const <String>[];
       final phone = <Map<String, Object?>>[];
@@ -397,7 +397,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
       }
       if (!mounted) return;
       setState(() {
-        _gridRecent = page.items.take(20).toList(growable: false);
+        _gridRecent = recentDocuments;
         _phoneRecent = phone.take(20).toList(growable: false);
       });
     } catch (_) {
@@ -428,7 +428,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
         'sizeBytes': bytes,
         'openedAt': DateTime.now().toUtc().toIso8601String(),
       });
-      final limited = recent.take(5).toList(growable: false);
+      final limited = recent.take(20).toList(growable: false);
       await prefs.setStringList('docsgrid_phone_recent_v1',
           limited.map((item) => jsonEncode(item)).toList());
       if (mounted) setState(() => _phoneRecent = limited);
