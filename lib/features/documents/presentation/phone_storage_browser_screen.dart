@@ -151,7 +151,10 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
           overflow: TextOverflow.ellipsis,
         ),
       ),
-      body: selectedPath == null
+      body: Column(
+        children: [
+          Expanded(
+            child: selectedPath == null
           ? folders.isEmpty
               ? const Center(child: Text('No folders with direct PDF files.'))
               : ListView.builder(
@@ -253,21 +256,21 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
                     );
                   },
                 ),
-      bottomNavigationBar: SafeArea(
-        top: false,
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
-          child: Align(
-            alignment: Alignment.centerLeft,
-            heightFactor: 1,
-            child: Text(
-              selectedPath == null
-                  ? '${folders.length} folders'
-                  : '${selectedFiles.length} PDFs',
-              style: Theme.of(context).textTheme.bodySmall,
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                selectedPath == null
+                    ? '${folders.length} folders'
+                    : '${selectedFiles.length} PDFs',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
             ),
           ),
-        ),
+        ],
+      ),
       ),
     );
   }
