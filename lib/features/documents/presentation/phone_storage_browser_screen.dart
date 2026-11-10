@@ -271,7 +271,6 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
           ),
         ],
       ),
-      ),
     );
   }
 }
