@@ -206,6 +206,27 @@ class _SmartCollectionResultsState extends State<_SmartCollectionResults> {
     setState(() { _rows = rows; _loading = false; });
   }
 
+  Future<void> _openPdf(Map<String, Object?> row) async {
+    try {
+      final document = await DocumentRepository().getById(row['id'] as String);
+      if (!mounted || document == null || document.storagePath.isEmpty) return;
+      await DocumentRepository().markOpened(document);
+      final uri = document.storagePath;
+      if (uri.startsWith('content://') || uri.startsWith('file://')) {
+        await StorageLocationService.instance.openPdf(uri);
+      } else {
+        final result = await OpenFilex.open(uri, type: 'application/pdf');
+        if (result.type != ResultType.done) {
+          throw StateError(result.message.isEmpty ? 'No PDF viewer is available.' : result.message);
+        }
+      }
+    } catch (error) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not open PDF: $error')),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) => Scaffold(
     appBar: AppBar(title: Text(widget.collection['name'] as String)),
@@ -222,6 +243,7 @@ class _SmartCollectionResultsState extends State<_SmartCollectionResults> {
               leading: Icon(row['is_favorite'] == 1 ? Icons.star : Icons.picture_as_pdf_outlined),
               title: Text('${row['name']}.pdf', maxLines: 1, overflow: TextOverflow.ellipsis),
               subtitle: Text(size),
+              onTap: () => _openPdf(row),
             );
           },
         ),
