@@ -1277,7 +1277,12 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
           _clearSelection();
         }
       },
-      child: Column(
+      child: RefreshIndicator(
+        onRefresh: _load,
+        child: SingleChildScrollView(
+          controller: _scrollController,
+          physics: const AlwaysScrollableScrollPhysics(),
+          child: Column(
       children: [
         if (_selectionMode)
           Material(
@@ -1382,12 +1387,10 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                   child: _storageSummaryCard(
                     icon: Icons.phone_android,
                     title: 'Internal Storage',
-                    value: _phonePdfCount == null
+                    value: _phoneStorageBytes == null
                         ? 'Permission needed'
-                        : '${_phoneScanIncomplete ? 'At least ' : ''}$_phonePdfCount PDFs',
-                    detail: _phoneStorageBytes == null
-                        ? 'Accessible locations not yet available'
-                        : '${_phoneScanIncomplete || _phoneUnknownSizeCount > 0 ? 'At least ' : ''}${_size(_phoneStorageBytes!)} used by PDFs${_phoneUnknownSizeCount > 0 ? ' · size unavailable for $_phoneUnknownSizeCount PDFs' : ''}${_phoneInaccessibleCount > 0 ? ' · $_phoneInaccessibleCount inaccessible' : ''}',
+                        : '${_phoneScanIncomplete || _phoneUnknownSizeCount > 0 ? 'At least ' : ''}${_size(_phoneStorageBytes!)}',
+                    detail: '',
                     onTap: _browsePhoneStorage,
                   ),
                 ),
@@ -1396,8 +1399,8 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                   child: _storageSummaryCard(
                     icon: Icons.folder_copy_outlined,
                     title: 'Grid Storage',
-                    value: '$_totalDocumentCount PDFs',
-                    detail: '${_size(_totalStorageBytes)} used · $_starredCount starred',
+                    value: _size(_totalStorageBytes),
+                    detail: '',
                     onTap: () => Navigator.of(context).push(
                       MaterialPageRoute(builder: (_) => const FoldersScreen()),
                     ),
@@ -1569,74 +1572,77 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
             ),
           ),
         if (_importing) const LinearProgressIndicator(),
-        Expanded(
-          child: _loading
-              ? const Center(child: CircularProgressIndicator())
-              : _error != null
-                  ? Center(
-                      child: Padding(
-                        padding: const EdgeInsets.all(24),
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            const Icon(Icons.cloud_off_outlined, size: 42),
-                            const SizedBox(height: 12),
-                            const Text(
-                              'Could not load documents',
-                              style: TextStyle(fontWeight: FontWeight.w600),
-                              textAlign: TextAlign.center,
-                            ),
-                            const SizedBox(height: 6),
-                            Text(_error!, textAlign: TextAlign.center),
-                            const SizedBox(height: 14),
-                            FilledButton.icon(
-                              onPressed: _load,
-                              icon: const Icon(Icons.refresh),
-                              label: const Text('Try again'),
-                            ),
-                          ],
-                        ),
-                      ),
+        if (_loading)
+          const SizedBox(height: 220, child: Center(child: CircularProgressIndicator()))
+        else if (_error != null)
+          SizedBox(
+            height: 220,
+            child: Center(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.cloud_off_outlined, size: 42),
+                    const SizedBox(height: 12),
+                    const Text('Could not load documents',
+                      style: TextStyle(fontWeight: FontWeight.w600),
+                      textAlign: TextAlign.center),
+                    const SizedBox(height: 6),
+                    Text(_error!, textAlign: TextAlign.center),
+                    const SizedBox(height: 14),
+                    FilledButton.icon(
+                      onPressed: _load,
+                      icon: const Icon(Icons.refresh),
+                      label: const Text('Try again'),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          )
+        else if (_documents.isEmpty)
+          _emptyState()
+        else
+          if (_gridView)
+            LayoutBuilder(
+              builder: (context, constraints) {
+                final columns = constraints.maxWidth >= 600 ? 3 : 2;
+                return GridView.builder(
+                  shrinkWrap: true,
+                  physics: const NeverScrollableScrollPhysics(),
+                  padding: const EdgeInsets.fromLTRB(12, 8, 12, 100),
+                  gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: columns,
+                    crossAxisSpacing: 6,
+                    mainAxisSpacing: 6,
+                    childAspectRatio: 1.65,
+                  ),
+                  itemCount: _documents.length + (_loadingMore ? 1 : 0),
+                  itemBuilder: (context, index) => index >= _documents.length
+                      ? const Center(child: CircularProgressIndicator())
+                      : _documentTile(_documents[index]),
+                );
+              },
+            )
+          else
+            ListView.separated(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              padding: const EdgeInsets.fromLTRB(12, 8, 12, 100),
+              itemCount: _documents.length + (_loadingMore ? 1 : 0),
+              separatorBuilder: (_, _) => const SizedBox(height: 6),
+              itemBuilder: (context, index) => index >= _documents.length
+                  ? const Padding(
+                      padding: EdgeInsets.all(18),
+                      child: Center(child: CircularProgressIndicator()),
                     )
-                  : _documents.isEmpty
-                      ? _emptyState()
-                      : RefreshIndicator(
-                          onRefresh: _load,
-                          child: _gridView
-                              ? LayoutBuilder(
-                                  builder: (context, constraints) {
-                                    final columns = constraints.maxWidth >= 600 ? 3 : 2;
-                                    return GridView.builder(
-                                      controller: _scrollController,
-                                      padding: const EdgeInsets.fromLTRB(12, 8, 12, 100),
-                                      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                                        crossAxisCount: columns,
-                                        crossAxisSpacing: 6,
-                                        mainAxisSpacing: 6,
-                                        childAspectRatio: 1.65,
-                                      ),
-                                      itemCount: _documents.length + (_loadingMore ? 1 : 0),
-                                      itemBuilder: (context, index) => index >= _documents.length
-                                          ? const Center(child: CircularProgressIndicator())
-                                          : _documentTile(_documents[index]),
-                                    );
-                                  },
-                                )
-                              : ListView.separated(
-                                  controller: _scrollController,
-                                  padding: const EdgeInsets.fromLTRB(12, 8, 12, 100),
-                                  itemCount: _documents.length + (_loadingMore ? 1 : 0),
-                                  separatorBuilder: (_, _) => const SizedBox(height: 6),
-                                  itemBuilder: (context, index) => index >= _documents.length
-                                      ? const Padding(
-                                          padding: EdgeInsets.all(18),
-                                          child: Center(child: CircularProgressIndicator()),
-                                        )
-                                      : _documentTile(_documents[index]),
-                                ),
-                        ),
-        ),
+                  : _documentTile(_documents[index]),
+            ),
       ],
+          ),
+        ),
+      ),
     ),
     );
   }
@@ -1664,8 +1670,9 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
             Text(value, maxLines: 1, overflow: TextOverflow.ellipsis,
               style: Theme.of(context).textTheme.titleMedium),
             const SizedBox(height: 3),
-            Text(detail, maxLines: 2, overflow: TextOverflow.ellipsis,
-              style: Theme.of(context).textTheme.bodySmall),
+            if (detail.trim().isNotEmpty)
+              Text(detail, maxLines: 2, overflow: TextOverflow.ellipsis,
+                style: Theme.of(context).textTheme.bodySmall),
           ],
         ),
       ),
