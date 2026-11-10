@@ -118,7 +118,7 @@ void main() {
     ));
     await tester.tap(find.text('Open browser'));
     await tester.pumpAndSettle();
-    logTestLayout(tester);
+
     expect(find.text('Personal Documents'), findsOneWidget);
     await tester.tap(find.text('Personal Documents'));
     await tester.pumpAndSettle();
