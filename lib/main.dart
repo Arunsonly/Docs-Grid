@@ -681,6 +681,16 @@ class _SettingsScreenState extends State<_SettingsScreen> {
         ),
         const Divider(height: 1),
         ListTile(
+          leading: const Icon(Icons.auto_awesome_outlined),
+          title: const Text('Smart Collections'),
+          subtitle: const Text('Saved filters for categories, tags, starred and recent PDFs'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () => Navigator.of(context).push(MaterialPageRoute(
+            builder: (_) => const SmartCollectionsScreen(),
+          )),
+        ),
+        const Divider(height: 1),
+        ListTile(
           leading: const Icon(Icons.sell_outlined),
           title: const Text('Category & Tag'),
           trailing: const Icon(Icons.chevron_right),
