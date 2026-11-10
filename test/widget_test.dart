@@ -1,3 +1,5 @@
+import 'dart:ui' show Size;
+
 import 'package:docs_grid/main.dart';
 import 'package:flutter_test/flutter_test.dart';
 
