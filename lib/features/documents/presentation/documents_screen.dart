@@ -1,10 +1,12 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:open_filex/open_filex.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../data/document_repository.dart';
 import '../../../core/storage/storage_location_service.dart';
@@ -45,6 +47,9 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   int _trashCount = 0;
   int _trashBytes = 0;
   List<Map<String, Object?>> _phoneFolders = [];
+  List<Map<String, Object?>> _phoneRecent = [];
+  List<DocumentRecord> _gridRecent = [];
+  String _recentFilter = 'grid';
   List<Map<String, Object?>> _phoneEntries = [];
   final Set<String> _selectedIds = <String>{};
   bool _selectionMode = false;
@@ -60,6 +65,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     super.initState();
     _load();
     _loadTrashSummary();
+    _loadRecentDocuments();
     _search.addListener(_onSearchChanged);
     _scrollController.addListener(_onScroll);
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -309,6 +315,61 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     ));
   }
 
+  Future<void> _loadRecentDocuments() async {
+    try {
+      final page = await _repository.listPage(recentOnly: true, pageSize: 5);
+      final prefs = await SharedPreferences.getInstance();
+      final saved = prefs.getStringList('docsgrid_phone_recent_v1') ?? const <String>[];
+      final phone = <Map<String, Object?>>[];
+      for (final item in saved) {
+        try {
+          final decoded = jsonDecode(item);
+          if (decoded is Map) phone.add(Map<String, Object?>.from(decoded));
+        } catch (_) {
+          // Skip malformed optional recent metadata without affecting PDFs.
+        }
+      }
+      if (!mounted) return;
+      setState(() {
+        _gridRecent = page.items.take(5).toList(growable: false);
+        _phoneRecent = phone.take(5).toList(growable: false);
+      });
+    } catch (_) {
+      // Recent metadata is optional and must not block the dashboard.
+    }
+  }
+
+  Future<void> _recordPhoneRecent(String uri, String name) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final saved = prefs.getStringList('docsgrid_phone_recent_v1') ?? <String>[];
+      final recent = <Map<String, Object?>>[];
+      for (final item in saved) {
+        try {
+          final decoded = jsonDecode(item);
+          if (decoded is Map && decoded['uri'] != uri) {
+            recent.add(Map<String, Object?>.from(decoded));
+          }
+        } catch (_) {}
+      }
+      final bytes = _phoneEntries.where((entry) => entry['uri'] == uri)
+          .map((entry) => (entry['sizeBytes'] as num?)?.toInt() ?? 0)
+          .firstOrNull ?? 0;
+      recent.insert(0, {
+        'uri': uri,
+        'name': name,
+        'sizeBytes': bytes,
+        'openedAt': DateTime.now().toUtc().toIso8601String(),
+      });
+      final limited = recent.take(5).toList(growable: false);
+      await prefs.setStringList('docsgrid_phone_recent_v1',
+          limited.map((item) => jsonEncode(item)).toList());
+      if (mounted) setState(() => _phoneRecent = limited);
+    } catch (_) {
+      // Failure to save optional recent metadata must not affect PDF opening.
+    }
+  }
+
   Future<void> _openExternalStoragePdf(String uri, String name) async {
     try {
       if (uri.startsWith('file://')) {
@@ -320,6 +381,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
       } else {
         await StorageLocationService.instance.openPdf(uri);
       }
+      await _recordPhoneRecent(uri, name);
     } catch (error) {
       if (mounted) _message('Could not open $name: $error');
     }
@@ -916,6 +978,60 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
               value: '$_trashCount PDFs',
               detail: '${_size(_trashBytes)} · Restore or permanently delete',
               onTap: _showTrash,
+            ),
+          ),
+        if (!widget.favoritesOnly && !widget.recentOnly)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+            child: Card(
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('Recent Documents', style: TextStyle(fontWeight: FontWeight.w700)),
+                    const SizedBox(height: 8),
+                    SegmentedButton<String>(
+                      segments: const [
+                        ButtonSegment(value: 'phone', label: Text('Phone Recent')),
+                        ButtonSegment(value: 'grid', label: Text('Grid Recent')),
+                      ],
+                      selected: {_recentFilter},
+                      onSelectionChanged: (selection) =>
+                          setState(() => _recentFilter = selection.first),
+                    ),
+                    const SizedBox(height: 6),
+                    if (_recentFilter == 'phone')
+                      if (_phoneRecent.isEmpty)
+                        const ListTile(title: Text('No recently opened phone PDFs'))
+                      else
+                        for (final item in _phoneRecent)
+                          ListTile(
+                            dense: true,
+                            leading: const Icon(Icons.picture_as_pdf_outlined),
+                            title: Text(item['name'] as String? ?? 'PDF',
+                                maxLines: 1, overflow: TextOverflow.ellipsis),
+                            subtitle: Text(_size((item['sizeBytes'] as num?)?.toInt() ?? 0)),
+                            onTap: () => _openExternalStoragePdf(
+                              item['uri'] as String, item['name'] as String? ?? 'PDF',
+                            ),
+                          )
+                    else
+                      if (_gridRecent.isEmpty)
+                        const ListTile(title: Text('No recently opened Grid PDFs'))
+                      else
+                        for (final document in _gridRecent)
+                          ListTile(
+                            dense: true,
+                            leading: const Icon(Icons.picture_as_pdf_outlined),
+                            title: Text('${document.name}.pdf',
+                                maxLines: 1, overflow: TextOverflow.ellipsis),
+                            subtitle: Text(_size(document.sizeBytes)),
+                            onTap: () => _open(document),
+                          ),
+                  ],
+                ),
+              ),
             ),
           ),
         if (!widget.favoritesOnly && !widget.recentOnly && _phoneFolders.isNotEmpty)
