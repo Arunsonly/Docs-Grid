@@ -310,6 +310,7 @@ class StorageLocationService {
             'uri': uri,
             'folderPath': current.path,
             'parentUri': current.uri,
+            'sizeBytes': (child['size'] as num?)?.toInt() ?? 0,
           });
         }
       }
