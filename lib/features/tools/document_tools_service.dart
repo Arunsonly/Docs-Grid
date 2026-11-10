@@ -1197,7 +1197,13 @@ class DocumentToolsService {
     // A ZIP is untrusted input. Validate parent links before creating any
     // directories, and never use imported IDs as filesystem path segments.
     BackupFolderGraphValidator.validate(folderRows);
-    PortableSnapshotRowsValidator.validate(rowsByTable);
+    final externalDocumentIds = replaceExisting
+        ? <String>{}
+        : existingDocuments.map((row) => row['id'] as String).toSet();
+    PortableSnapshotRowsValidator.validate(
+      rowsByTable,
+      allowedExternalDocumentIds: externalDocumentIds,
+    );
     final portableLocations = Platform.isAndroid
         ? await StorageLocationService.instance.portableDataLocations()
         : const <String, String>{};
@@ -1293,9 +1299,17 @@ class DocumentToolsService {
           // complete replacement back if any insert or constraint fails.
           for (final table in [
             'document_tags', 'reminders', 'history', 'document_text_index',
-            'documents', 'folders', 'categories', 'tags', 'settings',
+            'documents', 'categories', 'tags', 'settings',
           ]) {
             await txn.delete(table);
+          }
+          // folders.parent_id uses ON DELETE RESTRICT: remove descendants
+          // before their parents rather than issuing one unsafe bulk delete.
+          final existingFolderRows = await txn.query(
+            'folders', columns: ['id', 'parent_id'],
+          );
+          for (final folder in BackupFolderGraphValidator.childFirst(existingFolderRows)) {
+            await txn.delete('folders', where: 'id = ?', whereArgs: [folder['id']]);
           }
         }
         var batch = txn.batch();
@@ -1315,7 +1329,7 @@ class DocumentToolsService {
           pending++;
         }
 
-        for (final row in folderRows) {
+        for (final row in BackupFolderGraphValidator.parentFirst(folderRows)) {
           final oldId = row['id'] as String;
           final copy = Map<String, Object?>.from(row);
           copy['id'] = folderIdMap[oldId];
@@ -1437,7 +1451,10 @@ class DocumentToolsService {
         for (final row in rowsByTable['document_text_index']!) {
           final oldDocumentId = row['document_id'] as String;
           if (duplicateDocumentIds.contains(oldDocumentId)) continue;
-          final mappedDocumentId = documentIdMap[oldDocumentId];
+          // Selective OCR-only restore may target an existing document without
+          // importing its document row; preserve that live document ID.
+          final mappedDocumentId = documentIdMap[oldDocumentId] ??
+              (externalDocumentIds.contains(oldDocumentId) ? oldDocumentId : null);
           if (mappedDocumentId == null) continue;
           queueInsert('document_text_index', {
             ...row,

@@ -2,7 +2,10 @@
 class PortableSnapshotRowsValidator {
   const PortableSnapshotRowsValidator._();
 
-  static void validate(Map<String, List<Map<String, Object?>>> tables) {
+  static void validate(
+    Map<String, List<Map<String, Object?>>> tables, {
+    Set<String> allowedExternalDocumentIds = const <String>{},
+  }) {
     final folderIds = _ids(tables, 'folders');
     final documentIds = _ids(tables, 'documents');
     final categoryIds = _ids(tables, 'categories');
@@ -162,9 +165,10 @@ class PortableSnapshotRowsValidator {
     optionalReference('documents', 'category_id', categoryIds);
     optionalReference('document_tags', 'document_id', documentIds, nullable: false);
     optionalReference('document_tags', 'tag_id', tagIds, nullable: false);
-    optionalReference('reminders', 'document_id', documentIds);
-    optionalReference('history', 'document_id', documentIds);
-    optionalReference('document_text_index', 'document_id', documentIds, nullable: false);
+    final validDocumentReferences = <String>{...documentIds, ...allowedExternalDocumentIds};
+    optionalReference('reminders', 'document_id', validDocumentReferences);
+    optionalReference('history', 'document_id', validDocumentReferences);
+    optionalReference('document_text_index', 'document_id', validDocumentReferences, nullable: false);
 
     uniqueText('categories', 'name', caseInsensitive: true);
     uniqueText('tags', 'name', caseInsensitive: true);
