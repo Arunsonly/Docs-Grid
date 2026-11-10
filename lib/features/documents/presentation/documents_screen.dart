@@ -39,6 +39,8 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   int _totalStorageBytes = 0;
   int _totalDocumentCount = 0;
   int _starredCount = 0;
+  int? _phonePdfCount;
+  int? _phoneStorageBytes;
   final Set<String> _selectedIds = <String>{};
   bool _selectionMode = false;
   int _loadGeneration = 0;
@@ -232,7 +234,16 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
       final files = await storage.listStorageTreeRecursively(
         selected['uri']!, includeEmptyFolders: true,
       );
+      final pdfEntries = files.where((entry) => entry['isDirectory'] != true).toList();
+      final phoneBytes = pdfEntries.fold<int>(
+        0,
+        (total, entry) => total + ((entry['sizeBytes'] as num?)?.toInt() ?? 0),
+      );
       if (!mounted) return;
+      setState(() {
+        _phonePdfCount = pdfEntries.length;
+        _phoneStorageBytes = phoneBytes;
+      });
       await _showRecursiveStoragePdfs(selected['name']!, files);
     } catch (error) {
       if (mounted) _message('Could not index the selected folder. Check its storage permission and try again: $error');
@@ -818,39 +829,31 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
             ),
           ),
         if (!widget.favoritesOnly && !widget.recentOnly)
-          Container(
-            margin: const EdgeInsets.fromLTRB(16, 10, 16, 8),
-            padding: const EdgeInsets.all(18),
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(22),
-              gradient: const LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: [Color(0xFF123B91), Color(0xFF087FC7), Color(0xFF08AFC0)],
-              ),
-              boxShadow: const [BoxShadow(color: Color(0x220B4B91), blurRadius: 18, offset: Offset(0, 8))],
-            ),
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              const Text('YOUR OFFLINE DRIVE', style: TextStyle(color: Colors.white70, fontSize: 11, letterSpacing: 1.4, fontWeight: FontWeight.w700)),
-              const SizedBox(height: 6),
-              Text('${_size(_totalStorageBytes)} occupied', style: const TextStyle(color: Colors.white70, fontSize: 12, fontWeight: FontWeight.w600)),
-              const SizedBox(height: 14),
-              Row(children: [
-                Expanded(child: _dashboardMetric(Icons.picture_as_pdf_outlined, '$_totalDocumentCount', 'Documents')),
-                Expanded(child: _dashboardMetric(Icons.star_border, '$_starredCount', 'Starred')),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 10, 16, 8),
+            child: Row(
+              children: [
                 Expanded(
-                  child: InkWell(
-                    borderRadius: BorderRadius.circular(14),
+                  child: _storageSummaryCard(
+                    icon: Icons.phone_android,
+                    title: 'Internal Storage',
+                    value: _phonePdfCount == null ? 'Not scanned' : '$_phonePdfCount PDFs',
+                    detail: _phoneStorageBytes == null ? 'Tap to scan accessible phone PDFs' : '${_size(_phoneStorageBytes!)} used by PDFs',
                     onTap: _browsePhoneStorage,
-                    child: _dashboardMetric(
-                      Icons.folder_open_outlined,
-                      'Browse',
-                      'Phone storage',
-                    ),
                   ),
                 ),
-              ]),
-            ]),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: _storageSummaryCard(
+                    icon: Icons.folder_copy_outlined,
+                    title: 'Grid Storage',
+                    value: '$_totalDocumentCount PDFs',
+                    detail: '${_size(_totalStorageBytes)} used · $_starredCount starred',
+                    onTap: _load,
+                  ),
+                ),
+              ],
+            ),
           ),
         if (!widget.favoritesOnly)
           Padding(
@@ -978,6 +981,37 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     ),
     );
   }
+
+  Widget _storageSummaryCard({
+    required IconData icon,
+    required String title,
+    required String value,
+    required String detail,
+    required VoidCallback onTap,
+  }) => Card(
+    elevation: 0,
+    child: InkWell(
+      borderRadius: BorderRadius.circular(16),
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(icon, size: 22, color: Theme.of(context).colorScheme.primary),
+            const SizedBox(height: 10),
+            Text(title, style: const TextStyle(fontWeight: FontWeight.w700)),
+            const SizedBox(height: 4),
+            Text(value, maxLines: 1, overflow: TextOverflow.ellipsis,
+              style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(height: 3),
+            Text(detail, maxLines: 2, overflow: TextOverflow.ellipsis,
+              style: Theme.of(context).textTheme.bodySmall),
+          ],
+        ),
+      ),
+    ),
+  );
 
   Widget _dashboardMetric(IconData icon, String value, String label) => Row(
     children: [
