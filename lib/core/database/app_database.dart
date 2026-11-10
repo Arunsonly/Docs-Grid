@@ -10,7 +10,7 @@ class AppDatabase {
   @visibleForTesting
   AppDatabase.forTesting(Future<Database> Function() opener) : this._(opener: opener);
 
-  static const int schemaVersion = 7;
+  static const int schemaVersion = 8;
   static final AppDatabase instance = AppDatabase._();
   final Future<Database> Function()? _opener;
 
@@ -120,6 +120,7 @@ class AppDatabase {
         await _createV5SummaryInvalidation(db);
         await _createV6NameSearchIndex(db);
         await _createV7FolderOrder(db);
+        await _createV8SmartCollections(db);
         await db.insert('schema_migrations', {
           'version': 1,
           'applied_at': DateTime.now().toUtc().toIso8601String(),
@@ -146,6 +147,10 @@ class AppDatabase {
         });
         await db.insert('schema_migrations', {
           'version': 7,
+          'applied_at': DateTime.now().toUtc().toIso8601String(),
+        });
+        await db.insert('schema_migrations', {
+          'version': 8,
           'applied_at': DateTime.now().toUtc().toIso8601String(),
         });
       },
@@ -207,6 +212,11 @@ class AppDatabase {
     if (oldVersion < 7 && newVersion >= 7) {
       await _createV7FolderOrder(db);
       await db.insert('schema_migrations', {'version': 7, 'applied_at': applied},
+          conflictAlgorithm: ConflictAlgorithm.ignore);
+    }
+    if (oldVersion < 8 && newVersion >= 8) {
+      await _createV8SmartCollections(db);
+      await db.insert('schema_migrations', {'version': 8, 'applied_at': applied},
           conflictAlgorithm: ConflictAlgorithm.ignore);
     }
   }
@@ -294,6 +304,23 @@ class AppDatabase {
         UPDATE document_summary_state SET revision = revision + 1 WHERE id = 1;
       END
     ''');
+  }
+
+  Future<void> _createV8SmartCollections(DatabaseExecutor db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS smart_collections (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+        query_text TEXT NOT NULL DEFAULT '',
+        favorites_only INTEGER NOT NULL DEFAULT 0,
+        recent_only INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )
+    ''');
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_smart_collections_name ON smart_collections(name COLLATE NOCASE)',
+    );
   }
 
   Future<void> _createV7FolderOrder(DatabaseExecutor db) async {
