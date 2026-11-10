@@ -739,6 +739,14 @@ class _FoldersScreenState extends State<FoldersScreen> {
                     child: ListView(
                       padding: const EdgeInsets.fromLTRB(12, 8, 12, 24),
                       children: [
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(4, 4, 4, 10),
+                          child: Align(
+                            alignment: Alignment.centerLeft,
+                            child: Text('${folders.length} folders · ${documents.length} PDFs',
+                              style: Theme.of(context).textTheme.bodySmall),
+                          ),
+                        ),
                         if (folders.isNotEmpty) ...[
                           Padding(
                             padding: const EdgeInsets.fromLTRB(4, 8, 4, 4),
