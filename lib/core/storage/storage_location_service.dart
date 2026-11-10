@@ -111,9 +111,10 @@ class StorageLocationService {
   }
 
   /// OS-exposed shared storage and all persisted SAF read grants. No picker.
-  Future<List<Map<String, String>>> accessibleStorageRoots() async {
-    if (!Platform.isAndroid) return const [];
-    final values = await _channel.invokeListMethod<dynamic>('getAccessibleScanRoots') ?? const [];
+  @visibleForTesting
+  static List<Map<String, String>> normalizeAccessibleStorageRoots(
+    Iterable<dynamic> values,
+  ) {
     final roots = <Map<String, String>>[];
     final seen = <String>{};
     for (final value in values) {
@@ -123,6 +124,12 @@ class StorageLocationService {
       roots.add({'uri': uri, 'name': name is String && name.isNotEmpty ? name : 'Granted folder'});
     }
     return roots;
+  }
+
+  Future<List<Map<String, String>>> accessibleStorageRoots() async {
+    if (!Platform.isAndroid) return const [];
+    final values = await _channel.invokeListMethod<dynamic>('getAccessibleScanRoots') ?? const [];
+    return normalizeAccessibleStorageRoots(values);
   }
 
   /// Checks whether the OS still grants access to the saved external folder.
