@@ -30,18 +30,6 @@ class PhoneStorageBrowserScreen extends StatefulWidget {
 class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
   String? _selectedFolderPath;
 
-  @override
-  void initState() {
-    super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) {
-        debugPrint('PHONE_STORAGE_DIAG widget tree follows');
-        debugDumpApp();
-        debugDumpRenderTree();
-      }
-    });
-  }
-
   String _normalizePath(String value) {
     final separator = String.fromCharCode(92);
     return value
@@ -143,15 +131,6 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
   @override
   Widget build(BuildContext context) {
     final folders = _directPdfFolders;
-    assert(() {
-      for (final entry in widget.entries) {
-        debugPrint('PHONE_STORAGE_DIAG entry=$entry isPdf=${_isPdfFile(entry)} '
-            'folderPath=${_normalizedFolderPath(entry)}');
-      }
-      debugPrint('PHONE_STORAGE_DIAG pdfCount=${_pdfs.length} '
-          'folders=${folders.keys.toList()}');
-      return true;
-    }());
     final selectedPath = _selectedFolderPath;
     final selectedFiles = selectedPath == null
         ? const <Map<String, Object?>>[]
