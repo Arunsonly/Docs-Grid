@@ -320,6 +320,15 @@ class _SmartCollectionResultsState extends State<_SmartCollectionResults> {
   List<Map<String, Object?>> _rows = [];
   bool _loading = true;
 
+  List<String> _tagIds(Object? raw) {
+    try {
+      final decoded = jsonDecode(raw as String? ?? '[]');
+      return decoded is List ? decoded.whereType<String>().toSet().toList() : const [];
+    } catch (_) {
+      return const [];
+    }
+  }
+
   @override
   void initState() { super.initState(); _load(); }
 
