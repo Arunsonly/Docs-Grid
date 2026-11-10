@@ -412,6 +412,56 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   Future<List<DocumentRecord>> _loadAllRecentGrid() =>
       _repository.recentActivity(limit: 100000);
 
+  List<PopupMenuEntry<String>> _phoneRecentMenu(Map<String, Object?> item) => [
+    const PopupMenuItem(value: 'share', child: Text('Share PDF')),
+    const PopupMenuItem(value: 'favorite', child: Text('Add to Star')),
+    const PopupMenuItem(value: 'category', child: Text('Set category')),
+    const PopupMenuItem(value: 'tags', child: Text('Edit tags')),
+    const PopupMenuItem(value: 'rename', child: Text('Rename')),
+    const PopupMenuItem(value: 'move', child: Text('Move to folder')),
+    const PopupMenuItem(value: 'trash', child: Text('Move to Recycle Bin')),
+  ];
+
+  Future<void> _handlePhoneRecentAction(Map<String, Object?> item, String action) async {
+    final uri = item['uri'] as String? ?? '';
+    final name = item['name'] as String? ?? 'PDF';
+    if (action == 'share') {
+      await _sharePhonePdf(uri, name);
+    } else if (action == 'favorite') {
+      await _recordExternalFavorite(uri, name);
+    } else {
+      _message('This Phone PDF action is available from the Phone folder browser.');
+    }
+  }
+
+  Future<void> _recordExternalFavorite(String uri, String name) async {
+    _message('Phone files can be starred after importing them into Grid.');
+  }
+
+  Future<void> _openPhoneRecentSelection(Map<String, Object?> first) async {
+    final items = _phoneRecent;
+    final selected = <String>{first['uri'] as String};
+    await Navigator.of(context).push<void>(MaterialPageRoute(
+      builder: (_) => _PhoneRecentSelectionScreen(
+        items: items,
+        initialUri: first['uri'] as String,
+        onOpen: (item) => _openExternalStoragePdf(
+          item['uri'] as String, item['name'] as String? ?? 'PDF',
+        ),
+        onShare: (chosen) => _tools.shareManyStoredPdfs(
+          chosen.map((x) => x['uri'] as String).toList(),
+          chosen.map((x) => '${x['name']}.pdf').toList(),
+        ),
+        onDelete: (chosen) async {
+          final prefs = await SharedPreferences.getInstance();
+          final keep = _phoneRecent.where((item) => !chosen.any((x) => x['uri'] == item['uri'])).toList();
+          await prefs.setStringList('docsgrid_phone_recent_v1', keep.map(jsonEncode).toList());
+          if (mounted) setState(() => _phoneRecent = keep);
+        },
+      ),
+    ));
+  }
+
   Widget _recentDocumentTile(DocumentRecord document) {
     final activityAt = document.lastOpenedAt ?? document.createdAt;
     final activity = document.lastOpenedAt != null
@@ -1777,8 +1827,7 @@ class _RecentSelectionScreenState extends State<_RecentSelectionScreen> {
                               ],
                       ),
                     ]),
-                    const SizedBox(height: 8),,
-                    const SizedBox(height: 6),
+                    const SizedBox(height: 8),
                     SizedBox(
                       height: 320,
                       child: _showStarredRecent
@@ -1812,6 +1861,12 @@ class _RecentSelectionScreenState extends State<_RecentSelectionScreen> {
                                       subtitle: Text('Opened · ${_recentDateLabel(openedAt ?? DateTime.now())}'),
                                       onTap: () => _openExternalStoragePdf(
                                         item['uri'] as String, name,
+                                      ),
+                                      onLongPress: () => _openPhoneRecentSelection(item),
+                                      trailing: PopupMenuButton<String>(
+                                        tooltip: 'Actions for $name',
+                                        onSelected: (action) => _handlePhoneRecentAction(item, action),
+                                        itemBuilder: (_) => _phoneRecentMenu(item),
                                       ),
                                     );
                                   },
