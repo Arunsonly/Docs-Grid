@@ -1603,8 +1603,9 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
             ),
           ),
         if (_importing) const LinearProgressIndicator(),
-        if (_loading)
-          const SizedBox(height: 220, child: Center(child: CircularProgressIndicator()))
+        if (widget.favoritesOnly || widget.recentOnly || _search.text.trim().isNotEmpty)
+          if (_loading)
+            const SizedBox(height: 220, child: Center(child: CircularProgressIndicator()))
         else if (_error != null)
           SizedBox(
             height: 220,
