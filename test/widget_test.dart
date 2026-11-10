@@ -14,8 +14,9 @@ void main() {
     expect(find.text('DocsGrid'), findsOneWidget);
     expect(find.text('Home'), findsOneWidget);
     expect(find.text('Grid'), findsOneWidget);
-    expect(find.text('Star'), findsOneWidget);
-    expect(find.text('Settings'), findsOneWidget);
+    expect(find.text('Phone'), findsOneWidget);
+    expect(find.text('Home'), findsOneWidget);
+    expect(find.text('Grid'), findsOneWidget);
   });
 
 }
