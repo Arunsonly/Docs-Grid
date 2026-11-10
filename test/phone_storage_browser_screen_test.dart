@@ -1,24 +1,14 @@
-import 'dart:ui' show Size;
 import 'package:docs_grid/features/documents/presentation/phone_storage_browser_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  void logTestLayout(WidgetTester tester) {
-    final screen = find.byType(PhoneStorageBrowserScreen).last;
-    final element = tester.element(screen);
-    final scaffolds = find.byType(Scaffold);
-    final lists = find.byType(ListView);
-    debugPrint('TEST_LAYOUT view=${tester.view.physicalSize} '
-        'dpr=${tester.view.devicePixelRatio} '
-        'media=${MediaQuery.sizeOf(element)} '
-        'scaffold=${tester.getSize(scaffolds.last)} '
-        'list=${tester.getSize(lists.last)}');
-  }
-
   void setTestViewport(WidgetTester tester) {
     tester.view.physicalSize = const Size(800, 600);
     tester.view.devicePixelRatio = 1;
+    tester.view.padding = FakeViewPadding.zero;
+    tester.view.viewPadding = FakeViewPadding.zero;
+    tester.view.viewInsets = FakeViewPadding.zero;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
   }
@@ -47,7 +37,6 @@ void main() {
         },
       ),
     ));
-    logTestLayout(tester);
 
     expect(find.text('Work Files'), findsOneWidget);
     expect(find.text('Archived Files'), findsOneWidget);
