@@ -264,6 +264,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
                           BackupRestoreSection.reminders => 'Reminders',
                           BackupRestoreSection.history => 'Activity and history',
                           BackupRestoreSection.settings => 'Settings',
+                          BackupRestoreSection.smartCollections => 'Smart Collections',
                           BackupRestoreSection.ocrIndexes => 'OCR search indexes',
                         }),
                         onChanged: (checked) => refresh(() {
