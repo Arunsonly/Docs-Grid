@@ -347,7 +347,7 @@ class StorageLocationService {
     final pending = <({String uri, String path, int depth})>[(uri: rootUri, path: '', depth: 0)];
     final visited = <String>{};
     final entries = <Map<String, Object?>>[];
-    final counts = <String, int>{}, sizes = <String, int>{};
+    final counts = <String, int>{}, sizes = <String, int>{}, unknownSizes = <String, int>{};
     final withPdfs = <String>{}, allFolders = <String>{}, inaccessible = <String>[];
     final incompleteFolders = <String>{};
     var visitedEntries = 0;
@@ -381,11 +381,14 @@ class StorageLocationService {
           pending.add((uri: uri, path: path, depth: current.depth + 1));
         } else if (name.toLowerCase().endsWith('.pdf')) {
           final size = (child['sizeBytes'] as num?)?.toInt() ?? (child['size'] as num?)?.toInt() ?? 0;
-          entries.add({'name': name, 'uri': uri, 'folderPath': current.path, 'sizeBytes': size, 'isDirectory': false});
+          final sizeKnown = child['sizeKnown'] as bool? ?? true;
+          entries.add({'name': name, 'uri': uri, 'folderPath': current.path,
+            'sizeBytes': size < 0 ? 0 : size, 'sizeKnown': sizeKnown, 'isDirectory': false});
           var ancestor = current.path;
           while (ancestor.isNotEmpty) {
             withPdfs.add(ancestor); counts[ancestor] = (counts[ancestor] ?? 0) + 1;
-            sizes[ancestor] = (sizes[ancestor] ?? 0) + size;
+            sizes[ancestor] = (sizes[ancestor] ?? 0) + (size < 0 ? 0 : size);
+            if (!sizeKnown) unknownSizes[ancestor] = (unknownSizes[ancestor] ?? 0) + 1;
             final slash = ancestor.lastIndexOf('/'); ancestor = slash < 0 ? '' : ancestor.substring(0,slash);
           }
         }
@@ -397,7 +400,9 @@ class StorageLocationService {
       return <String,Object?>{'name':parts.last,'uri':'',
         'folderPath':parts.length == 1 ? '' : parts.sublist(0,parts.length-1).join('/'),
         'path':path,'isDirectory':true,'pdfCount':counts[path] ?? 0,'sizeBytes':sizes[path] ?? 0,
-        'isIncomplete':incompleteFolders.contains(path)};
+        'isIncomplete':incompleteFolders.contains(path),
+        'unknownSizeCount':unknownSizes[path] ?? 0,
+        'isSizeIncomplete':(unknownSizes[path] ?? 0) > 0 || incompleteFolders.contains(path)};
     }));
     entries.sort((a,b) {
       final pth=(a['folderPath'] as String).compareTo(b['folderPath'] as String);
@@ -406,10 +411,11 @@ class StorageLocationService {
       return (a['name'] as String).toLowerCase().compareTo((b['name'] as String).toLowerCase());
     });
     if(rootLabel.isNotEmpty) {
-      var totalCount=0,totalBytes=0;
+      var totalCount=0,totalBytes=0,totalUnknownSizes=0;
       for(final entry in entries) {
         if(entry['isDirectory']!=true) {
           totalCount++; totalBytes+=(entry['sizeBytes'] as num?)?.toInt() ?? 0;
+          if (entry['sizeKnown'] == false) totalUnknownSizes++;
           final folder=entry['folderPath'] as String? ?? '';
           entry['folderPath']=folder.isEmpty?rootLabel:'$rootLabel/$folder';
         } else {
@@ -423,7 +429,9 @@ class StorageLocationService {
       if (totalCount > 0) {
         entries.add({'name':rootLabel,'uri':rootUri,'folderPath':'','path':rootLabel,
           'isDirectory':true,'pdfCount':totalCount,'sizeBytes':totalBytes,
-          'isIncomplete':inaccessible.isNotEmpty});
+          'isIncomplete':inaccessible.isNotEmpty,
+          'unknownSizeCount':totalUnknownSizes,
+          'isSizeIncomplete':inaccessible.isNotEmpty || totalUnknownSizes > 0});
       }
     }
     if(inaccessible.isNotEmpty) entries.add({'name':'${inaccessible.length} inaccessible folder(s)',
