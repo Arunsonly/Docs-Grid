@@ -27,236 +27,203 @@ class PhoneStorageBrowserScreen extends StatefulWidget {
       _PhoneStorageBrowserScreenState();
 }
 
-class _PhoneStorageBrowserScreenState
-    extends State<PhoneStorageBrowserScreen> {
-  late String _currentPath;
-
-  @override
-  void initState() {
-    super.initState();
-    _currentPath = widget.initialPath;
-  }
-
-  // Derive these from the current widget input rather than caching a snapshot.
-  // The browser can be rebuilt after a storage rescan or refreshed test fixture.
-  Set<String> get _folderPaths => widget.entries
-      .where((entry) =>
-          entry['isDirectory'] == true &&
-          entry['isInaccessible'] != true &&
-          entry['isInaccessibleSummary'] != true &&
-          entry['path'] is String)
-      .map((entry) => entry['path'] as String)
-      .toSet();
-
-  List<Map<String, Object?>> get _inaccessible => widget.entries
-      .where((entry) => entry['isInaccessible'] == true)
-      .toList(growable: false);
+class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
+  String? _selectedFolderPath;
 
   List<Map<String, Object?>> get _pdfs => widget.entries
-      .where((entry) => entry['isDirectory'] != true)
+      .where((entry) =>
+          entry['isDirectory'] != true &&
+          entry['isInaccessible'] != true &&
+          entry['isInaccessibleSummary'] != true)
       .toList(growable: false);
 
-  List<String> get _crumbs =>
-      _currentPath.isEmpty ? const [] : _currentPath.split('/');
-
-  List<String> get _folders => (_folderPaths.where((path) {
-        final parent =
-            path.contains('/') ? path.substring(0, path.lastIndexOf('/')) : '';
-        return parent == _currentPath;
-      }).toList()
-        ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase())));
-
-  List<Map<String, Object?>> get _files => _pdfs
-      .where((entry) => entry['folderPath'] == _currentPath)
-      .toList(growable: false);
-
-  int _countPdfsUnder(String folderPath) {
-    final descendantPrefix = '$folderPath/';
-    return _pdfs.where((entry) {
-      final path = entry['folderPath'] as String? ?? '';
-      return path == folderPath || path.startsWith(descendantPrefix);
-    }).length;
+  Map<String, List<Map<String, Object?>>> get _directPdfFolders {
+    final grouped = <String, List<Map<String, Object?>>>{};
+    for (final pdf in _pdfs) {
+      final path = pdf['folderPath'] as String? ?? '';
+      if (path.isEmpty) continue;
+      (grouped[path] ??= <Map<String, Object?>>[]).add(pdf);
+    }
+    final sorted = grouped.keys.toList()
+      ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+    return {
+      for (final path in sorted)
+        path: grouped[path]!..sort((a, b) =>
+            (a['name'] as String).toLowerCase().compareTo(
+                (b['name'] as String).toLowerCase())),
+    };
   }
 
-  int _sizeUnder(String folderPath) {
-    final prefix = '$folderPath/';
-    return _pdfs.where((entry) {
-      final path = entry['folderPath'] as String? ?? '';
-      return path == folderPath || path.startsWith(prefix);
-    }).fold<int>(0, (sum, entry) =>
-        sum + ((entry['sizeBytes'] as num?)?.toInt() ?? 0));
-  }
+  String _folderName(String path) => path.split('/').last;
+
+  String _displayPath(String path) =>
+      path.startsWith('/') ? path : '${widget.rootName}/$path';
 
   String _formatSize(int bytes) {
     if (bytes < 1024) return '$bytes B';
     if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
-    if (bytes < 1024 * 1024 * 1024) return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+    if (bytes < 1024 * 1024 * 1024) {
+      return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+    }
     return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
   }
 
-  void _navigateBack() {
-    if (_currentPath.isEmpty) return;
-    final separator = _currentPath.lastIndexOf('/');
-    setState(() {
-      _currentPath =
-          separator < 0 ? '' : _currentPath.substring(0, separator);
-    });
+  Future<void> _runPdfAction(
+    String action,
+    Map<String, Object?> entry,
+  ) async {
+    final uri = entry['uri'] as String;
+    final name = entry['name'] as String;
+    var sourceChanged = false;
+    if (action == 'move') {
+      sourceChanged = await widget.onMovePdf?.call(uri, name) ?? false;
+    } else if (action == 'rename') {
+      sourceChanged = await widget.onRenamePdf?.call(uri, name) ?? false;
+    } else if (action == 'share') {
+      await widget.onSharePdf?.call(uri, name);
+    } else if (action == 'trash') {
+      sourceChanged = await widget.onTrashPdf?.call(uri, name) ?? false;
+    }
+    if (sourceChanged && mounted) Navigator.of(context).pop();
   }
 
   @override
   Widget build(BuildContext context) {
-    final folders = _folders;
-    final files = _files;
+    final folders = _directPdfFolders;
+    final selectedPath = _selectedFolderPath;
+    final selectedFiles =
+        selectedPath == null ? const <Map<String, Object?>>[] : folders[selectedPath] ?? const [];
 
-    return PopScope<Object?>(
-      canPop: _currentPath.isEmpty,
-      onPopInvokedWithResult: (didPop, result) {
-        if (!didPop && _currentPath.isNotEmpty) {
-          _navigateBack();
-        }
-      },
-      child: Scaffold(
-        appBar: AppBar(
-          title: Text(
-            widget.rootName,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-          ),
-          actions: [
-            IconButton(
-              tooltip: 'Go to root',
-              onPressed: _currentPath.isEmpty
-                  ? null
-                  : () => setState(() => _currentPath = ''),
-              icon: const Icon(Icons.home_outlined),
-            ),
-          ],
-        ),
-        bottomNavigationBar: SafeArea(
-          top: false,
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
-            child: Align(
-              alignment: Alignment.centerLeft,
-              child: Text('${folders.length} folders · ${files.length} PDFs',
-                style: Theme.of(context).textTheme.bodySmall),
-            ),
-          ),
-        ),
-        body: Column(
-          children: [
-            if (_inaccessible.isNotEmpty)
-              Material(
-                color: Theme.of(context).colorScheme.errorContainer,
-                child: Padding(
-                  padding: const EdgeInsets.all(12),
-                  child: Row(children: [
-                    const Icon(Icons.lock_outline),
-                    const SizedBox(width: 8),
-                    Expanded(child: Text(
-                      '${_inaccessible.length} storage location(s) are inaccessible. They are not treated as empty.',
-                    )),
-                  ]),
-                ),
+    return Scaffold(
+      appBar: AppBar(
+        leading: selectedPath == null
+            ? null
+            : IconButton(
+                tooltip: 'Back to folders',
+                onPressed: () => setState(() => _selectedFolderPath = null),
+                icon: const Icon(Icons.arrow_back),
               ),
-            if (_currentPath.isNotEmpty)
-              SizedBox(
-                height: 54,
-                child: ListView(
-                  scrollDirection: Axis.horizontal,
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                  children: [
-                    TextButton(
-                      onPressed: () => setState(() => _currentPath = ''),
-                      child: Text(widget.rootName),
-                    ),
-                    for (var i = 0; i < _crumbs.length; i++) ...[
-                      const Icon(Icons.chevron_right, size: 18),
-                      TextButton(
-                        onPressed: () => setState(
-                          () => _currentPath = _crumbs.take(i + 1).join('/'),
-                        ),
-                        child: Text(_crumbs[i]),
+        title: Text(
+          selectedPath == null ? widget.rootName : _folderName(selectedPath),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
+      ),
+      body: selectedPath == null
+          ? folders.isEmpty
+              ? const Center(child: Text('No folders with direct PDF files.'))
+              : ListView.builder(
+                  itemCount: folders.length,
+                  itemBuilder: (context, index) {
+                    final path = folders.keys.elementAt(index);
+                    final files = folders[path]!;
+                    final bytes = files.fold<int>(
+                      0,
+                      (sum, file) =>
+                          sum + ((file['sizeBytes'] as num?)?.toInt() ?? 0),
+                    );
+                    return ListTile(
+                      key: ValueKey('phone-folder-$path'),
+                      leading: const Icon(Icons.folder_outlined),
+                      title: Text(
+                        _folderName(path),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
                       ),
-                    ],
-                  ],
+                      subtitle: Text(
+                        '${files.length} PDFs · ${_formatSize(bytes)}',
+                      ),
+                      onTap: () =>
+                          setState(() => _selectedFolderPath = path),
+                      trailing: PopupMenuButton<String>(
+                        tooltip: 'Folder details and actions',
+                        onSelected: (value) {
+                          if (value == 'open') {
+                            setState(() => _selectedFolderPath = path);
+                          }
+                        },
+                        itemBuilder: (_) => [
+                          PopupMenuItem<String>(
+                            enabled: false,
+                            child: SizedBox(
+                              width: 240,
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Text(
+                                    _folderName(path),
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    _displayPath(path),
+                                    style: Theme.of(context).textTheme.bodySmall,
+                                    softWrap: true,
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                          const PopupMenuDivider(),
+                          const PopupMenuItem(
+                            value: 'open',
+                            child: Text('Open folder'),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                )
+          : selectedFiles.isEmpty
+              ? const Center(child: Text('No PDF files in this folder.'))
+              : ListView.builder(
+                  itemCount: selectedFiles.length,
+                  itemBuilder: (context, index) {
+                    final entry = selectedFiles[index];
+                    return ListTile(
+                      leading: const Icon(Icons.picture_as_pdf_outlined),
+                      title: Text(
+                        entry['name'] as String,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      subtitle: const Text('PDF document'),
+                      trailing: PopupMenuButton<String>(
+                        onSelected: (action) => _runPdfAction(action, entry),
+                        itemBuilder: (_) => [
+                          if (widget.onMovePdf != null)
+                            const PopupMenuItem(value: 'move', child: Text('Move to Grid')),
+                          if (widget.onRenamePdf != null)
+                            const PopupMenuItem(value: 'rename', child: Text('Rename')),
+                          if (widget.onSharePdf != null)
+                            const PopupMenuItem(value: 'share', child: Text('Share')),
+                          if (widget.onTrashPdf != null)
+                            const PopupMenuItem(value: 'trash', child: Text('Move to Recycle Bin')),
+                        ],
+                      ),
+                      onTap: () => widget.onOpenPdf(
+                        entry['uri'] as String,
+                        entry['name'] as String,
+                      ),
+                    );
+                  },
                 ),
-              ),
-            Expanded(
-              child: folders.isEmpty && files.isEmpty
-                  ? const Center(child: Text('No PDFs in this folder.'))
-                  : ListView(
-                      children: [
-                        for (final path in folders)
-                          ListTile(
-                            leading: const Icon(Icons.folder_outlined),
-                            title: Text(
-                              path.split('/').last,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                            subtitle: Text(
-                              '${_countPdfsUnder(path)} PDFs · ${_formatSize(_sizeUnder(path))}',
-                            ),
-                            trailing: const Icon(Icons.chevron_right),
-                            onTap: () =>
-                                setState(() => _currentPath = path),
-                          ),
-                        if (folders.isNotEmpty && files.isNotEmpty)
-                          const Divider(height: 1),
-                        for (final entry in files)
-                          ListTile(
-                            leading:
-                                const Icon(Icons.picture_as_pdf_outlined),
-                            title: Text(
-                              entry['name'] as String,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                            subtitle: const Text('PDF document'),
-                            trailing: PopupMenuButton<String>(
-                              onSelected: (action) async {
-                                final uri = entry['uri'] as String;
-                                final name = entry['name'] as String;
-                                var sourceChanged = false;
-                                if (action == 'move') {
-                                  sourceChanged = await widget.onMovePdf?.call(uri, name) ?? false;
-                                }
-                                if (action == 'rename') {
-                                  sourceChanged = await widget.onRenamePdf?.call(uri, name) ?? false;
-                                }
-                                if (action == 'share') {
-                                  await widget.onSharePdf?.call(uri, name);
-                                }
-                                if (action == 'trash') {
-                                  sourceChanged = await widget.onTrashPdf?.call(uri, name) ?? false;
-                                }
-                                // The parent rescans Phone Storage after a successful
-                                // mutation. Close this snapshot-based browser so stale
-                                // document URIs cannot be acted on again.
-                                if (sourceChanged && mounted) Navigator.of(context).pop();
-                              },
-                              itemBuilder: (_) => [
-                                if (widget.onMovePdf != null)
-                                  const PopupMenuItem(value: 'move', child: Text('Move to Grid')),
-                                if (widget.onRenamePdf != null)
-                                  const PopupMenuItem(value: 'rename', child: Text('Rename')),
-                                if (widget.onSharePdf != null)
-                                  const PopupMenuItem(value: 'share', child: Text('Share')),
-                                if (widget.onTrashPdf != null)
-                                  const PopupMenuItem(value: 'trash', child: Text('Move to Recycle Bin')),
-                              ],
-                            ),
-                            onTap: () => widget.onOpenPdf(
-                              entry['uri'] as String,
-                              entry['name'] as String,
-                            ),
-                          ),
-                      ],
-                    ),
+      bottomNavigationBar: SafeArea(
+        top: false,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: Text(
+              selectedPath == null
+                  ? '${folders.length} folders'
+                  : '${selectedFiles.length} PDFs',
+              style: Theme.of(context).textTheme.bodySmall,
             ),
-          ],
+          ),
         ),
       ),
     );
