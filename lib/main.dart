@@ -418,6 +418,19 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
     return Scaffold(
       appBar: AppBar(
         title: const Text('DocsGrid', style: TextStyle(fontWeight: FontWeight.w700)),
+        actions: [
+          IconButton(
+            tooltip: widget.darkMode ? 'Switch to light theme' : 'Switch to dark theme',
+            onPressed: () => widget.onDarkModeChanged(!widget.darkMode),
+            icon: Icon(widget.darkMode ? Icons.light_mode_outlined : Icons.dark_mode_outlined),
+          ),
+          IconButton(
+            tooltip: 'Settings',
+            onPressed: () => setState(() => _selectedIndex = 3),
+            icon: const Icon(Icons.settings_outlined),
+          ),
+          const SizedBox(width: 6),
+        ],
       ),
       body: SafeArea(
         child: switch (_selectedIndex) {
@@ -427,18 +440,11 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
           _ => _SettingsScreen(darkMode: widget.darkMode, onDarkModeChanged: widget.onDarkModeChanged),
         },
       ),
-      floatingActionButton: _selectedIndex == 0
-          ? FloatingActionButton.small(
-              tooltip: 'Quick document actions',
-              onPressed: _showQuickActions,
-              child: const Icon(Icons.document_scanner_outlined),
-            )
-          : null,
       bottomNavigationBar: NavigationBar(
         selectedIndex: _selectedIndex,
         onDestinationSelected: (index) => setState(() => _selectedIndex = index),
         destinations: const [
-          NavigationDestination(icon: Icon(Icons.dashboard_outlined), label: 'Dashboard'),
+          NavigationDestination(icon: Icon(Icons.dashboard_outlined), label: 'Home'),
           NavigationDestination(icon: Icon(Icons.folder_outlined), label: 'Grid'),
           NavigationDestination(icon: Icon(Icons.star_border), label: 'Star'),
           NavigationDestination(icon: Icon(Icons.settings_outlined), label: 'Settings'),
