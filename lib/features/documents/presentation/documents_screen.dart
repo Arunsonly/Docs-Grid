@@ -632,48 +632,6 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     );
   }
 
-  List<PopupMenuEntry<String>> _phoneRecentMenu(Map<String, Object?> item) => [
-    const PopupMenuItem(value: 'share', child: Text('Share PDF')),
-    const PopupMenuItem(value: 'favorite', child: Text('Add to Star')),
-    const PopupMenuItem(value: 'category', child: Text('Set category')),
-    const PopupMenuItem(value: 'tags', child: Text('Edit tags')),
-    const PopupMenuItem(value: 'rename', child: Text('Rename')),
-    const PopupMenuItem(value: 'move', child: Text('Move to folder')),
-    const PopupMenuItem(value: 'trash', child: Text('Move to Recycle Bin')),
-  ];
-
-  Future<void> _handlePhoneRecentAction(Map<String, Object?> item, String action) async {
-    final uri = item['uri'] as String? ?? '';
-    final name = item['name'] as String? ?? 'PDF';
-    if (action == 'share') {
-      await _sharePhonePdf(uri, name);
-    } else if (action == 'rename') {
-      final renamed = await _renamePhonePdf(uri, name);
-      if (renamed) await _loadRecentDocuments();
-    } else {
-      _message('Import this Phone PDF into Grid to manage its Star, category, tags and Recycle Bin record.');
-    }
-  }
-
-  Future<void> _openPhoneRecentSelection(Map<String, Object?> first) async {
-    await Navigator.of(context).push<void>(MaterialPageRoute(
-      builder: (_) => _PhoneRecentSelectionScreen(
-        items: _phoneRecent,
-        initialUri: first['uri'] as String,
-        onShare: (chosen) => _tools.shareManyStoredPdfs(
-          chosen.map((x) => x['uri'] as String).toList(),
-          chosen.map((x) => '${x['name']}.pdf').toList(),
-        ),
-        onDelete: (chosen) async {
-          final prefs = await SharedPreferences.getInstance();
-          final keep = _phoneRecent.where((item) => !chosen.any((x) => x['uri'] == item['uri'])).toList();
-          await prefs.setStringList('docsgrid_phone_recent_v1', keep.map(jsonEncode).toList());
-          if (mounted) setState(() => _phoneRecent = keep);
-        },
-      ),
-    ));
-  }
-
   Future<void> _loadRecentDocuments() async {
     try {
       // Include both opened documents and newly added documents. The list
@@ -951,7 +909,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     }
   }
 
-  Future<void> _rename(DocumentRecord document) async {
+  Future<bool> _rename(DocumentRecord document) async {
     final controller = TextEditingController(text: document.name);
     final value = await showDialog<String>(
       context: context,
@@ -969,12 +927,14 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
       ),
     );
     controller.dispose();
-    if (value == null) return;
+    if (value == null) return false;
     try {
       await _repository.rename(document, value);
       await _patchDocument(document.id);
+      return true;
     } catch (error) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$error')));
+      return false;
     }
   }
 
@@ -1757,14 +1717,22 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                                   itemBuilder: (context, index) => _recentDocumentTile(_starredRecent[index]),
                                 )
                           : _recentFilter == 'phone'
-                          ? _phoneRecent.isEmpty
-                              ? const Center(child: Text('No recent Phone PDFs'))
-                              : ListView.separated(
-                                  primary: false,
-                                  itemCount: _phoneRecent.length,
-                                  separatorBuilder: (_, _) => const Divider(height: 1),
-                                  itemBuilder: (context, index) => _phoneRecentTile(_phoneRecent[index]),
-                                ),
+                              ? _phoneRecent.isEmpty
+                                  ? const Center(child: Text('No recent Phone PDFs'))
+                                  : ListView.separated(
+                                      primary: false,
+                                      itemCount: _phoneRecent.length,
+                                      separatorBuilder: (_, _) => const Divider(height: 1),
+                                      itemBuilder: (context, index) => _phoneRecentTile(_phoneRecent[index]),
+                                    )
+                              : _gridRecent.isEmpty
+                                  ? const Center(child: Text('No recent Grid PDFs'))
+                                  : ListView.separated(
+                                      primary: false,
+                                      itemCount: _gridRecent.length,
+                                      separatorBuilder: (_, _) => const Divider(height: 1),
+                                      itemBuilder: (context, index) => _recentDocumentTile(_gridRecent[index]),
+                                    ),
                     ),
                   ],
                 ),
