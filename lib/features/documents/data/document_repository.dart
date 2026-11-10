@@ -1071,6 +1071,46 @@ class DocumentRepository {
     return const ImportSummary(added: 1, duplicates: 0, failed: 0);
   }
 
+  /// Moves a PDF discovered in shared storage into the managed Grid library.
+  /// The source is deleted only after the copied PDF has been verified and its
+  /// database record has committed successfully.
+  Future<ImportSummary> moveExternalPdfToGrid({
+    required String sourceUri,
+    required String displayName,
+    String? targetFolderId,
+  }) async {
+    final storage = StorageLocationService.instance;
+    final tempDirectory = await getTemporaryDirectory();
+    final staged = File(p.join(
+      tempDirectory.path,
+      'docsgrid_move_${DateTime.now().microsecondsSinceEpoch}.pdf',
+    ));
+    try {
+      await storage.copyPdfToPath(
+        sourceUri: sourceUri,
+        destinationPath: staged.path,
+      );
+      final imported = await importScannedPdf(
+        staged,
+        displayName: displayName,
+        targetFolderId: targetFolderId,
+        sourceType: 'phone_storage_move',
+      );
+      if (imported.added == 0) {
+        // A duplicate already exists in Grid. Keep the Phone original intact.
+        return imported;
+      }
+      // importScannedPdf verifies SHA-256 and commits the Grid record before
+      // this destructive step. If deletion fails, both copies remain safe.
+      await storage.deletePdf(sourceUri);
+      return imported;
+    } finally {
+      try {
+        if (await staged.exists()) await staged.delete();
+      } catch (_) {}
+    }
+  }
+
   Future<ImportSummary> importPdfs({
     Future<ImportDecision?> Function(String suggestedName, String? suggestedCategoryId, List<ImportCategoryOption> categories)? review,
     String? targetFolderId,
