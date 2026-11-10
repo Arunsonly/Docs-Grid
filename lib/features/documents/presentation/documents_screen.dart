@@ -333,6 +333,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     await Navigator.of(context).push<void>(MaterialPageRoute(
       builder: (_) => PhoneStorageBrowserScreen(
         rootName: rootName, entries: entries, onOpenPdf: _openExternalStoragePdf,
+        onMovePdf: _movePhonePdfToGrid,
         initialPath: initialPath,
       ),
     ));
@@ -880,6 +881,110 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     if (result == null) return;
     await _categoryRepository.setDocumentTags(document.id, result.toList());
     await _patchDocument(document.id);
+  }
+
+  Future<void> _movePhonePdfToGrid(String uri, String name) async {
+    var folders = await _folderRepository.allFoldersWithPaths();
+    var selectedFolderId = '';
+    final destination = await showDialog<String?>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, refresh) => AlertDialog(
+          title: const Text('Move PDF to Grid'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Text('Folder'),
+              DropdownButtonFormField<String>(
+                value: selectedFolderId,
+                isExpanded: true,
+                items: [
+                  const DropdownMenuItem(value: '', child: Text('Root')),
+                  for (final folder in folders)
+                    DropdownMenuItem(
+                      value: folder.folder.id,
+                      child: Text(folder.path, overflow: TextOverflow.ellipsis),
+                    ),
+                ],
+                onChanged: (value) => refresh(() => selectedFolderId = value ?? ''),
+              ),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton.icon(
+                  icon: const Icon(Icons.create_new_folder_outlined),
+                  label: const Text('Create folder'),
+                  onPressed: () async {
+                    final controller = TextEditingController();
+                    final folderName = await showDialog<String>(
+                      context: context,
+                      builder: (ctx) => AlertDialog(
+                        title: const Text('Create Grid folder'),
+                        content: TextField(
+                          controller: controller,
+                          autofocus: true,
+                          decoration: const InputDecoration(labelText: 'Folder name'),
+                        ),
+                        actions: [
+                          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+                          FilledButton(onPressed: () => Navigator.pop(ctx, controller.text.trim()), child: const Text('Create')),
+                        ],
+                      ),
+                    );
+                    controller.dispose();
+                    if (folderName == null || folderName.isEmpty) return;
+                    try {
+                      await _folderRepository.create(
+                        name: folderName,
+                        parentId: selectedFolderId.isEmpty ? null : selectedFolderId,
+                      );
+                      folders = await _folderRepository.allFoldersWithPaths();
+                      selectedFolderId = folders
+                          .where((folder) => folder.folder.name == folderName)
+                          .map((folder) => folder.folder.id)
+                          .firstOrNull ?? '';
+                      refresh(() {});
+                    } catch (error) {
+                      if (context.mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(content: Text('Could not create folder: $error')),
+                        );
+                      }
+                    }
+                  },
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Cancel')),
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, selectedFolderId),
+              child: const Text('Move'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (destination == null) return;
+    try {
+      final result = await _repository.moveExternalPdfToGrid(
+        sourceUri: uri,
+        displayName: name,
+        targetFolderId: destination.isEmpty ? null : destination,
+      );
+      if (!mounted) return;
+      if (result.added == 1) {
+        _message('Moved $name to Grid.');
+      } else if (result.duplicates > 0) {
+        _message('This PDF already exists in Grid. The Phone original was kept.');
+      }
+      await _scanPhoneStorage(openBrowser: false);
+      await _load();
+      await _refreshDashboardSummary();
+    } catch (error) {
+      if (mounted) _message('Could not move $name. The Phone original was kept: $error');
+    }
   }
 
   Future<void> _moveToFolder(DocumentRecord document) async {
