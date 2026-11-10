@@ -16,6 +16,7 @@ final _pdfHash = sha256.convert(_pdfBytes).toString();
 Map<String, List<Map<String, Object?>>> _backupRows({
   bool withReminder = false,
   bool withFolder = false,
+  bool withCollection = false,
 }) => {
   'folders': withFolder ? [{
     'id': 'folder-1', 'name': 'Insurance', 'parent_id': null,
@@ -47,11 +48,17 @@ Map<String, List<Map<String, Object?>>> _backupRows({
   'history': <Map<String, Object?>>[],
   'settings': <Map<String, Object?>>[],
   'document_text_index': <Map<String, Object?>>[],
+  'smart_collections': withCollection ? [{
+    'id': 'collection-1', 'name': 'Recent policies', 'query_text': 'policy',
+    'favorites_only': 0, 'recent_only': 1,
+    'created_at': '2026-01-01T00:00:00Z',
+    'updated_at': '2026-01-01T00:00:00Z',
+  }] : <Map<String, Object?>>[],
 };
 
-Future<File> _makeBackup(Directory directory, {bool withReminder = false, bool withFolder = false}) async {
+Future<File> _makeBackup(Directory directory, {bool withReminder = false, bool withFolder = false, bool withCollection = false}) async {
   final archive = Archive();
-  final rows = _backupRows(withReminder: withReminder, withFolder: withFolder);
+  final rows = _backupRows(withReminder: withReminder, withFolder: withFolder, withCollection: withCollection);
   final metadataFiles = <Map<String, Object?>>[];
   for (final entry in rows.entries) {
     final bytes = Uint8List.fromList(utf8.encode(jsonEncode(entry.value)));
@@ -251,6 +258,22 @@ void main() {
     expect(await db.query('folders'), isEmpty);
     expect(await db.query('documents'), hasLength(1));
     expect(await db.rawQuery('PRAGMA foreign_key_check'), isEmpty);
+  });
+
+  test('Selective Smart Collections restore saved filters without touching documents', () async {
+    final backup = await _makeBackup(temp, withCollection: true);
+    await service.restoreBackup(
+      backup,
+      confirm: (_) async => true,
+      mode: BackupRestoreMode.selective,
+      selection: {BackupRestoreSection.smartCollections},
+    );
+    final collections = await db.query('smart_collections');
+    expect(collections, hasLength(1));
+    expect(collections.single['name'], 'Recent policies');
+    expect(collections.single['query_text'], 'policy');
+    expect(collections.single['recent_only'], 1);
+    expect(await db.query('documents'), isEmpty);
   });
 
   test('Selective reminders retain links to documents already on this device', () async {
