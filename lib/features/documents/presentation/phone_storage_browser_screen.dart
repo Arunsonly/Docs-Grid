@@ -7,6 +7,8 @@ class PhoneStorageBrowserScreen extends StatefulWidget {
     required this.entries,
     required this.onOpenPdf,
     this.onMovePdf,
+    this.onRenamePdf,
+    this.onSharePdf,
     this.initialPath = '',
   });
 
@@ -14,6 +16,8 @@ class PhoneStorageBrowserScreen extends StatefulWidget {
   final List<Map<String, Object?>> entries;
   final Future<void> Function(String uri, String name) onOpenPdf;
   final Future<void> Function(String uri, String name)? onMovePdf;
+  final Future<void> Function(String uri, String name)? onRenamePdf;
+  final Future<void> Function(String uri, String name)? onSharePdf;
   final String initialPath;
 
   @override
@@ -195,16 +199,23 @@ class _PhoneStorageBrowserScreenState
                               overflow: TextOverflow.ellipsis,
                             ),
                             subtitle: const Text('PDF document'),
-                            trailing: widget.onMovePdf == null
-                                ? null
-                                : IconButton(
-                                    tooltip: 'Move to Grid',
-                                    icon: const Icon(Icons.drive_file_move_outline),
-                                    onPressed: () => widget.onMovePdf!(
-                                      entry['uri'] as String,
-                                      entry['name'] as String,
-                                    ),
-                                  ),
+                            trailing: PopupMenuButton<String>(
+                              onSelected: (action) async {
+                                final uri = entry['uri'] as String;
+                                final name = entry['name'] as String;
+                                if (action == 'move') await widget.onMovePdf?.call(uri, name);
+                                if (action == 'rename') await widget.onRenamePdf?.call(uri, name);
+                                if (action == 'share') await widget.onSharePdf?.call(uri, name);
+                              },
+                              itemBuilder: (_) => [
+                                if (widget.onMovePdf != null)
+                                  const PopupMenuItem(value: 'move', child: Text('Move to Grid')),
+                                if (widget.onRenamePdf != null)
+                                  const PopupMenuItem(value: 'rename', child: Text('Rename')),
+                                if (widget.onSharePdf != null)
+                                  const PopupMenuItem(value: 'share', child: Text('Share')),
+                              ],
+                            ),
                             onTap: () => widget.onOpenPdf(
                               entry['uri'] as String,
                               entry['name'] as String,
