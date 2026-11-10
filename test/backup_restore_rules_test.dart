@@ -5,14 +5,14 @@ void main() {
   group('BackupSchemaCompatibility', () {
     test('accepts the current database schema version', () {
       expect(
-        () => BackupSchemaCompatibility.requireSupported(8),
+        () => BackupSchemaCompatibility.requireSupported(BackupSchemaCompatibility.currentVersion),
         returnsNormally,
       );
     });
 
     test('rejects a backup created by a newer database schema', () {
       expect(
-        () => BackupSchemaCompatibility.requireSupported(9),
+        () => BackupSchemaCompatibility.requireSupported(BackupSchemaCompatibility.currentVersion + 1),
         throwsA(isA<FormatException>()),
       );
     });
