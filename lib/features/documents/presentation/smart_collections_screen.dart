@@ -119,6 +119,58 @@ class _SmartCollectionsScreenState extends State<SmartCollectionsScreen> {
     }
   }
 
+  Future<void> _edit(Map<String, Object?> item) async {
+    final name = TextEditingController(text: item['name'] as String? ?? '');
+    final query = TextEditingController(text: item['query_text'] as String? ?? '');
+    var starred = item['favorites_only'] == 1;
+    var recent = item['recent_only'] == 1;
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, refresh) => AlertDialog(
+          title: const Text('Edit Smart Collection'),
+          content: SingleChildScrollView(child: Column(mainAxisSize: MainAxisSize.min, children: [
+            TextField(controller: name, autofocus: true, decoration: const InputDecoration(labelText: 'Collection name')),
+            TextField(controller: query, decoration: const InputDecoration(labelText: 'PDF name contains (optional)')),
+            CheckboxListTile(contentPadding: EdgeInsets.zero, value: starred, title: const Text('Starred PDFs only'), onChanged: (v) => refresh(() => starred = v ?? false)),
+            CheckboxListTile(contentPadding: EdgeInsets.zero, value: recent, title: const Text('Recently opened only'), onChanged: (v) => refresh(() => recent = v ?? false)),
+          ])),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')),
+            FilledButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Save changes')),
+          ],
+        ),
+      ),
+    );
+    await WidgetsBinding.instance.endOfFrame;
+    final label = name.text.trim();
+    final search = query.text.trim();
+    name.dispose();
+    query.dispose();
+    if (saved != true) return;
+    if (label.isEmpty) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Enter a collection name.')),
+      );
+      return;
+    }
+    try {
+      final db = await _db;
+      await db.update('smart_collections', {
+        'name': label,
+        'query_text': search,
+        'favorites_only': starred ? 1 : 0,
+        'recent_only': recent ? 1 : 0,
+        'updated_at': DateTime.now().toUtc().toIso8601String(),
+      }, where: 'id = ?', whereArgs: [item['id']]);
+      await _load();
+    } catch (error) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not update collection: $error')),
+      );
+    }
+  }
+
   Future<void> _delete(Map<String, Object?> item) async {
     final ok = await showDialog<bool>(context: context, builder: (ctx) => AlertDialog(
       title: const Text('Delete collection?'),
@@ -164,7 +216,16 @@ class _SmartCollectionsScreenState extends State<SmartCollectionsScreen> {
                   ].join(' · ')),
                   trailing: Row(mainAxisSize: MainAxisSize.min, children: [
                     Text(snapshot.hasData ? '${snapshot.data}' : '…'),
-                    PopupMenuButton<String>(onSelected: (v) { if (v == 'delete') _delete(item); }, itemBuilder: (_) => const [PopupMenuItem(value: 'delete', child: Text('Delete'))]),
+                    PopupMenuButton<String>(
+                      onSelected: (value) {
+                        if (value == 'edit') _edit(item);
+                        if (value == 'delete') _delete(item);
+                      },
+                      itemBuilder: (_) => const [
+                        PopupMenuItem(value: 'edit', child: Text('Edit')),
+                        PopupMenuItem(value: 'delete', child: Text('Delete')),
+                      ],
+                    ),
                   ]),
                   onTap: () => _open(item),
                 ),
