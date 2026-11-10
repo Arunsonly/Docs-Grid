@@ -48,6 +48,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   int? _phoneStorageBytes;
   int _phoneInaccessibleCount = 0;
   bool _phoneScanIncomplete = false;
+  int _phoneUnknownSizeCount = 0;
   bool _phoneScanLoading = false;
   int _trashCount = 0;
   int _trashBytes = 0;
@@ -302,6 +303,8 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
             _phonePdfCount = null;
             _phoneStorageBytes = null;
             _phoneInaccessibleCount = 0;
+            _phoneScanIncomplete = false;
+            _phoneUnknownSizeCount = 0;
             _phoneFolders = [];
             _phoneEntries = [];
           });
@@ -325,12 +328,14 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
         }
       }
       final pdfs=entries.where((e)=>e['isDirectory']!=true).toList();
-      final bytes=pdfs.fold<int>(0,(sum,e)=>sum+((e['sizeBytes'] as num?)?.toInt()??0));
+      final bytes=pdfs.fold<int>(0,(sum,e)=>sum+(((e['sizeBytes'] as num?)?.toInt() ?? 0).clamp(0, 1 << 62)));
+      final unknownSizes = pdfs.where((entry) => entry['sizeKnown'] == false).length;
       if(!mounted)return;
       setState(() {
         _phonePdfCount = inaccessibleRoots == roots.length ? null : pdfs.length;
         _phoneStorageBytes = inaccessibleRoots == roots.length ? null : bytes;
-        _phoneInaccessibleCount = inaccessibleRoots + entries.where((entry) => entry['isInaccessible'] == true).length;
+        _phoneInaccessibleCount = entries.where((entry) => entry['isInaccessible'] == true).length;
+        _phoneUnknownSizeCount = unknownSizes;
         _phoneScanIncomplete = _phoneInaccessibleCount > 0;
         _phoneEntries=entries;
         _phoneFolders=entries.where((entry) =>
@@ -349,6 +354,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
           _phonePdfCount = null;
           _phoneStorageBytes = null;
           _phoneInaccessibleCount = 0;
+          _phoneUnknownSizeCount = 0;
           _phoneScanIncomplete = true;
           _phoneFolders = [];
           _phoneEntries = [];
@@ -1294,7 +1300,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                         : '${_phoneScanIncomplete ? 'At least ' : ''}$_phonePdfCount PDFs',
                     detail: _phoneStorageBytes == null
                         ? 'Accessible locations not yet available'
-                        : '${_phoneScanIncomplete ? 'At least ' : ''}${_size(_phoneStorageBytes!)} used by PDFs${_phoneInaccessibleCount > 0 ? ' · $_phoneInaccessibleCount inaccessible' : ''}',
+                        : '${_phoneScanIncomplete || _phoneUnknownSizeCount > 0 ? 'At least ' : ''}${_size(_phoneStorageBytes!)} used by PDFs${_phoneUnknownSizeCount > 0 ? ' · size unavailable for $_phoneUnknownSizeCount PDFs' : ''}${_phoneInaccessibleCount > 0 ? ' · $_phoneInaccessibleCount inaccessible' : ''}',
                     onTap: _browsePhoneStorage,
                   ),
                 ),
@@ -1400,7 +1406,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                           dense: true,
                           leading: const Icon(Icons.folder_outlined),
                           title: Text(path, maxLines: 1, overflow: TextOverflow.ellipsis),
-                          subtitle: Text('${folder['isIncomplete'] == true ? 'At least ' : ''}$count PDFs · ${folder['isIncomplete'] == true ? 'at least ' : ''}${_size(bytes)}'),
+                          subtitle: Text('${folder['isIncomplete'] == true ? 'At least ' : ''}$count PDFs · ${folder['isSizeIncomplete'] == true ? 'at least ' : ''}${_size(bytes)}${((folder['unknownSizeCount'] as num?)?.toInt() ?? 0) > 0 ? ' · size unavailable for ${folder['unknownSizeCount']} PDFs' : ''}'),
                           onTap: () => _showRecursiveStoragePdfs(
                             'Phone Storage', _phoneEntries, initialPath: path,
                           ),
