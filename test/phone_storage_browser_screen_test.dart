@@ -70,7 +70,7 @@ void main() {
 
     await tester.tap(find.byTooltip('Folder details and actions'));
     await tester.pumpAndSettle();
-    expect(find.text('Work Files'), findsOneWidget);
+    expect(find.text('Work Files'), findsNWidgets(2));
     expect(find.text('Internal Storage/Documents/Work Files'), findsOneWidget);
     expect(find.text('Open folder'), findsOneWidget);
   });
@@ -139,10 +139,10 @@ void main() {
     expect(find.text('Phone Storage'), findsNothing);
   });
 
-  testWidgets('duplicate Move keeps the Phone Storage browser open', (tester) async {
+  testWidgets('duplicate Move keeps the selected folder browser open', (tester) async {
     await openActionBrowser(tester, onMove: (_, __) async => false);
     await selectAction(tester, 'Move to Grid');
-    expect(find.text('Phone Storage'), findsOneWidget);
+    expect(find.text('Personal Documents'), findsOneWidget);
     expect(find.text('Policy.pdf'), findsOneWidget);
   });
 
@@ -153,7 +153,7 @@ void main() {
     expect(find.text('Phone Storage'), findsNothing);
   });
 
-  testWidgets('failed Rename keeps the Phone Storage browser open', (tester) async {
+  testWidgets('failed Rename keeps the selected folder browser open', (tester) async {
     await openActionBrowser(tester, onRename: (_, __) async => false);
     await selectAction(tester, 'Rename');
     expect(find.text('Phone Storage'), findsOneWidget);
@@ -167,7 +167,7 @@ void main() {
     expect(find.text('Phone Storage'), findsNothing);
   });
 
-  testWidgets('Share does not close the Phone Storage browser', (tester) async {
+  testWidgets('Share does not close the selected folder browser', (tester) async {
     await openActionBrowser(tester, onShare: (_, __) async {});
     await selectAction(tester, 'Share');
     expect(find.text('Phone Storage'), findsOneWidget);
