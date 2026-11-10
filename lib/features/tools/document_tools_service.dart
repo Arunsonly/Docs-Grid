@@ -1232,8 +1232,10 @@ class DocumentToolsService {
     final restoreStamp = 'Restored_${DateTime.now().microsecondsSinceEpoch}';
     final restoreRoot = Directory(p.join(unfiledRoot.path, restoreStamp));
     final folderRestoreRoot = Directory(p.join(foldersRoot.path, restoreStamp));
+    final usesFallbackFoldersRoot =
+        portableFoldersUri == null || !portableFoldersUri.startsWith('file://');
     await restoreRoot.create(recursive: true);
-    await folderRestoreRoot.create(recursive: true);
+    if (folderRows.isNotEmpty) await folderRestoreRoot.create(recursive: true);
     final fileRows = rowsByTable['documents']!.isEmpty
         ? <Map<String, dynamic>>[]
         : (manifest['files'] as List<dynamic>).cast<Map<String, dynamic>>();
@@ -1531,6 +1533,11 @@ class DocumentToolsService {
         try {
           if (await folderRestoreRoot.exists()) {
             await folderRestoreRoot.delete(recursive: true);
+          }
+          if (usesFallbackFoldersRoot &&
+              await foldersRoot.exists() &&
+              await foldersRoot.list().isEmpty) {
+            await foldersRoot.delete();
           }
         } catch (_) {}
       }
