@@ -30,12 +30,27 @@ class PhoneStorageBrowserScreen extends StatefulWidget {
 class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
   String? _selectedFolderPath;
 
+  String _normalizePath(String value) {
+    final separator = String.fromCharCode(92);
+    return value
+        .trim()
+        .replaceAll(separator, '/')
+        .replaceAll(RegExp(r'/+'), '/')
+        .replaceAll(RegExp(r'^/+|/+$'), '');
+  }
+
   String _normalizedFolderPath(Map<String, Object?> entry) {
-    final raw = (entry['folderPath'] as String? ?? '').replaceAll('\\\\', '/');
-    final root = widget.rootName.replaceAll('\\\\', '/').replaceAll(RegExp(r'/+$'), '');
-    if (raw == root) return '';
-    if (raw.startsWith('$root/')) return raw.substring(root.length + 1);
-    return raw.replaceAll(RegExp(r'^/+|/+$'), '');
+    final rawValue = entry['folderPath'] ?? entry['path'] ?? '';
+    if (rawValue is! String) return '';
+    final raw = _normalizePath(rawValue);
+    final root = _normalizePath(widget.rootName);
+    if (raw.toLowerCase() == root.toLowerCase()) return '';
+    if (raw.length > root.length &&
+        raw.substring(0, root.length).toLowerCase() == root.toLowerCase() &&
+        raw[root.length] == '/') {
+      return raw.substring(root.length + 1);
+    }
+    return raw;
   }
 
   bool _isPdfFile(Map<String, Object?> entry) {
@@ -47,9 +62,9 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
     final name = entry['name'];
     final uri = entry['uri'];
     return name is String &&
-        name.toLowerCase().endsWith('.pdf') &&
+        name.trim().toLowerCase().endsWith('.pdf') &&
         uri is String &&
-        uri.isNotEmpty;
+        uri.trim().isNotEmpty;
   }
 
   List<Map<String, Object?>> get _pdfs =>
@@ -111,8 +126,9 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
   Widget build(BuildContext context) {
     final folders = _directPdfFolders;
     final selectedPath = _selectedFolderPath;
-    final selectedFiles =
-        selectedPath == null ? const <Map<String, Object?>>[] : folders[selectedPath] ?? const [];
+    final selectedFiles = selectedPath == null
+        ? const <Map<String, Object?>>[]
+        : folders[selectedPath] ?? const [];
 
     return Scaffold(
       appBar: AppBar(
