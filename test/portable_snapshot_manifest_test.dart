@@ -74,13 +74,13 @@ void main() {
   });
 
   test('accepts the current database schema version', () {
-    final value = validManifest()..['databaseSchemaVersion'] = 8;
+    final value = validManifest()..['databaseSchemaVersion'] = 9;
     final manifest = PortableSnapshotManifest.parse(jsonEncode(value));
-    expect(manifest.databaseSchemaVersion, 8);
+    expect(manifest.databaseSchemaVersion, 9);
   });
 
   test('rejects a schema version newer than the app supports', () {
-    final value = validManifest()..['databaseSchemaVersion'] = 9;
+    final value = validManifest()..['databaseSchemaVersion'] = 10;
     expect(() => PortableSnapshotManifest.parse(jsonEncode(value)), throwsFormatException);
   });
 
