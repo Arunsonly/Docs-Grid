@@ -14,6 +14,7 @@ import '../../tools/document_tools_service.dart';
 import '../../tools/document_tools_screen.dart' show DocumentToolsScreen;
 import 'document_pdf_viewer_screen.dart';
 import 'phone_storage_browser_screen.dart';
+import '../../folders/presentation/folders_screen.dart';
 import '../../reminders/data/reminder_repository.dart';
 
 class DocumentsScreen extends StatefulWidget {
@@ -41,6 +42,8 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   int _starredCount = 0;
   int? _phonePdfCount;
   int? _phoneStorageBytes;
+  int _trashCount = 0;
+  int _trashBytes = 0;
   final Set<String> _selectedIds = <String>{};
   bool _selectionMode = false;
   int _loadGeneration = 0;
@@ -54,6 +57,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   void initState() {
     super.initState();
     _load();
+    _loadTrashSummary();
     _search.addListener(_onSearchChanged);
     _scrollController.addListener(_onScroll);
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -201,6 +205,19 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
         return byName != 0 ? byName : a.id.compareTo(b.id);
       });
     });
+  }
+
+  Future<void> _loadTrashSummary() async {
+    try {
+      final trashed = await _repository.listTrash();
+      if (!mounted) return;
+      setState(() {
+        _trashCount = trashed.length;
+        _trashBytes = trashed.fold<int>(0, (sum, item) => sum + item.sizeBytes);
+      });
+    } catch (_) {
+      // Keep the dashboard usable; the Recycle Bin screen reports its own error.
+    }
   }
 
   Future<void> _refreshDashboardSummary() async {
@@ -867,10 +884,23 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                     title: 'Grid Storage',
                     value: '$_totalDocumentCount PDFs',
                     detail: '${_size(_totalStorageBytes)} used · $_starredCount starred',
-                    onTap: _load,
+                    onTap: () => Navigator.of(context).push(
+                      MaterialPageRoute(builder: (_) => const FoldersScreen()),
+                    ),
                   ),
                 ),
               ],
+            ),
+          ),
+        if (!widget.favoritesOnly && !widget.recentOnly)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+            child: _storageSummaryCard(
+              icon: Icons.delete_outline,
+              title: 'Recycle Bin',
+              value: '$_trashCount PDFs',
+              detail: '${_size(_trashBytes)} · Restore or permanently delete',
+              onTap: _showTrash,
             ),
           ),
         if (!widget.favoritesOnly)

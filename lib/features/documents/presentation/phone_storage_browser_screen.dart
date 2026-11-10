@@ -22,9 +22,17 @@ class _PhoneStorageBrowserScreenState
   String _currentPath = '';
 
   late final Set<String> _folderPaths = widget.entries
-      .where((entry) => entry['isDirectory'] == true)
+      .where((entry) => entry['isDirectory'] == true &&
+          entry['isInaccessible'] != true &&
+          entry['isInaccessibleSummary'] != true &&
+          entry['path'] is String)
       .map((entry) => entry['path'] as String)
       .toSet();
+
+  late final List<Map<String, Object?>> _inaccessible = widget.entries
+      .where((entry) => entry['isInaccessible'] == true ||
+          entry['isInaccessibleSummary'] == true)
+      .toList(growable: false);
 
   late final List<Map<String, Object?>> _pdfs = widget.entries
       .where((entry) => entry['isDirectory'] != true)
@@ -50,6 +58,22 @@ class _PhoneStorageBrowserScreenState
       final path = entry['folderPath'] as String? ?? '';
       return path == folderPath || path.startsWith(descendantPrefix);
     }).length;
+  }
+
+  int _sizeUnder(String folderPath) {
+    final prefix = '$folderPath/';
+    return _pdfs.where((entry) {
+      final path = entry['folderPath'] as String? ?? '';
+      return path == folderPath || path.startsWith(prefix);
+    }).fold<int>(0, (sum, entry) =>
+        sum + ((entry['sizeBytes'] as num?)?.toInt() ?? 0));
+  }
+
+  String _formatSize(int bytes) {
+    if (bytes < 1024) return '$bytes B';
+    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    if (bytes < 1024 * 1024 * 1024) return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+    return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
   }
 
   void _navigateBack() {
@@ -92,6 +116,20 @@ class _PhoneStorageBrowserScreenState
         ),
         body: Column(
           children: [
+            if (_inaccessible.isNotEmpty)
+              Material(
+                color: Theme.of(context).colorScheme.errorContainer,
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Row(children: [
+                    const Icon(Icons.lock_outline),
+                    const SizedBox(width: 8),
+                    Expanded(child: Text(
+                      '${_inaccessible.length} storage location(s) are inaccessible. They are not treated as empty.',
+                    )),
+                  ]),
+                ),
+              ),
             if (_currentPath.isNotEmpty)
               SizedBox(
                 height: 54,
@@ -129,7 +167,9 @@ class _PhoneStorageBrowserScreenState
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                             ),
-                            subtitle: Text('${_countPdfsUnder(path)} PDFs'),
+                            subtitle: Text(
+                              '${_countPdfsUnder(path)} PDFs · ${_formatSize(_sizeUnder(path))}',
+                            ),
                             trailing: const Icon(Icons.chevron_right),
                             onTap: () =>
                                 setState(() => _currentPath = path),
