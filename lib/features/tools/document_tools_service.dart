@@ -1125,11 +1125,16 @@ class DocumentToolsService {
       for (final row in rowsByTable['documents']!) row['id'] as String: row,
     };
     final db = await _database.database;
-    final existingFolders = replaceExisting
+    // Keep every persisted ID for collision detection, but only active folders
+    // participate in path matching. A soft-deleted row still owns its primary key.
+    final existingFolderRows = replaceExisting
         ? <Map<String, Object?>>[]
-        : await db.query('folders', columns: ['id', 'name', 'parent_id'],
-            where: 'deleted_at IS NULL');
-    final existingFolderIds = existingFolders.map((row) => row['id'] as String).toSet();
+        : await db.query('folders', columns: ['id', 'name', 'parent_id', 'deleted_at']);
+    final existingFolders = existingFolderRows
+        .where((row) => row['deleted_at'] == null)
+        .toList(growable: false);
+    final existingFolderIds =
+        existingFolderRows.map((row) => row['id'] as String).toSet();
     final existingFolderRowsById = <String, Map<String, Object?>>{
       for (final row in existingFolders) row['id'] as String: row,
     };
