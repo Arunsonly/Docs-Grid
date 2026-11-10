@@ -254,7 +254,13 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
       if (Platform.isAndroid && !await storage.hasAllFilesAccess()) {
         final granted = await storage.accessibleStorageRoots();
         if (granted.isEmpty) {
-          if (mounted) setState(() { _phonePdfCount = null; _phoneStorageBytes = null; });
+          if (mounted) setState(() {
+            _phonePdfCount = null;
+            _phoneStorageBytes = null;
+            _phoneInaccessibleCount = 0;
+            _phoneFolders = [];
+            _phoneEntries = [];
+          });
           if (openBrowser && mounted) {
             await storage.requestAllFilesAccess();
             _message('Grant Android storage access or a SAF location. No folder picker was opened.');
@@ -264,7 +270,13 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
       }
       final roots = await storage.accessibleStorageRoots();
       if (roots.isEmpty) {
-        if (mounted) setState(() { _phonePdfCount = null; _phoneStorageBytes = null; });
+        if (mounted) setState(() {
+            _phonePdfCount = null;
+            _phoneStorageBytes = null;
+            _phoneInaccessibleCount = 0;
+            _phoneFolders = [];
+            _phoneEntries = [];
+          });
         return;
       }
       final entries = <Map<String,Object?>>[], seen = <String>{};
@@ -303,7 +315,16 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
       if(openBrowser) await _showRecursiveStoragePdfs('Phone Storage',entries);
       if(inaccessibleRoots>0 && mounted) _message('$inaccessibleRoots granted location(s) could not be read; they were not marked empty.');
     } catch(error) {
-      if(mounted)_message('Phone Storage scan failed; inaccessible locations were not marked empty: $error');
+      if (mounted) {
+        setState(() {
+          _phonePdfCount = null;
+          _phoneStorageBytes = null;
+          _phoneInaccessibleCount = 0;
+          _phoneFolders = [];
+          _phoneEntries = [];
+        });
+        _message('Phone Storage scan failed; inaccessible locations were not marked empty: $error');
+      }
     }
   }
 
