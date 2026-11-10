@@ -435,7 +435,7 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
         onDestinationSelected: (index) => setState(() => _selectedIndex = index),
         destinations: const [
           NavigationDestination(icon: Icon(Icons.dashboard_outlined), label: 'Dashboard'),
-          NavigationDestination(icon: Icon(Icons.folder_outlined), label: 'Folders'),
+          NavigationDestination(icon: Icon(Icons.folder_outlined), label: 'Grid'),
           NavigationDestination(icon: Icon(Icons.star_border), label: 'Star'),
           NavigationDestination(icon: Icon(Icons.settings_outlined), label: 'Settings'),
         ],
