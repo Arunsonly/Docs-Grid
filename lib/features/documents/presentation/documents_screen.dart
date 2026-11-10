@@ -1483,12 +1483,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
           ),
         if (!widget.favoritesOnly && !_searchInsideText && _search.text.trim().isNotEmpty)
           Builder(builder: (context) {
-            final query = _search.text.trim().toLowerCase();
-            final matches = _phoneEntries.where((entry) =>
-              entry['isDirectory'] != true &&
-              (entry['name'] as String? ?? '').toLowerCase().contains(query)
-            ).toList(growable: false);
-            if (matches.isEmpty) return const SizedBox.shrink();
+            final matches = _phoneStorageSearchMatches(_search.text);
             return Padding(
               padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
               child: Card(
@@ -1498,35 +1493,56 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                     Padding(
                       padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
                       child: Text(
-                        'Phone Storage matches (${matches.length})',
+                        'Phone Storage · ${matches.length} matches',
                         style: Theme.of(context).textTheme.titleSmall,
                       ),
                     ),
-                    SizedBox(
-                      height: (matches.length.clamp(1, 3) * 64).toDouble(),
-                      child: ListView.builder(
-                        itemCount: matches.length,
-                        itemBuilder: (context, index) {
-                          final item = matches[index];
-                          final name = item['name'] as String? ?? 'PDF';
-                          final uri = item['uri'] as String? ?? '';
-                          final folder = item['folderPath'] as String? ?? '';
-                          return ListTile(
-                            dense: true,
-                            leading: const Icon(Icons.picture_as_pdf_outlined),
-                            title: Text(name, maxLines: 1, overflow: TextOverflow.ellipsis),
-                            subtitle: Text(folder.isEmpty ? 'Phone Storage' : 'Phone Storage · $folder',
-                              maxLines: 1, overflow: TextOverflow.ellipsis),
-                            onTap: () => _openExternalStoragePdf(uri, name),
-                          );
-                        },
+                    if (matches.isEmpty)
+                      const Padding(
+                        padding: EdgeInsets.fromLTRB(16, 4, 16, 12),
+                        child: Text('No matching PDFs in the scanned Phone Storage locations.'),
+                      )
+                    else
+                      SizedBox(
+                        height: (matches.length.clamp(1, 4) * 64).toDouble(),
+                        child: ListView.builder(
+                          itemCount: matches.length,
+                          itemBuilder: (context, index) {
+                            final item = matches[index];
+                            final name = item['name'] as String? ?? 'PDF';
+                            final uri = item['uri'] as String? ?? '';
+                            final folder = item['folderPath'] as String? ?? '';
+                            final bytes = (item['sizeBytes'] as num?)?.toInt() ?? 0;
+                            return ListTile(
+                              dense: true,
+                              leading: const Icon(Icons.picture_as_pdf_outlined),
+                              title: Text(name, maxLines: 1, overflow: TextOverflow.ellipsis),
+                              subtitle: Text(
+                                'Phone Storage · ${folder.isEmpty ? 'Root' : folder} · ${_size(bytes)}',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                              onTap: () => _openExternalStoragePdf(uri, name),
+                            );
+                          },
+                        ),
                       ),
-                    ),
                   ],
                 ),
               ),
             );
           }),
+        if (!widget.favoritesOnly && !_searchInsideText && _search.text.trim().isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                'Grid Storage · ${_documents.length}${_hasMore ? '+' : ''} matches',
+                style: Theme.of(context).textTheme.labelLarge,
+              ),
+            ),
+          ),
         if (_importing) const LinearProgressIndicator(),
         Expanded(
           child: _loading
@@ -1643,6 +1659,50 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
       ])),
     ],
   );
+
+  String _normaliseSearchLocation(String value) {
+    try {
+      return Uri.decodeFull(value).trim().toLowerCase();
+    } catch (_) {
+      return value.trim().toLowerCase();
+    }
+  }
+
+  List<Map<String, Object?>> _phoneStorageSearchMatches(String rawQuery) {
+    final terms = rawQuery.trim().toLowerCase().split(RegExp(r'\\s+'))
+        .where((term) => term.isNotEmpty).toList(growable: false);
+    if (terms.isEmpty) return const [];
+
+    // A PDF already represented by the Grid database must not appear twice
+    // when its stored URI points at the same Phone Storage file.
+    final gridLocations = _documents
+        .map((document) => _normaliseSearchLocation(document.storagePath))
+        .where((location) => location.isNotEmpty)
+        .toSet();
+
+    return _phoneEntries.where((entry) {
+      if (entry['isDirectory'] == true ||
+          entry['isInaccessible'] == true ||
+          entry['isInaccessibleSummary'] == true) {
+        return false;
+      }
+      final uri = _normaliseSearchLocation(entry['uri'] as String? ?? '');
+      if (uri.isEmpty || gridLocations.contains(uri)) return false;
+
+      final name = (entry['name'] as String? ?? '').toLowerCase();
+      final folder = (entry['folderPath'] as String? ?? '').toLowerCase();
+      final searchable = '$name $folder';
+      return terms.every(searchable.contains);
+    }).toList(growable: false)
+      ..sort((a, b) {
+        final folderA = (a['folderPath'] as String? ?? '').toLowerCase();
+        final folderB = (b['folderPath'] as String? ?? '').toLowerCase();
+        final folderOrder = folderA.compareTo(folderB);
+        if (folderOrder != 0) return folderOrder;
+        return (a['name'] as String? ?? '').toLowerCase()
+            .compareTo((b['name'] as String? ?? '').toLowerCase());
+      });
+  }
 
   Widget _emptyState() => SingleChildScrollView(
     physics: const AlwaysScrollableScrollPhysics(),
