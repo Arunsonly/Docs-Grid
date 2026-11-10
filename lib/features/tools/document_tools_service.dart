@@ -2223,7 +2223,7 @@ class DocumentToolsService {
         for (final raw in metadataFiles) {
           if (raw is! Map || raw['entry'] is! String ||
               raw['sizeBytes'] is! int || raw['sha256'] is! String ||
-              !RegExp(r'^[a-fA-F0-9]{64}) {
+              !RegExp(r'^[a-fA-F0-9]{64}
             throw StateError('Backup contains an invalid metadata checksum record.');
           }
           final name = raw['entry'] as String;
@@ -2412,7 +2412,7 @@ class OcrIndexCancelled implements Exception {
   @override
   String toString() => 'OCR indexing was cancelled because its screen was closed.';
 }
-).hasMatch(raw['sha256'] as String)) {
+).hasMatch(raw['sha256'] as String) ||
             throw StateError('Backup contains an invalid metadata checksum record.');
           }
           final name = raw['entry'] as String;
@@ -2438,6 +2438,10 @@ class OcrIndexCancelled implements Exception {
           throw StateError('Backup is missing a metadata checksum or contains an unreferenced metadata checksum.');
         }
       }
+      const tableNames = <String>[
+        'folders', 'documents', 'categories', 'tags', 'document_tags',
+        'reminders', 'history', 'settings', 'document_text_index',
+      ];
       final rowsByTable = <String, List<Map<String, Object?>>>{};
       for (final table in tableNames) {
         final tableFile = decoded.findFile('$table.json');
