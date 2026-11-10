@@ -108,9 +108,13 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
       unawaited(_openReminderDocument(documentId));
     };
     WidgetsBinding.instance.addPostFrameCallback((_) async {
-      await _refreshReminderSchedules();
+      // Notification reconciliation is independent of the first frame. Keep
+      // it off the critical startup path while preserving pending tap handling.
+      unawaited(_refreshReminderSchedules());
       final pendingDocumentId = ReminderNotifications.takePendingDocumentId();
       if (pendingDocumentId != null) await _openReminderDocument(pendingDocumentId);
+      // Keep incoming share and first-run recovery sequential: both may show
+      // dialogs, so running them concurrently would lose or stack user prompts.
       await _consumeSharedPdfs();
       await _offerRestoreOnFirstLaunch();
     });
