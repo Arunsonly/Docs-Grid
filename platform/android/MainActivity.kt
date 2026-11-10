@@ -580,7 +580,8 @@ class MainActivity : FlutterActivity() {
                 "name" to child.name,
                 "uri" to Uri.fromFile(child).toString(),
                 "isDirectory" to child.isDirectory,
-                "size" to if (child.isFile) child.length() else 0L
+                "size" to if (child.isFile) child.length() else 0L,
+                "sizeKnown" to (!child.isFile || child.length() >= 0L)
             )
         }
     }
@@ -758,7 +759,8 @@ class MainActivity : FlutterActivity() {
                     "name" to cursor.getString(nameIndex),
                     "uri" to DocumentsContract.buildDocumentUriUsingTree(directoryUri, id).toString(),
                     "isDirectory" to (mime == DocumentsContract.Document.MIME_TYPE_DIR),
-                    "size" to if (sizeIndex >= 0 && !cursor.isNull(sizeIndex)) cursor.getLong(sizeIndex) else 0L
+                    "size" to if (sizeIndex >= 0 && !cursor.isNull(sizeIndex) && cursor.getLong(sizeIndex) >= 0L) cursor.getLong(sizeIndex) else 0L,
+                    "sizeKnown" to (sizeIndex >= 0 && !cursor.isNull(sizeIndex) && cursor.getLong(sizeIndex) >= 0L)
                 ))
             }
         } ?: throw IllegalStateException("The storage provider could not list this folder.")
