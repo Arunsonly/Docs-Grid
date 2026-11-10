@@ -15,6 +15,7 @@ import '../../folders/data/folder_repository.dart';
 import '../../tools/document_tools_service.dart';
 import '../../tools/document_tools_screen.dart' show DocumentToolsScreen;
 import 'document_pdf_viewer_screen.dart';
+import 'document_thumbnail.dart';
 import 'phone_storage_browser_screen.dart';
 import '../../folders/presentation/folders_screen.dart';
 import '../../reminders/data/reminder_repository.dart';
@@ -1687,7 +1688,11 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
         onLongPress: () => _startSelection(document),
         leading: _selectionMode
             ? Checkbox(value: selected, onChanged: (_) => _toggleSelected(document))
-            : const CircleAvatar(child: Icon(Icons.picture_as_pdf_outlined)),
+            : DocumentThumbnail(
+                documentId: document.id,
+                storagePath: document.storagePath,
+                sizeBytes: document.sizeBytes,
+              ),
         title: Text('${document.name}.pdf', maxLines: 1, overflow: TextOverflow.ellipsis),
         subtitle: Text([
           _size(document.sizeBytes),
