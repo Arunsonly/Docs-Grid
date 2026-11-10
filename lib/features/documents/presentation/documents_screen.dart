@@ -1336,33 +1336,48 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
           ),
         if (!widget.favoritesOnly && !widget.recentOnly)
           Padding(
-            padding: const EdgeInsets.fromLTRB(16, 10, 16, 8),
-            child: Row(
-              children: [
-                Expanded(
-                  child: _storageSummaryCard(
-                    icon: Icons.phone_android,
-                    title: 'Internal Storage',
-                    value: _phoneStorageBytes == null
-                        ? 'Permission needed'
-                        : '${_phoneScanIncomplete || _phoneUnknownSizeCount > 0 ? 'At least ' : ''}${_size(_phoneStorageBytes!)}',
-                    detail: '',
-                    onTap: _browsePhoneStorage,
-                  ),
+            padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
+            child: Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(18),
+              decoration: BoxDecoration(
+                gradient: const LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [Color(0xFFAAB7F2), Color(0xFF687BCB)],
                 ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: _storageSummaryCard(
-                    icon: Icons.folder_copy_outlined,
-                    title: 'Grid Storage',
-                    value: _size(_totalStorageBytes),
-                    detail: '',
-                    onTap: () => Navigator.of(context).push(
-                      MaterialPageRoute(builder: (_) => const FoldersScreen()),
-                    ),
-                  ),
-                ),
-              ],
+                borderRadius: BorderRadius.circular(28),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('Your library', style: TextStyle(color: Color(0xFF17203D), fontSize: 16)),
+                  const SizedBox(height: 2),
+                  Text('$_totalDocumentCount PDFs', style: const TextStyle(
+                    color: Color(0xFF10162C), fontSize: 34, fontWeight: FontWeight.w800,
+                  )),
+                  const SizedBox(height: 14),
+                  Row(children: [
+                    Expanded(child: _dashboardStorageMetric(
+                      icon: Icons.phone_android_outlined,
+                      title: 'Phone storage',
+                      value: _phoneStorageBytes == null
+                          ? 'Permission needed'
+                          : '${_phoneScanIncomplete || _phoneUnknownSizeCount > 0 ? 'At least ' : ''}${_size(_phoneStorageBytes!)} used',
+                      onTap: _browsePhoneStorage,
+                    )),
+                    const SizedBox(width: 10),
+                    Expanded(child: _dashboardStorageMetric(
+                      icon: Icons.folder_outlined,
+                      title: 'Grid storage',
+                      value: '${_size(_totalStorageBytes)} used',
+                      onTap: () => Navigator.of(context).push(
+                        MaterialPageRoute(builder: (_) => const FoldersScreen()),
+                      ),
+                    )),
+                  ]),
+                ],
+              ),
             ),
           ),
         if (!widget.favoritesOnly && !widget.recentOnly)
@@ -1619,6 +1634,34 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
       ),
     );
   }
+
+  Widget _dashboardStorageMetric({
+    required IconData icon,
+    required String title,
+    required String value,
+    required VoidCallback onTap,
+  }) => Material(
+    color: const Color(0x33717FBF),
+    borderRadius: BorderRadius.circular(18),
+    child: InkWell(
+      borderRadius: BorderRadius.circular(18),
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(icon, color: const Color(0xFF202A4D), size: 20),
+            const SizedBox(height: 8),
+            Text(title, style: const TextStyle(color: Color(0xFF202A4D), fontSize: 13)),
+            const SizedBox(height: 3),
+            Text(value, maxLines: 1, overflow: TextOverflow.ellipsis,
+              style: const TextStyle(color: Color(0xFF10162C), fontSize: 16, fontWeight: FontWeight.w800)),
+          ],
+        ),
+      ),
+    ),
+  );
 
   Widget _storageSummaryCard({
     required IconData icon,
