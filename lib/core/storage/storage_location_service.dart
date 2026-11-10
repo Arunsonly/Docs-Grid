@@ -349,6 +349,7 @@ class StorageLocationService {
     final entries = <Map<String, Object?>>[];
     final counts = <String, int>{}, sizes = <String, int>{};
     final withPdfs = <String>{}, allFolders = <String>{}, inaccessible = <String>[];
+    final incompleteFolders = <String>{};
     var visitedEntries = 0;
     while (pending.isNotEmpty) {
       final current = pending.removeLast();
@@ -359,6 +360,12 @@ class StorageLocationService {
       catch (error) {
         if (current.depth == 0) rethrow;
         inaccessible.add(current.path);
+        var incompletePath = current.path;
+        while (incompletePath.isNotEmpty) {
+          incompleteFolders.add(incompletePath);
+          final slash = incompletePath.lastIndexOf('/');
+          incompletePath = slash < 0 ? '' : incompletePath.substring(0, slash);
+        }
         entries.add({'name': current.path.split('/').last, 'uri': current.uri,
           'folderPath': current.path.contains('/') ? current.path.substring(0,current.path.lastIndexOf('/')) : '',
           'path': current.path, 'isDirectory': true, 'isInaccessible': true, 'accessError': error.toString()});
@@ -389,7 +396,8 @@ class StorageLocationService {
       final parts = path.split('/');
       return <String,Object?>{'name':parts.last,'uri':'',
         'folderPath':parts.length == 1 ? '' : parts.sublist(0,parts.length-1).join('/'),
-        'path':path,'isDirectory':true,'pdfCount':counts[path] ?? 0,'sizeBytes':sizes[path] ?? 0};
+        'path':path,'isDirectory':true,'pdfCount':counts[path] ?? 0,'sizeBytes':sizes[path] ?? 0,
+        'isIncomplete':incompleteFolders.contains(path)};
     }));
     entries.sort((a,b) {
       final pth=(a['folderPath'] as String).compareTo(b['folderPath'] as String);
@@ -414,7 +422,8 @@ class StorageLocationService {
       }
       if (totalCount > 0) {
         entries.add({'name':rootLabel,'uri':rootUri,'folderPath':'','path':rootLabel,
-          'isDirectory':true,'pdfCount':totalCount,'sizeBytes':totalBytes});
+          'isDirectory':true,'pdfCount':totalCount,'sizeBytes':totalBytes,
+          'isIncomplete':inaccessible.isNotEmpty});
       }
     }
     if(inaccessible.isNotEmpty) entries.add({'name':'${inaccessible.length} inaccessible folder(s)',
