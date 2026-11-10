@@ -53,6 +53,8 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   int _trashCount = 0;
   List<Map<String, Object?>> _phoneRecent = [];
   List<DocumentRecord> _gridRecent = [];
+  bool _showStarredRecent = false;
+  List<DocumentRecord> _starredRecent = [];
   String _recentFilter = 'grid';
   List<Map<String, Object?>> _phoneEntries = [];
   final Set<String> _selectedIds = <String>{};
@@ -381,6 +383,166 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
         initialPath: initialPath,
       ),
     ));
+  }
+
+  Future<void> _loadAllStarred() async {
+    try {
+      final items = await _repository.listAllStarred();
+      if (mounted) setState(() => _starredRecent = items);
+    } catch (error) {
+      if (mounted) _message('Could not load Starred PDFs: $error');
+    }
+  }
+
+  Future<void> _clearRecentActivity() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove('docsgrid_phone_recent_v1');
+      await _repository.clearOpenedHistory();
+      if (!mounted) return;
+      setState(() => _phoneRecent = []);
+      await _loadRecentDocuments();
+      if (_showStarredRecent) await _loadAllStarred();
+      if (mounted) _message('Recent cleared. PDF files were not deleted.');
+    } catch (error) {
+      if (mounted) _message('Could not clear Recent: $error');
+    }
+  }
+
+  Future<List<DocumentRecord>> _loadAllRecentGrid() =>
+      _repository.recentActivity(limit: 100000);
+
+  Widget _recentDocumentTile(DocumentRecord document) {
+    final activityAt = document.lastOpenedAt ?? document.createdAt;
+    final activity = document.lastOpenedAt != null
+        ? 'Opened'
+        : document.source == 'download'
+            ? 'Downloaded'
+            : 'Added';
+    return ListTile(
+      key: ValueKey('recent-${document.id}'),
+      dense: true,
+      leading: DocumentThumbnail(
+        documentId: document.id,
+        storagePath: document.storagePath,
+        sizeBytes: document.sizeBytes,
+      ),
+      title: Row(children: [
+        Flexible(child: Text('${document.name}.pdf',
+            maxLines: 1, overflow: TextOverflow.ellipsis)),
+        const SizedBox(width: 6),
+        _recentSourceTag('Grid'),
+      ]),
+      subtitle: Text('${_recentDateLabel(activityAt)} · $activity'),
+      onTap: () => _open(document),
+      onLongPress: () => _openRecentSelection(document),
+      trailing: PopupMenuButton<String>(
+        tooltip: 'Actions for ${document.name}',
+        onSelected: (value) => _handleRecentAction(document, value),
+        itemBuilder: (_) => _recentPdfMenu(document),
+      ),
+    );
+  }
+
+  List<PopupMenuEntry<String>> _recentPdfMenu(DocumentRecord document) => [
+    const PopupMenuItem(value: 'share', child: Text('Share PDF')),
+    PopupMenuItem(value: 'favorite',
+      child: Text(document.isFavorite ? 'Remove from Star' : 'Add to Star')),
+    const PopupMenuItem(value: 'category', child: Text('Set category')),
+    const PopupMenuItem(value: 'tags', child: Text('Edit tags')),
+    const PopupMenuItem(value: 'rename', child: Text('Rename')),
+    const PopupMenuItem(value: 'move', child: Text('Move to folder')),
+    const PopupMenuItem(value: 'trash', child: Text('Move to Recycle Bin')),
+  ];
+
+  Future<void> _handleRecentAction(DocumentRecord document, String action) async {
+    if (action == 'favorite') {
+      await _repository.setFavorite(document, !document.isFavorite);
+      await _loadAllStarred();
+      await _loadRecentDocuments();
+      if (mounted) await _refreshDashboardSummary();
+      return;
+    }
+    if (action == 'share') {
+      await _share(document);
+    } else if (action == 'category') {
+      await _chooseCategory(document);
+    } else if (action == 'tags') {
+      await _editTags(document);
+    } else if (action == 'rename') {
+      await _rename(document);
+    } else if (action == 'move') {
+      await _moveToFolder(document);
+    } else if (action == 'trash') {
+      await _trash(document);
+    }
+    await _loadRecentDocuments();
+    if (_showStarredRecent) await _loadAllStarred();
+  }
+
+  Future<void> _openRecentSelection(DocumentRecord first) async {
+    await Navigator.of(context).push<void>(MaterialPageRoute(
+      builder: (_) => _RecentSelectionScreen(
+        initialDocument: first,
+        loadItems: _showStarredRecent ? _repository.listAllStarred : _loadAllRecentGrid,
+        onOpen: _open,
+        onMove: _bulkMoveDocuments,
+        onCopy: _bulkCopyDocuments,
+        onDelete: _bulkDeleteDocuments,
+        onShare: _bulkShareDocuments,
+        onRename: _rename,
+      ),
+    ));
+    await _loadRecentDocuments();
+    await _loadAllStarred();
+  }
+
+  Future<void> _bulkMoveDocuments(List<DocumentRecord> selected) async {
+    final folders = await _folderRepository.allFoldersWithPaths();
+    if (!mounted) return;
+    final destination = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) => ListView(shrinkWrap: true, children: [
+        const ListTile(title: Text('Move selected PDFs to')),
+        ListTile(title: const Text('Root / No folder'), onTap: () => Navigator.pop(ctx, '')),
+        for (final option in folders)
+          ListTile(title: Text(option.path), onTap: () => Navigator.pop(ctx, option.folder.id)),
+      ]),
+    );
+    if (destination == null) return;
+    final result = await _repository.moveManyToFolder(selected, destination.isEmpty ? null : destination);
+    if (mounted) _message('Moved ${result['moved']} of ${selected.length} PDFs');
+  }
+
+  Future<void> _bulkCopyDocuments(List<DocumentRecord> selected) async {
+    var copied = 0;
+    final failures = <String>[];
+    for (final document in selected) {
+      try {
+        await _repository.copyDocument(document, targetFolderId: document.folderId);
+        copied++;
+      } catch (error) {
+        failures.add('${document.name}: $error');
+      }
+    }
+    if (mounted) _message('Copied $copied of ${selected.length} PDFs'
+        '${failures.isEmpty ? '' : ' · ${failures.length} failed'}');
+  }
+
+  Future<void> _bulkDeleteDocuments(List<DocumentRecord> selected) async {
+    await _repository.moveManyToTrash(selected);
+    if (mounted) {
+      _message('Moved ${selected.length} PDFs to Recycle Bin');
+      await _refreshDashboardSummary();
+    }
+  }
+
+  Future<void> _bulkShareDocuments(List<DocumentRecord> selected) async {
+    await _tools.shareManyStoredPdfs(
+      selected.map((item) => item.storagePath).toList(),
+      selected.map((item) => '${item.name}.pdf').toList(),
+    );
   }
 
   Future<void> _loadRecentDocuments() async {
@@ -1411,33 +1573,61 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Row(children: [
-                      const Text('Recent', style: TextStyle(fontWeight: FontWeight.w700)),
+                      Text(_showStarredRecent ? 'Starred' : 'Recent',
+                          style: const TextStyle(fontWeight: FontWeight.w700)),
                       const Spacer(),
-                      SegmentedButton<String>(
-                        showSelectedIcon: false,
-                        segments: const [
-                          ButtonSegment(value: 'phone', label: Text('Phone')),
-                          ButtonSegment(value: 'grid', label: Text('Grid')),
-                        ],
-                        selected: {_recentFilter},
-                        onSelectionChanged: (selection) =>
-                            setState(() => _recentFilter = selection.first),
-                      ),
+                      if (!_showStarredRecent)
+                        SegmentedButton<String>(
+                          showSelectedIcon: false,
+                          segments: const [
+                            ButtonSegment(value: 'phone', label: Text('Phone')),
+                            ButtonSegment(value: 'grid', label: Text('Grid')),
+                          ],
+                          selected: {_recentFilter},
+                          onSelectionChanged: (selection) =>
+                              setState(() => _recentFilter = selection.first),
+                        ),
                       PopupMenuButton<String>(
-                        tooltip: 'Recent options',
-                        onSelected: (value) {
-                          if (value == 'refresh') _loadRecentDocuments();
+                        tooltip: _showStarredRecent ? 'Starred options' : 'Recent options',
+                        onSelected: (value) async {
+                          if (value == 'starred') {
+                            await _loadAllStarred();
+                            if (mounted) setState(() => _showStarredRecent = true);
+                          } else if (value == 'recent') {
+                            setState(() => _showStarredRecent = false);
+                          } else if (value == 'clear') {
+                            await _clearRecentActivity();
+                          } else if (value == 'refresh') {
+                            await _loadRecentDocuments();
+                            if (_showStarredRecent) await _loadAllStarred();
+                          }
                         },
-                        itemBuilder: (_) => const [
-                          PopupMenuItem(value: 'refresh', child: Text('Refresh recent')),
-                        ],
+                        itemBuilder: (_) => _showStarredRecent
+                            ? const [
+                                PopupMenuItem(value: 'recent', child: Text('Recent')),
+                                PopupMenuItem(value: 'refresh', child: Text('Refresh Starred')),
+                              ]
+                            : const [
+                                PopupMenuItem(value: 'clear', child: Text('Clear Recent')),
+                                PopupMenuItem(value: 'starred', child: Text('Starred')),
+                                PopupMenuItem(value: 'refresh', child: Text('Refresh Recent')),
+                              ],
                       ),
                     ]),
-                    const SizedBox(height: 8),
+                    const SizedBox(height: 8),,
                     const SizedBox(height: 6),
                     SizedBox(
                       height: 320,
-                      child: _recentFilter == 'phone'
+                      child: _showStarredRecent
+                          ? _starredRecent.isEmpty
+                              ? const Center(child: Text('No starred PDFs'))
+                              : ListView.separated(
+                                  primary: false,
+                                  itemCount: _starredRecent.length,
+                                  separatorBuilder: (_, _) => const Divider(height: 1),
+                                  itemBuilder: (context, index) => _recentDocumentTile(_starredRecent[index]),
+                                )
+                          : _recentFilter == 'phone'
                           ? _phoneRecent.isEmpty
                               ? const Center(child: Text('No recent Phone PDFs'))
                               : ListView.separated(
@@ -1471,24 +1661,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                                   separatorBuilder: (_, _) => const Divider(height: 1),
                                   itemBuilder: (context, index) {
                                     final document = _gridRecent[index];
-                                    final activityAt = document.lastOpenedAt ?? document.createdAt;
-                                    final activity = document.lastOpenedAt != null
-                                        ? 'Opened'
-                                        : document.source == 'download'
-                                            ? 'Downloaded'
-                                            : 'Added';
-                                    return ListTile(
-                                      dense: true,
-                                      leading: const Icon(Icons.picture_as_pdf_outlined),
-                                      title: Row(mainAxisSize: MainAxisSize.min, children: [
-                                        Flexible(child: Text('${document.name}.pdf',
-                                            maxLines: 1, overflow: TextOverflow.ellipsis)),
-                                        const SizedBox(width: 6),
-                                        _recentSourceTag('Grid'),
-                                      ]),
-                                      subtitle: Text('$activity · ${_recentDateLabel(activityAt)}'),
-                                      onTap: () => _open(document),
-                                    );
+                                    return _recentDocumentTile(document);
                                   },
                                 ),
                     ),
