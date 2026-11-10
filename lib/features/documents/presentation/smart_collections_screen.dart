@@ -190,7 +190,10 @@ class _SmartCollectionsScreenState extends State<SmartCollectionsScreen> {
     var recent = item['recent_only'] == 1;
     final categories = await _categoryRepository.listCategories();
     final tags = await _categoryRepository.listTags();
-    String selectedCategory = item['category_id'] as String? ?? '';
+    final savedCategory = item['category_id'] as String? ?? '';
+    String selectedCategory = categories.any((category) => category.id == savedCategory)
+        ? savedCategory
+        : '';
     final selectedTags = _tagIds(item['tag_ids_json']).toSet();
     final saved = await showDialog<bool>(
       context: context,
@@ -202,6 +205,40 @@ class _SmartCollectionsScreenState extends State<SmartCollectionsScreen> {
             TextField(controller: query, decoration: const InputDecoration(labelText: 'PDF name contains (optional)')),
             CheckboxListTile(contentPadding: EdgeInsets.zero, value: starred, title: const Text('Starred PDFs only'), onChanged: (v) => refresh(() => starred = v ?? false)),
             CheckboxListTile(contentPadding: EdgeInsets.zero, value: recent, title: const Text('Recently opened only'), onChanged: (v) => refresh(() => recent = v ?? false)),
+            DropdownButtonFormField<String>(
+              value: selectedCategory,
+              decoration: const InputDecoration(labelText: 'Category'),
+              items: [
+                const DropdownMenuItem(value: '', child: Text('Any category')),
+                for (final category in categories)
+                  DropdownMenuItem(value: category.id, child: Text(category.name)),
+              ],
+              onChanged: (value) => refresh(() => selectedCategory = value ?? ''),
+            ),
+            if (tags.isNotEmpty)
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Padding(
+                  padding: const EdgeInsets.only(top: 12),
+                  child: Wrap(
+                    spacing: 6,
+                    children: [
+                      for (final tag in tags)
+                        FilterChip(
+                          label: Text(tag.name),
+                          selected: selectedTags.contains(tag.id),
+                          onSelected: (value) => refresh(() {
+                            if (value) {
+                              selectedTags.add(tag.id);
+                            } else {
+                              selectedTags.remove(tag.id);
+                            }
+                          }),
+                        ),
+                    ],
+                  ),
+                ),
+              ),
           ])),
           actions: [
             TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')),
