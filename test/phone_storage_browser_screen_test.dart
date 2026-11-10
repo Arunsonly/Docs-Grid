@@ -3,20 +3,22 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  testWidgets('phone browser navigates only PDF-bearing folders and opens PDFs',
+  testWidgets('lists only folders with direct PDFs and opens that folder PDFs',
       (tester) async {
     String? openedUri;
     String? openedName;
     final entries = <Map<String, Object?>>[
       {'name': 'Insurance', 'uri': '', 'folderPath': '', 'path': 'Insurance', 'isDirectory': true},
       {'name': 'Archive', 'uri': '', 'folderPath': 'Insurance', 'path': 'Insurance/Archive', 'isDirectory': true},
-      {'name': 'Policy.pdf', 'uri': 'content://policy', 'folderPath': 'Insurance/Archive', 'isDirectory': false},
+      {'name': 'Empty', 'uri': '', 'folderPath': '', 'path': 'Empty', 'isDirectory': true},
+      {'name': 'Policy.pdf', 'uri': 'content://policy', 'folderPath': 'Insurance', 'isDirectory': false, 'sizeBytes': 128},
+      {'name': 'Archived.pdf', 'uri': 'content://archive', 'folderPath': 'Insurance/Archive', 'isDirectory': false, 'sizeBytes': 256},
       {'name': 'Root.pdf', 'uri': 'content://root', 'folderPath': '', 'isDirectory': false},
     ];
 
     await tester.pumpWidget(MaterialApp(
       home: PhoneStorageBrowserScreen(
-        rootName: 'Documents',
+        rootName: 'Internal Storage',
         entries: entries,
         onOpenPdf: (uri, name) async {
           openedUri = uri;
@@ -26,40 +28,46 @@ void main() {
     ));
 
     expect(find.text('Insurance'), findsOneWidget);
-    expect(find.text('Root.pdf'), findsOneWidget);
-    expect(find.text('Archive'), findsNothing);
-
-    await tester.tap(find.text('Insurance'));
-    await tester.pumpAndSettle();
     expect(find.text('Archive'), findsOneWidget);
+    expect(find.text('Empty'), findsNothing);
     expect(find.text('Policy.pdf'), findsNothing);
+    expect(find.text('Root.pdf'), findsNothing);
 
-    await tester.tap(find.text('Archive'));
+    await tester.tap(find.byKey(const ValueKey('phone-folder-Insurance')));
     await tester.pumpAndSettle();
     expect(find.text('Policy.pdf'), findsOneWidget);
+    expect(find.text('Archived.pdf'), findsNothing);
+
     await tester.tap(find.text('Policy.pdf'));
     await tester.pumpAndSettle();
-
     expect(openedUri, 'content://policy');
     expect(openedName, 'Policy.pdf');
+  });
 
-    // System Back first navigates to the parent folder, then to the root.
-    await tester.binding.handlePopRoute();
-    await tester.pumpAndSettle();
-    expect(find.text('Archive'), findsOneWidget);
-    expect(find.text('Policy.pdf'), findsNothing);
+  testWidgets('folder menu shows folder name and full path above its action',
+      (tester) async {
+    await tester.pumpWidget(MaterialApp(
+      home: PhoneStorageBrowserScreen(
+        rootName: 'Internal Storage',
+        entries: const [
+          {'name': 'Policy.pdf', 'uri': 'content://policy', 'folderPath': 'Documents/Insurance', 'isDirectory': false},
+        ],
+        onOpenPdf: (_, __) async {},
+      ),
+    ));
 
-    await tester.binding.handlePopRoute();
+    await tester.tap(find.byTooltip('Folder details and actions'));
     await tester.pumpAndSettle();
     expect(find.text('Insurance'), findsOneWidget);
-    expect(find.text('Root.pdf'), findsOneWidget);
+    expect(find.text('Internal Storage/Documents/Insurance'), findsOneWidget);
+    expect(find.text('Open folder'), findsOneWidget);
   });
 
   const actionEntries = <Map<String, Object?>>[
     {
       'name': 'Policy.pdf',
       'uri': 'content://document/policy',
-      'folderPath': '',
+      'folderPath': 'Downloads',
       'isDirectory': false,
       'sizeBytes': 128,
     },
@@ -96,7 +104,9 @@ void main() {
     ));
     await tester.tap(find.text('Open browser'));
     await tester.pumpAndSettle();
-    expect(find.text('Phone Storage'), findsOneWidget);
+    expect(find.text('Downloads'), findsOneWidget);
+    await tester.tap(find.text('Downloads'));
+    await tester.pumpAndSettle();
     expect(find.text('Policy.pdf'), findsOneWidget);
   }
 
@@ -148,5 +158,4 @@ void main() {
     expect(find.text('Phone Storage'), findsOneWidget);
     expect(find.text('Policy.pdf'), findsOneWidget);
   });
-
 }
