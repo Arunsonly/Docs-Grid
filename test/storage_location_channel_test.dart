@@ -276,6 +276,42 @@ void main() {
     );
   });
 
+  test('recursive scan reports inaccessible nested folders instead of treating them as empty', () async {
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      final uri = call.arguments['uri'] as String;
+      if (uri == 'content://root') {
+        return [
+          {'name':'Protected','uri':'content://protected','isDirectory':true,'sizeBytes':0},
+          {'name':'Readable','uri':'content://readable','isDirectory':true,'sizeBytes':0},
+        ];
+      }
+      if (uri == 'content://protected') {
+        throw PlatformException(code:'PERMISSION_DENIED', message:'Access revoked');
+      }
+      if (uri == 'content://readable') {
+        return [{'name':'Open.PDF','uri':'content://pdf','isDirectory':false,'sizeBytes':64}];
+      }
+      return <Map<String,Object?>>[];
+    });
+    final rows = await StorageLocationService.instance.listStorageTreeRecursively('content://root');
+    expect(rows.any((row) => row['isInaccessible'] == true), isTrue);
+    expect(rows.any((row) => row['isInaccessibleSummary'] == true), isTrue);
+    expect(rows.where((row) => row['isDirectory'] != true).map((row) => row['uri']),
+      contains('content://pdf'));
+    expect(rows.where((row) => row['isDirectory'] == true && row['path'] == 'Protected'),
+      isEmpty);
+  });
+
+  test('root permission failure is propagated and is not reported as empty storage', () async {
+    messenger.setMockMethodCallHandler(channel, (_) async {
+      throw PlatformException(code:'PERMISSION_DENIED', message:'Root access revoked');
+    });
+    await expectLater(
+      StorageLocationService.instance.listStorageTreeRecursively('content://root'),
+      throwsA(isA<PlatformException>()),
+    );
+  });
+
   test('accessibleStorageRoots returns native-granted roots without a picker', () async {
     messenger.setMockMethodCallHandler(channel, (call) async {
       expect(call.method, 'getAccessibleScanRoots');
