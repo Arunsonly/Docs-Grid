@@ -771,6 +771,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
         ),
       ),
     );
+    await _loadTrashSummary();
   }
 
   Future<void> _chooseCategory(DocumentRecord document) async {
