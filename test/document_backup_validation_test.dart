@@ -35,6 +35,7 @@ Future<File> _makeBackup(
   bool includeFileRecord = true,
   bool databaseOnly = false,
   bool corruptMetadataChecksum = false,
+  bool malformedMetadataChecksum = false,
 }) async {
   final bytes = pdfBytes ?? utf8.encode('%PDF-1.7\nDocsGrid test PDF');
   final archive = Archive();
@@ -42,13 +43,15 @@ Future<File> _makeBackup(
   for (final table in _validRows(databaseOnly: databaseOnly).entries) {
     final json = Uint8List.fromList(utf8.encode(jsonEncode(table.value)));
     archive.addFile(ArchiveFile('${table.key}.json', json.length, json));
-    metadataFiles.add({
-      'entry': '${table.key}.json',
-      'sizeBytes': json.length,
-      'sha256': corruptMetadataChecksum
-          ? List.filled(64, '0').join()
-          : sha256.convert(json).toString(),
-    });
+    metadataFiles.add(malformedMetadataChecksum
+        ? {'entry': '${table.key}.json'}
+        : {
+            'entry': '${table.key}.json',
+            'sizeBytes': json.length,
+            'sha256': corruptMetadataChecksum
+                ? List.filled(64, '0').join()
+                : sha256.convert(json).toString(),
+          });
   }
   if (!databaseOnly) {
     archive.addFile(ArchiveFile(entry, bytes.length, Uint8List.fromList(bytes)));
@@ -116,6 +119,11 @@ void main() {
 
   test('rejects metadata JSON whose manifest checksum does not match', () async {
     final file = await _makeBackup(temp, corruptMetadataChecksum: true);
+    await expectLater(service.validateBackup(file), throwsA(isA<StateError>()));
+  });
+
+  test('rejects malformed metadata checksum records', () async {
+    final file = await _makeBackup(temp, malformedMetadataChecksum: true);
     await expectLater(service.validateBackup(file), throwsA(isA<StateError>()));
   });
 
