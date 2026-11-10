@@ -86,7 +86,7 @@ void main() {
 
   test('durable snapshot tables exclude derived indexes and caches', () {
     expect(PortableSnapshotManifest.supportedTableNames,
-      containsAll(['folders', 'documents', 'document_text_index', 'schema_migrations']));
+      containsAll(['folders', 'documents', 'document_text_index', 'smart_collections', 'schema_migrations']));
     expect(PortableSnapshotManifest.supportedTableNames, isNot(contains('documents_name_fts')));
     expect(PortableSnapshotManifest.supportedTableNames, isNot(contains('document_summary_state')));
   });
