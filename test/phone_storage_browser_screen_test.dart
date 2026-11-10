@@ -3,18 +3,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  void logTestLayout(WidgetTester tester) {
-    final screen = find.byType(PhoneStorageBrowserScreen).last;
-    final scaffold = find.ancestor(
-      of: screen,
-      matching: find.byType(Scaffold),
-    ).first;
-    final body = find.descendant(of: scaffold, matching: find.byType(ListView));
-    debugPrint('TEST_LAYOUT screen=${tester.getSize(screen)} '
-        'scaffold=${tester.getSize(scaffold)} '
-        'list=${body.evaluate().isEmpty ? 'none' : tester.getSize(body.first)}');
-  }
-
   void setTestViewport(WidgetTester tester) {
     tester.view.physicalSize = const Size(800, 600);
     tester.view.devicePixelRatio = 1;
@@ -130,7 +118,6 @@ void main() {
     ));
     await tester.tap(find.text('Open browser'));
     await tester.pumpAndSettle();
-    logTestLayout(tester);
 
     expect(find.text('Personal Documents'), findsOneWidget);
     await tester.tap(find.text('Personal Documents'));
