@@ -112,11 +112,12 @@ class DocumentPage {
 }
 
 class ImportSummary {
-  const ImportSummary({required this.added, required this.duplicates, required this.failed, this.skipped = 0});
+  const ImportSummary({required this.added, required this.duplicates, required this.failed, this.skipped = 0, this.errors = const []});
   final int added;
   final int duplicates;
   final int failed;
   final int skipped;
+  final List<String> errors;
 }
 
 class ImportDecision {
@@ -1069,6 +1070,7 @@ class DocumentRepository {
     var duplicates = 0;
     var failed = 0;
     var skipped = 0;
+    final errors = <String>[];
     final categoryRows = await db.query('categories', columns: ['id', 'name'], orderBy: 'name COLLATE NOCASE');
     final categoryOptions = categoryRows.map((row) => ImportCategoryOption(
       id: row['id'] as String,
@@ -1227,6 +1229,7 @@ class DocumentRepository {
           duplicates++;
         } else {
           failed++;
+          errors.add('${picked.name}: $error');
         }
       } finally {
         if (stagedSource != null) {
@@ -1238,7 +1241,7 @@ class DocumentRepository {
         }
       }
     }
-    return ImportSummary(added: added, duplicates: duplicates, failed: failed, skipped: skipped);
+    return ImportSummary(added: added, duplicates: duplicates, failed: failed, skipped: skipped, errors: errors);
   }
 
   String? _suggestCategoryId(String fileName, List<ImportCategoryOption> categories) {
