@@ -48,6 +48,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   bool _phoneScanIncomplete = false;
   int _phoneUnknownSizeCount = 0;
   bool _phoneScanLoading = false;
+  bool _phoneScanCompleted = false;
   int _trashCount = 0;
   List<Map<String, Object?>> _phoneRecent = [];
   List<DocumentRecord> _gridRecent = [];
@@ -268,11 +269,19 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
   }
 
-  Future<void> _browsePhoneStorage() => _scanPhoneStorage(openBrowser: true);
+  Future<void> _browsePhoneStorage() async {
+    // Reuse the dashboard's completed scan. Opening this page must not walk
+    // the whole storage tree a second time.
+    if (_phoneScanCompleted) {
+      await _showRecursiveStoragePdfs('Internal Storage', _phoneEntries);
+      return;
+    }
+    await _scanPhoneStorage(openBrowser: true);
+  }
 
   Future<void> _scanPhoneStorage({required bool openBrowser}) async {
     final storage = StorageLocationService.instance;
-    if (mounted) setState(() => _phoneScanLoading = true);
+    if (mounted) setState(() { _phoneScanLoading = true; _phoneScanCompleted = false; });
     try {
       if (Platform.isAndroid && !await storage.hasAllFilesAccess()) {
         final granted = await storage.accessibleStorageRoots();
@@ -282,6 +291,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
             _phoneInaccessibleCount = 0;
             _phoneScanIncomplete = false;
             _phoneEntries = [];
+            _phoneScanCompleted = false;
           });
           if (openBrowser && mounted) {
             await storage.requestAllFilesAccess();
@@ -298,6 +308,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
             _phoneScanIncomplete = false;
             _phoneUnknownSizeCount = 0;
               _phoneEntries = [];
+            _phoneScanCompleted = true;
           });
         return;
       }
@@ -331,6 +342,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
         _phoneUnknownSizeCount = unknownSizes;
         _phoneScanIncomplete = _phoneInaccessibleCount > 0;
         _phoneEntries=entries;
+        _phoneScanCompleted = true;
       });
       if(openBrowser) await _showRecursiveStoragePdfs('Phone Storage',entries);
       if(inaccessibleRoots>0 && mounted) _message('$inaccessibleRoots granted location(s) could not be read; they were not marked empty.');
@@ -342,6 +354,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
           _phoneUnknownSizeCount = 0;
           _phoneScanIncomplete = true;
           _phoneEntries = [];
+          _phoneScanCompleted = false;
         });
         _message('Phone Storage scan failed; inaccessible locations were not marked empty: $error');
       }
