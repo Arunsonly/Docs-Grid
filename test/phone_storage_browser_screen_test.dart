@@ -8,11 +8,11 @@ void main() {
     String? openedUri;
     String? openedName;
     final entries = <Map<String, Object?>>[
-      {'name': 'Insurance', 'uri': '', 'folderPath': '', 'path': 'Insurance', 'isDirectory': true},
-      {'name': 'Archive', 'uri': '', 'folderPath': 'Insurance', 'path': 'Insurance/Archive', 'isDirectory': true},
-      {'name': 'Empty', 'uri': '', 'folderPath': '', 'path': 'Empty', 'isDirectory': true},
-      {'name': 'Policy.pdf', 'uri': 'content://policy', 'folderPath': 'Insurance', 'isDirectory': false, 'sizeBytes': 128},
-      {'name': 'Archived.pdf', 'uri': 'content://archive', 'folderPath': 'Insurance/Archive', 'isDirectory': false, 'sizeBytes': 256},
+      {'name': 'Work Files', 'uri': '', 'folderPath': '', 'path': 'Work Files', 'isDirectory': true},
+      {'name': 'Archived Files', 'uri': '', 'folderPath': 'Work Files', 'path': 'Work Files/Archived Files', 'isDirectory': true},
+      {'name': 'Empty Folder', 'uri': '', 'folderPath': '', 'path': 'Empty Folder', 'isDirectory': true},
+      {'name': 'Policy.pdf', 'uri': 'content://policy', 'folderPath': 'Work Files', 'isDirectory': false, 'sizeBytes': 128},
+      {'name': 'Archived Filesd.pdf', 'uri': 'content://archive', 'folderPath': 'Work Files/Archived Files', 'isDirectory': false, 'sizeBytes': 256},
       {'name': 'Root.pdf', 'uri': 'content://root', 'folderPath': '', 'isDirectory': false},
     ];
 
@@ -27,16 +27,16 @@ void main() {
       ),
     ));
 
-    expect(find.text('Insurance'), findsOneWidget);
-    expect(find.text('Archive'), findsOneWidget);
-    expect(find.text('Empty'), findsNothing);
+    expect(find.text('Work Files'), findsOneWidget);
+    expect(find.text('Archived Files'), findsOneWidget);
+    expect(find.text('Empty Folder'), findsNothing);
     expect(find.text('Policy.pdf'), findsNothing);
     expect(find.text('Root.pdf'), findsNothing);
 
-    await tester.tap(find.byKey(const ValueKey('phone-folder-Insurance')));
+    await tester.tap(find.byKey(const ValueKey('phone-folder-Work Files')));
     await tester.pumpAndSettle();
     expect(find.text('Policy.pdf'), findsOneWidget);
-    expect(find.text('Archived.pdf'), findsNothing);
+    expect(find.text('Archived Filesd.pdf'), findsNothing);
 
     await tester.tap(find.text('Policy.pdf'));
     await tester.pumpAndSettle();
@@ -50,7 +50,7 @@ void main() {
       home: PhoneStorageBrowserScreen(
         rootName: 'Internal Storage',
         entries: const [
-          {'name': 'Policy.pdf', 'uri': 'content://policy', 'folderPath': 'Documents/Insurance', 'isDirectory': false},
+          {'name': 'Policy.pdf', 'uri': 'content://policy', 'folderPath': 'Documents/Work Files', 'isDirectory': false},
         ],
         onOpenPdf: (_, __) async {},
       ),
@@ -58,8 +58,8 @@ void main() {
 
     await tester.tap(find.byTooltip('Folder details and actions'));
     await tester.pumpAndSettle();
-    expect(find.text('Insurance'), findsOneWidget);
-    expect(find.text('Internal Storage/Documents/Insurance'), findsOneWidget);
+    expect(find.text('Work Files'), findsOneWidget);
+    expect(find.text('Internal Storage/Documents/Work Files'), findsOneWidget);
     expect(find.text('Open folder'), findsOneWidget);
   });
 
@@ -67,7 +67,7 @@ void main() {
     {
       'name': 'Policy.pdf',
       'uri': 'content://document/policy',
-      'folderPath': 'Downloads',
+      'folderPath': 'Personal Documents',
       'isDirectory': false,
       'sizeBytes': 128,
     },
@@ -104,8 +104,8 @@ void main() {
     ));
     await tester.tap(find.text('Open browser'));
     await tester.pumpAndSettle();
-    expect(find.text('Downloads'), findsOneWidget);
-    await tester.tap(find.text('Downloads'));
+    expect(find.text('Personal Documents'), findsOneWidget);
+    await tester.tap(find.text('Personal Documents'));
     await tester.pumpAndSettle();
     expect(find.text('Policy.pdf'), findsOneWidget);
   }
