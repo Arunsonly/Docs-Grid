@@ -59,7 +59,7 @@ Future<File> _makeBackup(
     if (databaseOnly) 'backupType': 'database',
     'createdAt': '2026-01-01T00:00:00Z',
     'tables': <String, int>{
-      for (final table in _validRows().entries) table.key: table.value.length,
+      for (final table in _validRows(databaseOnly: databaseOnly).entries) table.key: table.value.length,
     },
     'metadataFiles': metadataFiles,
     'files': includeFileRecord && !databaseOnly ? [{
