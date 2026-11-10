@@ -1000,7 +1000,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
         uri: uri,
         name: clean.toLowerCase().endsWith('.pdf') ? clean : '$clean.pdf',
       );
-      if (!mounted) return;
+      if (!mounted) return false;
       _message('PDF renamed.');
       await _scanPhoneStorage(openBrowser: false);
       await _refreshDashboardSummary();
