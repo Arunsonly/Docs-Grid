@@ -44,6 +44,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   int _starredCount = 0;
   int? _phonePdfCount;
   int? _phoneStorageBytes;
+  int _phoneInaccessibleCount = 0;
   int _trashCount = 0;
   int _trashBytes = 0;
   List<Map<String, Object?>> _phoneFolders = [];
@@ -289,6 +290,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
       setState(() {
         _phonePdfCount = inaccessibleRoots == roots.length ? null : pdfs.length;
         _phoneStorageBytes = inaccessibleRoots == roots.length ? null : bytes;
+        _phoneInaccessibleCount = entries.where((entry) => entry['isInaccessible'] == true).length;
         _phoneEntries=entries;
         _phoneFolders=entries.where((entry) =>
           entry['isDirectory']==true &&
@@ -324,7 +326,9 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
       for (final item in saved) {
         try {
           final decoded = jsonDecode(item);
-          if (decoded is Map) phone.add(Map<String, Object?>.from(decoded));
+          if (decoded is Map && decoded['uri'] is String && decoded['name'] is String) {
+            phone.add(Map<String, Object?>.from(decoded));
+          }
         } catch (_) {
           // Skip malformed optional recent metadata without affecting PDFs.
         }
@@ -526,6 +530,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
         ),
       );
       await _patchDocument(document.id);
+      await _loadRecentDocuments();
     } catch (error) {
       if (mounted) {
         _message('Could not open PDF in the fast viewer: $error');
@@ -951,7 +956,9 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                     icon: Icons.phone_android,
                     title: 'Internal Storage',
                     value: _phonePdfCount == null ? 'Permission needed' : '$_phonePdfCount PDFs',
-                    detail: _phoneStorageBytes == null ? 'Accessible locations not yet available' : '${_size(_phoneStorageBytes!)} used by PDFs',
+                    detail: _phoneStorageBytes == null
+                        ? 'Accessible locations not yet available'
+                        : '${_size(_phoneStorageBytes!)} used by PDFs${_phoneInaccessibleCount > 0 ? ' · $_phoneInaccessibleCount inaccessible' : ''}',
                     onTap: _browsePhoneStorage,
                   ),
                 ),

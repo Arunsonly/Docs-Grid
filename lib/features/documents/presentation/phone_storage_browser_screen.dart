@@ -38,8 +38,7 @@ class _PhoneStorageBrowserScreenState
       .toSet();
 
   late final List<Map<String, Object?>> _inaccessible = widget.entries
-      .where((entry) => entry['isInaccessible'] == true ||
-          entry['isInaccessibleSummary'] == true)
+      .where((entry) => entry['isInaccessible'] == true)
       .toList(growable: false);
 
   late final List<Map<String, Object?>> _pdfs = widget.entries
