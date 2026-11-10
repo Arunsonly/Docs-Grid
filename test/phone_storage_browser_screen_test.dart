@@ -3,6 +3,21 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  void logTestLayout(WidgetTester tester) {
+    final element = tester.element(find.byType(PhoneStorageBrowserScreen).last);
+    final media = MediaQuery.of(element);
+    final safeAreas = find.byType(SafeArea);
+    final appBars = find.byType(AppBar);
+    final lists = find.byType(ListView);
+    debugPrint('TEST_LAYOUT view=${tester.view.physicalSize} '
+        'dpr=${tester.view.devicePixelRatio} media=${media.size} '
+        'padding=${media.padding} viewPadding=${media.viewPadding} '
+        'viewInsets=${media.viewInsets} '
+        'appBar=${tester.getSize(appBars.last)} '
+        'safeArea=${tester.getSize(safeAreas.last)} '
+        'list=${tester.getSize(lists.last)}');
+  }
+
   void setTestViewport(WidgetTester tester) {
     tester.view.physicalSize = const Size(800, 600);
     tester.view.devicePixelRatio = 1;
@@ -37,6 +52,7 @@ void main() {
         },
       ),
     ));
+    logTestLayout(tester);
 
     expect(find.text('Work Files'), findsOneWidget);
     expect(find.text('Archived Files'), findsOneWidget);
@@ -118,6 +134,7 @@ void main() {
     ));
     await tester.tap(find.text('Open browser'));
     await tester.pumpAndSettle();
+    logTestLayout(tester);
     expect(find.text('Personal Documents'), findsOneWidget);
     await tester.tap(find.text('Personal Documents'));
     await tester.pumpAndSettle();
