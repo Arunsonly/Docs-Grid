@@ -47,6 +47,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   int? _phonePdfCount;
   int? _phoneStorageBytes;
   int _phoneInaccessibleCount = 0;
+  bool _phoneScanLoading = false;
   int _trashCount = 0;
   int _trashBytes = 0;
   List<Map<String, Object?>> _phoneFolders = [];
@@ -274,6 +275,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
 
   Future<void> _scanPhoneStorage({required bool openBrowser}) async {
     final storage = StorageLocationService.instance;
+    if (mounted) setState(() => _phoneScanLoading = true);
     try {
       if (Platform.isAndroid && !await storage.hasAllFilesAccess()) {
         final granted = await storage.accessibleStorageRoots();
@@ -349,6 +351,8 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
         });
         _message('Phone Storage scan failed; inaccessible locations were not marked empty: $error');
       }
+    } finally {
+      if (mounted) setState(() => _phoneScanLoading = false);
     }
   }
 
@@ -1497,7 +1501,18 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                         style: Theme.of(context).textTheme.titleSmall,
                       ),
                     ),
-                    if (matches.isEmpty)
+                    if (_phoneScanLoading)
+                      const Padding(
+                        padding: EdgeInsets.fromLTRB(16, 8, 16, 12),
+                        child: Row(
+                          children: [
+                            SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
+                            SizedBox(width: 10),
+                            Text('Scanning Phone Storage…'),
+                          ],
+                        ),
+                      )
+                    else if (matches.isEmpty)
                       const Padding(
                         padding: EdgeInsets.fromLTRB(16, 4, 16, 12),
                         child: Text('No matching PDFs in the scanned Phone Storage locations.'),
