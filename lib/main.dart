@@ -18,7 +18,6 @@ import 'features/folders/presentation/folders_screen.dart';
 import 'features/folders/data/folder_repository.dart';
 import 'core/storage/storage_location_service.dart';
 import 'features/tools/document_tools_screen.dart' show DocumentToolsScreen;
-import 'features/tools/document_scanner_screen.dart';
 
 final GlobalKey<NavigatorState> docsGridNavigatorKey = GlobalKey<NavigatorState>();
 
@@ -370,49 +369,6 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
     }
   }
 
-  Future<void> _showQuickActions() async {
-    final action = await showModalBottomSheet<String>(
-      context: context,
-      showDragHandle: true,
-      builder: (sheetContext) => SafeArea(
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          const ListTile(title: Text('Quick actions'), subtitle: Text('Scan, create PDFs, search document text and set reminders.')),
-          ListTile(leading: const Icon(Icons.document_scanner_outlined), title: const Text('Scan using camera'), onTap: () => Navigator.pop(sheetContext, 'camera')),
-          ListTile(leading: const Icon(Icons.photo_library_outlined), title: const Text('Create PDF from gallery'), onTap: () => Navigator.pop(sheetContext, 'gallery')),
-          ListTile(leading: const Icon(Icons.manage_search_outlined), title: const Text('OCR Search Inside PDF'), onTap: () => Navigator.pop(sheetContext, 'tools')),
-          ListTile(leading: const Icon(Icons.auto_awesome_outlined), title: const Text('Smart Collections'), onTap: () => Navigator.pop(sheetContext, 'collections')),
-          ListTile(leading: const Icon(Icons.notifications_active_outlined), title: const Text('Set a reminder'), onTap: () => Navigator.pop(sheetContext, 'reminder')),
-        ]),
-      ),
-    );
-    if (!mounted || action == null) return;
-    if (action == 'collections') {
-      await Navigator.of(context).push(MaterialPageRoute(builder: (_) => const SmartCollectionsScreen()));
-      return;
-    }
-    if (action == 'reminder') {
-      await Navigator.of(context).push(MaterialPageRoute(builder: (_) => const RemindersScreen()));
-      return;
-    }
-    final pageTitle = switch (action) {
-      'camera' => 'Scan document',
-      'gallery' => 'Create PDF from gallery',
-      'tools' => 'OCR Search',
-      _ => 'Document tools',
-    };
-    if (action == 'camera' || action == 'gallery') {
-      await Navigator.of(context).push(MaterialPageRoute(
-        builder: (_) => DocumentScannerScreen(useCamera: action == 'camera'),
-        fullscreenDialog: true,
-      ));
-      return;
-    }
-    await Navigator.of(context).push(MaterialPageRoute(builder: (_) => Scaffold(
-      appBar: AppBar(title: Text(pageTitle)),
-      body: DocumentToolsScreen(quickAction: action),
-    )));
-  }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -666,6 +622,14 @@ class _SettingsScreenState extends State<_SettingsScreen> {
           title: const Text('Choose storage location'),
           trailing: const Icon(Icons.chevron_right),
           onTap: () => _chooseStorage(context),
+        ),
+        const Divider(height: 1),
+        ListTile(
+          leading: const Icon(Icons.star_outline),
+          title: const Text('Starred PDFs'),
+          subtitle: const Text('Open your saved favourites'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: widget.onOpenStarred,
         ),
         const Divider(height: 1),
         ListTile(
