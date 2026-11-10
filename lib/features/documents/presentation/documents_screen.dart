@@ -1413,12 +1413,12 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text('Recent Documents', style: TextStyle(fontWeight: FontWeight.w700)),
+                    const Text('Recent', style: TextStyle(fontWeight: FontWeight.w700)),
                     const SizedBox(height: 8),
                     SegmentedButton<String>(
                       segments: const [
-                        ButtonSegment(value: 'phone', label: Text('Phone Recent')),
-                        ButtonSegment(value: 'grid', label: Text('Grid Recent')),
+                        ButtonSegment(value: 'phone', label: Text('Phone')),
+                        ButtonSegment(value: 'grid', label: Text('Grid')),
                       ],
                       selected: {_recentFilter},
                       onSelectionChanged: (selection) =>
