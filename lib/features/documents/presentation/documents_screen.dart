@@ -7,7 +7,6 @@ import 'package:open_filex/open_filex.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:share_plus/share_plus.dart';
 
 import '../data/document_repository.dart';
 import '../../../core/storage/storage_location_service.dart';
@@ -934,10 +933,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
 
   Future<void> _sharePhonePdf(String uri, String name) async {
     try {
-      await SharePlus.instance.share(ShareParams(
-        files: [XFile(uri, name: name, mimeType: 'application/pdf')],
-        subject: name,
-      ));
+      await _tools.shareStoredPdf(uri, name);
     } catch (error) {
       if (mounted) _message('Could not share PDF: $error');
     }
