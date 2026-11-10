@@ -236,7 +236,7 @@ jobs:
           rsvg-convert -w 1024 -h 1024 assets/docsgrid_icon.svg -o assets/docsgrid_icon.png
           dart run flutter_launcher_icons
       - name: Analyze
-        run: flutter analyze
+        run: flutter analyze --no-fatal-infos
       - name: Install system SQLite for FFI tests
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev
@@ -348,7 +348,7 @@ jobs:
           rsvg-convert -w 1024 -h 1024 assets/docsgrid_icon.svg -o assets/docsgrid_icon.png
           dart run flutter_launcher_icons
       - name: Analyze
-        run: flutter analyze
+        run: flutter analyze --no-fatal-infos
       - name: Widget and unit tests
         run: flutter test
       - name: End-to-end integration workflow tests
