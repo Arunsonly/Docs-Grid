@@ -608,6 +608,69 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     );
   }
 
+  Widget _phoneRecentTile(Map<String, Object?> item) {
+    final name = item['name'] as String? ?? 'PDF';
+    final uri = item['uri'] as String? ?? '';
+    final openedAt = DateTime.tryParse(item['openedAt']?.toString() ?? '');
+    return ListTile(
+      key: ValueKey('phone-recent-$uri'),
+      dense: true,
+      leading: const Icon(Icons.picture_as_pdf_outlined),
+      title: Row(children: [
+        Flexible(child: Text(name, maxLines: 1, overflow: TextOverflow.ellipsis)),
+        const SizedBox(width: 6),
+        _recentSourceTag('Phone'),
+      ]),
+      subtitle: Text('Opened · ${_recentDateLabel(openedAt ?? DateTime.now())}'),
+      onTap: () => _openExternalStoragePdf(uri, name),
+      onLongPress: () => _openPhoneRecentSelection(item),
+      trailing: PopupMenuButton<String>(
+        tooltip: 'Actions for $name',
+        onSelected: (action) => _handlePhoneRecentAction(item, action),
+        itemBuilder: (_) => _phoneRecentMenu(item),
+      ),
+    );
+  }
+
+  List<PopupMenuEntry<String>> _phoneRecentMenu(Map<String, Object?> item) => [
+    const PopupMenuItem(value: 'share', child: Text('Share PDF')),
+    const PopupMenuItem(value: 'favorite', child: Text('Add to Star')),
+    const PopupMenuItem(value: 'category', child: Text('Set category')),
+    const PopupMenuItem(value: 'tags', child: Text('Edit tags')),
+    const PopupMenuItem(value: 'rename', child: Text('Rename')),
+    const PopupMenuItem(value: 'move', child: Text('Move to folder')),
+    const PopupMenuItem(value: 'trash', child: Text('Move to Recycle Bin')),
+  ];
+
+  Future<void> _handlePhoneRecentAction(Map<String, Object?> item, String action) async {
+    final uri = item['uri'] as String? ?? '';
+    final name = item['name'] as String? ?? 'PDF';
+    if (action == 'share') {
+      await _sharePhonePdf(uri, name);
+    } else {
+      _message('Phone PDF management actions are available from the Phone folder browser.');
+    }
+  }
+
+  Future<void> _openPhoneRecentSelection(Map<String, Object?> first) async {
+    await Navigator.of(context).push<void>(MaterialPageRoute(
+      builder: (_) => _PhoneRecentSelectionScreen(
+        items: _phoneRecent,
+        initialUri: first['uri'] as String,
+        onShare: (chosen) => _tools.shareManyStoredPdfs(
+          chosen.map((x) => x['uri'] as String).toList(),
+          chosen.map((x) => '${x['name']}.pdf').toList(),
+        ),
+        onDelete: (chosen) async {
+          final prefs = await SharedPreferences.getInstance();
+          final keep = _phoneRecent.where((item) => !chosen.any((x) => x['uri'] == item['uri'])).toList();
+          await prefs.setStringList('docsgrid_phone_recent_v1', keep.map(jsonEncode).toList());
+          if (mounted) setState(() => _phoneRecent = keep);
+        },
+      ),
+    ));
+  }
+
   Future<void> _loadRecentDocuments() async {
     try {
       // Include both opened documents and newly added documents. The list
@@ -1697,41 +1760,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                                   primary: false,
                                   itemCount: _phoneRecent.length,
                                   separatorBuilder: (_, _) => const Divider(height: 1),
-                                  itemBuilder: (context, index) {
-                                    final item = _phoneRecent[index];
-                                    final name = item['name'] as String? ?? 'PDF';
-                                    final openedAt = DateTime.tryParse(item['openedAt']?.toString() ?? '');
-                                    return ListTile(
-                                      dense: true,
-                                      leading: const Icon(Icons.picture_as_pdf_outlined),
-                                      title: Row(mainAxisSize: MainAxisSize.min, children: [
-                                        Flexible(child: Text(name, maxLines: 1, overflow: TextOverflow.ellipsis)),
-                                        const SizedBox(width: 6),
-                                        _recentSourceTag('Phone'),
-                                      ]),
-                                      subtitle: Text('Opened · ${_recentDateLabel(openedAt ?? DateTime.now())}'),
-                                      onTap: () => _openExternalStoragePdf(
-                                        item['uri'] as String, name,
-                                      ),
-                                      onLongPress: () => _openPhoneRecentSelection(item),
-                                      trailing: PopupMenuButton<String>(
-                                        tooltip: 'Actions for $name',
-                                        onSelected: (action) => _handlePhoneRecentAction(item, action),
-                                        itemBuilder: (_) => _phoneRecentMenu(item),
-                                      ),
-                                    );
-                                  },
-                                )
-                          : _gridRecent.isEmpty
-                              ? const Center(child: Text('No recent Grid PDFs'))
-                              : ListView.separated(
-                                  primary: false,
-                                  itemCount: _gridRecent.length,
-                                  separatorBuilder: (_, _) => const Divider(height: 1),
-                                  itemBuilder: (context, index) {
-                                    final document = _gridRecent[index];
-                                    return _recentDocumentTile(document);
-                                  },
+                                  itemBuilder: (context, index) => _phoneRecentTile(_phoneRecent[index]),
                                 ),
                     ),
                   ],
