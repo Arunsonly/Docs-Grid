@@ -141,6 +141,32 @@ String escapeLikeWildcards(String value) {
       .replaceAll('_', r'\_');
 }
 
+class PdfImportDestination {
+  const PdfImportDestination(this.uri);
+
+  final String? uri;
+
+  bool get usesPrivateStorage => uri == null;
+}
+
+/// Resolves the physical destination for a PDF import.
+///
+/// Android's portable DocsGrid Documents folder takes precedence when it is
+/// available. If it is unavailable, an explicitly selected storage folder
+/// remains a valid destination. App-private storage is used only when neither
+/// shared destination exists.
+PdfImportDestination resolvePdfImportDestination({
+  required bool isAndroid,
+  String? portableDocumentsUri,
+  String? selectedFolderUri,
+  String? targetFolderUri,
+}) {
+  final rootUri = isAndroid
+      ? (portableDocumentsUri ?? selectedFolderUri)
+      : selectedFolderUri;
+  return PdfImportDestination(targetFolderUri ?? rootUri);
+}
+
 class DocumentRepository {
   DocumentRepository({AppDatabase? database})
       : _database = database ?? AppDatabase.instance;
@@ -1102,12 +1128,21 @@ class DocumentRepository {
         final effectiveTargetFolderId = review != null && pickedFiles.length == 1
             ? decision.targetFolderId
             : targetFolderId;
-        final destinationFolderUri = effectiveTargetFolderId != null
-            ? await FolderRepository().ensurePhysicalStorageUri(effectiveTargetFolderId)
-            : (Platform.isAndroid
-                ? portableLocations['documentsUri']
-                : selectedFolder?['uri']);
-        final library = selectedFolder == null
+        final targetFolderUri = effectiveTargetFolderId == null
+            ? null
+            : await FolderRepository().ensurePhysicalStorageUri(effectiveTargetFolderId);
+        final destination = resolvePdfImportDestination(
+          isAndroid: Platform.isAndroid,
+          portableDocumentsUri: portableLocations['documentsUri'],
+          selectedFolderUri: selectedFolder?['uri'],
+          targetFolderUri: targetFolderUri,
+        );
+        final destinationFolderUri = destination.uri;
+        // Base the private-storage fallback on the resolved destination, not
+        // merely on whether a folder preference exists. A selected SAF folder
+        // can be the only available Android destination when portable storage
+        // is unavailable (for example, without MANAGE_EXTERNAL_STORAGE).
+        final library = destination.usesPrivateStorage
             ? await _privateFolderFor(effectiveTargetFolderId)
             : null;
         final safeName = _safePdfName(decision.name);
