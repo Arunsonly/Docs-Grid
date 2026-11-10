@@ -223,7 +223,7 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
         ],
       ),
     );
-    if (!mounted || (restoreChoice != 'recover' && restoreChoice != 'pdfs')) return;
+    if (!context.mounted || (restoreChoice != 'recover' && restoreChoice != 'pdfs')) return;
     if (restoreChoice == 'pdfs') {
       await Navigator.of(context).push(MaterialPageRoute(builder: (_) => Scaffold(
         appBar: AppBar(title: const Text('Recover existing PDFs')),
@@ -251,6 +251,7 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
       }
     }
 
+    if (!context.mounted) return;
     await Navigator.of(context).push(MaterialPageRoute(builder: (_) => Scaffold(
       appBar: AppBar(title: const Text('Recover DocsGrid')),
       body: DocumentToolsScreen(
