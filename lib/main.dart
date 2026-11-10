@@ -190,6 +190,7 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
       }
     }
 
+    if (!mounted) return;
     final restoreChoice = await showDialog<String>(
       context: context,
       builder: (ctx) => AlertDialog(
