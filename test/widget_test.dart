@@ -12,7 +12,7 @@ void main() {
     await tester.pumpWidget(const DocsGridApp());
 
     expect(find.text('DocsGrid'), findsOneWidget);
-    expect(find.text('Dashboard'), findsOneWidget);
+    expect(find.text('Home'), findsOneWidget);
     expect(find.text('Grid'), findsOneWidget);
     expect(find.text('Star'), findsOneWidget);
     expect(find.text('Settings'), findsOneWidget);
