@@ -1600,7 +1600,6 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
           ),
         ),
       ),
-    ),
     );
   }
 
