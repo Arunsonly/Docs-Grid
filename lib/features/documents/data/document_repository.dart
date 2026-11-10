@@ -390,8 +390,8 @@ class DocumentRepository {
     return directory;
   }
 
-  Future<void> moveToFolder(DocumentRecord document, String? folderId) async {
-    if (document.folderId == folderId) return;
+  Future<void> moveToFolder(DocumentRecord document, String? folderId, {String? destinationUri}) async {
+    if (document.folderId == folderId && destinationUri == null) return;
     final db = await _database.database;
     final storage = StorageLocationService.instance;
     final portableLocations = Platform.isAndroid
@@ -399,10 +399,9 @@ class DocumentRepository {
         : const <String, String>{};
     final selectedRoot = await storage.selectedFolder();
 
-    String? destinationUri;
-    if (folderId == null) {
+    if (destinationUri == null && folderId == null) {
       destinationUri = portableLocations['documentsUri'] ?? selectedRoot?['uri'];
-    } else {
+    } else if (destinationUri == null) {
       final rows = await db.query(
         'folders',
         columns: ['storage_uri_or_relative_path'],
