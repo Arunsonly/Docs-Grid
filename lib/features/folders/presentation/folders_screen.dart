@@ -613,7 +613,12 @@ class _FoldersScreenState extends State<FoldersScreen> {
                       review: _reviewSinglePdf,
                     );
                     await _refresh();
-                    if (mounted) _message('Added ${result.added} · Duplicates ${result.duplicates}');
+                    if (mounted) {
+                      final details = result.errors.isEmpty ? '' : '\n${result.errors.first}';
+                      _message(
+                        'Added ${result.added} · Duplicates ${result.duplicates} · Failed ${result.failed}$details',
+                      );
+                    }
                   }
                 },
                 itemBuilder: (_) => const [
