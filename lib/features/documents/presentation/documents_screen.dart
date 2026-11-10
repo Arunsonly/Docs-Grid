@@ -1452,6 +1452,52 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
               ],
             ),
           ),
+        if (!widget.favoritesOnly && !_searchInsideText && _search.text.trim().isNotEmpty)
+          Builder(builder: (context) {
+            final query = _search.text.trim().toLowerCase();
+            final matches = _phoneEntries.where((entry) =>
+              entry['isDirectory'] != true &&
+              (entry['name'] as String? ?? '').toLowerCase().contains(query)
+            ).toList(growable: false);
+            if (matches.isEmpty) return const SizedBox.shrink();
+            return Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+              child: Card(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+                      child: Text(
+                        'Phone Storage matches (${matches.length})',
+                        style: Theme.of(context).textTheme.titleSmall,
+                      ),
+                    ),
+                    SizedBox(
+                      height: (matches.length.clamp(1, 3) * 64).toDouble(),
+                      child: ListView.builder(
+                        itemCount: matches.length,
+                        itemBuilder: (context, index) {
+                          final item = matches[index];
+                          final name = item['name'] as String? ?? 'PDF';
+                          final uri = item['uri'] as String? ?? '';
+                          final folder = item['folderPath'] as String? ?? '';
+                          return ListTile(
+                            dense: true,
+                            leading: const Icon(Icons.picture_as_pdf_outlined),
+                            title: Text(name, maxLines: 1, overflow: TextOverflow.ellipsis),
+                            subtitle: Text(folder.isEmpty ? 'Phone Storage' : 'Phone Storage · $folder',
+                              maxLines: 1, overflow: TextOverflow.ellipsis),
+                            onTap: () => _openExternalStoragePdf(uri, name),
+                          );
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          }),
         if (_importing) const LinearProgressIndicator(),
         Expanded(
           child: _loading
