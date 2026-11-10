@@ -131,6 +131,15 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
   @override
   Widget build(BuildContext context) {
     final folders = _directPdfFolders;
+    assert(() {
+      for (final entry in widget.entries) {
+        debugPrint('PHONE_STORAGE_DIAG entry=$entry isPdf=${_isPdfFile(entry)} '
+            'folderPath=${_normalizedFolderPath(entry)}');
+      }
+      debugPrint('PHONE_STORAGE_DIAG pdfCount=${_pdfs.length} '
+          'folders=${folders.keys.toList()}');
+      return true;
+    }());
     final selectedPath = _selectedFolderPath;
     final selectedFiles = selectedPath == null
         ? const <Map<String, Object?>>[]
