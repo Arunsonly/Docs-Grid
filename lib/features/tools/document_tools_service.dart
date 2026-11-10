@@ -1645,11 +1645,7 @@ class DocumentToolsService {
           await _findChildUri(snapshotUri, 'manifest.json'),
         );
         final manifest = PortableSnapshotManifest.parse(manifestText);
-        const tableNames = <String>[
-        'folders', 'documents', 'categories', 'tags', 'document_tags',
-        'reminders', 'history', 'settings', 'document_text_index',
-      ];
-      final rowsByTable = <String, List<Map<String, Object?>>>{};
+        final rowsByTable = <String, List<Map<String, Object?>>>{};
         for (final record in manifest.files) {
           final table = record.path.substring(0, record.path.length - 5);
           if (!PortableSnapshotManifest.supportedTableNames.contains(table)) {
@@ -2253,6 +2249,10 @@ class DocumentToolsService {
           throw StateError('Backup is missing a metadata checksum or contains an unreferenced metadata checksum.');
         }
       }
+      const tableNames = <String>[
+        'folders', 'documents', 'categories', 'tags', 'document_tags',
+        'reminders', 'history', 'settings', 'document_text_index',
+      ];
       final rowsByTable = <String, List<Map<String, Object?>>>{};
       for (final table in tableNames) {
         final tableFile = decoded.findFile('$table.json');
