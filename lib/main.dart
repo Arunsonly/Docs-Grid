@@ -408,3 +408,293 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
       body: DocumentToolsScreen(quickAction: action),
     )));
   }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('DocsGrid', style: TextStyle(fontWeight: FontWeight.w700)),
+      ),
+      body: SafeArea(
+        child: switch (_selectedIndex) {
+          0 => const DocumentsScreen(),
+          1 => const FoldersScreen(),
+          2 => const DocumentsScreen(favoritesOnly: true),
+          _ => _SettingsScreen(darkMode: widget.darkMode, onDarkModeChanged: widget.onDarkModeChanged),
+        },
+      ),
+      floatingActionButton: _selectedIndex == 0
+          ? FloatingActionButton.small(
+              tooltip: 'Quick document actions',
+              onPressed: _showQuickActions,
+              child: const Icon(Icons.document_scanner_outlined),
+            )
+          : null,
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: _selectedIndex,
+        onDestinationSelected: (index) => setState(() => _selectedIndex = index),
+        destinations: const [
+          NavigationDestination(icon: Icon(Icons.dashboard_outlined), label: 'Dashboard'),
+          NavigationDestination(icon: Icon(Icons.folder_outlined), label: 'Folders'),
+          NavigationDestination(icon: Icon(Icons.star_border), label: 'Star'),
+          NavigationDestination(icon: Icon(Icons.settings_outlined), label: 'Settings'),
+        ],
+      ),
+    );
+  }
+}
+
+class _SettingsScreen extends StatefulWidget {
+  const _SettingsScreen({required this.darkMode, required this.onDarkModeChanged});
+  final bool darkMode;
+  final ValueChanged<bool> onDarkModeChanged;
+
+  @override
+  State<_SettingsScreen> createState() => _SettingsScreenState();
+}
+
+class _SettingsScreenState extends State<_SettingsScreen> {
+  Map<String, String>? _storageStatus;
+  bool _checkingStorage = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _refreshStorageStatus();
+  }
+
+  Future<void> _refreshStorageStatus() async {
+    setState(() => _checkingStorage = true);
+    try {
+      final status = await StorageLocationService.instance.checkStorageAccess();
+      if (mounted) setState(() => _storageStatus = status);
+    } catch (error) {
+      if (mounted) {
+        setState(() => _storageStatus = {
+          'status': 'unknown',
+          'message': 'Could not check storage access: $error',
+        });
+      }
+    } finally {
+      if (mounted) setState(() => _checkingStorage = false);
+    }
+  }
+
+  Future<void> _chooseStorage(BuildContext context) async {
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final folder = await StorageLocationService.instance.chooseFolder();
+      if (folder == null || !context.mounted) return;
+      final migrate = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('Move existing PDF library?'),
+          content: Text(
+            'Use “${folder['name']}” for new imports and move your existing PDFs and folder structure there? '
+            'Every PDF is verified before its old copy is removed.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('New imports only'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('Move existing library'),
+            ),
+          ],
+        ),
+      );
+      if (!context.mounted) return;
+      await _refreshStorageStatus();
+      if (!context.mounted) return;
+      if (migrate != true) {
+        messenger.showSnackBar(
+          SnackBar(content: Text('Storage folder selected: ${folder['name']}. Existing PDFs were not moved.')),
+        );
+        return;
+      }
+
+      var completed = 0;
+      var total = 0;
+      var current = 'Preparing migration…';
+      StateSetter? updateProgress;
+      final progressDialog = showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (dialogContext) => StatefulBuilder(
+          builder: (dialogContext, setDialogState) {
+            updateProgress = setDialogState;
+            final value = total == 0 ? null : completed / total;
+            return AlertDialog(
+              title: const Text('Migrating PDF library'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  LinearProgressIndicator(value: value),
+                  const SizedBox(height: 14),
+                  Text(total == 0 ? 'Scanning documents…' : '$completed of $total PDFs processed'),
+                  const SizedBox(height: 6),
+                  Text(current, maxLines: 2, overflow: TextOverflow.ellipsis,
+                      style: Theme.of(dialogContext).textTheme.bodySmall),
+                  const SizedBox(height: 8),
+                  const Text('Keep DocsGrid open. Original files are removed only after verification and database update.'),
+                ],
+              ),
+            );
+          },
+        ),
+      );
+      await Future<void>.delayed(Duration.zero);
+      try {
+        final count = await DocumentRepository().migrateExistingLibraryToSelectedStorage(
+          onProgress: (done, all, name) {
+            completed = done;
+            total = all;
+            current = name;
+            updateProgress?.call(() {});
+          },
+        );
+        if (context.mounted) {
+          Navigator.of(context, rootNavigator: true).pop();
+          await progressDialog;
+          messenger.showSnackBar(
+            SnackBar(content: Text('Migration completed: $count PDFs moved and verified.')),
+          );
+        }
+      } catch (error) {
+        if (context.mounted) {
+          Navigator.of(context, rootNavigator: true).pop();
+          await progressDialog;
+          messenger.showSnackBar(
+            SnackBar(content: Text('Migration stopped safely: $error')),
+          );
+        }
+      }
+    } catch (error) {
+      if (context.mounted) {
+        messenger.showSnackBar(
+          SnackBar(content: Text('Storage operation stopped safely: $error')),
+        );
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final status = _storageStatus?['status'];
+    return ListView(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      children: [
+        if (Platform.isAndroid)
+          FutureBuilder<bool>(
+            future: StorageLocationService.instance.hasAllFilesAccess(),
+            builder: (context, snapshot) {
+              final granted = snapshot.data == true;
+              return ListTile(
+                leading: Icon(
+                  granted ? Icons.folder_special : Icons.folder_off_outlined,
+                  color: granted ? Theme.of(context).colorScheme.primary : null,
+                ),
+                title: const Text('Full internal storage access'),
+                subtitle: Text(granted
+                    ? 'Allowed. DocsGrid can access shared internal storage.'
+                    : 'Required for personal-use full storage browsing and automatic recovery discovery.'),
+                trailing: granted
+                    ? const Icon(Icons.check_circle_outline)
+                    : const Icon(Icons.chevron_right),
+                onTap: () async {
+                  try {
+                    await StorageLocationService.instance.requestAllFilesAccess();
+                  } catch (error) {
+                    if (context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text('Could not open storage permission settings: $error')),
+                      );
+                    }
+                  }
+                },
+              );
+            },
+          ),
+        SwitchListTile(
+          secondary: const Icon(Icons.dark_mode_outlined),
+          title: const Text('Dark appearance'),
+          value: widget.darkMode,
+          onChanged: widget.onDarkModeChanged,
+        ),
+        const Divider(height: 1),
+        ListTile(
+          leading: const Icon(Icons.health_and_safety_outlined),
+          title: const Text('Storage access health'),
+          trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+            if (_checkingStorage) const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
+            if (!_checkingStorage) Text(status == 'available' ? 'OK' : status == 'revoked' ? 'Repair' : 'Check',
+              style: TextStyle(color: status == 'available' ? Colors.green : null)),
+            IconButton(tooltip: 'Refresh', onPressed: _checkingStorage ? null : _refreshStorageStatus,
+              icon: const Icon(Icons.refresh)),
+          ]),
+          onTap: _refreshStorageStatus,
+        ),
+        const Divider(height: 1),
+        ListTile(
+          leading: const Icon(Icons.sd_storage_outlined),
+          title: const Text('Choose storage location'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () => _chooseStorage(context),
+        ),
+        const Divider(height: 1),
+        ListTile(
+          leading: const Icon(Icons.backup_outlined),
+          title: const Text('Backup & Restore'),
+          subtitle: const Text('Create backup · Restore backup'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => Scaffold(
+            appBar: AppBar(title: const Text('Backup & Restore')),
+            body: const DocumentToolsScreen(section: 'backup_restore'),
+          ))),
+        ),
+        const Divider(height: 1),
+        ListTile(
+          leading: const Icon(Icons.build_outlined),
+          title: const Text('Document tools'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => Scaffold(
+            appBar: AppBar(title: const Text('Document tools')),
+            body: const DocumentToolsScreen(section: 'tools'),
+          ))),
+        ),
+        const Divider(height: 1),
+        ListTile(
+          leading: const Icon(Icons.history),
+          title: const Text('Activity'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const HistoryScreen())),
+        ),
+        const Divider(height: 1),
+        ListTile(
+          leading: const Icon(Icons.notifications_active_outlined),
+          title: const Text('Reminder'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const RemindersScreen())),
+        ),
+        const Divider(height: 1),
+        ListTile(
+          leading: const Icon(Icons.sell_outlined),
+          title: const Text('Category & Tag'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => Scaffold(
+            appBar: AppBar(title: const Text('Category & Tag')),
+            body: const CategoriesScreen(),
+          ))),
+        ),
+        const Divider(height: 1),
+        const ListTile(
+          leading: Icon(Icons.info_outline),
+          title: Text('About'),
+        ),
+      ],
+    );
+  }
+}
