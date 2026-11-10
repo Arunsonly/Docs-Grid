@@ -970,7 +970,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                       phoneFolderUri = await storage.createDirectory(parentUri: parent, name: name);
                       await refreshPhoneFolders();
                     } else {
-                      await _folderRepository.create(name: name);
+                      await _folderRepository.create(name: name, parentId: gridFolderId.isEmpty ? null : gridFolderId);
                       gridFolders
                         ..clear()
                         ..addAll(await _folderRepository.allFoldersWithPaths());
@@ -1458,7 +1458,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
             PopupMenuItem(value: 'favorite',
               child: Text(document.isFavorite ? 'Remove from Star' : 'Add to Star')),
             const PopupMenuItem(value: 'category', child: Text('Set category')),
-            const PopupMenuItem(value: 'move', child: Text('Move to folder')),
+            const PopupMenuItem(value: 'move', child: Text('Move')),
             const PopupMenuItem(value: 'tags', child: Text('Edit tags')),
             const PopupMenuItem(value: 'rename', child: Text('Rename')),
             const PopupMenuItem(value: 'share', child: Text('Share PDF')),
