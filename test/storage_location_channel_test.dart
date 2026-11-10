@@ -177,6 +177,45 @@ void main() {
   });
 
 
+  test('system .Trash folders and their PDFs are excluded from storage scan', () async {
+    final tree = <String, List<Map<String, Object?>>>{
+      'content://tree/root': [
+        {'name': 'Android', 'uri': 'content://tree/android', 'isDirectory': true},
+        {'name': 'Documents', 'uri': 'content://tree/documents', 'isDirectory': true},
+      ],
+      'content://tree/android': [
+        {'name': '.Trash', 'uri': 'content://tree/trash', 'isDirectory': true},
+        {'name': 'media', 'uri': 'content://tree/media', 'isDirectory': true},
+      ],
+      'content://tree/trash': [
+        {'name': 'Deleted-policy.pdf', 'uri': 'content://doc/deleted', 'isDirectory': false},
+        {'name': 'nested', 'uri': 'content://tree/trash-nested', 'isDirectory': true},
+      ],
+      'content://tree/trash-nested': [
+        {'name': 'Another-deleted.pdf', 'uri': 'content://doc/deleted-2', 'isDirectory': false},
+      ],
+      'content://tree/media': [],
+      'content://tree/documents': [
+        {'name': 'Current-policy.pdf', 'uri': 'content://doc/current', 'isDirectory': false},
+      ],
+    };
+    final visited = <String>[];
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      visited.add(call.arguments['uri'] as String);
+      return tree[call.arguments['uri']]!;
+    });
+
+    final entries = await StorageLocationService.instance
+        .listStorageTreeRecursively('content://tree/root');
+
+    expect(visited, isNot(contains('content://tree/trash')));
+    expect(visited, isNot(contains('content://tree/trash-nested')));
+    expect(entries.where((entry) => entry['name'] == 'Deleted-policy.pdf'), isEmpty);
+    expect(entries.where((entry) => entry['name'] == 'Another-deleted.pdf'), isEmpty);
+    expect(entries.where((entry) => entry['name'] == 'Current-policy.pdf'), hasLength(1));
+    expect(entries.where((entry) => entry['path'] == 'Android/.Trash'), isEmpty);
+  });
+
   test('recursive storage browser hides empty branches and retains PDF ancestors', () async {
     final tree = <String, List<Map<String, Object?>>>{
       'content://tree/root': [
