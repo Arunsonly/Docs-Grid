@@ -1334,47 +1334,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                   onPressed: _toggleDocumentView,
                   icon: Icon(_gridView ? Icons.view_list_outlined : Icons.grid_view_outlined),
                 ),
-                PopupMenuButton<String>(
-                  tooltip: 'More document actions',
-                  icon: const Icon(Icons.more_vert),
-                  onSelected: (action) {
-                    if (action == 'trash') _showTrash();
-                    if (action == 'select') setState(() { _selectionMode = true; _selectedIds.clear(); });
-                    if (action == 'duplicates') {
-                      Navigator.of(context).push(
-                        MaterialPageRoute(
-                          builder: (_) => const DocumentToolsScreen(section: 'tools', quickAction: 'duplicates'),
-                        ),
-                      );
-                    }
-                  },
-                  itemBuilder: (_) => const [
-                    PopupMenuItem(
-                      value: 'trash',
-                      child: ListTile(
-                        contentPadding: EdgeInsets.zero,
-                        leading: Icon(Icons.delete_outline),
-                        title: Text('Recycle Bin'),
-                      ),
-                    ),
-                    PopupMenuItem(
-                      value: 'duplicates',
-                      child: ListTile(
-                        contentPadding: EdgeInsets.zero,
-                        leading: Icon(Icons.copy_all_outlined),
-                        title: Text('Check Duplicate File'),
-                      ),
-                    ),
-                    PopupMenuItem(
-                      value: 'select',
-                      child: ListTile(
-                        contentPadding: EdgeInsets.zero,
-                        leading: Icon(Icons.checklist),
-                        title: Text('Select PDFs'),
-                      ),
-                    ),
-                  ],
-                ),
+
               ],
             ),
           ),
@@ -1826,15 +1786,14 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
             }
           },
           itemBuilder: (_) => [
+            const PopupMenuItem(value: 'share', child: Text('Share PDF')),
             PopupMenuItem(value: 'favorite',
               child: Text(document.isFavorite ? 'Remove from Star' : 'Add to Star')),
             const PopupMenuItem(value: 'category', child: Text('Set category')),
-            const PopupMenuItem(value: 'move', child: Text('Move')),
             const PopupMenuItem(value: 'tags', child: Text('Edit tags')),
             const PopupMenuItem(value: 'rename', child: Text('Rename')),
-            const PopupMenuItem(value: 'share', child: Text('Share PDF')),
-            const PopupMenuItem(value: 'reminder', child: Text('Add to reminder')), 
-            const PopupMenuItem(value: 'relink', child: Text('Relink / Replace PDF')),
+            const PopupMenuItem(value: 'move', child: Text('Move')),
+            const PopupMenuItem(value: 'reminder', child: Text('Add to reminder')),
             const PopupMenuItem(value: 'trash', child: Text('Move to Recycle Bin')),
           ],
         ),
