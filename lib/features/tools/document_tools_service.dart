@@ -2224,7 +2224,6 @@ class DocumentToolsService {
           if (raw is! Map || raw['entry'] is! String ||
               raw['sizeBytes'] is! int || raw['sha256'] is! String ||
               !RegExp(r'^[a-fA-F0-9]{64}
-            throw StateError('Backup contains an invalid metadata checksum record.');
           }
           final name = raw['entry'] as String;
           if (!seenMetadata.add(name) || !name.endsWith('.json') ||
@@ -2412,7 +2411,7 @@ class OcrIndexCancelled implements Exception {
   @override
   String toString() => 'OCR indexing was cancelled because its screen was closed.';
 }
-).hasMatch(raw['sha256'] as String) ||
+).hasMatch(raw['sha256'] as String)) {
             throw StateError('Backup contains an invalid metadata checksum record.');
           }
           final name = raw['entry'] as String;
