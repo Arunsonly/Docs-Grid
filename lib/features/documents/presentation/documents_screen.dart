@@ -883,40 +883,124 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   }
 
   Future<void> _moveToFolder(DocumentRecord document) async {
-    final folders = await _folderRepository.allFoldersWithPaths();
+    final storage = StorageLocationService.instance;
+    final gridFolders = await _folderRepository.allFoldersWithPaths();
+    final roots = await storage.accessibleStorageRoots();
+    final portable = await storage.portableDataLocationsIfAvailable();
     if (!mounted) return;
-    final selected = await showModalBottomSheet<String>(
+    final phoneRoot = roots.isEmpty ? null : roots.first['uri'];
+    var location = 'grid';
+    var gridFolderId = '';
+    String? phoneFolderUri = phoneRoot;
+    var phoneFolders = <Map<String, Object?>>[];
+
+    Future<void> refreshPhoneFolders() async {
+      if (phoneFolderUri == null) return;
+      final entries = await storage.listDirectory(phoneFolderUri!);
+      phoneFolders = entries.where((entry) => entry['isDirectory'] == true).toList();
+    }
+
+    if (phoneRoot != null) await refreshPhoneFolders();
+    final selected = await showDialog<({String location, String? folderId, String? uri})>(
       context: context,
-      showDragHandle: true,
-      builder: (sheetContext) => SafeArea(
-        child: ListView(
-          shrinkWrap: true,
-          children: [
-            const ListTile(
-              title: Text('Move PDF to folder'),
-              subtitle: Text('The PDF stays in the same local library.'),
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('Move PDF'),
+          content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+            const Text('Location'),
+            DropdownButtonFormField<String>(
+              value: location,
+              items: [
+                const DropdownMenuItem(value: 'grid', child: Text('Grid')),
+                DropdownMenuItem(value: 'internal', enabled: phoneRoot != null, child: const Text('Internal storage')),
+              ],
+              onChanged: (value) async {
+                if (value == null) return;
+                setDialogState(() => location = value);
+                if (value == 'internal') {
+                  phoneFolderUri = phoneRoot;
+                  try { await refreshPhoneFolders(); setDialogState(() {}); }
+                  catch (error) { if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Storage access failed: $error'))); }
+                }
+              },
             ),
-            ListTile(
-              leading: const Icon(Icons.home_outlined),
-              title: const Text('Root / No folder'),
-              trailing: document.folderId == null ? const Icon(Icons.check) : null,
-              onTap: () => Navigator.pop(sheetContext, ''),
-            ),
-            for (final option in folders)
-              ListTile(
-                leading: const Icon(Icons.folder_outlined),
-                title: Text(option.path),
-                trailing: document.folderId == option.folder.id
-                    ? const Icon(Icons.check, color: Colors.green)
-                    : null,
-                onTap: () => Navigator.pop(sheetContext, option.folder.id),
+            const SizedBox(height: 12),
+            const Text('Folder'),
+            if (location == 'grid')
+              DropdownButtonFormField<String>(
+                value: gridFolderId,
+                isExpanded: true,
+                items: [
+                  const DropdownMenuItem(value: '', child: Text('Root')),
+                  for (final folder in gridFolders) DropdownMenuItem(value: folder.folder.id, child: Text(folder.path, overflow: TextOverflow.ellipsis)),
+                ],
+                onChanged: (value) => setDialogState(() => gridFolderId = value ?? ''),
+              )
+            else
+              DropdownButtonFormField<String>(
+                value: phoneFolderUri,
+                isExpanded: true,
+                items: [
+                  if (phoneRoot != null) DropdownMenuItem(value: phoneRoot, child: const Text('Root')),
+                  for (final folder in phoneFolders) DropdownMenuItem(value: folder['uri'] as String, child: Text(folder['name'] as String, overflow: TextOverflow.ellipsis)),
+                ],
+                onChanged: (value) => setDialogState(() => phoneFolderUri = value),
               ),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton.icon(
+                icon: const Icon(Icons.create_new_folder_outlined),
+                label: const Text('Create folder'),
+                onPressed: () async {
+                  final controller = TextEditingController();
+                  final name = await showDialog<String>(context: context, builder: (ctx) => AlertDialog(
+                    title: const Text('Create folder'),
+                    content: TextField(controller: controller, autofocus: true, decoration: const InputDecoration(labelText: 'Folder name')),
+                    actions: [
+                      TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+                      FilledButton(onPressed: () => Navigator.pop(ctx, controller.text.trim()), child: const Text('Create')),
+                    ],
+                  ));
+                  controller.dispose();
+                  if (name == null || name.isEmpty) return;
+                  try {
+                    if (location == 'internal') {
+                      final parent = phoneFolderUri ?? phoneRoot;
+                      if (parent == null) throw StateError('Internal storage is unavailable.');
+                      phoneFolderUri = await storage.createDirectory(parentUri: parent, name: name);
+                      await refreshPhoneFolders();
+                    } else {
+                      await _folderRepository.create(name: name);
+                      gridFolders
+                        ..clear()
+                        ..addAll(await _folderRepository.allFoldersWithPaths());
+                      gridFolderId = gridFolders.where((item) => item.folder.name == name).map((item) => item.folder.id).firstOrNull ?? '';
+                    }
+                    setDialogState(() {});
+                  } catch (error) {
+                    if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not create folder: $error')));
+                  }
+                },
+              ),
+            ),
+          ]),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Cancel')),
+            FilledButton(onPressed: () => Navigator.pop(dialogContext, (
+              location: location,
+              folderId: location == 'grid' ? gridFolderId : null,
+              uri: location == 'internal' ? phoneFolderUri : null,
+            )), child: const Text('Move')),
           ],
         ),
       ),
     );
     if (selected == null) return;
-    await _repository.moveToFolder(document, selected.isEmpty ? null : selected);
+    await _repository.moveToFolder(
+      document,
+      selected.location == 'grid' && selected.folderId!.isNotEmpty ? selected.folderId : null,
+      destinationUri: selected.location == 'internal' ? selected.uri : null,
+    );
     await _patchDocument(document.id);
   }
 
