@@ -15,7 +15,27 @@ permissions:
   contents: read
 
 jobs:
+  launcher_icon:
+    name: Prepare shared DocsGrid launcher icon
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install SVG renderer
+        run: brew install librsvg
+      - name: Render DocsGrid launcher icon
+        run: |
+          mkdir -p assets
+          rsvg-convert -w 1024 -h 1024 assets/docsgrid_icon.svg -o assets/docsgrid_icon.png
+      - name: Upload pre-rendered launcher icon
+        uses: actions/upload-artifact@v4
+        with:
+          name: docsgrid-launcher-icon
+          path: assets/docsgrid_icon.png
+          if-no-files-found: error
+          retention-days: 1
+
   android:
+    needs: launcher_icon
     name: Android analyze, test and APK
     runs-on: ubuntu-latest
     steps:
@@ -228,13 +248,13 @@ jobs:
           cp platform/android/MainActivity.kt android/app/src/main/kotlin/com/docsgrid/docs_grid/MainActivity.kt
       - name: Install packages
         run: flutter pub get
+      - name: Download pre-rendered DocsGrid launcher icon
+        uses: actions/download-artifact@v4
+        with:
+          name: docsgrid-launcher-icon
+          path: assets
       - name: Generate DocsGrid launcher icons
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y librsvg2-bin
-          mkdir -p assets
-          rsvg-convert -w 1024 -h 1024 assets/docsgrid_icon.svg -o assets/docsgrid_icon.png
-          dart run flutter_launcher_icons
+        run: dart run flutter_launcher_icons
       - name: Analyze
         run: flutter analyze --no-fatal-infos
       - name: Install system SQLite for FFI tests
@@ -267,6 +287,7 @@ jobs:
           retention-days: 14
 
   ios:
+    needs: launcher_icon
     name: iOS analyze, test and unsigned build
     runs-on: macos-latest
     steps:
@@ -341,12 +362,13 @@ jobs:
           PY
       - name: Install packages
         run: flutter pub get
+      - name: Download pre-rendered DocsGrid launcher icon
+        uses: actions/download-artifact@v4
+        with:
+          name: docsgrid-launcher-icon
+          path: assets
       - name: Generate DocsGrid launcher icons
-        run: |
-          brew install librsvg
-          mkdir -p assets
-          rsvg-convert -w 1024 -h 1024 assets/docsgrid_icon.svg -o assets/docsgrid_icon.png
-          dart run flutter_launcher_icons
+        run: dart run flutter_launcher_icons
       - name: Analyze
         run: flutter analyze --no-fatal-infos
       - name: Widget and unit tests
