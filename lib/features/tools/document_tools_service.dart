@@ -883,6 +883,11 @@ class DocumentToolsService {
       await encoder.close();
       encoderOpened = false;
       await BackupArchiveLimits.validate(output);
+      await _pruneBackupArchives(
+        backups,
+        keep: includePdfs ? 4 : 14,
+        newestPath: output.path,
+      );
       return output;
     } catch (_) {
       if (encoderOpened) {
@@ -892,6 +897,42 @@ class DocumentToolsService {
       rethrow;
     } finally {
       try { if (await staging.exists()) await staging.delete(recursive: true); } catch (_) {}
+    }
+  }
+
+  /// Retains four verified weekly full archives and fourteen database-only
+  /// daily archives. Only DocsGrid-owned ZIPs are considered for cleanup.
+  Future<void> _pruneBackupArchives(
+    Directory directory, {
+    required int keep,
+    required String newestPath,
+  }) async {
+    try {
+      if (!await directory.exists()) return;
+      final files = await directory
+          .list(followLinks: false)
+          .where((entry) =>
+              entry is File &&
+              p.basename(entry.path).startsWith('DocsGrid_') &&
+              p.extension(entry.path).toLowerCase() == '.zip')
+          .cast<File>()
+          .toList();
+      files.sort((a, b) => b.lastModifiedSync().compareTo(a.lastModifiedSync()));
+      var retained = 0;
+      for (final file in files) {
+        if (file.path == newestPath || retained < keep) {
+          retained++;
+          continue;
+        }
+        try {
+          // Never prune an archive until the new archive has passed validation.
+          await file.delete();
+        } catch (_) {
+          // Retention is best-effort; failed cleanup never invalidates a backup.
+        }
+      }
+    } catch (_) {
+      // A listing/permission error must not invalidate the newly verified archive.
     }
   }
 
