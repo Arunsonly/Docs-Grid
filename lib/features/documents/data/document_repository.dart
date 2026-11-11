@@ -11,6 +11,7 @@ import 'package:uuid/uuid.dart';
 import '../../../core/database/app_database.dart';
 import '../../../core/storage/byte_stream_file.dart';
 import '../../../core/storage/storage_location_service.dart';
+import '../../../core/storage/portable_snapshot_events.dart';
 import '../../folders/data/folder_repository.dart';
 import '../../reminders/data/reminder_notifications.dart';
 
@@ -548,6 +549,7 @@ class DocumentRepository {
           'storage_uri': newStorageUri,
         });
       });
+      PortableSnapshotEvents.notifyDataChanged();
     } catch (_) {
       if (copiedToNewLocation && newStorageUri != sourceUri) {
         try {
@@ -729,6 +731,7 @@ class DocumentRepository {
             'to': destinationUri,
           });
         });
+        PortableSnapshotEvents.notifyDataChanged();
       } catch (_) {
         if (createdDestination && destinationUri != sourceUri) {
           try { await storage.deletePdf(destinationUri); } catch (_) {}
@@ -880,6 +883,7 @@ class DocumentRepository {
             'storage_uri': createdUri,
           });
         });
+        PortableSnapshotEvents.notifyDataChanged();
       } catch (_) {
         try {
           if (createdUri.startsWith('content://') || createdUri.startsWith('file://')) {
@@ -982,6 +986,7 @@ class DocumentRepository {
           'folder_id': targetFolderId,
         });
       });
+      PortableSnapshotEvents.notifyDataChanged();
       return true;
     } finally {
       if (await staged.exists()) await staged.delete();
@@ -1082,6 +1087,7 @@ class DocumentRepository {
         });
         await _recordHistory(txn, id, sourceType == 'share' ? 'imported_from_share' : 'scanned', {'name': safeName, 'folder_id': targetFolderId});
       });
+      PortableSnapshotEvents.notifyDataChanged();
     } catch (error) {
       try {
         if (uri.startsWith('content://') || uri.startsWith('file://')) {
@@ -1353,6 +1359,7 @@ class DocumentRepository {
           });
           await _recordHistory(txn, documentId, 'imported', {'name': storedName});
         });
+        PortableSnapshotEvents.notifyDataChanged();
         added++;
       } catch (error) {
         if (createdUri != null) {
@@ -1441,6 +1448,7 @@ class DocumentRepository {
         }
       }
     });
+    PortableSnapshotEvents.notifyDataChanged();
     await _reconcileReminders();
   }
 
@@ -1514,6 +1522,7 @@ class DocumentRepository {
         {},
       );
     });
+    PortableSnapshotEvents.notifyDataChanged();
   }
 
   Future<DocumentRecord?> getById(String id) async {
@@ -1563,6 +1572,7 @@ class DocumentRepository {
         await _recordHistory(txn, row['id'] as String, 'recent_cleared', {});
       }
     });
+    PortableSnapshotEvents.notifyDataChanged();
   }
 
   Future<DocumentRecord> copyDocument(
@@ -1635,6 +1645,7 @@ class DocumentRepository {
     await db.transaction((txn) async {
       await _recordHistory(txn, newId, 'copied', {'from': document.id});
     });
+    PortableSnapshotEvents.notifyDataChanged();
     return created;
   }
 
@@ -1650,6 +1661,7 @@ class DocumentRepository {
       if (count == 0) return;
       await _recordHistory(txn, document.id, 'opened', {});
     });
+    PortableSnapshotEvents.notifyDataChanged();
   }
 
   Future<List<DocumentRecord>> listTrash({String query = ''}) async {
@@ -1677,6 +1689,7 @@ class DocumentRepository {
       if (count == 0) throw StateError('PDF is no longer in the Recycle Bin.');
       await _recordHistory(txn, document.id, 'restored', {});
     });
+    PortableSnapshotEvents.notifyDataChanged();
     await _reconcileReminders();
   }
 
@@ -1690,6 +1703,7 @@ class DocumentRepository {
       if (changed == 0) throw StateError('PDF record is already in the Recycle Bin.');
       await _recordHistory(txn, document.id, 'moved_to_recycle_bin', {});
     });
+    PortableSnapshotEvents.notifyDataChanged();
     await _reconcileReminders();
   }
 
@@ -1746,6 +1760,7 @@ class DocumentRepository {
           'to': safeBase,
         });
       });
+      PortableSnapshotEvents.notifyDataChanged();
     } catch (_) {
       try {
         if (isShared) {
@@ -1819,6 +1834,7 @@ class DocumentRepository {
         throw StateError('The document is no longer in the Recycle Bin.');
       }
     });
+    PortableSnapshotEvents.notifyDataChanged();
 
     // If OS cancellation fails, startup/resume reconciliation removes the
     // orphaned pending notification because its reminder row no longer exists.

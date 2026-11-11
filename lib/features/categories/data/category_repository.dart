@@ -5,6 +5,7 @@ import 'package:sqflite/sqflite.dart';
 import 'package:uuid/uuid.dart';
 
 import '../../../core/database/app_database.dart';
+import '../../../core/storage/portable_snapshot_events.dart';
 
 class CategoryRecord {
   const CategoryRecord({
@@ -60,6 +61,7 @@ class CategoryRepository {
       });
       await _recordHistory(txn, null, 'category_created', {'category_id': category.id, 'name': cleaned});
     });
+    PortableSnapshotEvents.notifyDataChanged();
     return category;
   }
 
@@ -81,6 +83,7 @@ class CategoryRepository {
         'category_id': category.id, 'from': category.name, 'to': cleaned,
       });
     });
+    PortableSnapshotEvents.notifyDataChanged();
   }
 
   Future<void> deleteCategory(CategoryRecord category) async {
@@ -118,6 +121,7 @@ class CategoryRepository {
         'category_id': category.id, 'name': category.name, 'documents_affected': affected,
       });
     });
+    PortableSnapshotEvents.notifyDataChanged();
   }
 
   Future<List<TagRecord>> listTags() async {
@@ -138,6 +142,7 @@ class CategoryRepository {
       });
       await _recordHistory(txn, null, 'tag_created', {'tag_id': tag.id, 'name': cleaned});
     });
+    PortableSnapshotEvents.notifyDataChanged();
     return tag;
   }
 
@@ -156,6 +161,7 @@ class CategoryRepository {
         'tag_id': tag.id, 'from': tag.name, 'to': cleaned,
       });
     });
+    PortableSnapshotEvents.notifyDataChanged();
   }
 
   Future<void> deleteTag(TagRecord tag) async {
@@ -165,6 +171,7 @@ class CategoryRepository {
       if (count == 0) throw StateError('Tag no longer exists.');
       await _recordHistory(txn, null, 'tag_deleted', {'tag_id': tag.id, 'name': tag.name});
     });
+    PortableSnapshotEvents.notifyDataChanged();
   }
 
   Future<List<TagRecord>> tagsForDocument(String documentId) async {
@@ -215,6 +222,7 @@ class CategoryRepository {
         await _recordHistory(txn, documentId, 'tags_changed', {'from': before, 'to': after});
       }
     });
+    PortableSnapshotEvents.notifyDataChanged();
   }
 
   Future<void> setDocumentCategory(String documentId, String? categoryId) async {
@@ -253,6 +261,7 @@ class CategoryRepository {
         'to_category_id': categoryId, 'to_category': newName,
       });
     });
+    PortableSnapshotEvents.notifyDataChanged();
   }
 
   Future<void> _recordHistory(

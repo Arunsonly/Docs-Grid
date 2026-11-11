@@ -10,6 +10,7 @@ import 'package:uuid/uuid.dart';
 
 import '../../../core/database/app_database.dart';
 import '../../../core/storage/storage_location_service.dart';
+import '../../../core/storage/portable_snapshot_events.dart';
 import '../domain/folder.dart';
 
 class FolderOption {
@@ -111,6 +112,7 @@ class FolderRepository {
           );
         }
       });
+      PortableSnapshotEvents.notifyDataChanged();
     }
     return visible;
   }
@@ -146,6 +148,7 @@ class FolderRepository {
       }
       await batch.commit(noResult: true);
     });
+    PortableSnapshotEvents.notifyDataChanged();
   }
 
   Future<List<FolderOption>> allFoldersWithPaths() async {
@@ -332,6 +335,7 @@ class FolderRepository {
           'updated_at': now,
         });
       });
+      PortableSnapshotEvents.notifyDataChanged();
     } catch (_) {
       if (physicalUri != null) {
         try { await storage.deletePdf(physicalUri); } catch (_) {}
@@ -541,6 +545,7 @@ class FolderRepository {
           );
         }
       });
+      PortableSnapshotEvents.notifyDataChanged();
     } catch (_) {
       if (renamedUri != null) {
         try {
@@ -647,6 +652,7 @@ class FolderRepository {
       }
       await batch.commit(noResult: true);
     });
+    PortableSnapshotEvents.notifyDataChanged();
   }
 
   /// Soft-deletes selected folders and all descendants. PDFs go to Recycle Bin
@@ -722,6 +728,7 @@ class FolderRepository {
         whereArgs: allIds.toList(),
       );
     });
+    PortableSnapshotEvents.notifyDataChanged();
     return movedPdfCount;
   }
 
@@ -779,6 +786,7 @@ class FolderRepository {
       );
       if (count == 0) throw StateError('Folder no longer exists.');
     });
+    PortableSnapshotEvents.notifyDataChanged();
     if (storageUri != null) {
       try {
         await StorageLocationService.instance.deletePdf(storageUri);
