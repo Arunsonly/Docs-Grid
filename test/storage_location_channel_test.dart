@@ -12,6 +12,69 @@ void main() {
     messenger.setMockMethodCallHandler(channel, null);
   });
 
+  test('copyFileToStorage forwards an app-staged archive and destination metadata', () async {
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      expect(call.method, 'copyFileToStorage');
+      expect(call.arguments, {
+        'sourcePath': '/private/cache/backup.zip',
+        'parentUri': 'content://tree/backups',
+        'name': 'DocsGrid_Full.zip',
+        'mimeType': 'application/zip',
+      });
+      return 'content://document/backup-1';
+    });
+
+    expect(
+      await StorageLocationService.instance.copyFileToStorage(
+        sourcePath: '/private/cache/backup.zip',
+        parentUri: 'content://tree/backups',
+        name: 'DocsGrid_Full.zip',
+        mimeType: 'application/zip',
+      ),
+      'content://document/backup-1',
+    );
+  });
+
+  test('copyFileToStorage rejects a missing published URI', () async {
+    messenger.setMockMethodCallHandler(channel, (_) async => null);
+    await expectLater(
+      StorageLocationService.instance.copyFileToStorage(
+        sourcePath: '/private/cache/backup.zip',
+        parentUri: 'content://tree/backups',
+        name: 'DocsGrid_Full.zip',
+        mimeType: 'application/zip',
+      ),
+      throwsStateError,
+    );
+  });
+
+  test('copyStorageFileToPath requires a verified native staging result', () async {
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      expect(call.method, 'copyStorageFileToPath');
+      expect(call.arguments, {
+        'sourceUri': 'content://document/backup-1',
+        'destinationPath': '/private/cache/restore.zip',
+      });
+      return true;
+    });
+
+    await StorageLocationService.instance.copyStorageFileToPath(
+      sourceUri: 'content://document/backup-1',
+      destinationPath: '/private/cache/restore.zip',
+    );
+  });
+
+  test('copyStorageFileToPath fails closed when native verification fails', () async {
+    messenger.setMockMethodCallHandler(channel, (_) async => false);
+    await expectLater(
+      StorageLocationService.instance.copyStorageFileToPath(
+        sourceUri: 'content://document/backup-1',
+        destinationPath: '/private/cache/restore.zip',
+      ),
+      throwsStateError,
+    );
+  });
+
   test('queryPhonePdfIndex preserves MediaStore URI, folder path, date and generation metadata', () async {
     messenger.setMockMethodCallHandler(channel, (call) async {
       expect(call.method, 'queryPhonePdfIndex');
