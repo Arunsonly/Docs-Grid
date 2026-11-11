@@ -373,27 +373,29 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
     return Scaffold(
       appBar: AppBar(
         title: const Text('DocsGrid', style: TextStyle(fontWeight: FontWeight.w700)),
-        actions: [
-          IconButton(
-            tooltip: widget.darkMode ? 'Switch to light theme' : 'Switch to dark theme',
-            onPressed: () => widget.onDarkModeChanged(!widget.darkMode),
-            icon: Icon(widget.darkMode ? Icons.light_mode_outlined : Icons.dark_mode_outlined),
-          ),
-          IconButton(
-            tooltip: 'Settings',
-            onPressed: () => Navigator.of(context).push(MaterialPageRoute(
-              builder: (_) => Scaffold(
-                appBar: AppBar(title: const Text('Settings')),
-                body: _SettingsScreen(
-                  darkMode: widget.darkMode,
-                  onDarkModeChanged: widget.onDarkModeChanged,
+        actions: _selectedIndex == 1
+            ? [
+                IconButton(
+                  tooltip: widget.darkMode ? 'Switch to light theme' : 'Switch to dark theme',
+                  onPressed: () => widget.onDarkModeChanged(!widget.darkMode),
+                  icon: Icon(widget.darkMode ? Icons.light_mode_outlined : Icons.dark_mode_outlined),
                 ),
-              ),
-            )),
-            icon: const Icon(Icons.settings_outlined),
-          ),
-          const SizedBox(width: 6),
-        ],
+                IconButton(
+                  tooltip: 'Settings',
+                  onPressed: () => Navigator.of(context).push(MaterialPageRoute(
+                    builder: (_) => Scaffold(
+                      appBar: AppBar(title: const Text('Settings')),
+                      body: _SettingsScreen(
+                        darkMode: widget.darkMode,
+                        onDarkModeChanged: widget.onDarkModeChanged,
+                      ),
+                    ),
+                  )),
+                  icon: const Icon(Icons.settings_outlined),
+                ),
+                const SizedBox(width: 6),
+              ]
+            : const [],
       ),
       body: SafeArea(
         child: switch (_selectedIndex) {
