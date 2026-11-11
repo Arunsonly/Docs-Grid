@@ -61,11 +61,17 @@ class FolderRepository {
 
   Future<List<Folder>> childrenOf(String? parentId) async {
     final db = await _database.database;
-    final rows = await db.query(
-      'folders',
-      where: parentId == null ? 'parent_id IS NULL AND deleted_at IS NULL' : 'parent_id = ? AND deleted_at IS NULL',
-      whereArgs: parentId == null ? null : [parentId],
-      orderBy: 'sort_order ASC, name COLLATE NOCASE ASC',
+    final rows = await db.rawQuery(
+      '''
+      SELECT f.*,
+        (SELECT COUNT(*) FROM documents d
+          WHERE d.folder_id = f.id AND d.deleted_at IS NULL) AS pdf_count
+      FROM folders f
+      WHERE ${parentId == null ? 'f.parent_id IS NULL' : 'f.parent_id = ?'}
+        AND f.deleted_at IS NULL
+      ORDER BY f.sort_order ASC, f.name COLLATE NOCASE ASC
+      ''',
+      parentId == null ? const [] : [parentId],
     );
     final storage = StorageLocationService.instance;
     final visible = <Folder>[];

@@ -550,15 +550,30 @@ class MainActivity : FlutterActivity() {
         }.distinctBy { it.path }
     }
 
-    private fun fileForUri(uri: Uri): java.io.File {
+    private fun appPrivateStorageRoots(): List<java.io.File> {
+        val roots = mutableListOf(filesDir, cacheDir, codeCacheDir, noBackupFilesDir)
+        externalCacheDir?.let { roots.add(it) }
+        getExternalFilesDirs(null).filterNotNull().forEach { roots.add(it) }
+        return roots.mapNotNull { directory ->
+            try { directory.canonicalFile } catch (_: Exception) { null }
+        }
+    }
+
+    private fun fileForUri(uri: Uri, allowAppPrivate: Boolean = false): java.io.File {
         if (uri.scheme != "file") throw IllegalArgumentException("Expected a local file URI.")
+        val file = java.io.File(uri.path ?: throw IllegalArgumentException("Invalid file URI."))
+        val canonical = file.canonicalFile
+        val separator = java.io.File.separator
+        if (allowAppPrivate) {
+            val isAppPrivate = appPrivateStorageRoots().any { root ->
+                canonical.path == root.path || canonical.path.startsWith(root.path + separator)
+            }
+            if (isAppPrivate) return canonical
+        }
         if (android.os.Build.VERSION.SDK_INT >= 30 &&
             !android.os.Environment.isExternalStorageManager()) {
             throw SecurityException("Allow Full internal storage access in DocsGrid Settings.")
         }
-        val file = java.io.File(uri.path ?: throw IllegalArgumentException("Invalid file URI."))
-        val canonical = file.canonicalFile
-        val separator = java.io.File.separator
         val allowed = sharedStorageVolumeRoots().any { root ->
             canonical.path == root.path || canonical.path.startsWith(root.path + separator)
         }
@@ -607,7 +622,10 @@ class MainActivity : FlutterActivity() {
 
     private fun copyFilePdf(source: Uri, parent: Uri, requestedName: String): Uri {
         validateLeafName(requestedName)
-        val sourceFile = fileForUri(source)
+        // The picker may stage the source under this app's private cache.
+        // Permit that path for reading only; the destination remains restricted
+        // to an approved shared-storage volume.
+        val sourceFile = fileForUri(source, allowAppPrivate = true)
         val destinationFolder = fileForUri(parent)
         val base = requestedName.removeSuffix(".pdf")
         var candidate = "$base.pdf"
@@ -622,7 +640,8 @@ class MainActivity : FlutterActivity() {
             sourceFile.inputStream().buffered().use { input ->
                 temporary.outputStream().buffered().use { output -> input.copyTo(output, 64 * 1024); output.flush() }
             }
-            if (!digest(Uri.fromFile(sourceFile)).contentEquals(digest(Uri.fromFile(temporary))) ||
+            if (!digest(Uri.fromFile(sourceFile), allowAppPrivateFile = true)
+                    .contentEquals(digest(Uri.fromFile(temporary))) ||
                 !temporary.renameTo(destination)) {
                 throw IllegalStateException("PDF copy verification or publish failed.")
             }
@@ -822,13 +841,18 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    private fun digest(uri: Uri): ByteArray {
-        val md = MessageDigest.getInstance("SHA-256")
-        val inputStream = if (uri.scheme == "file") {
-            fileForUri(uri).inputStream()
+    private fun openPdfSource(uri: Uri, allowAppPrivateFile: Boolean = false): java.io.InputStream? {
+        return if (uri.scheme == "file") {
+            fileForUri(uri, allowAppPrivate = allowAppPrivateFile).inputStream()
         } else {
             contentResolver.openInputStream(uri)
-        } ?: throw IllegalStateException("Could not read PDF for verification.")
+        }
+    }
+
+    private fun digest(uri: Uri, allowAppPrivateFile: Boolean = false): ByteArray {
+        val md = MessageDigest.getInstance("SHA-256")
+        val inputStream = openPdfSource(uri, allowAppPrivateFile)
+            ?: throw IllegalStateException("Could not read PDF for verification.")
         inputStream.use { input ->
             val buffer = ByteArray(64 * 1024)
             while (true) {
@@ -867,13 +891,13 @@ class MainActivity : FlutterActivity() {
             contentResolver, parent, "application/pdf", candidate
         ) ?: throw IllegalStateException("Could not create the destination PDF.")
         try {
-            contentResolver.openInputStream(source)?.use { input ->
+            openPdfSource(source, allowAppPrivateFile = true)?.use { input ->
                 contentResolver.openOutputStream(destination, "w")?.use { output ->
                     input.copyTo(output)
                     output.flush()
                 } ?: throw IllegalStateException("Could not write the destination PDF.")
             } ?: throw IllegalStateException("Could not read the source PDF.")
-            if (!digest(source).contentEquals(digest(destination))) {
+            if (!digest(source, allowAppPrivateFile = true).contentEquals(digest(destination))) {
                 throw IllegalStateException("PDF verification failed; both source and destination were retained.")
             }
             return destination
