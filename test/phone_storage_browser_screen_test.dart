@@ -146,6 +146,44 @@ void main() {
     expect(find.text('Policies'), findsOneWidget);
   });
 
+  testWidgets('system back returns to Phone folder list before leaving tab',
+      (tester) async {
+    setTestViewport(tester);
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: PhoneStorageBrowserScreen(
+          rootName: 'Internal Storage',
+          embedded: true,
+          entries: const [
+            {
+              'name': 'Policies',
+              'uri': '',
+              'folderPath': 'Internal',
+              'path': 'Internal/Policies',
+              'isDirectory': true,
+              'pdfCount': 1,
+            },
+            {
+              'name': 'Policy.pdf',
+              'uri': 'content://policy',
+              'folderPath': 'Internal/Policies',
+              'path': 'Internal/Policies',
+              'isDirectory': false,
+            },
+          ],
+          onOpenPdf: (_, __) async {},
+        ),
+      ),
+    ));
+    await tester.tap(find.byKey(const ValueKey('phone-folder-Internal/Policies')));
+    await tester.pumpAndSettle();
+    expect(find.text('Policy.pdf'), findsOneWidget);
+    await tester.binding.handlePopRoute();
+    await tester.pumpAndSettle();
+    expect(find.text('Policies'), findsOneWidget);
+    expect(find.text('Policy.pdf'), findsNothing);
+  });
+
   testWidgets('folder menu shows folder name and full path above its action',
       (tester) async {
     setTestViewport(tester);

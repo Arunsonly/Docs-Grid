@@ -478,7 +478,9 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   }
 
   Future<List<DocumentRecord>> _loadAllRecentGrid() =>
-      _repository.recentActivity(limit: 100000);
+      // The repository caps this query at 100 rows. Requesting 100,000 throws
+      // and used to leave Recent selection looking blank.
+      _repository.recentActivity(limit: 100);
 
   List<PopupMenuEntry<String>> _phoneRecentMenu(Map<String, Object?> item) => [
     const PopupMenuItem(value: 'share', child: Text('Share PDF')),
@@ -1678,7 +1680,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
             padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
             child: Container(
               width: double.infinity,
-              padding: const EdgeInsets.all(18),
+              padding: const EdgeInsets.all(16),
               decoration: BoxDecoration(
                 gradient: const LinearGradient(
                   begin: Alignment.topLeft,
@@ -1693,23 +1695,23 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                   const Text('Your library', style: TextStyle(color: Color(0xFF17203D), fontSize: 16)),
                   const SizedBox(height: 2),
                   Text('$_totalDocumentCount PDFs', style: const TextStyle(
-                    color: Color(0xFF10162C), fontSize: 34, fontWeight: FontWeight.w800,
+                    color: Color(0xFF10162C), fontSize: 32, fontWeight: FontWeight.w800,
                   )),
-                  const SizedBox(height: 14),
+                  const SizedBox(height: 12),
                   Row(children: [
                     Expanded(child: _dashboardStorageMetric(
                       icon: Icons.phone_android_outlined,
                       title: 'Phone storage',
                       value: _phoneStorageBytes == null
                           ? 'Permission needed'
-                          : '${_phoneScanIncomplete || _phoneUnknownSizeCount > 0 ? 'At least ' : ''}${_size(_phoneStorageBytes!)} used',
+                          : '${_phoneScanIncomplete || _phoneUnknownSizeCount > 0 ? 'At least ' : ''}${_size(_phoneStorageBytes!)}',
                       onTap: _browsePhoneStorage,
                     )),
                     const SizedBox(width: 10),
                     Expanded(child: _dashboardStorageMetric(
                       icon: Icons.folder_outlined,
                       title: 'Grid storage',
-                      value: '${_size(_totalStorageBytes)} used',
+                      value: _size(_totalStorageBytes),
                       onTap: () => Navigator.of(context).push(
                         MaterialPageRoute(builder: (_) => const FoldersScreen()),
                       ),
@@ -1992,7 +1994,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     required String value,
     required VoidCallback onTap,
   }) => Material(
-    color: const Color(0x33717FBF),
+    color: const Color(0x66717FBF),
     borderRadius: BorderRadius.circular(18),
     child: InkWell(
       borderRadius: BorderRadius.circular(18),
@@ -2207,7 +2209,10 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   String _size(int bytes) {
     if (bytes < 1024) return '$bytes B';
     if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
-    return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+    if (bytes < 1024 * 1024 * 1024) {
+      return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+    }
+    return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(1)} GB';
   }
 }
 

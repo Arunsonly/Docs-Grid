@@ -468,10 +468,27 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
 
   @override
   Widget build(BuildContext context) {
-    if (widget.embedded) return _buildBrowserContent();
-
     final selectedPath = _selectedFolderPath;
-    return Scaffold(
+    if (widget.embedded) {
+      return PopScope<void>(
+        canPop: selectedPath == null,
+        onPopInvokedWithResult: (didPop, result) {
+          if (!didPop && _selectedFolderPath != null && mounted) {
+            setState(() => _selectedFolderPath = null);
+          }
+        },
+        child: _buildBrowserContent(),
+      );
+    }
+
+    return PopScope<void>(
+      canPop: selectedPath == null,
+      onPopInvokedWithResult: (didPop, result) {
+        if (!didPop && _selectedFolderPath != null && mounted) {
+          setState(() => _selectedFolderPath = null);
+        }
+      },
+      child: Scaffold(
       appBar: AppBar(
         leading: selectedPath == null
             ? null
@@ -494,6 +511,7 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
         ],
       ),
       body: _buildBrowserContent(),
+      ),
     );
   }
 }
