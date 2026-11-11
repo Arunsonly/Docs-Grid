@@ -112,7 +112,8 @@ void main() {
       (tester) async {
     setTestViewport(tester);
     await tester.pumpWidget(MaterialApp(
-      home: PhoneStorageBrowserScreen(
+      home: Scaffold(
+        body: PhoneStorageBrowserScreen(
         rootName: 'Internal Storage',
         embedded: true,
         entries: const [
@@ -133,6 +134,7 @@ void main() {
           },
         ],
         onOpenPdf: (_, __) async {},
+        ),
       ),
     ));
 
