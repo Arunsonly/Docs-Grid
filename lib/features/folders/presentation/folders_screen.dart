@@ -27,6 +27,8 @@ class _FoldersScreenState extends State<FoldersScreen> {
   String? _currentFolderId;
   String _currentTitle = 'Folders';
   final Set<String> _selectedDocumentIds = <String>{};
+  bool _isReorderingFolders = false;
+  List<Folder> _draftFolderOrder = <Folder>[];
   late Future<List<Folder>> _foldersFuture;
   late Future<List<DocumentRecord>> _documentsFuture;
 
@@ -42,7 +44,11 @@ class _FoldersScreenState extends State<FoldersScreen> {
   }
 
   Future<void> _refresh() async {
-    setState(_load);
+    setState(() {
+      _isReorderingFolders = false;
+      _draftFolderOrder = <Folder>[];
+      _load();
+    });
     // Wait for both sections to settle. FutureBuilder renders any errors;
     // swallowing here prevents a failed refresh from escaping the indicator.
     try {
@@ -756,35 +762,39 @@ class _FoldersScreenState extends State<FoldersScreen> {
                               shrinkWrap: true,
                               physics: const NeverScrollableScrollPhysics(),
                               buildDefaultDragHandles: false,
-                              itemCount: folders.length,
-                              onReorderItem: (oldIndex, newIndex) async {
-                                final reordered = List<Folder>.of(folders);
-                                final moved = reordered.removeAt(oldIndex);
-                                reordered.insert(newIndex, moved);
-                                try {
-                                  await _repository.reorderChildren(
-                                    _currentFolderId,
-                                    reordered.map((folder) => folder.id).toList(),
-                                  );
-                                  if (mounted) await _refresh();
-                                } catch (error) {
-                                  if (mounted) _message('Could not reorder folders: $error');
+                              itemCount: displayedFolders.length,
+                              onReorderStart: (_) {
+                                if (!_isReorderingFolders) {
+                                  setState(() => _isReorderingFolders = true);
                                 }
                               },
+                              onReorderItem: (oldIndex, newIndex) {
+                                setState(() {
+                                  final moved = _draftFolderOrder.removeAt(oldIndex);
+                                  _draftFolderOrder.insert(newIndex, moved);
+                                });
+                              },
                               itemBuilder: (context, index) {
-                                final folder = folders[index];
+                                final folder = displayedFolders[index];
                                 return Card(
                                   key: ValueKey('folder-${folder.id}'),
                                   elevation: 0,
                                   child: ListTile(
-                                    leading: ReorderableDelayedDragStartListener(
-                                      index: index,
-                                      child: const CircleAvatar(child: Icon(Icons.folder_outlined)),
-                                    ),
+                                    leading: CircleAvatar(child: const Icon(Icons.folder_outlined)),
                                     title: Text(folder.name, maxLines: 1, overflow: TextOverflow.ellipsis),
                                     subtitle: const Text('Folder'),
                                     onTap: () => _openFolder(folder),
-                                    trailing: PopupMenuButton<String>(
+                                    trailing: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        ReorderableDelayedDragStartListener(
+                                          index: index,
+                                          child: const Padding(
+                                            padding: EdgeInsets.all(10),
+                                            child: Icon(Icons.drag_indicator, color: Colors.grey),
+                                          ),
+                                        ),
+                                        PopupMenuButton<String>(
                                       tooltip: 'Folder actions · Hold folder icon to reorder',
                                       onSelected: (value) {
                                         if (value == 'rename') _renameFolder(folder);
@@ -794,6 +804,7 @@ class _FoldersScreenState extends State<FoldersScreen> {
                                         PopupMenuItem(value: 'rename', child: Text('Rename')),
                                         PopupMenuItem(value: 'delete', child: Text('Delete')),
                                       ],
+                                    ),
                                     ),
                                   ),
                                 );
@@ -875,7 +886,36 @@ class _FoldersScreenState extends State<FoldersScreen> {
               );
             },
           ),
-        )
+        ),
+        if (_isReorderingFolders)
+          SafeArea(
+            top: false,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+              child: SizedBox(
+                width: double.infinity,
+                child: FilledButton.icon(
+                  key: const ValueKey('finish-folder-reorder'),
+                  icon: const Icon(Icons.check),
+                  label: const Text('Finish'),
+                  onPressed: () async {
+                    try {
+                      await _repository.reorderChildren(
+                        _currentFolderId,
+                        _draftFolderOrder.map((folder) => folder.id).toList(),
+                      );
+                      if (!mounted) return;
+                      setState(() => _isReorderingFolders = false);
+                      await _refresh();
+                      _message('Folder order saved.');
+                    } catch (error) {
+                      if (mounted) _message('Could not save folder order: $error');
+                    }
+                  },
+                ),
+              ),
+            ),
+          ),
       ],
       ),
     );
