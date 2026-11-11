@@ -200,6 +200,23 @@ class FolderRepository {
     String? parentUri = defaultLibraryRoot ?? selectedRoot?['uri'];
     for (final folder in chain.reversed) {
       var childUri = folder.uri;
+      // Older full restores stored absolute filesystem paths in this URI column.
+      // Convert those legacy values to file:// URIs before passing them to the
+      // Android channel, which dispatches file:// and SAF content:// separately.
+      if (Platform.isAndroid &&
+          childUri != null &&
+          childUri.startsWith('/')) {
+        childUri = Uri.file(childUri).toString();
+        await db.update(
+          'folders',
+          {
+            'storage_uri_or_relative_path': childUri,
+            'updated_at': DateTime.now().toUtc().toIso8601String(),
+          },
+          where: 'id = ? AND deleted_at IS NULL',
+          whereArgs: [folder.id],
+        );
+      }
       if (childUri == null && parentUri != null) {
         try {
           childUri = await StorageLocationService.instance.findChildUri(
