@@ -2,9 +2,12 @@ package com.docsgrid.docs_grid
 
 import android.app.Activity
 import android.content.Intent
-import android.provider.OpenableColumns
+import android.database.ContentObserver
 import android.database.Cursor
 import android.net.Uri
+import android.content.ContentUris
+import android.provider.MediaStore
+import android.provider.OpenableColumns
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -13,6 +16,7 @@ import java.security.MessageDigest
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
+import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodCall
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.RejectedExecutionException
@@ -30,6 +34,10 @@ class MainActivity : FlutterActivity() {
     private val requestChooseFolder = 4817
     private var pendingFolderResult: MethodChannel.Result? = null
     private var pendingRecoverySelection = false
+    private var storageChangeSink: EventChannel.EventSink? = null
+    private val storageObservers = mutableListOf<ContentObserver>()
+    private var storageObserversRegistered = false
+    private var storageChangeRunnable: Runnable? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -56,6 +64,18 @@ class MainActivity : FlutterActivity() {
                     else -> result.notImplemented()
                 }
             }
+        EventChannel(flutterEngine.dartExecutor.binaryMessenger, "docsgrid/storage_changes")
+            .setStreamHandler(object : EventChannel.StreamHandler {
+                override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
+                    storageChangeSink = events
+                    registerStorageChangeObservers()
+                }
+
+                override fun onCancel(arguments: Any?) {
+                    storageChangeSink = null
+                    unregisterStorageChangeObservers()
+                }
+            })
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName)
             .setMethodCallHandler { call, result ->
                 val mainThreadOnly = call.method == "chooseFolder" || call.method == "chooseRecoveryFolder" || call.method == "openPdf"
@@ -75,6 +95,222 @@ class MainActivity : FlutterActivity() {
                     }
                 }
             }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        registerStorageChangeObservers()
+    }
+
+    override fun onPause() {
+        unregisterStorageChangeObservers()
+        super.onPause()
+    }
+
+    private fun registerStorageChangeObservers() {
+        if (storageObserversRegistered || storageChangeSink == null) return
+        val observedUris = linkedMapOf<String, Uri>()
+        observedUris["media"] = MediaStore.Files.getContentUri("external")
+        try {
+            contentResolver.persistedUriPermissions
+                .filter { it.isReadPermission }
+                .forEach { permission ->
+                    observedUris[permission.uri.toString()] = permission.uri
+                }
+        } catch (_: Exception) {
+            // MediaStore observation remains available when SAF grants cannot be read.
+        }
+
+        observedUris.values.forEach { uri ->
+            try {
+                val observer = object : ContentObserver(mainHandler) {
+                    override fun onChange(selfChange: Boolean) {
+                        scheduleStorageChangeEvent()
+                    }
+
+                    override fun onChange(selfChange: Boolean, changedUri: Uri?) {
+                        scheduleStorageChangeEvent()
+                    }
+                }
+                contentResolver.registerContentObserver(uri, true, observer)
+                storageObservers.add(observer)
+            } catch (_: Exception) {
+                // A provider can reject observation. Resume reconciliation still runs.
+            }
+        }
+        storageObserversRegistered = true
+    }
+
+    private fun unregisterStorageChangeObservers() {
+        storageChangeRunnable?.let { mainHandler.removeCallbacks(it) }
+        storageChangeRunnable = null
+        storageObservers.forEach { observer ->
+            try { contentResolver.unregisterContentObserver(observer) } catch (_: Exception) {}
+        }
+        storageObservers.clear()
+        storageObserversRegistered = false
+    }
+
+    private fun scheduleStorageChangeEvent() {
+        storageChangeRunnable?.let { mainHandler.removeCallbacks(it) }
+        val task = Runnable {
+            storageChangeSink?.success(mapOf("changedAt" to System.currentTimeMillis()))
+        }
+        storageChangeRunnable = task
+        mainHandler.postDelayed(task, 650L)
+    }
+
+    private fun queryPhonePdfIndex(): Map<String, Any> {
+        if (android.os.Build.VERSION.SDK_INT >= 30 &&
+            !android.os.Environment.isExternalStorageManager()) {
+            throw SecurityException("Allow Full internal storage access to index all shared PDF files.")
+        }
+
+        val entries = mutableListOf<Map<String, Any>>()
+        val volumeStates = linkedMapOf<String, Map<String, Any>>()
+        val volumes = if (android.os.Build.VERSION.SDK_INT >= 29) {
+            MediaStore.getExternalVolumeNames(this).toList().sorted()
+        } else {
+            listOf("external")
+        }
+        var complete = true
+
+        volumes.forEachIndexed { volumeIndex, volumeName ->
+            try {
+                val collection = if (android.os.Build.VERSION.SDK_INT >= 29) {
+                    MediaStore.Files.getContentUri(volumeName)
+                } else {
+                    MediaStore.Files.getContentUri("external")
+                }
+                val projection = mutableListOf(
+                    MediaStore.MediaColumns._ID,
+                    MediaStore.MediaColumns.DISPLAY_NAME,
+                    MediaStore.MediaColumns.MIME_TYPE,
+                    MediaStore.MediaColumns.SIZE,
+                    MediaStore.MediaColumns.DATE_MODIFIED,
+                    MediaStore.MediaColumns.RELATIVE_PATH
+                )
+                if (android.os.Build.VERSION.SDK_INT >= 30) {
+                    projection.add(MediaStore.MediaColumns.GENERATION_MODIFIED)
+                }
+
+                val version = if (android.os.Build.VERSION.SDK_INT >= 30) {
+                    MediaStore.getVersion(this, volumeName)
+                } else {
+                    "legacy"
+                }
+                val generation = if (android.os.Build.VERSION.SDK_INT >= 30) {
+                    MediaStore.getGeneration(this, volumeName)
+                } else {
+                    0L
+                }
+                volumeStates[volumeName] = mapOf(
+                    "version" to version,
+                    "generation" to generation,
+                    "label" to if (volumeName == MediaStore.VOLUME_EXTERNAL_PRIMARY) {
+                        "Internal"
+                    } else {
+                        "External storage ${volumeIndex}"
+                    }
+                )
+
+                val idIndexName = MediaStore.MediaColumns._ID
+                val nameIndexName = MediaStore.MediaColumns.DISPLAY_NAME
+                val mimeIndexName = MediaStore.MediaColumns.MIME_TYPE
+                val sizeIndexName = MediaStore.MediaColumns.SIZE
+                val modifiedIndexName = MediaStore.MediaColumns.DATE_MODIFIED
+                val relativeIndexName = MediaStore.MediaColumns.RELATIVE_PATH
+                contentResolver.query(
+                    collection,
+                    projection.toTypedArray(),
+                    "$mimeIndexName = ? OR $nameIndexName LIKE ?",
+                    arrayOf("application/pdf", "%.pdf"),
+                    "$modifiedIndexName DESC"
+                )?.use { cursor ->
+                    val idIndex = cursor.getColumnIndex(idIndexName)
+                    val nameIndex = cursor.getColumnIndex(nameIndexName)
+                    val mimeIndex = cursor.getColumnIndex(mimeIndexName)
+                    val sizeIndex = cursor.getColumnIndex(sizeIndexName)
+                    val modifiedIndex = cursor.getColumnIndex(modifiedIndexName)
+                    val relativeIndex = cursor.getColumnIndex(relativeIndexName)
+                    val generationIndex = if (android.os.Build.VERSION.SDK_INT >= 30) {
+                        cursor.getColumnIndex(MediaStore.MediaColumns.GENERATION_MODIFIED)
+                    } else {
+                        -1
+                    }
+                    if (idIndex < 0 || nameIndex < 0) {
+                        throw IllegalStateException("MediaStore returned incomplete PDF columns.")
+                    }
+                    while (cursor.moveToNext()) {
+                        val name = cursor.getString(nameIndex) ?: continue
+                        if (!name.lowercase().endsWith(".pdf")) continue
+                        val relativePath = if (relativeIndex >= 0 && !cursor.isNull(relativeIndex)) {
+                            cursor.getString(relativeIndex).orEmpty()
+                                .replace('\\', '/').trim('/')
+                        } else {
+                            ""
+                        }
+                        val normalized = relativePath.lowercase()
+                        // DocsGrid-managed files belong to the Grid library, not Phone storage.
+                        if (normalized.startsWith("android/media/com.docsgrid/") ||
+                            normalized == "android/media/com.docsgrid" ||
+                            normalized.startsWith("android/media/docsgrid/") ||
+                            normalized == "android/media/docsgrid") {
+                            continue
+                        }
+                        val sizeKnown = sizeIndex >= 0 && !cursor.isNull(sizeIndex) &&
+                            cursor.getLong(sizeIndex) >= 0L
+                        val size = if (sizeKnown) cursor.getLong(sizeIndex) else 0L
+                        val modifiedMillis = if (modifiedIndex >= 0 && !cursor.isNull(modifiedIndex)) {
+                            cursor.getLong(modifiedIndex).coerceAtLeast(0L) * 1000L
+                        } else {
+                            0L
+                        }
+                        val label = if (volumeName == MediaStore.VOLUME_EXTERNAL_PRIMARY) {
+                            "Internal"
+                        } else {
+                            "External storage ${volumeIndex}"
+                        }
+                        val folderPath = when {
+                            relativePath.isEmpty() -> ""
+                            label == "Internal" -> "Internal/$relativePath"
+                            else -> "$label/$relativePath"
+                        }
+                        val item = mutableMapOf<String, Any>(
+                            "name" to name,
+                            "uri" to ContentUris.withAppendedId(collection, cursor.getLong(idIndex)).toString(),
+                            "isDirectory" to false,
+                            "sizeBytes" to size,
+                            "sizeKnown" to sizeKnown,
+                            "lastModified" to modifiedMillis,
+                            "folderPath" to folderPath,
+                            "volumeName" to volumeName
+                        )
+                        if (generationIndex >= 0 && !cursor.isNull(generationIndex)) {
+                            item["generationModified"] = cursor.getLong(generationIndex)
+                        }
+                        entries.add(item)
+                    }
+                } ?: throw IllegalStateException("MediaStore could not query volume $volumeName.")
+            } catch (error: Exception) {
+                complete = false
+                volumeStates[volumeName] = mapOf(
+                    "error" to (error.message ?: "Volume query failed"),
+                    "label" to if (volumeName == MediaStore.VOLUME_EXTERNAL_PRIMARY) {
+                        "Internal"
+                    } else {
+                        "External storage ${volumeIndex}"
+                    }
+                )
+            }
+        }
+
+        entries.sortByDescending { it["lastModified"] as Long }
+        return mapOf(
+            "entries" to entries,
+            "volumes" to volumeStates,
+            "complete" to complete
+        )
     }
 
     private fun enqueueStorageCall(result: MethodChannel.Result, task: () -> Unit): Boolean {
@@ -226,6 +462,7 @@ class MainActivity : FlutterActivity() {
                                     mapOf("uri" to it, "name" to if (hasAllFiles) "Internal storage" else "DocsGrid/Folders")
                                 })
                             }
+                            "queryPhonePdfIndex" -> result.success(queryPhonePdfIndex())
                             "getAccessibleScanRoots" -> {
                                 val roots = linkedMapOf<String, Map<String, String>>()
                                 val hasAllFiles = android.os.Build.VERSION.SDK_INT < 30 ||
