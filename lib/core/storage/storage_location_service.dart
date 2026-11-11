@@ -195,9 +195,16 @@ class StorageLocationService {
     required String parentUri,
     required String name,
   }) async {
+    // Older restored folder records may still contain a bare absolute
+    // filesystem path instead of a URI. Normalize at the storage boundary so
+    // every PDF-import caller (Grid folder import, WhatsApp share, scanner,
+    // move/copy) sends a valid file:// URI to Android.
+    final normalizedParentUri = Platform.isAndroid && parentUri.startsWith('/')
+        ? Uri.file(parentUri).toString()
+        : parentUri;
     final result = await _channel.invokeMethod<String>('copyPdf', {
       'sourceUri': sourceUri,
-      'parentUri': parentUri,
+      'parentUri': normalizedParentUri,
       'name': name,
     });
     if (result == null) throw StateError('The platform did not return the copied PDF location.');
