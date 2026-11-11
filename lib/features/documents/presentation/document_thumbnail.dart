@@ -222,15 +222,15 @@ class _DocumentThumbnailState extends State<DocumentThumbnail> {
             ),
           );
         }
-        return _placeholder(
-          context,
-          loading: snapshot.connectionState != ConnectionState.done,
-        );
+        // Keep a stable red PDF glyph while the first-page preview loads.
+        // A spinner here prevents scrollable widget tests from settling and
+        // makes large Phone folders visually noisy during thumbnail warm-up.
+        return _placeholder(context);
       },
     );
   }
 
-  Widget _placeholder(BuildContext context, {bool loading = false}) =>
+  Widget _placeholder(BuildContext context) =>
       Container(
         width: 48,
         height: 64,
@@ -239,16 +239,10 @@ class _DocumentThumbnailState extends State<DocumentThumbnail> {
           color: Theme.of(context).colorScheme.surfaceContainerHighest,
           borderRadius: BorderRadius.circular(8),
         ),
-        child: loading
-            ? const SizedBox(
-                width: 18,
-                height: 18,
-                child: CircularProgressIndicator(strokeWidth: 2),
-              )
-            : const Icon(
-                Icons.picture_as_pdf_rounded,
-                size: 38,
-                color: Color(0xFFD32F2F),
-              ),
+        child: const Icon(
+          Icons.picture_as_pdf_rounded,
+          size: 38,
+          color: Color(0xFFD32F2F),
+        ),
       );
 }
