@@ -2471,15 +2471,17 @@ class _RecentSelectionScreenState extends State<_RecentSelectionScreen> {
               separatorBuilder: (_, _) => const Divider(height: 1),
               itemBuilder: (context, index) {
                 final item = _items[index];
-                return CheckboxListTile(
-                  value: _selected.contains(item.id),
-                  onChanged: (value) => _toggleSelection(item, value),
+                return ListTile(
                   onTap: _selected.isEmpty ? () => widget.onOpen(item) : null,
-                  secondary: const Icon(Icons.picture_as_pdf_outlined),
+                  leading: const Icon(Icons.picture_as_pdf_outlined),
                   title: Text('${item.name}.pdf',
                     maxLines: 1, overflow: TextOverflow.ellipsis),
                   subtitle: Text(
                     '${(item.sizeBytes / (1024 * 1024)).toStringAsFixed(1)} MB',
+                  ),
+                  trailing: Checkbox(
+                    value: _selected.contains(item.id),
+                    onChanged: (value) => _toggleSelection(item, value),
                   ),
                 );
               },
@@ -2631,13 +2633,15 @@ class _PhoneRecentSelectionScreenState extends State<_PhoneRecentSelectionScreen
         itemBuilder: (context, index) {
           final item = widget.items[index];
           final uri = item['uri'] as String;
-          return CheckboxListTile(
-            value: _selected.contains(uri),
-            onChanged: (value) => _toggleSelection(uri, value),
+          return ListTile(
             onTap: _selected.isEmpty ? () => widget.onOpen(item) : null,
+            leading: const Icon(Icons.picture_as_pdf_outlined),
             title: Text(item['name'] as String? ?? 'PDF'),
             subtitle: Text('Phone · ${item['openedAt'] ?? ''}'),
-            secondary: const Icon(Icons.picture_as_pdf_outlined),
+            trailing: Checkbox(
+              value: _selected.contains(uri),
+              onChanged: (value) => _toggleSelection(uri, value),
+            ),
           );
         },
       ),
