@@ -108,6 +108,47 @@ void main() {
     expect(find.text('Vehicle-Quote.pdf'), findsNothing);
   });
 
+  testWidgets('does not show a parent folder when PDFs exist only in a nested folder',
+      (tester) async {
+    setTestViewport(tester);
+    await tester.pumpWidget(MaterialApp(
+      home: PhoneStorageBrowserScreen(
+        rootName: 'Internal Storage',
+        entries: const [
+          {
+            'name': 'Android',
+            'uri': '',
+            'folderPath': 'Internal',
+            'path': 'Internal/Android',
+            'isDirectory': true,
+            'pdfCount': 0,
+          },
+          {
+            'name': 'data',
+            'uri': '',
+            'folderPath': 'Internal/Android',
+            'path': 'Internal/Android/data',
+            'isDirectory': true,
+            'pdfCount': 1,
+          },
+          {
+            'name': 'Nested.pdf',
+            'uri': 'content://nested',
+            'folderPath': 'Internal/Android/data',
+            'path': 'Internal/Android/data',
+            'isDirectory': false,
+          },
+        ],
+        onOpenPdf: (_, __) async {},
+      ),
+    ));
+    expect(find.text('Android'), findsNothing);
+    expect(find.text('data'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('phone-folder-Internal/Android/data')));
+    await tester.pumpAndSettle();
+    expect(find.text('Nested.pdf'), findsOneWidget);
+  });
+
   testWidgets('embedded Phone browser stays in place and returns to folder list',
       (tester) async {
     setTestViewport(tester);

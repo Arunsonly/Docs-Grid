@@ -46,8 +46,6 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   int _starredCount = 0;
   int? _phoneStorageBytes;
   int _phoneInaccessibleCount = 0;
-  bool _phoneScanIncomplete = false;
-  int _phoneUnknownSizeCount = 0;
   bool _phoneScanLoading = false;
   bool _phoneScanCompleted = false;
   int _trashCount = 0;
@@ -295,17 +293,56 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     await _scanPhoneStorage(openBrowser: true);
   }
 
+  Future<bool> _restorePhoneStorageIndexCache(List<Map<String, String>> roots) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString('docsgrid_phone_storage_index_v1');
+      if (raw == null) return false;
+      final decoded = jsonDecode(raw);
+      final signature = roots.map((root) => root['uri']!).join('|');
+      if (decoded is! Map || decoded['rootSignature'] != signature ||
+          decoded['entries'] is! List) return false;
+      final cached = (decoded['entries'] as List).whereType<Map>()
+          .map((entry) => Map<String, Object?>.from(entry)).toList(growable: false);
+      if (!mounted || cached.isEmpty) return false;
+      setState(() { _phoneEntries = cached; _phoneScanCompleted = true; });
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<void> _persistPhoneStorageIndexCache(
+    List<Map<String, String>> roots, List<Map<String, Object?>> entries,
+  ) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('docsgrid_phone_storage_index_v1', jsonEncode({
+        'rootSignature': roots.map((root) => root['uri']!).join('|'),
+        'entries': entries,
+      }));
+    } catch (_) {
+      // Optional cache; never compromise the live filesystem listing.
+    }
+  }
+
   Future<void> _scanPhoneStorage({required bool openBrowser}) async {
     final storage = StorageLocationService.instance;
     if (mounted) setState(() { _phoneScanLoading = true; _phoneScanCompleted = false; });
     try {
+      if (Platform.isAndroid) {
+        try {
+          final usage = await storage.phoneStorageUsage();
+          if (mounted) setState(() => _phoneStorageBytes = usage['usedBytes']);
+        } catch (_) {
+          // StatFs is supplementary; PDF browsing remains available.
+        }
+      }
       if (Platform.isAndroid && !await storage.hasAllFilesAccess()) {
         final granted = await storage.accessibleStorageRoots();
         if (granted.isEmpty) {
           if (mounted) setState(() {
-            _phoneStorageBytes = null;
             _phoneInaccessibleCount = 0;
-            _phoneScanIncomplete = false;
             _phoneEntries = [];
             _phoneScanCompleted = false;
           });
@@ -319,19 +356,17 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
       final roots = await storage.accessibleStorageRoots();
       if (roots.isEmpty) {
         if (mounted) setState(() {
-          _phoneStorageBytes = null;
           _phoneInaccessibleCount = 0;
-          _phoneScanIncomplete = false;
-          _phoneUnknownSizeCount = 0;
           _phoneEntries = [];
           _phoneScanCompleted = true;
         });
         return;
       }
 
-      // Fast first paint: query only each granted root's immediate children.
-      // The complete recursive scan continues afterward and replaces this
-      // provisional list without navigating to another route.
+      // Restore the last complete index for instant first paint, then refresh
+      // it from the live filesystem in the background.
+      final cacheRestored = await _restorePhoneStorageIndexCache(roots);
+      // On first run without a cache, show only root-level PDFs provisionally.
       final firstLevelEntries = <Map<String, Object?>>[];
       for (var index = 0; index < roots.length; index++) {
         final root = roots[index];
@@ -341,14 +376,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
           for (final child in children) {
             final name = child['name'] as String;
             final isDirectory = child['isDirectory'] == true;
-            if (isDirectory) {
-              firstLevelEntries.add({
-                ...child,
-                'path': '$label/$name',
-                'folderPath': label,
-                'isPending': true,
-              });
-            } else if (name.toLowerCase().endsWith('.pdf')) {
+            if (!isDirectory && name.toLowerCase().endsWith('.pdf')) {
               firstLevelEntries.add({
                 ...child,
                 'path': label,
@@ -369,7 +397,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
         }
       }
       if (!mounted) return;
-      setState(() => _phoneEntries = firstLevelEntries);
+      if (!cacheRestored) setState(() => _phoneEntries = firstLevelEntries);
 
       final entries = <Map<String, Object?>>[];
       final seen = <String>{};
@@ -403,18 +431,10 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
           });
         }
       }
-      final pdfs=entries.where((e)=>e['isDirectory']!=true).toList();
-      final bytes=pdfs.fold<int>(0,(sum,e) {
-        final size = (e['sizeBytes'] as num?)?.toInt() ?? 0;
-        return sum + (size < 0 ? 0 : size);
-      });
-      final unknownSizes = pdfs.where((entry) => entry['sizeKnown'] == false).length;
       if(!mounted)return;
+      await _persistPhoneStorageIndexCache(roots, entries);
       setState(() {
-        _phoneStorageBytes = inaccessibleRoots == roots.length ? null : bytes;
         _phoneInaccessibleCount = entries.where((entry) => entry['isInaccessible'] == true).length;
-        _phoneUnknownSizeCount = unknownSizes;
-        _phoneScanIncomplete = _phoneInaccessibleCount > 0;
         _phoneEntries=entries;
         _phoneScanCompleted = true;
       });
@@ -425,10 +445,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     } catch(error) {
       if (mounted) {
         setState(() {
-          _phoneStorageBytes = null;
           _phoneInaccessibleCount = 0;
-          _phoneUnknownSizeCount = 0;
-          _phoneScanIncomplete = true;
           _phoneEntries = [];
           _phoneScanCompleted = false;
         });
@@ -1704,7 +1721,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                       title: 'Phone storage',
                       value: _phoneStorageBytes == null
                           ? 'Permission needed'
-                          : '${_phoneScanIncomplete || _phoneUnknownSizeCount > 0 ? 'At least ' : ''}${_size(_phoneStorageBytes!)}',
+                          : _size(_phoneStorageBytes!),
                       onTap: _browsePhoneStorage,
                     )),
                     const SizedBox(width: 10),

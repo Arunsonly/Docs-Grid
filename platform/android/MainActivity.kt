@@ -281,6 +281,18 @@ class MainActivity : FlutterActivity() {
                                 android.os.Build.VERSION.SDK_INT < 30 ||
                                     android.os.Environment.isExternalStorageManager()
                             )
+                            "getStorageUsage" -> {
+                                val stats = android.os.StatFs(
+                                    android.os.Environment.getExternalStorageDirectory().absolutePath
+                                )
+                                val totalBytes = stats.totalBytes.coerceAtLeast(0L)
+                                val availableBytes = stats.availableBytes.coerceIn(0L, totalBytes)
+                                result.success(mapOf(
+                                    "totalBytes" to totalBytes,
+                                    "availableBytes" to availableBytes,
+                                    "usedBytes" to (totalBytes - availableBytes)
+                                ))
+                            }
                             "requestAllFilesAccess" -> {
                                 if (android.os.Build.VERSION.SDK_INT < 30 ||
                                     android.os.Environment.isExternalStorageManager()) {

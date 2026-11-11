@@ -74,6 +74,21 @@ class StorageLocationService {
     return await _channel.invokeMethod<bool>('hasAllFilesAccess') ?? false;
   }
 
+  /// Actual primary shared-storage occupancy reported by Android StatFs.
+  Future<Map<String, int>> phoneStorageUsage() async {
+    if (!Platform.isAndroid) return const <String, int>{};
+    final value = await _channel.invokeMapMethod<String, dynamic>('getStorageUsage');
+    if (value == null || value['usedBytes'] is! num ||
+        value['totalBytes'] is! num || value['availableBytes'] is! num) {
+      throw StateError('Android did not return valid phone storage usage.');
+    }
+    return {
+      'usedBytes': (value['usedBytes'] as num).toInt(),
+      'totalBytes': (value['totalBytes'] as num).toInt(),
+      'availableBytes': (value['availableBytes'] as num).toInt(),
+    };
+  }
+
   /// Returns an empty map when Android's optional all-files permission is not granted.
   /// This lets ordinary imports and folder operations retain their SAF/private fallback.
   /// Other platform/storage errors still propagate and are not silently hidden.
@@ -456,16 +471,14 @@ class StorageLocationService {
               'sizeKnown': sizeKnown,
               'isDirectory': false,
             });
-            var ancestor = current.path;
-            while (ancestor.isNotEmpty) {
-              withPdfs.add(ancestor);
-              counts[ancestor] = (counts[ancestor] ?? 0) + 1;
-              sizes[ancestor] = (sizes[ancestor] ?? 0) + (size < 0 ? 0 : size);
+            // Only mark the folder that directly contains this PDF.
+            if (current.path.isNotEmpty) {
+              withPdfs.add(current.path);
+              counts[current.path] = (counts[current.path] ?? 0) + 1;
+              sizes[current.path] = (sizes[current.path] ?? 0) + (size < 0 ? 0 : size);
               if (!sizeKnown) {
-                unknownSizes[ancestor] = (unknownSizes[ancestor] ?? 0) + 1;
+                unknownSizes[current.path] = (unknownSizes[current.path] ?? 0) + 1;
               }
-              final slash = ancestor.lastIndexOf('/');
-              ancestor = slash < 0 ? '' : ancestor.substring(0, slash);
             }
           }
         }
@@ -491,9 +504,13 @@ class StorageLocationService {
       var totalCount=0,totalBytes=0,totalUnknownSizes=0;
       for(final entry in entries) {
         if(entry['isDirectory']!=true) {
-          totalCount++; totalBytes+=(entry['sizeBytes'] as num?)?.toInt() ?? 0;
-          if (entry['sizeKnown'] == false) totalUnknownSizes++;
           final folder=entry['folderPath'] as String? ?? '';
+          // The virtual Internal folder represents root-level PDFs only.
+          if (folder.isEmpty) {
+            totalCount++;
+            totalBytes+=(entry['sizeBytes'] as num?)?.toInt() ?? 0;
+            if (entry['sizeKnown'] == false) totalUnknownSizes++;
+          }
           entry['folderPath']=folder.isEmpty?rootLabel:'$rootLabel/$folder';
         } else {
           final path=entry['path'] as String? ?? '';

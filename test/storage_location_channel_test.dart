@@ -216,7 +216,7 @@ void main() {
     expect(entries.where((entry) => entry['path'] == 'Android/.Trash'), isEmpty);
   });
 
-  test('recursive storage browser hides empty branches and retains PDF ancestors', () async {
+  test('recursive storage browser lists only folders with direct PDFs', () async {
     final tree = <String, List<Map<String, Object?>>>{
       'content://tree/root': [
         {'name': 'Empty', 'uri': 'content://tree/empty', 'isDirectory': true},
@@ -238,9 +238,48 @@ void main() {
         .listStorageTreeRecursively('content://tree/root');
     expect(entries.where((entry) => entry['isDirectory'] == true)
         .map((entry) => entry['path']).toSet(),
-        {'Insurance', 'Insurance/Archive'});
+        {'Insurance/Archive'});
+    expect(entries.where((entry) => entry['path'] == 'Insurance'), isEmpty);
     expect(entries.where((entry) => entry['isDirectory'] == false).single['uri'],
         'content://doc/policy');
+  });
+
+  test('Internal virtual folder counts only root-level PDFs, not nested PDFs', () async {
+    final tree = <String, List<Map<String, Object?>>>{
+      'content://tree/root': [
+        {'name': 'Root.pdf', 'uri': 'content://doc/root', 'isDirectory': false, 'sizeBytes': 100},
+        {'name': 'Android', 'uri': 'content://tree/android', 'isDirectory': true},
+      ],
+      'content://tree/android': [
+        {'name': 'data', 'uri': 'content://tree/data', 'isDirectory': true},
+      ],
+      'content://tree/data': [
+        {'name': 'Nested.pdf', 'uri': 'content://doc/nested', 'isDirectory': false, 'sizeBytes': 900},
+      ],
+    };
+    messenger.setMockMethodCallHandler(channel, (call) async =>
+        tree[call.arguments['uri']]!);
+    final entries = await StorageLocationService.instance
+        .listStorageTreeRecursively('content://tree/root', rootLabel: 'Internal');
+    final internal = entries.singleWhere((entry) => entry['path'] == 'Internal');
+    expect(internal['pdfCount'], 1);
+    expect(internal['sizeBytes'], 100);
+    expect(entries.where((entry) => entry['path'] == 'Internal/Android'), isEmpty);
+    final nested = entries.singleWhere((entry) => entry['path'] == 'Internal/Android/data');
+    expect(nested['pdfCount'], 1);
+    expect(nested['sizeBytes'], 900);
+  });
+
+  test('phoneStorageUsage reads Android StatFs values rather than PDF totals', () async {
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      expect(call.method, 'getStorageUsage');
+      return {'usedBytes': 1200, 'totalBytes': 4000, 'availableBytes': 2800};
+    });
+    expect(await StorageLocationService.instance.phoneStorageUsage(), {
+      'usedBytes': 1200,
+      'totalBytes': 4000,
+      'availableBytes': 2800,
+    });
   });
 
   test('full phone browser can include empty SAF folders without changing PDF-focused default', () async {
