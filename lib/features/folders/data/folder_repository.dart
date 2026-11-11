@@ -678,15 +678,15 @@ class FolderRepository {
             .toList();
       }
       final allPlaceholders = List.filled(allIds.length, '?').join(',');
-      final documents = await txn.query(
+      final activeDocuments = await txn.query(
         'documents',
         columns: ['id'],
         where: 'folder_id IN ($allPlaceholders) AND deleted_at IS NULL',
         whereArgs: allIds.toList(),
       );
-      movedPdfCount = documents.length;
+      movedPdfCount = activeDocuments.length;
       final now = DateTime.now().toUtc().toIso8601String();
-      for (final document in documents) {
+      for (final document in activeDocuments) {
         await txn.insert('history', {
           'id': _uuid.v4(),
           'document_id': document['id'],
@@ -695,10 +695,18 @@ class FolderRepository {
           'created_at': now,
         });
       }
+      // Move active files into trash and detach already-trashed files too;
+      // otherwise restoring an old trash entry would point into a hidden folder.
       await txn.update(
         'documents',
         {'deleted_at': now, 'updated_at': now, 'folder_id': null},
         where: 'folder_id IN ($allPlaceholders) AND deleted_at IS NULL',
+        whereArgs: allIds.toList(),
+      );
+      await txn.update(
+        'documents',
+        {'folder_id': null, 'updated_at': now},
+        where: 'folder_id IN ($allPlaceholders) AND deleted_at IS NOT NULL',
         whereArgs: allIds.toList(),
       );
       await txn.update(
