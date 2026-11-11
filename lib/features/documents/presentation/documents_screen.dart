@@ -351,7 +351,25 @@ class _DocumentsScreenState extends State<DocumentsScreen>
   Future<bool> _restorePhoneStorageIndexCache(List<Map<String, String>> roots) async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final raw = prefs.getString('docsgrid_phone_storage_index_v1');
+      String? raw = prefs.getString('docsgrid_phone_storage_index_v1');
+      if (raw == null) {
+        // SharedPreferences is only the fast app-local copy. A portable
+        // FolderIndex cache survives reinstall and is still refreshed live.
+        try {
+          final locations = await StorageLocationService.instance
+              .portableDataLocationsIfAvailable();
+          final folderIndexUri = locations['folderIndexUri'];
+          if (folderIndexUri != null) {
+            final fileUri = await StorageLocationService.instance.findChildUri(
+              parentUri: folderIndexUri,
+              name: 'phone_storage_index.json',
+            );
+            raw = await StorageLocationService.instance.readTextFile(fileUri);
+          }
+        } catch (_) {
+          // No previous portable index is a normal first-install condition.
+        }
+      }
       if (raw == null) return false;
       final decoded = jsonDecode(raw);
       final signature = roots.map((root) => root['uri']!).join('|');
@@ -374,11 +392,27 @@ class _DocumentsScreenState extends State<DocumentsScreen>
   }) async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setString('docsgrid_phone_storage_index_v1', jsonEncode({
+      final payload = jsonEncode({
         'rootSignature': roots.map((root) => root['uri']!).join('|'),
         'mediaStoreVolumes': mediaStoreVolumes,
         'entries': entries,
-      }));
+        'cachedAtUtc': DateTime.now().toUtc().toIso8601String(),
+      });
+      await prefs.setString('docsgrid_phone_storage_index_v1', payload);
+      try {
+        final locations = await StorageLocationService.instance
+            .portableDataLocationsIfAvailable();
+        final folderIndexUri = locations['folderIndexUri'];
+        if (folderIndexUri != null) {
+          await StorageLocationService.instance.writeTextFile(
+            parentUri: folderIndexUri,
+            name: 'phone_storage_index.json',
+            contents: payload,
+          );
+        }
+      } catch (_) {
+        // The app-local cache still makes the current installation fast.
+      }
     } catch (_) {
       // Optional cache; never compromise the live filesystem listing.
     }

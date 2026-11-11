@@ -111,6 +111,15 @@ class MainActivity : FlutterActivity() {
         if (storageObserversRegistered || storageChangeSink == null) return
         val observedUris = linkedMapOf<String, Uri>()
         observedUris["media"] = MediaStore.Files.getContentUri("external")
+        if (android.os.Build.VERSION.SDK_INT >= 29) {
+            try {
+                MediaStore.getExternalVolumeNames(this).forEach { volume ->
+                    observedUris["volume:$volume"] = MediaStore.Files.getContentUri(volume)
+                }
+            } catch (_: Exception) {
+                // The aggregate external observer above remains as a fallback.
+            }
+        }
         try {
             contentResolver.persistedUriPermissions
                 .filter { it.isReadPermission }

@@ -122,7 +122,11 @@ class StorageLocationService {
     final volumes = value['volumes'] is Map
         ? Map<String, Object?>.from(value['volumes'] as Map)
         : <String, Object?>{};
-    return {'entries': entries, 'volumes': volumes};
+    return {
+      'entries': entries,
+      'volumes': volumes,
+      'complete': value['complete'] == true,
+    };
   }
 
   Future<bool> hasAllFilesAccess() async {
