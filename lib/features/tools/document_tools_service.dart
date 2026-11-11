@@ -679,11 +679,13 @@ class DocumentToolsService {
             ? await storage.cachedPortableDataLocations()
             : await storage.portableDataLocationsIfAvailable())
         : const <String, String>{};
+    final destinationUri = includePdfs
+        ? (portableLocations['fullBackupsUri'] ?? portableLocations['backupsUri'])
+        : (portableLocations['databaseBackupsUri'] ?? portableLocations['backupsUri']);
     if (backgroundSafe &&
-        (portableLocations['backupsUri'] == null ||
-            portableLocations['tempUri'] == null)) {
+        (destinationUri == null || !destinationUri.startsWith('file://'))) {
       throw StateError(
-        'Background backup skipped: portable file locations have not been cached by a foreground storage setup.',
+        'Background backup requires the initialized Android/media/com.docsgrid file-backed backup folder. Open DocsGrid with storage access to initialize it.',
       );
     }
     final db = await _database.database;
