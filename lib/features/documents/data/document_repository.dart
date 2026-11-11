@@ -1238,6 +1238,7 @@ class DocumentRepository {
             .fold<List<int>>(<int>[], (a, b) => a..addAll(b));
         if (header.length < 5 || String.fromCharCodes(header) != '%PDF-') {
           failed++;
+          errors.add('${picked.name}: the selected file is not a valid PDF (missing the %PDF- signature).');
           continue;
         }
         final digest = (await sha256.bind(sourceFile.openRead()).first).toString();
