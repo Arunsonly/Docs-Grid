@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/services.dart';
@@ -552,6 +553,162 @@ class FolderRepository {
       }
       rethrow;
     }
+  }
+
+  /// Reparents selected folders as logical library folders. Stable storage
+  /// URIs and documents are preserved; only the Grid hierarchy changes.
+  /// If both a parent and child are selected, only the parent is reparented.
+  Future<void> moveManyToParent(List<String> folderIds, String? parentId) async {
+    final requested = folderIds.toSet();
+    if (requested.isEmpty) return;
+    final db = await _database.database;
+    await db.transaction((txn) async {
+      final placeholders = List.filled(requested.length, '?').join(',');
+      final rows = await txn.query(
+        'folders',
+        columns: ['id', 'name', 'parent_id'],
+        where: 'id IN ($placeholders) AND deleted_at IS NULL',
+        whereArgs: requested.toList(),
+      );
+      if (rows.length != requested.length) {
+        throw StateError('One or more selected folders no longer exist.');
+      }
+      if (parentId != null) {
+        final target = await txn.query(
+          'folders',
+          columns: ['id'],
+          where: 'id = ? AND deleted_at IS NULL',
+          whereArgs: [parentId],
+          limit: 1,
+        );
+        if (target.isEmpty) throw StateError('Destination folder no longer exists.');
+      }
+      final roots = rows.where((row) => !requested.contains(row['parent_id'] as String?)).toList();
+      final rootIds = roots.map((row) => row['id'] as String).toSet();
+      var ancestorId = parentId;
+      final visited = <String>{};
+      while (ancestorId != null) {
+        if (!visited.add(ancestorId)) throw StateError('Folder hierarchy contains a cycle.');
+        if (rootIds.contains(ancestorId)) {
+          throw StateError('A folder cannot be moved inside itself or one of its subfolders.');
+        }
+        final parentRows = await txn.query(
+          'folders',
+          columns: ['parent_id'],
+          where: 'id = ? AND deleted_at IS NULL',
+          whereArgs: [ancestorId],
+          limit: 1,
+        );
+        if (parentRows.isEmpty) throw StateError('Destination folder no longer exists.');
+        ancestorId = parentRows.first['parent_id'] as String?;
+      }
+      final movingNames = <String>{};
+      for (final row in roots) {
+        final name = (row['name'] as String).toLowerCase();
+        if (!movingNames.add(name)) {
+          throw StateError('Two selected folders have the same name and cannot share one destination.');
+        }
+        final duplicate = await txn.query(
+          'folders',
+          columns: ['id'],
+          where: 'parent_id IS ? AND name = ? COLLATE NOCASE AND deleted_at IS NULL AND id != ?',
+          whereArgs: [parentId, row['name'], row['id']],
+          limit: 1,
+        );
+        if (duplicate.isNotEmpty) {
+          throw StateError('A folder named "${row['name']}" already exists at the destination.');
+        }
+      }
+      final maxRows = await txn.rawQuery(
+        parentId == null
+            ? 'SELECT COALESCE(MAX(sort_order), -1) AS max_order FROM folders WHERE parent_id IS NULL AND deleted_at IS NULL'
+            : 'SELECT COALESCE(MAX(sort_order), -1) AS max_order FROM folders WHERE parent_id = ? AND deleted_at IS NULL',
+        parentId == null ? null : [parentId],
+      );
+      var nextOrder = ((maxRows.first['max_order'] as int?) ?? -1) + 1;
+      final batch = txn.batch();
+      for (final row in roots) {
+        batch.update(
+          'folders',
+          {
+            'parent_id': parentId,
+            'sort_order': nextOrder++,
+            'updated_at': DateTime.now().toUtc().toIso8601String(),
+          },
+          where: 'id = ? AND deleted_at IS NULL',
+          whereArgs: [row['id']],
+        );
+      }
+      await batch.commit(noResult: true);
+    });
+  }
+
+  /// Soft-deletes selected folders and all descendants. PDFs go to Recycle Bin
+  /// with their folder_id cleared, so restoring them returns them to Grid root.
+  /// Physical files are retained; this operation never permanently deletes PDFs.
+  Future<int> moveManyToRecycleBin(List<String> folderIds) async {
+    final requested = folderIds.toSet();
+    if (requested.isEmpty) return 0;
+    final db = await _database.database;
+    var movedPdfCount = 0;
+    await db.transaction((txn) async {
+      final placeholders = List.filled(requested.length, '?').join(',');
+      final roots = await txn.query(
+        'folders',
+        columns: ['id'],
+        where: 'id IN ($placeholders) AND deleted_at IS NULL',
+        whereArgs: requested.toList(),
+      );
+      if (roots.length != requested.length) {
+        throw StateError('One or more selected folders no longer exist.');
+      }
+      final allIds = <String>{...requested};
+      var frontier = requested.toList();
+      while (frontier.isNotEmpty) {
+        final childPlaceholders = List.filled(frontier.length, '?').join(',');
+        final children = await txn.query(
+          'folders',
+          columns: ['id'],
+          where: 'parent_id IN ($childPlaceholders) AND deleted_at IS NULL',
+          whereArgs: frontier,
+        );
+        frontier = children
+            .map((row) => row['id'] as String)
+            .where(allIds.add)
+            .toList();
+      }
+      final allPlaceholders = List.filled(allIds.length, '?').join(',');
+      final documents = await txn.query(
+        'documents',
+        columns: ['id'],
+        where: 'folder_id IN ($allPlaceholders) AND deleted_at IS NULL',
+        whereArgs: allIds.toList(),
+      );
+      movedPdfCount = documents.length;
+      final now = DateTime.now().toUtc().toIso8601String();
+      for (final document in documents) {
+        await txn.insert('history', {
+          'id': _uuid.v4(),
+          'document_id': document['id'],
+          'action': 'moved_to_recycle_bin',
+          'details_json': jsonEncode({'folderDeleted': true}),
+          'created_at': now,
+        });
+      }
+      await txn.update(
+        'documents',
+        {'deleted_at': now, 'updated_at': now, 'folder_id': null},
+        where: 'folder_id IN ($allPlaceholders) AND deleted_at IS NULL',
+        whereArgs: allIds.toList(),
+      );
+      await txn.update(
+        'folders',
+        {'deleted_at': now, 'updated_at': now},
+        where: 'id IN ($allPlaceholders) AND deleted_at IS NULL',
+        whereArgs: allIds.toList(),
+      );
+    });
+    return movedPdfCount;
   }
 
   Future<void> deleteEmpty(String id) async {
