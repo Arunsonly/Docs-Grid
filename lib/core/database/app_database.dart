@@ -10,7 +10,7 @@ class AppDatabase {
   @visibleForTesting
   AppDatabase.forTesting(Future<Database> Function() opener) : this._(opener: opener);
 
-  static const int schemaVersion = 9;
+  static const int schemaVersion = 10;
   static final AppDatabase instance = AppDatabase._();
   final Future<Database> Function()? _opener;
 
@@ -122,6 +122,7 @@ class AppDatabase {
         await _createV7FolderOrder(db);
         await _createV8SmartCollections(db);
         await _createV9SmartCollectionFilters(db);
+        await _createV10PortableSnapshotState(db);
         await db.insert('schema_migrations', {
           'version': 1,
           'applied_at': DateTime.now().toUtc().toIso8601String(),
@@ -156,6 +157,10 @@ class AppDatabase {
         });
         await db.insert('schema_migrations', {
           'version': 9,
+          'applied_at': DateTime.now().toUtc().toIso8601String(),
+        });
+        await db.insert('schema_migrations', {
+          'version': 10,
           'applied_at': DateTime.now().toUtc().toIso8601String(),
         });
       },
@@ -227,6 +232,11 @@ class AppDatabase {
     if (oldVersion < 9 && newVersion >= 9) {
       await _createV9SmartCollectionFilters(db);
       await db.insert('schema_migrations', {'version': 9, 'applied_at': applied},
+          conflictAlgorithm: ConflictAlgorithm.ignore);
+    }
+    if (oldVersion < 10 && newVersion >= 10) {
+      await _createV10PortableSnapshotState(db);
+      await db.insert('schema_migrations', {'version': 10, 'applied_at': applied},
           conflictAlgorithm: ConflictAlgorithm.ignore);
     }
   }
@@ -331,6 +341,98 @@ class AppDatabase {
     await db.execute(
       'CREATE INDEX IF NOT EXISTS idx_smart_collections_name ON smart_collections(name COLLATE NOCASE)',
     );
+  }
+
+  /// Tracks durable user-data mutations independently from UI state.
+  /// SQLite triggers make this reliable even when a writer bypasses a repository.
+  Future<void> _createV10PortableSnapshotState(DatabaseExecutor db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS portable_snapshot_state (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        revision INTEGER NOT NULL DEFAULT 1,
+        last_snapshot_revision INTEGER NOT NULL DEFAULT 0,
+        last_snapshot_at TEXT,
+        last_snapshot_name TEXT
+      )
+    ''');
+    await db.insert(
+      'portable_snapshot_state',
+      {'id': 1, 'revision': 1, 'last_snapshot_revision': 0},
+      conflictAlgorithm: ConflictAlgorithm.ignore,
+    );
+
+    const durableTables = <String>[
+      'folders',
+      'documents',
+      'categories',
+      'tags',
+      'document_tags',
+      'reminders',
+      'history',
+      'settings',
+      'document_text_index',
+      'smart_collections',
+    ];
+    for (final table in durableTables) {
+      for (final operation in const ['INSERT', 'UPDATE', 'DELETE']) {
+        final trigger = 'portable_snapshot_${table}_${operation.toLowerCase()}';
+        await db.execute('''
+          CREATE TRIGGER IF NOT EXISTS $trigger
+          AFTER $operation ON $table
+          BEGIN
+            UPDATE portable_snapshot_state
+            SET revision = revision + 1
+            WHERE id = 1;
+          END
+        ''');
+      }
+    }
+  }
+
+  /// Returns whether a portable metadata snapshot is older than the live DB.
+  Future<bool> isPortableSnapshotDirty() async {
+    final db = await database;
+    final rows = await db.query(
+      'portable_snapshot_state',
+      columns: ['revision', 'last_snapshot_revision'],
+      where: 'id = 1',
+      limit: 1,
+    );
+    if (rows.isEmpty) return true;
+    return (rows.single['revision'] as int) !=
+        (rows.single['last_snapshot_revision'] as int);
+  }
+
+  Future<int> portableSnapshotRevision() async {
+    final db = await database;
+    final rows = await db.query(
+      'portable_snapshot_state',
+      columns: ['revision'],
+      where: 'id = 1',
+      limit: 1,
+    );
+    if (rows.isEmpty) throw StateError('Portable snapshot state is not initialized.');
+    return rows.single['revision'] as int;
+  }
+
+  /// Marks only the exact captured revision clean. Mutations which happen while
+  /// an export is running remain dirty and cause another snapshot pass.
+  Future<bool> markPortableSnapshotClean({
+    required int capturedRevision,
+    required String snapshotName,
+  }) async {
+    final db = await database;
+    final count = await db.update(
+      'portable_snapshot_state',
+      {
+        'last_snapshot_revision': capturedRevision,
+        'last_snapshot_at': DateTime.now().toUtc().toIso8601String(),
+        'last_snapshot_name': snapshotName,
+      },
+      where: 'id = 1 AND revision = ?',
+      whereArgs: [capturedRevision],
+    );
+    return count == 1;
   }
 
   Future<void> _createV9SmartCollectionFilters(DatabaseExecutor db) async {
