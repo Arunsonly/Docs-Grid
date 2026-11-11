@@ -29,6 +29,7 @@ dependencies:
   timezone: ^0.10.1
   flutter_timezone: ^5.1.0
   image: 4.9.2
+  workmanager: ^0.10.10
 
 dev_dependencies:
   flutter_test:

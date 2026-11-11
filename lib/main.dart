@@ -18,6 +18,10 @@ import 'features/folders/presentation/folders_screen.dart';
 import 'features/folders/data/folder_repository.dart';
 import 'core/storage/storage_location_service.dart';
 import 'features/tools/document_tools_screen.dart' show DocumentToolsScreen;
+import 'features/tools/document_tools_service.dart';
+import 'core/database/app_database.dart';
+import 'core/storage/portable_snapshot_events.dart';
+import 'core/backup/backup_automation.dart';
 
 final GlobalKey<NavigatorState> docsGridNavigatorKey = GlobalKey<NavigatorState>();
 
@@ -98,17 +102,31 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
   int _selectedIndex = 1;
   bool _checkingIncomingShare = false;
   static const MethodChannel _storageChannel = MethodChannel('docsgrid/storage');
+  StreamSubscription<void>? _snapshotChangesSubscription;
+  Timer? _snapshotDebounce;
+  Timer? _snapshotPoll;
+  bool _snapshotWriteInFlight = false;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _snapshotChangesSubscription =
+        PortableSnapshotEvents.changes.listen((_) => _schedulePortableSnapshot());
+    // SQLite revision triggers are the durable source of truth. This low-cost
+    // foreground poll also covers mutations performed by legacy/background code
+    // that does not emit an in-process change signal.
+    _snapshotPoll = Timer.periodic(
+      const Duration(seconds: 15),
+      (_) => _schedulePortableSnapshot(),
+    );
     ReminderNotifications.onDocumentNotificationTap = (documentId) {
       unawaited(_openReminderDocument(documentId));
     };
     WidgetsBinding.instance.addPostFrameCallback((_) async {
-      // Notification reconciliation is independent of the first frame. Keep
-      // it off the critical startup path while preserving pending tap handling.
+      // Initialize best-effort Android background jobs without blocking first paint.
+      unawaited(BackupAutomation.initializeAndroid());
+      unawaited(_schedulePortableSnapshot());
       unawaited(_refreshReminderSchedules());
       final pendingDocumentId = ReminderNotifications.takePendingDocumentId();
       if (pendingDocumentId != null) await _openReminderDocument(pendingDocumentId);
@@ -116,6 +134,7 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
       // dialogs, so running them concurrently would lose or stack user prompts.
       await _consumeSharedPdfs();
       await _offerRestoreOnFirstLaunch();
+      unawaited(BackupAutomation.runDueForegroundBackups());
     });
   }
 
@@ -124,6 +143,8 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
     if (state == AppLifecycleState.resumed) {
       unawaited(_refreshReminderSchedules());
       unawaited(_consumeSharedPdfs());
+      _schedulePortableSnapshot();
+      unawaited(BackupAutomation.runDueForegroundBackups());
     }
   }
 
@@ -173,16 +194,50 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
     }
   }
 
+  void _schedulePortableSnapshot() {
+    _snapshotDebounce?.cancel();
+    _snapshotDebounce = Timer(const Duration(seconds: 2), () {
+      unawaited(_writePortableSnapshotIfDirty());
+    });
+  }
+
+  Future<void> _writePortableSnapshotIfDirty() async {
+    if (!mounted || _snapshotWriteInFlight) return;
+    _snapshotWriteInFlight = true;
+    try {
+      if (!await AppDatabase.instance.isPortableSnapshotDirty()) return;
+      final locations = await StorageLocationService.instance
+          .portableDataLocationsIfAvailable();
+      if (locations['databaseUri'] == null) return;
+      await DocumentToolsService().createPortableMetadataSnapshot();
+      // A write which raced with the export leaves the revision dirty; queue
+      // exactly one follow-up snapshot instead of declaring a stale export current.
+      if (await AppDatabase.instance.isPortableSnapshotDirty()) {
+        _schedulePortableSnapshot();
+      }
+    } catch (_) {
+      // Keep the dirty revision. The next foreground poll/resume retries it.
+    } finally {
+      _snapshotWriteInFlight = false;
+    }
+  }
+
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _snapshotChangesSubscription?.cancel();
+    _snapshotDebounce?.cancel();
+    _snapshotPoll?.cancel();
     super.dispose();
   }
 
   Future<void> _offerRestoreOnFirstLaunch() async {
     final prefs = await SharedPreferences.getInstance();
     if (prefs.getBool('docsgrid_restore_prompt_shown') == true) return;
-    await prefs.setBool('docsgrid_restore_prompt_shown', true);
+    final snoozedUntil = DateTime.tryParse(
+      prefs.getString('docsgrid_restore_prompt_snoozed_until') ?? '',
+    );
+    if (snoozedUntil != null && snoozedUntil.isAfter(DateTime.now())) return;
     if (!mounted) return;
     if (Platform.isAndroid) {
       try {
@@ -221,8 +276,24 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
         ],
       ),
     );
-    if (!mounted || (restoreChoice != 'recover' && restoreChoice != 'pdfs')) return;
+    if (!mounted) return;
+    if (restoreChoice == 'later' || restoreChoice == null) {
+      await prefs.setString(
+        'docsgrid_restore_prompt_snoozed_until',
+        DateTime.now().add(Duration(days: restoreChoice == 'later' ? 7 : 1))
+            .toIso8601String(),
+      );
+      return;
+    }
+    if (restoreChoice == 'fresh') {
+      await prefs.setBool('docsgrid_restore_prompt_shown', true);
+      await prefs.remove('docsgrid_restore_prompt_snoozed_until');
+      return;
+    }
+    if (restoreChoice != 'recover' && restoreChoice != 'pdfs') return;
     if (restoreChoice == 'pdfs') {
+      await prefs.setBool('docsgrid_restore_prompt_shown', true);
+      await prefs.remove('docsgrid_restore_prompt_snoozed_until');
       await Navigator.of(context).push(MaterialPageRoute(builder: (_) => Scaffold(
         appBar: AppBar(title: const Text('Recover existing PDFs')),
         body: const DocumentToolsScreen(quickAction: 'recover_loose_pdfs'),
@@ -233,23 +304,17 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
     var hasPortableBackups = false;
     if (Platform.isAndroid) {
       try {
-        if (await StorageLocationService.instance.hasAllFilesAccess()) {
-          final locations = await StorageLocationService.instance.portableDataLocations();
-          final backupUri = locations['backupsUri'];
-          if (backupUri != null && backupUri.startsWith('file://')) {
-            final directory = Directory(Uri.parse(backupUri).toFilePath());
-            hasPortableBackups = await directory.exists() &&
-                await directory.list(followLinks: false).any(
-                  (item) => item is File && item.path.toLowerCase().endsWith('.zip'),
-                );
-          }
-        }
+        await StorageLocationService.instance.portableDataLocationsIfAvailable();
+        hasPortableBackups =
+            (await DocumentToolsService().listPortableBackupArchives()).isNotEmpty;
       } catch (_) {
-        // The recovery route will show the actionable permission/storage error.
+        // Portable metadata snapshot recovery remains available when ZIP access is limited.
       }
     }
 
     if (!mounted) return;
+    await prefs.setBool('docsgrid_restore_prompt_shown', true);
+    await prefs.remove('docsgrid_restore_prompt_snoozed_until');
     await Navigator.of(context).push(MaterialPageRoute(
       builder: (_) => Stack(
         fit: StackFit.expand,
