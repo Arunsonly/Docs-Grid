@@ -1,13 +1,21 @@
+import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:open_filex/open_filex.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class StorageLocationService {
   StorageLocationService._();
   static final StorageLocationService instance = StorageLocationService._();
   static const MethodChannel _channel = MethodChannel('docsgrid/storage');
+  static const EventChannel _changesChannel = EventChannel('docsgrid/storage_changes');
+
+  /// Foreground storage change notifications; events contain no file metadata.
+  Stream<void> get storageChanges =>
+      _changesChannel.receiveBroadcastStream().map<void>((_) {});
 
   /// Only an explicit native NOT_FOUND result permits creating a provider child.
   /// Permission, provider and I/O failures must propagate without side effects.
@@ -52,7 +60,7 @@ class StorageLocationService {
         value['libraryUri'] is! String) {
       throw StateError('DocsGrid portable data folders are not configured.');
     }
-    return {
+    final locations = <String, String>{
       'databaseUri': value['databaseUri'] as String,
       'recoveryUri': value['recoveryUri'] as String,
       'libraryUri': value['libraryUri'] as String,
@@ -66,7 +74,51 @@ class StorageLocationService {
       if (value['logsUri'] is String) 'logsUri': value['logsUri'] as String,
       if (value['exportsUri'] is String) 'exportsUri': value['exportsUri'] as String,
       if (value['thumbnailsUri'] is String) 'thumbnailsUri': value['thumbnailsUri'] as String,
+      if (value['cacheUri'] is String) 'cacheUri': value['cacheUri'] as String,
+      if (value['pagePreviewsUri'] is String) 'pagePreviewsUri': value['pagePreviewsUri'] as String,
+      if (value['searchIndexUri'] is String) 'searchIndexUri': value['searchIndexUri'] as String,
+      if (value['folderIndexUri'] is String) 'folderIndexUri': value['folderIndexUri'] as String,
     };
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('docsgrid_portable_locations_v1', jsonEncode(locations));
+    } catch (_) {
+      // Background automation may fall back safely when no path cache exists.
+    }
+    return locations;
+  }
+
+  Future<Map<String, String>> cachedPortableDataLocations() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString('docsgrid_portable_locations_v1');
+    if (raw == null) return const <String, String>{};
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map) return const <String, String>{};
+      return decoded.map<String, String>((key, value) =>
+          MapEntry(key.toString(), value.toString()));
+    } catch (_) {
+      return const <String, String>{};
+    }
+  }
+
+  /// Queries the Android MediaStore index over mounted shared-storage volumes.
+  Future<Map<String, Object?>> queryPhonePdfIndex() async {
+    if (!Platform.isAndroid) {
+      throw UnsupportedError('MediaStore indexing is available on Android only.');
+    }
+    final value = await _channel.invokeMapMethod<String, dynamic>('queryPhonePdfIndex');
+    if (value == null || value['entries'] is! List) {
+      throw StateError('Android did not return a valid MediaStore PDF index.');
+    }
+    final entries = (value['entries'] as List)
+        .whereType<Map>()
+        .map((entry) => Map<String, Object?>.from(entry))
+        .toList(growable: false);
+    final volumes = value['volumes'] is Map
+        ? Map<String, Object?>.from(value['volumes'] as Map)
+        : <String, Object?>{};
+    return {'entries': entries, 'volumes': volumes};
   }
 
   Future<bool> hasAllFilesAccess() async {
