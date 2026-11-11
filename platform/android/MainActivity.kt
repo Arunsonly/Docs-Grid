@@ -182,7 +182,10 @@ class MainActivity : FlutterActivity() {
         } else {
             listOf("external")
         }
-        var complete = true
+        // Android 9 and earlier do not expose RELATIVE_PATH or per-volume
+        // generation values consistently. The caller will use the verified
+        // recursive scan on those releases instead of mis-grouping every PDF.
+        var complete = android.os.Build.VERSION.SDK_INT >= 29
 
         volumes.forEachIndexed { volumeIndex, volumeName ->
             try {
@@ -191,14 +194,19 @@ class MainActivity : FlutterActivity() {
                 } else {
                     MediaStore.Files.getContentUri("external")
                 }
+                val relativePathColumn = if (android.os.Build.VERSION.SDK_INT >= 29) {
+                    MediaStore.MediaColumns.RELATIVE_PATH
+                } else {
+                    null
+                }
                 val projection = mutableListOf(
                     MediaStore.MediaColumns._ID,
                     MediaStore.MediaColumns.DISPLAY_NAME,
                     MediaStore.MediaColumns.MIME_TYPE,
                     MediaStore.MediaColumns.SIZE,
-                    MediaStore.MediaColumns.DATE_MODIFIED,
-                    MediaStore.MediaColumns.RELATIVE_PATH
+                    MediaStore.MediaColumns.DATE_MODIFIED
                 )
+                relativePathColumn?.let { projection.add(it) }
                 if (android.os.Build.VERSION.SDK_INT >= 30) {
                     projection.add(MediaStore.MediaColumns.GENERATION_MODIFIED)
                 }
@@ -228,7 +236,7 @@ class MainActivity : FlutterActivity() {
                 val mimeIndexName = MediaStore.MediaColumns.MIME_TYPE
                 val sizeIndexName = MediaStore.MediaColumns.SIZE
                 val modifiedIndexName = MediaStore.MediaColumns.DATE_MODIFIED
-                val relativeIndexName = MediaStore.MediaColumns.RELATIVE_PATH
+                val relativeIndexName = relativePathColumn
                 contentResolver.query(
                     collection,
                     projection.toTypedArray(),
@@ -241,7 +249,9 @@ class MainActivity : FlutterActivity() {
                     val mimeIndex = cursor.getColumnIndex(mimeIndexName)
                     val sizeIndex = cursor.getColumnIndex(sizeIndexName)
                     val modifiedIndex = cursor.getColumnIndex(modifiedIndexName)
-                    val relativeIndex = cursor.getColumnIndex(relativeIndexName)
+                    val relativeIndex = relativeIndexName?.let {
+                        cursor.getColumnIndex(it)
+                    } ?: -1
                     val generationIndex = if (android.os.Build.VERSION.SDK_INT >= 30) {
                         cursor.getColumnIndex(MediaStore.MediaColumns.GENERATION_MODIFIED)
                     } else {
