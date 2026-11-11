@@ -12,6 +12,45 @@ void main() {
     messenger.setMockMethodCallHandler(channel, null);
   });
 
+  test('queryPhonePdfIndex preserves MediaStore URI, folder path, date and generation metadata', () async {
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      expect(call.method, 'queryPhonePdfIndex');
+      return {
+        'complete': true,
+        'entries': [
+          {
+            'name': 'Policy.pdf',
+            'uri': 'content://media/external/file/41',
+            'isDirectory': false,
+            'sizeBytes': 4096,
+            'sizeKnown': true,
+            'lastModified': 1794425160000,
+            'folderPath': 'Internal/Download',
+            'volumeName': 'external_primary',
+            'generationModified': 88,
+          },
+        ],
+        'volumes': {
+          'external_primary': {
+            'version': 'volume-v1',
+            'generation': 90,
+            'label': 'Internal',
+          },
+        },
+      };
+    });
+
+    final index = await StorageLocationService.instance.queryPhonePdfIndex();
+    expect(index['complete'], isTrue);
+    final entries = index['entries'] as List<Map<String, Object?>>;
+    expect(entries, hasLength(1));
+    expect(entries.single['uri'], 'content://media/external/file/41');
+    expect(entries.single['folderPath'], 'Internal/Download');
+    expect(entries.single['lastModified'], 1794425160000);
+    expect(entries.single['generationModified'], 88);
+    expect((index['volumes'] as Map)['external_primary']['generation'], 90);
+  });
+
   test('only explicit NOT_FOUND errors permit missing-child creation', () {
     expect(StorageLocationService.isNotFoundError(
       PlatformException(code: 'NOT_FOUND'),
