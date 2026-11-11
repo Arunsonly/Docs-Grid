@@ -83,11 +83,33 @@ class _DocumentThumbnailState extends State<DocumentThumbnail> {
     }
   }
 
-  Future<File?> _loadThumbnail() async {
-    final id = widget.documentId.replaceAll(RegExp(r'[^A-Za-z0-9_-]'), '_');
+  Future<Directory> _thumbnailCacheDirectory() async {
+    // Keep the portable thumbnail cache in the agreed DocsGrid-owned tree
+    // whenever Android exposes it. This lets the cache survive app updates and
+    // keeps Recent/Grid previews beside the portable database and recovery data.
+    if (Platform.isAndroid) {
+      try {
+        final locations = await StorageLocationService.instance
+            .portableDataLocationsIfAvailable();
+        final thumbnailsUri = locations['thumbnailsUri'];
+        if (thumbnailsUri != null && thumbnailsUri.startsWith('file://')) {
+          final directory = Directory(Uri.parse(thumbnailsUri).toFilePath());
+          await directory.create(recursive: true);
+          return directory;
+        }
+      } catch (_) {
+        // Without optional shared-storage access, use the private cache below.
+      }
+    }
     final support = await getApplicationSupportDirectory();
     final directory = Directory(p.join(support.path, 'docsgrid', 'thumbnails'));
     await directory.create(recursive: true);
+    return directory;
+  }
+
+  Future<File?> _loadThumbnail() async {
+    final id = widget.documentId.replaceAll(RegExp(r'[^A-Za-z0-9_-]'), '_');
+    final directory = await _thumbnailCacheDirectory();
 
     final source = widget.storagePath;
     if (source.isEmpty) return null;
