@@ -29,7 +29,8 @@ class DocumentsScreen extends StatefulWidget {
   State<DocumentsScreen> createState() => _DocumentsScreenState();
 }
 
-class _DocumentsScreenState extends State<DocumentsScreen> {
+class _DocumentsScreenState extends State<DocumentsScreen>
+    with WidgetsBindingObserver {
   final _repository = DocumentRepository();
   final _categoryRepository = CategoryRepository();
   final _folderRepository = FolderRepository();
@@ -47,6 +48,9 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   int? _phoneStorageBytes;
   bool _phoneScanLoading = false;
   bool _phoneScanCompleted = false;
+  StreamSubscription<void>? _storageChangesSubscription;
+  Timer? _phoneRefreshDebounce;
+  bool _phoneScanPending = false;
   int _trashCount = 0;
   List<Map<String, Object?>> _phoneRecent = [];
   List<DocumentRecord> _gridRecent = [];
@@ -66,6 +70,14 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _storageChangesSubscription =
+        StorageLocationService.instance.storageChanges.listen(
+      (_) => _schedulePhoneStorageRefresh(),
+      onError: (_) {
+        // Provider change events are best-effort; resume reconciliation remains.
+      },
+    );
     if (!widget.phoneOnly) {
       _load();
       _loadViewPreference();
@@ -119,7 +131,25 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _schedulePhoneStorageRefresh();
+    }
+  }
+
+  void _schedulePhoneStorageRefresh() {
+    if (!mounted || widget.favoritesOnly || widget.recentOnly) return;
+    _phoneRefreshDebounce?.cancel();
+    _phoneRefreshDebounce = Timer(const Duration(milliseconds: 450), () {
+      if (mounted) unawaited(_scanPhoneStorage(openBrowser: false));
+    });
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _storageChangesSubscription?.cancel();
+    _phoneRefreshDebounce?.cancel();
     _loadGeneration++;
     _searchDebounce?.cancel();
     _search.removeListener(_onSearchChanged);
@@ -338,12 +368,15 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   }
 
   Future<void> _persistPhoneStorageIndexCache(
-    List<Map<String, String>> roots, List<Map<String, Object?>> entries,
-  ) async {
+    List<Map<String, String>> roots,
+    List<Map<String, Object?>> entries, {
+    Map<String, Object?> mediaStoreVolumes = const <String, Object?>{},
+  }) async {
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString('docsgrid_phone_storage_index_v1', jsonEncode({
         'rootSignature': roots.map((root) => root['uri']!).join('|'),
+        'mediaStoreVolumes': mediaStoreVolumes,
         'entries': entries,
       }));
     } catch (_) {
@@ -353,6 +386,10 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
 
   Future<void> _scanPhoneStorage({required bool openBrowser}) async {
     final storage = StorageLocationService.instance;
+    if (_phoneScanLoading) {
+      _phoneScanPending = true;
+      return;
+    }
     if (mounted) setState(() { _phoneScanLoading = true; _phoneScanCompleted = false; });
     try {
       if (Platform.isAndroid) {
@@ -386,31 +423,105 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
         return;
       }
 
-      // Restore the last complete index for instant first paint, then refresh
-      // it from the live filesystem in the background.
+      // The cached tree is rendered immediately. MediaStore then supplies a
+      // fast current index for shared volumes, including removable volumes.
       final cacheRestored = await _restorePhoneStorageIndexCache(roots);
-      // On first run without a cache, show only root-level PDFs provisionally.
-      final firstLevelEntries = <Map<String, Object?>>[];
+      var mediaStoreComplete = false;
+      var mediaStoreVolumes = <String, Object?>{};
+      final entries = <Map<String, Object?>>[];
+      final seen = <String>{};
+
+      if (Platform.isAndroid && await storage.hasAllFilesAccess()) {
+        try {
+          final index = await storage.queryPhonePdfIndex();
+          final indexed = index['entries'] as List<Map<String, Object?>>;
+          final complete = index['complete'] == true;
+          if (complete) {
+            mediaStoreComplete = true;
+            mediaStoreVolumes =
+                Map<String, Object?>.from(index['volumes'] as Map);
+            entries.addAll(indexed);
+            for (final item in indexed) {
+              final uri = item['uri'] as String? ?? '';
+              if (uri.isNotEmpty) seen.add(uri);
+            }
+            if (mounted) setState(() {
+              _phoneEntries = List<Map<String, Object?>>.from(entries);
+              _phoneScanCompleted = true;
+            });
+          }
+        } catch (_) {
+          // Unsupported provider/API falls back to the bounded SAF/file scan.
+        }
+      }
+
+      if (!mediaStoreComplete) {
+        // First-run provisional view: only root-level PDFs, never unverified
+        // parent directories which may contain documents only in descendants.
+        final firstLevelEntries = <Map<String, Object?>>[];
+        for (var index = 0; index < roots.length; index++) {
+          final root = roots[index];
+          final label = index == 0 ? 'Internal' : root['name']!;
+          try {
+            final children = await storage.listDirectory(root['uri']!);
+            for (final child in children) {
+              final name = child['name'] as String;
+              if (child['isDirectory'] != true &&
+                  name.toLowerCase().endsWith('.pdf')) {
+                firstLevelEntries.add({
+                  ...child,
+                  'path': label,
+                  'folderPath': label,
+                });
+              }
+            }
+          } catch (error) {
+            firstLevelEntries.add({
+              'name': label,
+              'uri': root['uri']!,
+              'folderPath': '',
+              'path': label,
+              'isDirectory': true,
+              'isInaccessible': true,
+              'accessError': error.toString(),
+            });
+          }
+        }
+        if (!mounted) return;
+        if (!cacheRestored) setState(() => _phoneEntries = firstLevelEntries);
+      }
+
+      var inaccessibleRoots = 0;
       for (var index = 0; index < roots.length; index++) {
         final root = roots[index];
+        final uri = root['uri']!;
+        // MediaStore already covers local shared volumes. Keep recursive
+        // traversal only for user-granted SAF/cloud roots, or as a fallback
+        // when MediaStore could not produce a complete index.
+        if (mediaStoreComplete && uri.startsWith('file://')) continue;
+        if (!mediaStoreComplete && uri.startsWith('file://') &&
+            Platform.isAndroid && await storage.hasAllFilesAccess()) {
+          // Native file-tree recursion is the safe fallback for failed volumes.
+        }
         final label = index == 0 ? 'Internal' : root['name']!;
         try {
-          final children = await storage.listDirectory(root['uri']!);
-          for (final child in children) {
-            final name = child['name'] as String;
-            final isDirectory = child['isDirectory'] == true;
-            if (!isDirectory && name.toLowerCase().endsWith('.pdf')) {
-              firstLevelEntries.add({
-                ...child,
-                'path': label,
-                'folderPath': label,
-              });
-            }
+          final found = await storage.listStorageTreeRecursively(
+            uri,
+            rootLabel: label,
+            includeEmptyFolders: false,
+          );
+          for (final item in found) {
+            final itemUri = item['uri'] as String? ?? '';
+            if (item['isDirectory'] != true &&
+                itemUri.isNotEmpty &&
+                !seen.add(itemUri)) continue;
+            entries.add(item);
           }
         } catch (error) {
-          firstLevelEntries.add({
+          inaccessibleRoots++;
+          entries.add({
             'name': label,
-            'uri': root['uri']!,
+            'uri': uri,
             'folderPath': '',
             'path': label,
             'isDirectory': true,
@@ -420,42 +531,15 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
         }
       }
       if (!mounted) return;
-      if (!cacheRestored) setState(() => _phoneEntries = firstLevelEntries);
-
-      final entries = <Map<String, Object?>>[];
-      final seen = <String>{};
-      var inaccessibleRoots = 0;
-      for (var index = 0; index < roots.length; index++) {
-        final root = roots[index];
-        final label = index == 0 ? 'Internal' : root['name']!;
-        try {
-          final found = await storage.listStorageTreeRecursively(
-            root['uri']!,
-            rootLabel: label,
-            includeEmptyFolders: false,
-          );
-          for (final item in found) {
-            final uri = item['uri'] as String? ?? '';
-            if (item['isDirectory'] != true && uri.isNotEmpty && !seen.add(uri)) {
-              continue;
-            }
-            entries.add(item);
-          }
-        } catch (error) {
-          inaccessibleRoots++;
-          entries.add({
-            'name': label,
-            'uri': root['uri']!,
-            'folderPath': '',
-            'path': label,
-            'isDirectory': true,
-            'isInaccessible': true,
-            'accessError': error.toString(),
-          });
-        }
+      if (mediaStoreVolumes.isNotEmpty) {
+        await _persistPhoneStorageIndexCache(
+          roots,
+          entries,
+          mediaStoreVolumes: mediaStoreVolumes,
+        );
+      } else {
+        await _persistPhoneStorageIndexCache(roots, entries);
       }
-      if(!mounted)return;
-      await _persistPhoneStorageIndexCache(roots, entries);
       setState(() {
         _phoneEntries=entries;
         _phoneScanCompleted = true;
@@ -474,6 +558,10 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
       }
     } finally {
       if (mounted) setState(() => _phoneScanLoading = false);
+      if (_phoneScanPending && mounted) {
+        _phoneScanPending = false;
+        _schedulePhoneStorageRefresh();
+      }
     }
   }
 
