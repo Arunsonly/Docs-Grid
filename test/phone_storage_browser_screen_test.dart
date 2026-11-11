@@ -108,6 +108,42 @@ void main() {
     expect(find.text('Vehicle-Quote.pdf'), findsNothing);
   });
 
+  testWidgets('embedded Phone browser stays in place and returns to folder list',
+      (tester) async {
+    setTestViewport(tester);
+    await tester.pumpWidget(MaterialApp(
+      home: PhoneStorageBrowserScreen(
+        rootName: 'Internal Storage',
+        embedded: true,
+        entries: const [
+          {
+            'name': 'Policies',
+            'uri': '',
+            'folderPath': 'Internal',
+            'path': 'Internal/Policies',
+            'isDirectory': true,
+            'pdfCount': 1,
+          },
+          {
+            'name': 'Policy.pdf',
+            'uri': 'content://policy',
+            'folderPath': 'Internal/Policies',
+            'path': 'Internal/Policies',
+            'isDirectory': false,
+          },
+        ],
+        onOpenPdf: (_, __) async {},
+      ),
+    ));
+
+    await tester.tap(find.byKey(const ValueKey('phone-folder-Internal/Policies')));
+    await tester.pumpAndSettle();
+    expect(find.text('Policy.pdf'), findsOneWidget);
+    await tester.tap(find.byTooltip('Back to folders'));
+    await tester.pumpAndSettle();
+    expect(find.text('Policies'), findsOneWidget);
+  });
+
   testWidgets('folder menu shows folder name and full path above its action',
       (tester) async {
     setTestViewport(tester);

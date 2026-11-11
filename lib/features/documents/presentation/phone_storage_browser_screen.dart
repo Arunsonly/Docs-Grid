@@ -418,6 +418,27 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
 
     return Column(
       children: [
+        if (widget.embedded && selectedPath != null)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(8, 0, 16, 0),
+            child: Row(
+              children: [
+                IconButton(
+                  tooltip: 'Back to folders',
+                  onPressed: () => setState(() => _selectedFolderPath = null),
+                  icon: const Icon(Icons.arrow_back),
+                ),
+                Expanded(
+                  child: Text(
+                    _folderName(selectedPath),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
+                ),
+              ],
+            ),
+          ),
         _buildSearchField(),
         if (widget.isLoading) const LinearProgressIndicator(minHeight: 2),
         Expanded(

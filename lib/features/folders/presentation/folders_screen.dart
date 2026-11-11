@@ -848,6 +848,7 @@ class _FoldersScreenState extends State<FoldersScreen> {
                 onPressed: () => setState(() {
                   _searchController.clear();
                   _searchQuery = '';
+                  _documentsFuture = _documents.listInFolder(_currentFolderId);
                 }),
               ),
               filled: true,
