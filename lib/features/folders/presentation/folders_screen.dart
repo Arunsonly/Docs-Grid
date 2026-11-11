@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:open_filex/open_filex.dart';
 
 import '../../documents/data/document_repository.dart';
+import '../../documents/presentation/document_thumbnail.dart';
 import '../../tools/document_tools_service.dart';
 import '../../../core/storage/storage_location_service.dart';
 import '../../reminders/data/reminder_repository.dart';
@@ -1128,7 +1129,11 @@ class _FoldersScreenState extends State<FoldersScreen> {
                               child: ListTile(
                                 leading: _selectedDocumentIds.isNotEmpty
                                     ? Checkbox(value: _selectedDocumentIds.contains(document.id), onChanged: (_) => setState(() { if (!_selectedDocumentIds.add(document.id)) _selectedDocumentIds.remove(document.id); }))
-                                    : const Icon(Icons.picture_as_pdf_outlined),
+                                    : DocumentThumbnail(
+                                        documentId: document.id,
+                                        storagePath: document.storagePath,
+                                        sizeBytes: document.sizeBytes,
+                                      ),
                                 title: Text('${document.name}.pdf', maxLines: 1, overflow: TextOverflow.ellipsis),
                                 subtitle: Text(_size(document.sizeBytes)),
                                 onLongPress: () {

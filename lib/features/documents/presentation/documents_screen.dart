@@ -777,7 +777,11 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     return ListTile(
       key: ValueKey('phone-recent-$uri'),
       dense: true,
-      leading: const Icon(Icons.picture_as_pdf_outlined),
+      leading: DocumentThumbnail(
+        documentId: 'phone_recent_$uri',
+        storagePath: uri,
+        sizeBytes: (item['sizeBytes'] as num?)?.toInt() ?? 0,
+      ),
       title: Row(children: [
         Flexible(child: Text(name, maxLines: 1, overflow: TextOverflow.ellipsis)),
         const SizedBox(width: 6),
@@ -2473,16 +2477,27 @@ class _RecentSelectionScreenState extends State<_RecentSelectionScreen> {
                 final item = _items[index];
                 return ListTile(
                   onTap: _selected.isEmpty ? () => widget.onOpen(item) : null,
-                  leading: const Icon(Icons.picture_as_pdf_outlined),
+                  leading: DocumentThumbnail(
+                    documentId: item.id,
+                    storagePath: item.storagePath,
+                    sizeBytes: item.sizeBytes,
+                  ),
                   title: Text('${item.name}.pdf',
                     maxLines: 1, overflow: TextOverflow.ellipsis),
                   subtitle: Text(
                     '${(item.sizeBytes / (1024 * 1024)).toStringAsFixed(1)} MB',
                   ),
-                  trailing: Checkbox(
-                    value: _selected.contains(item.id),
-                    onChanged: (value) => _toggleSelection(item, value),
-                  ),
+                  onLongPress: () {
+                    if (_selected.isEmpty) {
+                      setState(() => _selected.add(item.id));
+                    }
+                  },
+                  trailing: _selected.isEmpty
+                      ? null
+                      : Checkbox(
+                          value: _selected.contains(item.id),
+                          onChanged: (value) => _toggleSelection(item, value),
+                        ),
                 );
               },
             ),
@@ -2635,13 +2650,24 @@ class _PhoneRecentSelectionScreenState extends State<_PhoneRecentSelectionScreen
           final uri = item['uri'] as String;
           return ListTile(
             onTap: _selected.isEmpty ? () => widget.onOpen(item) : null,
-            leading: const Icon(Icons.picture_as_pdf_outlined),
+            leading: DocumentThumbnail(
+              documentId: 'phone_recent_$uri',
+              storagePath: uri,
+              sizeBytes: (item['sizeBytes'] as num?)?.toInt() ?? 0,
+            ),
             title: Text(item['name'] as String? ?? 'PDF'),
             subtitle: Text('Phone · ${item['openedAt'] ?? ''}'),
-            trailing: Checkbox(
-              value: _selected.contains(uri),
-              onChanged: (value) => _toggleSelection(uri, value),
-            ),
+            onLongPress: () {
+              if (_selected.isEmpty) {
+                setState(() => _selected.add(uri));
+              }
+            },
+            trailing: _selected.isEmpty
+                ? null
+                : Checkbox(
+                    value: _selected.contains(uri),
+                    onChanged: (value) => _toggleSelection(uri, value),
+                  ),
           );
         },
       ),
