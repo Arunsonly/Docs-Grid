@@ -408,6 +408,16 @@ class _FoldersScreenState extends State<FoldersScreen> {
     if (selected.isEmpty) return;
     final options = await _repository.allFoldersWithPaths();
     if (!mounted) return;
+    final selectedIds = selected.map((folder) => folder.id).toSet();
+    final selectedPaths = options
+        .where((option) => selectedIds.contains(option.folder.id))
+        .map((option) => option.path)
+        .toList();
+    final validDestinations = options.where((option) {
+      if (selectedIds.contains(option.folder.id)) return false;
+      return !selectedPaths.any((path) =>
+          option.path == path || option.path.startsWith('$path / '));
+    }).toList();
     final destination = await showModalBottomSheet<String>(
       context: context,
       showDragHandle: true,
@@ -419,7 +429,7 @@ class _FoldersScreenState extends State<FoldersScreen> {
             title: const Text('Folders (root)'),
             onTap: () => Navigator.pop(ctx, ''),
           ),
-          for (final option in options)
+          for (final option in validDestinations)
             ListTile(
               leading: const Icon(Icons.folder_outlined),
               title: Text(option.path, maxLines: 1, overflow: TextOverflow.ellipsis),
@@ -957,7 +967,9 @@ class _FoldersScreenState extends State<FoldersScreen> {
                                   subtitle: const Text('Folder'),
                                   onTap: _isSelectingFolders
                                       ? () => _toggleFolderSelection(folder)
-                                      : () => _openFolder(folder),
+                                      : _isReorderingFolders
+                                          ? null
+                                          : () => _openFolder(folder),
                                   onLongPress: _isSelectingFolders || _isReorderingFolders
                                       ? null
                                       : () => _beginFolderReorder(folders),
