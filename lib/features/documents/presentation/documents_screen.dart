@@ -53,6 +53,8 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   int _trashCount = 0;
   List<Map<String, Object?>> _phoneRecent = [];
   List<DocumentRecord> _gridRecent = [];
+  bool _showStarredRecent = false;
+  List<DocumentRecord> _starredRecent = [];
   String _recentFilter = 'grid';
   List<Map<String, Object?>> _phoneEntries = [];
   final Set<String> _selectedIds = <String>{};
@@ -383,6 +385,252 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     ));
   }
 
+  Future<void> _loadAllStarred() async {
+    try {
+      final items = await _repository.listAllStarred();
+      if (mounted) setState(() => _starredRecent = items);
+    } catch (error) {
+      if (mounted) _message('Could not load Starred PDFs: $error');
+    }
+  }
+
+  Future<void> _clearRecentActivity() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove('docsgrid_phone_recent_v1');
+      await _repository.clearOpenedHistory();
+      if (!mounted) return;
+      setState(() => _phoneRecent = []);
+      await _loadRecentDocuments();
+      if (_showStarredRecent) await _loadAllStarred();
+      if (mounted) _message('Recent cleared. PDF files were not deleted.');
+    } catch (error) {
+      if (mounted) _message('Could not clear Recent: $error');
+    }
+  }
+
+  Future<List<DocumentRecord>> _loadAllRecentGrid() =>
+      _repository.recentActivity(limit: 100000);
+
+  List<PopupMenuEntry<String>> _phoneRecentMenu(Map<String, Object?> item) => [
+    const PopupMenuItem(value: 'share', child: Text('Share PDF')),
+    const PopupMenuItem(value: 'favorite', child: Text('Add to Star')),
+    const PopupMenuItem(value: 'category', child: Text('Set category')),
+    const PopupMenuItem(value: 'tags', child: Text('Edit tags')),
+    const PopupMenuItem(value: 'rename', child: Text('Rename')),
+    const PopupMenuItem(value: 'move', child: Text('Move to folder')),
+    const PopupMenuItem(value: 'trash', child: Text('Move to Recycle Bin')),
+  ];
+
+  Future<void> _handlePhoneRecentAction(Map<String, Object?> item, String action) async {
+    final uri = item['uri'] as String? ?? '';
+    final name = item['name'] as String? ?? 'PDF';
+    if (action == 'share') {
+      await _sharePhonePdf(uri, name);
+    } else if (action == 'favorite') {
+      await _recordExternalFavorite(uri, name);
+    } else {
+      _message('This Phone PDF action is available from the Phone folder browser.');
+    }
+  }
+
+  Future<void> _recordExternalFavorite(String uri, String name) async {
+    _message('Phone files can be starred after importing them into Grid.');
+  }
+
+  Future<void> _openPhoneRecentSelection(Map<String, Object?> first) async {
+    final items = _phoneRecent;
+    await Navigator.of(context).push<void>(MaterialPageRoute(
+      builder: (_) => _PhoneRecentSelectionScreen(
+        items: items,
+        initialUri: first['uri'] as String,
+        onOpen: (item) => _openExternalStoragePdf(
+          item['uri'] as String, item['name'] as String? ?? 'PDF',
+        ),
+        onShare: (chosen) => _tools.shareManyStoredPdfs(
+          chosen.map((x) => x['uri'] as String).toList(),
+          chosen.map((x) => '${x['name']}.pdf').toList(),
+        ),
+        onDelete: (chosen) async {
+          final prefs = await SharedPreferences.getInstance();
+          final keep = _phoneRecent.where((item) => !chosen.any((x) => x['uri'] == item['uri'])).toList();
+          await prefs.setStringList('docsgrid_phone_recent_v1', keep.map(jsonEncode).toList());
+          if (mounted) setState(() => _phoneRecent = keep);
+        },
+      ),
+    ));
+  }
+
+  Widget _recentDocumentTile(DocumentRecord document) {
+    final activityAt = document.lastOpenedAt ?? document.createdAt;
+    final activity = document.lastOpenedAt != null
+        ? 'Opened'
+        : document.source == 'download'
+            ? 'Downloaded'
+            : 'Added';
+    return Card(
+      elevation: 0,
+      child: ListTile(
+        key: ValueKey('recent-${document.id}'),
+        dense: true,
+        leading: DocumentThumbnail(
+          documentId: document.id,
+          storagePath: document.storagePath,
+          sizeBytes: document.sizeBytes,
+        ),
+        title: Row(children: [
+          Flexible(child: Text('${document.name}.pdf',
+              maxLines: 1, overflow: TextOverflow.ellipsis)),
+          const SizedBox(width: 6),
+          _recentSourceTag('Grid'),
+        ]),
+        subtitle: Text('${_recentDateLabel(activityAt)} · $activity'),
+        onTap: () => _open(document),
+        onLongPress: () => _openRecentSelection(document),
+        trailing: PopupMenuButton<String>(
+          tooltip: 'Actions for ${document.name}',
+          onSelected: (value) => _handleRecentAction(document, value),
+          itemBuilder: (_) => _recentPdfMenu(document),
+        ),
+      ),
+    );
+  }
+
+  List<PopupMenuEntry<String>> _recentPdfMenu(DocumentRecord document) => [
+    const PopupMenuItem(value: 'share', child: Text('Share PDF')),
+    PopupMenuItem(value: 'favorite',
+      child: Text(document.isFavorite ? 'Remove from Star' : 'Add to Star')),
+    const PopupMenuItem(value: 'category', child: Text('Set category')),
+    const PopupMenuItem(value: 'tags', child: Text('Edit tags')),
+    const PopupMenuItem(value: 'rename', child: Text('Rename')),
+    const PopupMenuItem(value: 'move', child: Text('Move to folder')),
+    const PopupMenuItem(value: 'trash', child: Text('Move to Recycle Bin')),
+  ];
+
+  Future<void> _handleRecentAction(DocumentRecord document, String action) async {
+    if (action == 'favorite') {
+      await _repository.setFavorite(document, !document.isFavorite);
+      await _loadAllStarred();
+      await _loadRecentDocuments();
+      if (mounted) {
+        setState(() {
+          if (_showStarredRecent && !document.isFavorite) {
+            _starredRecent.removeWhere((item) => item.id == document.id);
+          }
+        });
+        await _refreshDashboardSummary();
+      }
+      return;
+    }
+    if (action == 'share') {
+      await _share(document);
+    } else if (action == 'category') {
+      await _chooseCategory(document);
+    } else if (action == 'tags') {
+      await _editTags(document);
+    } else if (action == 'rename') {
+      await _rename(document);
+    } else if (action == 'move') {
+      await _moveToFolder(document);
+    } else if (action == 'trash') {
+      await _trash(document);
+    }
+    await _loadRecentDocuments();
+    if (_showStarredRecent) await _loadAllStarred();
+  }
+
+  Future<void> _openRecentSelection(DocumentRecord first) async {
+    final action = await Navigator.of(context).push<String>(MaterialPageRoute(
+      builder: (_) => _RecentSelectionScreen(
+        initialDocument: first,
+        loadItems: _showStarredRecent ? _repository.listAllStarred : _loadAllRecentGrid,
+        onOpen: _open,
+        onMove: _bulkMoveDocuments,
+        onCopy: _bulkCopyDocuments,
+        onDelete: _bulkDeleteDocuments,
+        onShare: _bulkShareDocuments,
+        onRename: _rename,
+      ),
+    ));
+    await _loadRecentDocuments();
+    await _loadAllStarred();
+    if (action == 'rename' && mounted) {
+      _message('Rename completed.');
+    }
+  }
+
+  Future<void> _bulkMoveDocuments(List<DocumentRecord> selected) async {
+    final folders = await _folderRepository.allFoldersWithPaths();
+    if (!mounted) return;
+    final destination = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) => ListView(shrinkWrap: true, children: [
+        const ListTile(title: Text('Move selected PDFs to')),
+        ListTile(title: const Text('Root / No folder'), onTap: () => Navigator.pop(ctx, '')),
+        for (final option in folders)
+          ListTile(title: Text(option.path), onTap: () => Navigator.pop(ctx, option.folder.id)),
+      ]),
+    );
+    if (destination == null) return;
+    final result = await _repository.moveManyToFolder(selected, destination.isEmpty ? null : destination);
+    if (mounted) _message('Moved ${result['moved']} of ${selected.length} PDFs');
+  }
+
+  Future<void> _bulkCopyDocuments(List<DocumentRecord> selected) async {
+    var copied = 0;
+    final failures = <String>[];
+    for (final document in selected) {
+      try {
+        await _repository.copyDocument(document, targetFolderId: document.folderId);
+        copied++;
+      } catch (error) {
+        failures.add('${document.name}: $error');
+      }
+    }
+    if (mounted) _message('Copied $copied of ${selected.length} PDFs'
+        '${failures.isEmpty ? '' : ' · ${failures.length} failed'}');
+  }
+
+  Future<void> _bulkDeleteDocuments(List<DocumentRecord> selected) async {
+    await _repository.moveManyToTrash(selected);
+    if (mounted) {
+      _message('Moved ${selected.length} PDFs to Recycle Bin');
+      await _refreshDashboardSummary();
+    }
+  }
+
+  Future<void> _bulkShareDocuments(List<DocumentRecord> selected) async {
+    await _tools.shareManyStoredPdfs(
+      selected.map((item) => item.storagePath).toList(),
+      selected.map((item) => '${item.name}.pdf').toList(),
+    );
+  }
+
+  Widget _phoneRecentTile(Map<String, Object?> item) {
+    final name = item['name'] as String? ?? 'PDF';
+    final uri = item['uri'] as String? ?? '';
+    final openedAt = DateTime.tryParse(item['openedAt']?.toString() ?? '');
+    return ListTile(
+      key: ValueKey('phone-recent-$uri'),
+      dense: true,
+      leading: const Icon(Icons.picture_as_pdf_outlined),
+      title: Row(children: [
+        Flexible(child: Text(name, maxLines: 1, overflow: TextOverflow.ellipsis)),
+        const SizedBox(width: 6),
+        _recentSourceTag('Phone'),
+      ]),
+      subtitle: Text('Opened · ${_recentDateLabel(openedAt ?? DateTime.now())}'),
+      onTap: () => _openExternalStoragePdf(uri, name),
+      onLongPress: () => _openPhoneRecentSelection(item),
+      trailing: PopupMenuButton<String>(
+        tooltip: 'Actions for $name',
+        onSelected: (action) => _handlePhoneRecentAction(item, action),
+        itemBuilder: (_) => _phoneRecentMenu(item),
+      ),
+    );
+  }
+
   Future<void> _loadRecentDocuments() async {
     try {
       // Include both opened documents and newly added documents. The list
@@ -459,6 +707,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
       if (mounted) _message('Could not open $name: $error');
     }
   }
+
 
 
   void _startSelection(DocumentRecord document) {
@@ -659,7 +908,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     }
   }
 
-  Future<void> _rename(DocumentRecord document) async {
+  Future<bool> _rename(DocumentRecord document) async {
     final controller = TextEditingController(text: document.name);
     final value = await showDialog<String>(
       context: context,
@@ -677,12 +926,14 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
       ),
     );
     controller.dispose();
-    if (value == null) return;
+    if (value == null) return false;
     try {
       await _repository.rename(document, value);
       await _patchDocument(document.id);
+      return true;
     } catch (error) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$error')));
+      return false;
     }
   }
 
@@ -1411,86 +1662,76 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Row(children: [
-                      const Text('Recent', style: TextStyle(fontWeight: FontWeight.w700)),
+                      Text(_showStarredRecent ? 'Starred' : 'Recent',
+                          style: const TextStyle(fontWeight: FontWeight.w700)),
                       const Spacer(),
-                      SegmentedButton<String>(
-                        showSelectedIcon: false,
-                        segments: const [
-                          ButtonSegment(value: 'phone', label: Text('Phone')),
-                          ButtonSegment(value: 'grid', label: Text('Grid')),
-                        ],
-                        selected: {_recentFilter},
-                        onSelectionChanged: (selection) =>
-                            setState(() => _recentFilter = selection.first),
-                      ),
+                      if (!_showStarredRecent)
+                        SegmentedButton<String>(
+                          showSelectedIcon: false,
+                          segments: const [
+                            ButtonSegment(value: 'phone', label: Text('Phone')),
+                            ButtonSegment(value: 'grid', label: Text('Grid')),
+                          ],
+                          selected: {_recentFilter},
+                          onSelectionChanged: (selection) =>
+                              setState(() => _recentFilter = selection.first),
+                        ),
                       PopupMenuButton<String>(
-                        tooltip: 'Recent options',
-                        onSelected: (value) {
-                          if (value == 'refresh') _loadRecentDocuments();
+                        tooltip: _showStarredRecent ? 'Starred options' : 'Recent options',
+                        onSelected: (value) async {
+                          if (value == 'starred') {
+                            await _loadAllStarred();
+                            if (mounted) setState(() => _showStarredRecent = true);
+                          } else if (value == 'recent') {
+                            setState(() => _showStarredRecent = false);
+                          } else if (value == 'clear') {
+                            await _clearRecentActivity();
+                          } else if (value == 'refresh') {
+                            await _loadRecentDocuments();
+                            if (_showStarredRecent) await _loadAllStarred();
+                          }
                         },
-                        itemBuilder: (_) => const [
-                          PopupMenuItem(value: 'refresh', child: Text('Refresh recent')),
-                        ],
+                        itemBuilder: (_) => _showStarredRecent
+                            ? const [
+                                PopupMenuItem(value: 'recent', child: Text('Recent')),
+                                PopupMenuItem(value: 'refresh', child: Text('Refresh Starred')),
+                              ]
+                            : const [
+                                PopupMenuItem(value: 'clear', child: Text('Clear Recent')),
+                                PopupMenuItem(value: 'starred', child: Text('Starred')),
+                                PopupMenuItem(value: 'refresh', child: Text('Refresh Recent')),
+                              ],
                       ),
                     ]),
                     const SizedBox(height: 8),
-                    const SizedBox(height: 6),
                     SizedBox(
                       height: 320,
-                      child: _recentFilter == 'phone'
-                          ? _phoneRecent.isEmpty
-                              ? const Center(child: Text('No recent Phone PDFs'))
+                      child: _showStarredRecent
+                          ? _starredRecent.isEmpty
+                              ? const Center(child: Text('No starred PDFs'))
                               : ListView.separated(
                                   primary: false,
-                                  itemCount: _phoneRecent.length,
+                                  itemCount: _starredRecent.length,
                                   separatorBuilder: (_, _) => const Divider(height: 1),
-                                  itemBuilder: (context, index) {
-                                    final item = _phoneRecent[index];
-                                    final name = item['name'] as String? ?? 'PDF';
-                                    final openedAt = DateTime.tryParse(item['openedAt']?.toString() ?? '');
-                                    return ListTile(
-                                      dense: true,
-                                      leading: const Icon(Icons.picture_as_pdf_outlined),
-                                      title: Row(mainAxisSize: MainAxisSize.min, children: [
-                                        Flexible(child: Text(name, maxLines: 1, overflow: TextOverflow.ellipsis)),
-                                        const SizedBox(width: 6),
-                                        _recentSourceTag('Phone'),
-                                      ]),
-                                      subtitle: Text('Opened · ${_recentDateLabel(openedAt ?? DateTime.now())}'),
-                                      onTap: () => _openExternalStoragePdf(
-                                        item['uri'] as String, name,
-                                      ),
-                                    );
-                                  },
+                                  itemBuilder: (context, index) => _recentDocumentTile(_starredRecent[index]),
                                 )
-                          : _gridRecent.isEmpty
-                              ? const Center(child: Text('No recent Grid PDFs'))
-                              : ListView.separated(
-                                  primary: false,
-                                  itemCount: _gridRecent.length,
-                                  separatorBuilder: (_, _) => const Divider(height: 1),
-                                  itemBuilder: (context, index) {
-                                    final document = _gridRecent[index];
-                                    final activityAt = document.lastOpenedAt ?? document.createdAt;
-                                    final activity = document.lastOpenedAt != null
-                                        ? 'Opened'
-                                        : document.source == 'download'
-                                            ? 'Downloaded'
-                                            : 'Added';
-                                    return ListTile(
-                                      dense: true,
-                                      leading: const Icon(Icons.picture_as_pdf_outlined),
-                                      title: Row(mainAxisSize: MainAxisSize.min, children: [
-                                        Flexible(child: Text('${document.name}.pdf',
-                                            maxLines: 1, overflow: TextOverflow.ellipsis)),
-                                        const SizedBox(width: 6),
-                                        _recentSourceTag('Grid'),
-                                      ]),
-                                      subtitle: Text('$activity · ${_recentDateLabel(activityAt)}'),
-                                      onTap: () => _open(document),
-                                    );
-                                  },
-                                ),
+                          : _recentFilter == 'phone'
+                              ? _phoneRecent.isEmpty
+                                  ? const Center(child: Text('No recent Phone PDFs'))
+                                  : ListView.separated(
+                                      primary: false,
+                                      itemCount: _phoneRecent.length,
+                                      separatorBuilder: (_, _) => const Divider(height: 1),
+                                      itemBuilder: (context, index) => _phoneRecentTile(_phoneRecent[index]),
+                                    )
+                              : _gridRecent.isEmpty
+                                  ? const Center(child: Text('No recent Grid PDFs'))
+                                  : ListView.separated(
+                                      primary: false,
+                                      itemCount: _gridRecent.length,
+                                      separatorBuilder: (_, _) => const Divider(height: 1),
+                                      itemBuilder: (context, index) => _recentDocumentTile(_gridRecent[index]),
+                                    ),
                     ),
                   ],
                 ),
@@ -1832,11 +2073,13 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                       tagNames: current.tagNames,
                       folderId: current.folderId,
                       lastOpenedAt: current.lastOpenedAt,
+                      source: current.source,
                     );
                   }
                 }
                 _starredCount = (_starredCount + (nextFavorite ? 1 : -1)).clamp(0, _totalDocumentCount).toInt();
               });
+              await _loadAllStarred();
             } else if (value == 'tags') {
               await _editTags(document);
             } else if (value == 'move') {
@@ -1862,8 +2105,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
             const PopupMenuItem(value: 'category', child: Text('Set category')),
             const PopupMenuItem(value: 'tags', child: Text('Edit tags')),
             const PopupMenuItem(value: 'rename', child: Text('Rename')),
-            const PopupMenuItem(value: 'move', child: Text('Move')),
-            const PopupMenuItem(value: 'reminder', child: Text('Add to reminder')),
+            const PopupMenuItem(value: 'move', child: Text('Move to folder')),
             const PopupMenuItem(value: 'trash', child: Text('Move to Recycle Bin')),
           ],
         ),
@@ -1901,3 +2143,280 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
   }
 }
+
+class _RecentSelectionScreen extends StatefulWidget {
+  const _RecentSelectionScreen({
+    required this.initialDocument,
+    required this.loadItems,
+    required this.onOpen,
+    required this.onMove,
+    required this.onCopy,
+    required this.onDelete,
+    required this.onShare,
+    required this.onRename,
+  });
+
+  final DocumentRecord initialDocument;
+  final Future<List<DocumentRecord>> Function() loadItems;
+  final Future<void> Function(DocumentRecord) onOpen;
+  final Future<void> Function(List<DocumentRecord>) onMove;
+  final Future<void> Function(List<DocumentRecord>) onCopy;
+  final Future<void> Function(List<DocumentRecord>) onDelete;
+  final Future<void> Function(List<DocumentRecord>) onShare;
+  final Future<bool> Function(DocumentRecord) onRename;
+
+  @override
+  State<_RecentSelectionScreen> createState() => _RecentSelectionScreenState();
+}
+
+class _RecentSelectionScreenState extends State<_RecentSelectionScreen> {
+  late final Set<String> _selected = {widget.initialDocument.id};
+  List<DocumentRecord> _items = [];
+  bool _loading = true;
+  bool _busy = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    try {
+      final items = await widget.loadItems();
+      if (mounted) setState(() { _items = items; _loading = false; });
+    } catch (_) {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  List<DocumentRecord> get _selectedItems =>
+      _items.where((item) => _selected.contains(item.id)).toList(growable: false);
+
+  Future<void> _run(Future<void> Function(List<DocumentRecord>) action) async {
+    if (_busy || _selectedItems.isEmpty) return;
+    setState(() => _busy = true);
+    try {
+      await action(_selectedItems);
+      if (mounted) {
+        Navigator.of(context).pop();
+      }
+    } catch (error) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Action failed: $error')),
+      );
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _more() async {
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) => SafeArea(child: ListView(shrinkWrap: true, children: [
+        const ListTile(title: Text('More actions')),
+        ListTile(leading: const Icon(Icons.drive_file_rename_outline),
+          title: const Text('Rename'), onTap: () => Navigator.pop(ctx, 'rename')),
+      ])),
+    );
+    if (choice == 'rename' && _selectedItems.length == 1 && mounted) {
+      final renamed = await widget.onRename(_selectedItems.single);
+      if (renamed && mounted) Navigator.of(context).pop('rename');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text('${_selected.length} selected'),
+        leading: IconButton(
+          icon: const Icon(Icons.close),
+          onPressed: () => Navigator.of(context).pop(),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => setState(() {
+              if (_selected.length == _items.length) {
+                _selected.clear();
+              } else {
+                _selected.addAll(_items.map((item) => item.id));
+              }
+            }),
+            child: const Text('Select all'),
+          ),
+        ],
+      ),
+      body: _loading
+          ? const Center(child: CircularProgressIndicator())
+          : ListView.separated(
+              itemCount: _items.length,
+              separatorBuilder: (_, _) => const Divider(height: 1),
+              itemBuilder: (context, index) {
+                final item = _items[index];
+                return CheckboxListTile(
+                  value: _selected.contains(item.id),
+                  onChanged: (value) => setState(() {
+                    if (value == true) {
+                      _selected.add(item.id);
+                    } else {
+                      _selected.remove(item.id);
+                    }
+                  }),
+                  secondary: const Icon(Icons.picture_as_pdf_outlined),
+                  title: Text('${item.name}.pdf',
+                    maxLines: 1, overflow: TextOverflow.ellipsis),
+                  subtitle: Text('${(item.sizeBytes / (1024 * 1024)).toStringAsFixed(1)} MB'),
+                );
+              },
+            ),
+      bottomNavigationBar: SafeArea(
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+          decoration: BoxDecoration(
+            color: Theme.of(context).colorScheme.surface,
+            border: Border(top: BorderSide(color: Theme.of(context).dividerColor)),
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceAround,
+            children: [
+              _actionButton(Icons.drive_file_move_outline, 'Move', () => _run(widget.onMove)),
+              _actionButton(Icons.copy_outlined, 'Copy', () => _run(widget.onCopy)),
+              _actionButton(Icons.delete_outline, 'Delete', () => _run(widget.onDelete)),
+              _actionButton(Icons.share_outlined, 'Share', () => _run(widget.onShare)),
+              _actionButton(Icons.more_vert, 'More', _more),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _actionButton(IconData icon, String label, VoidCallback onPressed) =>
+      TextButton(
+        onPressed: _busy || _selected.isEmpty ? null : onPressed,
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Icon(icon),
+          Text(label, style: const TextStyle(fontSize: 11)),
+        ]),
+      );
+}
+
+class _PhoneRecentSelectionScreen extends StatefulWidget {
+  const _PhoneRecentSelectionScreen({
+    required this.items,
+    required this.initialUri,
+    required this.onOpen,
+    required this.onShare,
+    required this.onDelete,
+  });
+
+  final List<Map<String, Object?>> items;
+  final String initialUri;
+  final Future<void> Function(Map<String, Object?>) onOpen;
+  final Future<void> Function(List<Map<String, Object?>>) onShare;
+  final Future<void> Function(List<Map<String, Object?>>) onDelete;
+
+  @override
+  State<_PhoneRecentSelectionScreen> createState() => _PhoneRecentSelectionScreenState();
+}
+
+class _PhoneRecentSelectionScreenState extends State<_PhoneRecentSelectionScreen> {
+  late final Set<String> _selected = {widget.initialUri};
+  bool _busy = false;
+
+  List<Map<String, Object?>> get _chosen => widget.items
+      .where((item) => _selected.contains(item['uri']))
+      .toList(growable: false);
+
+  Future<void> _run(Future<void> Function(List<Map<String, Object?>>) action) async {
+    if (_busy || _chosen.isEmpty) return;
+    setState(() => _busy = true);
+    try {
+      await action(_chosen);
+      if (mounted) Navigator.of(context).pop();
+    } catch (error) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Action failed: $error')),
+      );
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(
+      title: Text('${_selected.length} selected'),
+      leading: IconButton(
+        icon: const Icon(Icons.close),
+        onPressed: () => Navigator.of(context).pop(),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => setState(() {
+            if (_selected.length == widget.items.length) {
+              _selected.clear();
+            } else {
+              _selected.addAll(widget.items.map((item) => item['uri'] as String));
+            }
+          }),
+          child: const Text('Select all'),
+        ),
+      ],
+    ),
+    body: ListView.separated(
+      itemCount: widget.items.length,
+      separatorBuilder: (_, _) => const Divider(height: 1),
+      itemBuilder: (context, index) {
+        final item = widget.items[index];
+        final uri = item['uri'] as String;
+        return CheckboxListTile(
+          value: _selected.contains(uri),
+          onChanged: (value) => setState(() {
+            if (value == true) { _selected.add(uri); } else { _selected.remove(uri); }
+          }),
+          title: Text(item['name'] as String? ?? 'PDF'),
+          subtitle: Text('Phone · ${item['openedAt'] ?? ''}'),
+          secondary: const Icon(Icons.picture_as_pdf_outlined),
+        );
+      },
+    ),
+    bottomNavigationBar: SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceAround,
+          children: [
+            TextButton.icon(onPressed: _busy ? null : () => _messageDisabled(),
+              icon: const Icon(Icons.drive_file_move_outline), label: const Text('Move')),
+            TextButton.icon(onPressed: _busy ? null : () => _messageDisabled(),
+              icon: const Icon(Icons.copy_outlined), label: const Text('Copy')),
+            TextButton.icon(onPressed: _busy ? null : () => _run(widget.onDelete),
+              icon: const Icon(Icons.delete_outline), label: const Text('Delete')),
+            TextButton.icon(onPressed: _busy ? null : () => _run(widget.onShare),
+              icon: const Icon(Icons.share_outlined), label: const Text('Share')),
+            PopupMenuButton<String>(
+              tooltip: 'More actions',
+              onSelected: (value) { if (value == 'rename') _messageDisabled(); },
+              itemBuilder: (_) => const [
+                PopupMenuItem(value: 'rename', child: Text('Rename')),
+              ],
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+
+  void _messageDisabled() {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Use the Phone folder browser for file-management actions.')),
+    );
+  }
+}
+
+
+
+
