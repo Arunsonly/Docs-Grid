@@ -8,6 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'features/documents/presentation/documents_screen.dart';
 import 'features/documents/data/document_repository.dart';
+import 'features/documents/presentation/smart_collections_screen.dart';
 import 'features/categories/presentation/categories_screen.dart';
 import 'features/history/presentation/history_screen.dart';
 import 'features/reminders/presentation/reminders_screen.dart';
@@ -712,6 +713,16 @@ class _SettingsScreenState extends State<_SettingsScreen> {
             title: const Text('Reminder', style: TextStyle(fontWeight: FontWeight.w600)),
             trailing: const Icon(Icons.chevron_right),
             onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const RemindersScreen())),
+          ),
+          mutedDivider,
+          ListTile(
+            leading: const Icon(Icons.auto_awesome_outlined),
+            title: const Text('Smart Collections', style: TextStyle(fontWeight: FontWeight.w600)),
+            subtitle: const Text('Saved filters for categories, tags, starred and recent PDFs'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.of(context).push(MaterialPageRoute(
+              builder: (_) => const SmartCollectionsScreen(),
+            )),
           ),
           mutedDivider,
           ListTile(
