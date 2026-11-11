@@ -635,6 +635,18 @@ class MainActivity : FlutterActivity() {
                                 val name = call.argument<String>("name")!!
                                 result.success((if (parent.scheme == "file") copyFilePdf(source, parent, name) else copyPdf(source, parent, name)).toString())
                             }
+                            "copyFileToStorage" -> {
+                                val sourcePath = call.argument<String>("sourcePath")!!
+                                val parent = Uri.parse(call.argument<String>("parentUri")!!)
+                                val name = call.argument<String>("name")!!
+                                val mimeType = call.argument<String>("mimeType") ?: "application/octet-stream"
+                                result.success(copyPrivateFileToStorage(sourcePath, parent, name, mimeType).toString())
+                            }
+                            "copyStorageFileToPath" -> {
+                                val source = Uri.parse(call.argument<String>("sourceUri")!!)
+                                val destinationPath = call.argument<String>("destinationPath")!!
+                                result.success(copyStorageFileToPrivatePath(source, destinationPath))
+                            }
                             "copyPdfToPath" -> {
                                 val source = Uri.parse(call.argument<String>("sourceUri")!!)
                                 val destinationPath = call.argument<String>("destinationPath")!!
@@ -1176,6 +1188,129 @@ class MainActivity : FlutterActivity() {
             fileForUri(uri, allowAppPrivate = allowAppPrivateFile).inputStream()
         } else {
             contentResolver.openInputStream(uri)
+        }
+    }
+
+    private fun isInsideAppPrivateStorage(file: java.io.File): Boolean {
+        val canonical = file.canonicalFile
+        val separator = java.io.File.separator
+        return appPrivateStorageRoots().any { root ->
+            canonical.path == root.path || canonical.path.startsWith(root.path + separator)
+        }
+    }
+
+    private fun fileSha256(file: java.io.File): ByteArray {
+        val md = MessageDigest.getInstance("SHA-256")
+        file.inputStream().buffered().use { input ->
+            val buffer = ByteArray(64 * 1024)
+            while (true) {
+                val count = input.read(buffer)
+                if (count < 0) break
+                md.update(buffer, 0, count)
+            }
+        }
+        return md.digest()
+    }
+
+    /// Copies an app-private staged archive to selected SAF storage and verifies it
+    /// before publishing the final name.
+    private fun copyPrivateFileToStorage(
+        sourcePath: String,
+        parentUri: Uri,
+        name: String,
+        mimeType: String
+    ): Uri {
+        validateLeafName(name)
+        val source = java.io.File(sourcePath).canonicalFile
+        if (!source.isFile || !isInsideAppPrivateStorage(source)) {
+            throw SecurityException("DocsGrid can only publish an app-staged file to selected storage.")
+        }
+        if (parentUri.scheme == "file") {
+            val directory = fileForUri(parentUri)
+            if (!directory.isDirectory) throw IllegalStateException("The selected destination is not a folder.")
+            val destination = java.io.File(directory, name)
+            if (destination.exists()) throw IllegalStateException("A file with this name already exists.")
+            val temporary = java.io.File(directory, ".$name.tmp-${java.util.UUID.randomUUID()}")
+            try {
+                source.inputStream().buffered().use { input ->
+                    temporary.outputStream().buffered().use { output ->
+                        input.copyTo(output, 64 * 1024)
+                        output.flush()
+                    }
+                }
+                if (!fileSha256(source).contentEquals(fileSha256(temporary))) {
+                    throw IllegalStateException("Backup copy failed SHA-256 verification.")
+                }
+                if (destination.exists() || !temporary.renameTo(destination)) {
+                    throw IllegalStateException("Could not safely publish the copied file.")
+                }
+                return Uri.fromFile(destination)
+            } finally {
+                if (temporary.exists()) temporary.delete()
+            }
+        }
+
+        val parent = resolveParentUri(parentUri)
+        val temporaryName = ".$name.tmp-${java.util.UUID.randomUUID()}"
+        val temporary = DocumentsContract.createDocument(
+            contentResolver, parent, mimeType, temporaryName
+        ) ?: throw IllegalStateException("Could not create a temporary file in the selected folder.")
+        var published = false
+        try {
+            source.inputStream().buffered().use { input ->
+                contentResolver.openOutputStream(temporary, "w")?.buffered()?.use { output ->
+                    input.copyTo(output, 64 * 1024)
+                    output.flush()
+                } ?: throw IllegalStateException("Could not write the selected-storage file.")
+            }
+            if (!fileSha256(source).contentEquals(digest(temporary))) {
+                throw IllegalStateException("Selected-storage copy failed SHA-256 verification.")
+            }
+            val finalUri = DocumentsContract.renameDocument(
+                contentResolver, temporary, name
+            ) ?: throw IllegalStateException("Could not publish the verified file in the selected folder.")
+            published = true
+            return finalUri
+        } finally {
+            if (!published) {
+                try { DocumentsContract.deleteDocument(contentResolver, temporary) }
+                catch (_: Exception) {}
+            }
+        }
+    }
+
+    /// Stages a selected SAF file into app-private storage for ZIP validation.
+    private fun copyStorageFileToPrivatePath(sourceUri: Uri, destinationPath: String): Boolean {
+        val destination = java.io.File(destinationPath).canonicalFile
+        val parent = destination.parentFile
+            ?: throw IllegalArgumentException("Destination path is invalid.")
+        if (!isInsideAppPrivateStorage(parent)) {
+            throw SecurityException("DocsGrid can only stage selected files inside its private storage.")
+        }
+        if (!parent.exists() && !parent.mkdirs()) {
+            throw IllegalStateException("Could not create the temporary staging folder.")
+        }
+        if (destination.exists()) {
+            throw IllegalStateException("The temporary staging file already exists.")
+        }
+        val temporary = java.io.File(parent, ".docsgrid-stage-${java.util.UUID.randomUUID()}.tmp")
+        try {
+            val sourceDigest = digest(sourceUri)
+            contentResolver.openInputStream(sourceUri)?.buffered()?.use { input ->
+                temporary.outputStream().buffered().use { output ->
+                    input.copyTo(output, 64 * 1024)
+                    output.flush()
+                }
+            } ?: throw IllegalStateException("Could not read the selected storage file.")
+            if (!sourceDigest.contentEquals(fileSha256(temporary))) {
+                throw IllegalStateException("The staged file failed SHA-256 verification.")
+            }
+            if (destination.exists() || !temporary.renameTo(destination)) {
+                throw IllegalStateException("Could not safely publish the staged file.")
+            }
+            return true
+        } finally {
+            if (temporary.exists()) temporary.delete()
         }
     }
 
