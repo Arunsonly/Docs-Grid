@@ -671,10 +671,21 @@ class DocumentToolsService {
   Future<File> createBackup({
     void Function(int, int)? onProgress,
     bool includePdfs = true,
+    bool backgroundSafe = false,
   }) async {
+    final storage = StorageLocationService.instance;
     final portableLocations = Platform.isAndroid
-        ? await StorageLocationService.instance.portableDataLocationsIfAvailable()
+        ? (backgroundSafe
+            ? await storage.cachedPortableDataLocations()
+            : await storage.portableDataLocationsIfAvailable())
         : const <String, String>{};
+    if (backgroundSafe &&
+        (portableLocations['backupsUri'] == null ||
+            portableLocations['tempUri'] == null)) {
+      throw StateError(
+        'Background backup skipped: portable file locations have not been cached by a foreground storage setup.',
+      );
+    }
     final db = await _database.database;
     final databaseSchemaVersion =
         Sqflite.firstIntValue(await db.rawQuery('PRAGMA user_version')) ?? 3;
@@ -697,11 +708,13 @@ class DocumentToolsService {
     final directory = await getApplicationDocumentsDirectory();
     // Android portable backups must survive app uninstall. Keep the live DB
     // private, but publish completed archives under Android/media/com.docsgrid.
-    final portableBackupsUri = portableLocations['backupsUri'];
+    final portableBackupsUri = includePdfs
+        ? (portableLocations['fullBackupsUri'] ?? portableLocations['backupsUri'])
+        : (portableLocations['databaseBackupsUri'] ?? portableLocations['backupsUri']);
     final backups = Directory(
       portableBackupsUri != null && portableBackupsUri.startsWith('file://')
           ? Uri.parse(portableBackupsUri).toFilePath()
-          : p.join(directory.path, 'DocsGrid', 'Backups'),
+          : p.join(directory.path, 'DocsGrid', 'Backups', includePdfs ? 'Full' : 'Database'),
     );
     await backups.create(recursive: true);
     final temporaryUri = portableLocations['tempUri'];
@@ -817,6 +830,11 @@ class DocumentToolsService {
             File? stagedProviderFile;
             final File file;
             if (uri.startsWith('content://')) {
+              if (backgroundSafe) {
+                throw StateError(
+                  'Background full backup cannot read a SAF content URI in a headless worker. Open DocsGrid to create a verified foreground full backup.',
+                );
+              }
               stagedProviderFile = File(p.join(staging.path, 'source_${_uuid.v4()}.pdf'));
               await StorageLocationService.instance.copyPdfToPath(
                 sourceUri: uri,
@@ -883,9 +901,14 @@ class DocumentToolsService {
         : const <String, String>{};
     final directories = <Directory>[];
     final uri = locations['backupsUri'];
-    if (uri != null && uri.startsWith('file://')) {
-      directories.add(Directory(Uri.parse(uri).toFilePath()));
-    } else {
+    final fullBackupsUri = locations['fullBackupsUri'];
+    final databaseBackupsUri = locations['databaseBackupsUri'];
+    for (final backupUri in [uri, fullBackupsUri, databaseBackupsUri]) {
+      if (backupUri != null && backupUri.startsWith('file://')) {
+        directories.add(Directory(Uri.parse(backupUri).toFilePath()));
+      }
+    }
+    if (directories.isEmpty) {
       directories.add(Directory(
         p.join((await getApplicationDocumentsDirectory()).path, 'DocsGrid', 'Backups'),
       ));
@@ -1581,8 +1604,12 @@ class DocumentToolsService {
   /// DocsGrid/System/Database folder. PDF bytes remain in the library folder;
   /// documents.json retains their relative paths and SHA-256 values.
   Future<String> createPortableMetadataSnapshot() async {
-    final locations = await StorageLocationService.instance.portableDataLocations();
+    final locations = await StorageLocationService.instance.portableDataLocationsIfAvailable();
+    if (locations['databaseUri'] == null) {
+      throw StateError('Portable Database folder is not available. Enable storage access or select an existing recovery tree.');
+    }
     final db = await _database.database;
+    final capturedRevision = await _database.portableSnapshotRevision();
     // Export only durable app data. FTS virtual/shadow tables and summary
     // cache tables are derived state and must not invalidate recovery snapshots.
     final tableNames = PortableSnapshotManifest.supportedTableNames;
@@ -1626,6 +1653,7 @@ class DocumentToolsService {
         'databaseSchemaVersion': (await db.rawQuery('PRAGMA user_version')).first.values.first,
         'snapshotId': _uuid.v4(),
         'createdAtUtc': DateTime.now().toUtc().toIso8601String(),
+        'portableDataRevision': capturedRevision,
         'app': 'DocsGrid',
         'tables': recordCounts,
         'files': fileRecords,
@@ -1638,6 +1666,12 @@ class DocumentToolsService {
         parentUri: snapshotUri,
         name: 'manifest.json',
         contents: jsonEncode(manifest),
+      );
+      // If any durable record changed during export, the revision mismatch
+      // deliberately leaves the snapshot dirty for the next coalesced pass.
+      await _database.markPortableSnapshotClean(
+        capturedRevision: capturedRevision,
+        snapshotName: snapshotName,
       );
       return snapshotName;
     } catch (_) {
