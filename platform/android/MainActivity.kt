@@ -22,7 +22,9 @@ import java.util.concurrent.TimeUnit
 private class MissingStorageChildException(message: String) : IllegalStateException(message)
 
 class MainActivity : FlutterActivity() {
-    private val storageExecutor = ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS, ArrayBlockingQueue<Runnable>(64))
+    // Storage providers may perform a remote query for every directory.
+    // A small bounded pool keeps scans responsive without creating unbounded IO.
+    private val storageExecutor = ThreadPoolExecutor(4, 4, 0L, TimeUnit.MILLISECONDS, ArrayBlockingQueue<Runnable>(64))
     private val mainHandler = Handler(Looper.getMainLooper())
     private val channelName = "docsgrid/storage"
     private val requestChooseFolder = 4817

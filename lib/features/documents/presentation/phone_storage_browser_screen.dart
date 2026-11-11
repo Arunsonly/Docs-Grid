@@ -11,6 +11,9 @@ class PhoneStorageBrowserScreen extends StatefulWidget {
     this.onSharePdf,
     this.onTrashPdf,
     this.initialPath = '',
+    this.embedded = false,
+    this.isLoading = false,
+    this.onRefresh,
   });
 
   final String rootName;
@@ -21,6 +24,9 @@ class PhoneStorageBrowserScreen extends StatefulWidget {
   final Future<void> Function(String uri, String name)? onSharePdf;
   final Future<bool> Function(String uri, String name)? onTrashPdf;
   final String initialPath;
+  final bool embedded;
+  final bool isLoading;
+  final Future<void> Function()? onRefresh;
 
   @override
   State<PhoneStorageBrowserScreen> createState() =>
@@ -29,6 +35,21 @@ class PhoneStorageBrowserScreen extends StatefulWidget {
 
 class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
   String? _selectedFolderPath;
+  late final TextEditingController _searchController;
+
+  @override
+  void initState() {
+    super.initState();
+    _searchController = TextEditingController();
+    _selectedFolderPath =
+        widget.initialPath.isEmpty ? null : _normalizePath(widget.initialPath);
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
 
   String _normalizePath(String value) {
     final separator = String.fromCharCode(92);
@@ -40,13 +61,25 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
   }
 
   String _normalizedFolderPath(Map<String, Object?> entry) {
-    // Some storage providers include folderPath as an empty string even when
-    // path contains the actual parent directory. Treat blank as missing.
     final folderPath = entry['folderPath'];
     final path = entry['path'];
     final rawValue = folderPath is String && folderPath.trim().isNotEmpty
         ? folderPath
         : path ?? folderPath ?? '';
+    if (rawValue is! String) return '';
+    final raw = _normalizePath(rawValue);
+    final root = _normalizePath(widget.rootName);
+    if (raw.toLowerCase() == root.toLowerCase()) return '';
+    if (raw.length > root.length &&
+        raw.substring(0, root.length).toLowerCase() == root.toLowerCase() &&
+        raw[root.length] == '/') {
+      return raw.substring(root.length + 1);
+    }
+    return raw;
+  }
+
+  String _normalizedDirectoryPath(Map<String, Object?> entry) {
+    final rawValue = entry['path'];
     if (rawValue is! String) return '';
     final raw = _normalizePath(rawValue);
     final root = _normalizePath(widget.rootName);
@@ -79,10 +112,24 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
   Map<String, List<Map<String, Object?>>> get _directPdfFolders {
     final grouped = <String, List<Map<String, Object?>>>{};
     for (final pdf in _pdfs) {
-      final path = _normalizedFolderPath(pdf);
-      // PDFs located directly in the storage root are not folders.
-      if (path.isEmpty) continue;
+      final rawPath = _normalizedFolderPath(pdf);
+      // Files directly under the storage root belong in a virtual Internal
+      // folder instead of being silently omitted.
+      final path = rawPath.isEmpty ? 'Internal' : rawPath;
       (grouped[path] ??= <Map<String, Object?>>[]).add(pdf);
+    }
+    for (final entry in widget.entries) {
+      if (entry['isDirectory'] != true ||
+          entry['isInaccessible'] == true ||
+          entry['isInaccessibleSummary'] == true) {
+        continue;
+      }
+      final path = _normalizedDirectoryPath(entry);
+      if (path.isEmpty) continue;
+      final count = (entry['pdfCount'] as num?)?.toInt() ?? 0;
+      if (count > 0 || entry['isPending'] == true) {
+        grouped.putIfAbsent(path, () => <Map<String, Object?>>[]);
+      }
     }
     final sorted = grouped.keys.toList()
       ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
@@ -93,6 +140,16 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
               .toLowerCase()
               .compareTo((b['name'] as String).toLowerCase())),
     };
+  }
+
+  Map<String, Object?>? _directoryFor(String path) {
+    for (final entry in widget.entries) {
+      if (entry['isDirectory'] == true &&
+          _normalizedDirectoryPath(entry) == path) {
+        return entry;
+      }
+    }
+    return null;
   }
 
   String _folderName(String path) => path.split('/').last;
@@ -125,17 +182,274 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
     } else if (action == 'trash') {
       sourceChanged = await widget.onTrashPdf?.call(uri, name) ?? false;
     }
-    if (sourceChanged && mounted) Navigator.of(context).pop();
+    if (!sourceChanged || !mounted) return;
+    if (widget.embedded) {
+      setState(() => _selectedFolderPath = null);
+      await widget.onRefresh?.call();
+    } else {
+      Navigator.of(context).pop();
+    }
   }
 
-  @override
-  Widget build(BuildContext context) {
+  Widget _buildSearchField() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+      child: TextField(
+        controller: _searchController,
+        onChanged: (_) => setState(() {}),
+        decoration: InputDecoration(
+          hintText: 'Search phone folders or PDF names',
+          prefixIcon: const Icon(Icons.search),
+          suffixIcon: _searchController.text.isEmpty
+              ? null
+              : IconButton(
+                  tooltip: 'Clear search',
+                  onPressed: () {
+                    _searchController.clear();
+                    setState(() {});
+                  },
+                  icon: const Icon(Icons.close),
+                ),
+          filled: true,
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(18),
+            borderSide: BorderSide.none,
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildFolderTile(String path, List<Map<String, Object?>> files) {
+    final directory = _directoryFor(path);
+    final bytes = (directory?['sizeBytes'] as num?)?.toInt() ??
+        files.fold<int>(
+          0,
+          (sum, file) => sum + ((file['sizeBytes'] as num?)?.toInt() ?? 0),
+        );
+    final count = (directory?['pdfCount'] as num?)?.toInt() ?? files.length;
+    return ListTile(
+      key: ValueKey('phone-folder-$path'),
+      leading: const Icon(Icons.folder_outlined),
+      title: Text(
+        _folderName(path),
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+      ),
+      subtitle: Text('$count PDFs · ${_formatSize(bytes)}'),
+      onTap: () => setState(() => _selectedFolderPath = path),
+      trailing: PopupMenuButton<String>(
+        tooltip: 'Folder details and actions',
+        onSelected: (value) {
+          if (value == 'open') setState(() => _selectedFolderPath = path);
+        },
+        itemBuilder: (_) => [
+          PopupMenuItem<String>(
+            enabled: false,
+            child: SizedBox(
+              width: 240,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(_folderName(path),
+                      style: const TextStyle(fontWeight: FontWeight.w700)),
+                  const SizedBox(height: 4),
+                  Text(
+                    _displayPath(path),
+                    style: Theme.of(context).textTheme.bodySmall,
+                    softWrap: true,
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const PopupMenuDivider(),
+          const PopupMenuItem(value: 'open', child: Text('Open folder')),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPdfTile(
+    Map<String, Object?> entry, {
+    required String subtitle,
+  }) {
+    return ListTile(
+      leading: const Icon(Icons.picture_as_pdf_outlined),
+      title: Text(
+        entry['name'] as String,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+      ),
+      subtitle: Text(subtitle, maxLines: 1, overflow: TextOverflow.ellipsis),
+      trailing: PopupMenuButton<String>(
+        onSelected: (action) => _runPdfAction(action, entry),
+        itemBuilder: (_) => [
+          if (widget.onMovePdf != null)
+            const PopupMenuItem(value: 'move', child: Text('Move to Grid')),
+          if (widget.onRenamePdf != null)
+            const PopupMenuItem(value: 'rename', child: Text('Rename')),
+          if (widget.onSharePdf != null)
+            const PopupMenuItem(value: 'share', child: Text('Share')),
+          if (widget.onTrashPdf != null)
+            const PopupMenuItem(
+              value: 'trash',
+              child: Text('Move to Recycle Bin'),
+            ),
+        ],
+      ),
+      onTap: () => widget.onOpenPdf(
+        entry['uri'] as String,
+        entry['name'] as String,
+      ),
+    );
+  }
+
+  Widget _buildBrowserContent() {
     final folders = _directPdfFolders;
     final selectedPath = _selectedFolderPath;
     final selectedFiles = selectedPath == null
         ? const <Map<String, Object?>>[]
-        : folders[selectedPath] ?? const [];
+        : folders[selectedPath] ?? const <Map<String, Object?>>[];
+    final query = _searchController.text.trim().toLowerCase();
+    final folderPaths = folders.keys
+        .where((path) =>
+            selectedPath != null || query.isEmpty || path.toLowerCase().contains(query))
+        .toList(growable: false);
+    final matchingPdfs = _pdfs.where((entry) {
+      final name = (entry['name'] as String).toLowerCase();
+      final folderPath = _normalizedFolderPath(entry).toLowerCase();
+      final matchesQuery =
+          query.isEmpty || name.contains(query) || folderPath.contains(query);
+      return matchesQuery &&
+          (selectedPath == null ||
+              (folderPath.isEmpty ? 'Internal' : folderPath) == selectedPath);
+    }).toList(growable: false);
 
+    final isSearching = query.isNotEmpty;
+    final children = <Widget>[];
+    if (selectedPath == null) {
+      if (folderPaths.isNotEmpty) {
+        children.add(
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+            child: Text('FOLDERS',
+                style: Theme.of(context).textTheme.labelLarge),
+          ),
+        );
+        for (final path in folderPaths) {
+          children.add(_buildFolderTile(path, folders[path]!));
+        }
+      }
+      if (isSearching && matchingPdfs.isNotEmpty) {
+        children.add(
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
+            child: Text('PDF FILES',
+                style: Theme.of(context).textTheme.labelLarge),
+          ),
+        );
+        for (final entry in matchingPdfs) {
+          final path = _normalizedFolderPath(entry);
+          children.add(_buildPdfTile(
+            entry,
+            subtitle: path.isEmpty ? 'Internal' : _displayPath(path),
+          ));
+        }
+      }
+      if (children.isEmpty) {
+        children.add(
+          Padding(
+            padding: const EdgeInsets.all(28),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  isSearching
+                      ? 'No matching folders or PDFs.'
+                      : widget.isLoading
+                          ? 'Reading Phone storage…'
+                          : 'No PDF folders found. Pull down to refresh.',
+                  textAlign: TextAlign.center,
+                ),
+                if (!widget.isLoading && widget.entries.isEmpty &&
+                    widget.onRefresh != null) ...[
+                  const SizedBox(height: 12),
+                  FilledButton.icon(
+                    onPressed: widget.onRefresh,
+                    icon: const Icon(Icons.folder_open_outlined),
+                    label: const Text('Open Phone storage'),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        );
+      }
+    } else {
+      final visibleFiles = isSearching
+          ? selectedFiles.where((entry) {
+              final name = (entry['name'] as String).toLowerCase();
+              return name.contains(query);
+            }).toList(growable: false)
+          : selectedFiles;
+      if (visibleFiles.isEmpty) {
+        children.add(
+          Padding(
+            padding: const EdgeInsets.all(28),
+            child: Center(
+              child: Text(
+                widget.isLoading
+                    ? 'Scanning this folder…'
+                    : isSearching
+                        ? 'No matching PDFs in this folder.'
+                        : 'No PDF files in this folder.',
+              ),
+            ),
+          ),
+        );
+      } else {
+        for (final entry in visibleFiles) {
+          children.add(_buildPdfTile(entry, subtitle: 'PDF document'));
+        }
+      }
+    }
+
+    return Column(
+      children: [
+        _buildSearchField(),
+        if (widget.isLoading) const LinearProgressIndicator(minHeight: 2),
+        Expanded(
+          child: RefreshIndicator(
+            onRefresh: widget.onRefresh ?? () async {},
+            child: ListView(
+              physics: const AlwaysScrollableScrollPhysics(),
+              children: children,
+            ),
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: Text(
+              selectedPath == null
+                  ? '${folderPaths.length} folders · ${matchingPdfs.length} PDFs'
+                  : '${matchingPdfs.length} PDFs',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (widget.embedded) return _buildBrowserContent();
+
+    final selectedPath = _selectedFolderPath;
     return Scaffold(
       appBar: AppBar(
         leading: selectedPath == null
@@ -150,127 +464,15 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
         ),
-      ),
-      body: Column(
-        children: [
-          Expanded(
-            child: selectedPath == null
-          ? folders.isEmpty
-              ? const Center(child: Text('No folders with direct PDF files.'))
-              : ListView.builder(
-                  itemCount: folders.length,
-                  itemBuilder: (context, index) {
-                    final path = folders.keys.elementAt(index);
-                    final files = folders[path]!;
-                    final bytes = files.fold<int>(
-                      0,
-                      (sum, file) =>
-                          sum + ((file['sizeBytes'] as num?)?.toInt() ?? 0),
-                    );
-                    return ListTile(
-                      key: ValueKey('phone-folder-$path'),
-                      leading: const Icon(Icons.folder_outlined),
-                      title: Text(
-                        _folderName(path),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                      subtitle: Text(
-                        '${files.length} PDFs · ${_formatSize(bytes)}',
-                      ),
-                      onTap: () =>
-                          setState(() => _selectedFolderPath = path),
-                      trailing: PopupMenuButton<String>(
-                        tooltip: 'Folder details and actions',
-                        onSelected: (value) {
-                          if (value == 'open') {
-                            setState(() => _selectedFolderPath = path);
-                          }
-                        },
-                        itemBuilder: (_) => [
-                          PopupMenuItem<String>(
-                            enabled: false,
-                            child: SizedBox(
-                              width: 240,
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Text(
-                                    _folderName(path),
-                                    style: const TextStyle(
-                                      fontWeight: FontWeight.w700,
-                                    ),
-                                  ),
-                                  const SizedBox(height: 4),
-                                  Text(
-                                    _displayPath(path),
-                                    style: Theme.of(context).textTheme.bodySmall,
-                                    softWrap: true,
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                          const PopupMenuDivider(),
-                          const PopupMenuItem(
-                            value: 'open',
-                            child: Text('Open folder'),
-                          ),
-                        ],
-                      ),
-                    );
-                  },
-                )
-          : selectedFiles.isEmpty
-              ? const Center(child: Text('No PDF files in this folder.'))
-              : ListView.builder(
-                  itemCount: selectedFiles.length,
-                  itemBuilder: (context, index) {
-                    final entry = selectedFiles[index];
-                    return ListTile(
-                      leading: const Icon(Icons.picture_as_pdf_outlined),
-                      title: Text(
-                        entry['name'] as String,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                      subtitle: const Text('PDF document'),
-                      trailing: PopupMenuButton<String>(
-                        onSelected: (action) => _runPdfAction(action, entry),
-                        itemBuilder: (_) => [
-                          if (widget.onMovePdf != null)
-                            const PopupMenuItem(value: 'move', child: Text('Move to Grid')),
-                          if (widget.onRenamePdf != null)
-                            const PopupMenuItem(value: 'rename', child: Text('Rename')),
-                          if (widget.onSharePdf != null)
-                            const PopupMenuItem(value: 'share', child: Text('Share')),
-                          if (widget.onTrashPdf != null)
-                            const PopupMenuItem(value: 'trash', child: Text('Move to Recycle Bin')),
-                        ],
-                      ),
-                      onTap: () => widget.onOpenPdf(
-                        entry['uri'] as String,
-                        entry['name'] as String,
-                      ),
-                    );
-                  },
-                ),
-          ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
-            child: Align(
-              alignment: Alignment.centerLeft,
-              child: Text(
-                selectedPath == null
-                    ? '${folders.length} folders'
-                    : '${selectedFiles.length} PDFs',
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
-            ),
+        actions: [
+          IconButton(
+            tooltip: 'Refresh Phone storage',
+            onPressed: widget.onRefresh,
+            icon: const Icon(Icons.refresh),
           ),
         ],
       ),
+      body: _buildBrowserContent(),
     );
   }
 }

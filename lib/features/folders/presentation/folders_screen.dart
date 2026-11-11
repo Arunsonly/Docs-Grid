@@ -50,7 +50,11 @@ class _FoldersScreenState extends State<FoldersScreen> {
 
   void _load() {
     _foldersFuture = _repository.childrenOf(_currentFolderId);
-    _documentsFuture = _documents.listInFolder(_currentFolderId);
+    final query = _searchQuery.trim();
+    // Grid search is library-wide, not limited to the currently open folder.
+    _documentsFuture = query.isEmpty
+        ? _documents.listInFolder(_currentFolderId)
+        : _documents.list(query: query);
   }
 
   Future<void> _refresh() async {
@@ -471,6 +475,7 @@ class _FoldersScreenState extends State<FoldersScreen> {
     setState(() {
       _searchController.clear();
       _searchQuery = '';
+      _documentsFuture = _documents.listInFolder(_currentFolderId);
       _isReorderingFolders = true;
       _draftFolderOrder = List<Folder>.from(visibleFolders);
     });
@@ -827,7 +832,13 @@ class _FoldersScreenState extends State<FoldersScreen> {
           padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
           child: TextField(
             controller: _searchController,
-            onChanged: (value) => setState(() => _searchQuery = value),
+            onChanged: (value) => setState(() {
+              _searchQuery = value;
+              final query = value.trim();
+              _documentsFuture = query.isEmpty
+                  ? _documents.listInFolder(_currentFolderId)
+                  : _documents.list(query: query);
+            }),
             decoration: InputDecoration(
               hintText: 'Search folders or PDF names',
               prefixIcon: const Icon(Icons.search),
@@ -1017,19 +1028,21 @@ class _FoldersScreenState extends State<FoldersScreen> {
                                     padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
                                     child: Row(
                                       children: [
-                                        SizedBox(
-                                          width: 40,
-                                          child: Checkbox(
-                                            value: isSelected,
-                                            onChanged: _isReorderingFolders
-                                                ? null
-                                                : (_) => _toggleFolderSelection(folder),
-                                            shape: RoundedRectangleBorder(
-                                              borderRadius: BorderRadius.circular(4),
+                                        if (_isSelectingFolders) ...[
+                                          SizedBox(
+                                            width: 40,
+                                            child: Checkbox(
+                                              value: isSelected,
+                                              onChanged: _isReorderingFolders
+                                                  ? null
+                                                  : (_) => _toggleFolderSelection(folder),
+                                              shape: RoundedRectangleBorder(
+                                                borderRadius: BorderRadius.circular(4),
+                                              ),
                                             ),
                                           ),
-                                        ),
-                                        const SizedBox(width: 10),
+                                          const SizedBox(width: 10),
+                                        ],
                                         Container(
                                           width: 56,
                                           height: 56,

@@ -366,53 +366,107 @@ class StorageLocationService {
   Future<List<Map<String, Object?>>> listStorageTreeRecursively(
     String rootUri, {int maxEntries = 50000, int maxDepth = 64,
     bool includeEmptyFolders = false, String rootLabel = ''}) async {
-    final pending = <({String uri, String path, int depth})>[(uri: rootUri, path: '', depth: 0)];
+    final pending = <({String uri, String path, int depth})>[
+      (uri: rootUri, path: '', depth: 0),
+    ];
     final visited = <String>{};
     final entries = <Map<String, Object?>>[];
     final counts = <String, int>{}, sizes = <String, int>{}, unknownSizes = <String, int>{};
     final withPdfs = <String>{}, allFolders = <String>{}, inaccessible = <String>[];
     final incompleteFolders = <String>{};
     var visitedEntries = 0;
+
+    // SAF providers can be slow. Read a bounded batch of directories in
+    // parallel instead of making one platform-channel round trip at a time.
+    const scanConcurrency = 4;
     while (pending.isNotEmpty) {
-      final current = pending.removeLast();
-      if (!visited.add(current.uri)) continue;
-      if (current.depth > maxDepth) throw StateError('Storage is nested too deeply to scan safely.');
-      List<Map<String, Object?>> children;
-      try { children = await listDirectory(current.uri); }
-      catch (error) {
-        if (current.depth == 0) rethrow;
-        inaccessible.add(current.path);
-        var incompletePath = current.path;
-        while (incompletePath.isNotEmpty) {
-          incompleteFolders.add(incompletePath);
-          final slash = incompletePath.lastIndexOf('/');
-          incompletePath = slash < 0 ? '' : incompletePath.substring(0, slash);
+      final batch = <({String uri, String path, int depth})>[];
+      while (pending.isNotEmpty && batch.length < scanConcurrency) {
+        final current = pending.removeLast();
+        if (visited.add(current.uri)) {
+          if (current.depth > maxDepth) {
+            throw StateError('Storage is nested too deeply to scan safely.');
+          }
+          batch.add(current);
         }
-        entries.add({'name': current.path.split('/').last, 'uri': current.uri,
-          'folderPath': current.path.contains('/') ? current.path.substring(0,current.path.lastIndexOf('/')) : '',
-          'path': current.path, 'isDirectory': true, 'isInaccessible': true, 'accessError': error.toString()});
-        continue;
       }
-      for (final child in children) {
-        if (++visitedEntries > maxEntries) throw StateError('Storage exceeds $maxEntries entries; scan stopped safely.');
-        final name = child['name'] as String, uri = child['uri'] as String;
-        if (child['isDirectory'] == true) {
-          final path = current.path.isEmpty ? name : '${current.path}/$name';
-          if (isExcludedStorageDirectoryPath(path)) continue;
-          allFolders.add(path);
-          if (path == 'Android/media/com.docsgrid' || path.startsWith('Android/media/com.docsgrid/')) continue;
-          pending.add((uri: uri, path: path, depth: current.depth + 1));
-        } else if (name.toLowerCase().endsWith('.pdf')) {
-          final size = (child['sizeBytes'] as num?)?.toInt() ?? (child['size'] as num?)?.toInt() ?? 0;
-          final sizeKnown = child['sizeKnown'] as bool? ?? true;
-          entries.add({'name': name, 'uri': uri, 'folderPath': current.path,
-            'sizeBytes': size < 0 ? 0 : size, 'sizeKnown': sizeKnown, 'isDirectory': false});
-          var ancestor = current.path;
-          while (ancestor.isNotEmpty) {
-            withPdfs.add(ancestor); counts[ancestor] = (counts[ancestor] ?? 0) + 1;
-            sizes[ancestor] = (sizes[ancestor] ?? 0) + (size < 0 ? 0 : size);
-            if (!sizeKnown) unknownSizes[ancestor] = (unknownSizes[ancestor] ?? 0) + 1;
-            final slash = ancestor.lastIndexOf('/'); ancestor = slash < 0 ? '' : ancestor.substring(0,slash);
+      if (batch.isEmpty) continue;
+
+      final readErrors = <String, Object>{};
+      final childLists = await Future.wait(batch.map((current) async {
+        try {
+          return await listDirectory(current.uri);
+        } catch (error) {
+          readErrors[current.uri] = error;
+          return null;
+        }
+      }));
+
+      for (var batchIndex = 0; batchIndex < batch.length; batchIndex++) {
+        final current = batch[batchIndex];
+        final children = childLists[batchIndex];
+        if (children == null) {
+          final error = readErrors[current.uri]!;
+          if (current.depth == 0) throw error;
+          inaccessible.add(current.path);
+          var incompletePath = current.path;
+          while (incompletePath.isNotEmpty) {
+            incompleteFolders.add(incompletePath);
+            final slash = incompletePath.lastIndexOf('/');
+            incompletePath = slash < 0 ? '' : incompletePath.substring(0, slash);
+          }
+          entries.add({
+            'name': current.path.split('/').last,
+            'uri': current.uri,
+            'folderPath': current.path.contains('/')
+                ? current.path.substring(0, current.path.lastIndexOf('/'))
+                : '',
+            'path': current.path,
+            'isDirectory': true,
+            'isInaccessible': true,
+            'accessError': error.toString(),
+          });
+          continue;
+        }
+
+        for (final child in children) {
+          if (++visitedEntries > maxEntries) {
+            throw StateError('Storage exceeds $maxEntries entries; scan stopped safely.');
+          }
+          final name = child['name'] as String;
+          final uri = child['uri'] as String;
+          if (child['isDirectory'] == true) {
+            final path = current.path.isEmpty ? name : '${current.path}/$name';
+            if (isExcludedStorageDirectoryPath(path)) continue;
+            allFolders.add(path);
+            if (path == 'Android/media/com.docsgrid' ||
+                path.startsWith('Android/media/com.docsgrid/')) {
+              continue;
+            }
+            pending.add((uri: uri, path: path, depth: current.depth + 1));
+          } else if (name.toLowerCase().endsWith('.pdf')) {
+            final size = (child['sizeBytes'] as num?)?.toInt() ??
+                (child['size'] as num?)?.toInt() ?? 0;
+            final sizeKnown = child['sizeKnown'] as bool? ?? true;
+            entries.add({
+              'name': name,
+              'uri': uri,
+              'folderPath': current.path,
+              'sizeBytes': size < 0 ? 0 : size,
+              'sizeKnown': sizeKnown,
+              'isDirectory': false,
+            });
+            var ancestor = current.path;
+            while (ancestor.isNotEmpty) {
+              withPdfs.add(ancestor);
+              counts[ancestor] = (counts[ancestor] ?? 0) + 1;
+              sizes[ancestor] = (sizes[ancestor] ?? 0) + (size < 0 ? 0 : size);
+              if (!sizeKnown) {
+                unknownSizes[ancestor] = (unknownSizes[ancestor] ?? 0) + 1;
+              }
+              final slash = ancestor.lastIndexOf('/');
+              ancestor = slash < 0 ? '' : ancestor.substring(0, slash);
+            }
           }
         }
       }

@@ -69,16 +69,19 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   @override
   void initState() {
     super.initState();
-    _load();
-    _loadViewPreference();
-    _loadTrashSummary();
-    _loadRecentDocuments();
+    if (!widget.phoneOnly) {
+      _load();
+      _loadViewPreference();
+      _loadTrashSummary();
+      _loadRecentDocuments();
+    }
     _search.addListener(_onSearchChanged);
     _scrollController.addListener(_onScroll);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       if (widget.phoneOnly) {
-        _scanPhoneStorage(openBrowser: true);
+        // Show the Phone tab in place; do not push a second page after scanning.
+        _scanPhoneStorage(openBrowser: false);
       } else if (!widget.favoritesOnly && !widget.recentOnly) {
         _scanPhoneStorage(openBrowser: false);
       }
@@ -278,8 +281,13 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   }
 
   Future<void> _browsePhoneStorage() async {
-    // Reuse the dashboard's completed scan. Opening this page must not walk
-    // the whole storage tree a second time.
+    // The Phone tab owns an inline browser. A refresh never navigates away.
+    if (widget.phoneOnly) {
+      await _scanPhoneStorage(openBrowser: true);
+      return;
+    }
+    // Reuse the dashboard's completed scan. Opening its detailed browser must
+    // not walk the whole storage tree a second time.
     if (_phoneScanCompleted) {
       await _showRecursiveStoragePdfs('Internal Storage', _phoneEntries);
       return;
@@ -311,30 +319,88 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
       final roots = await storage.accessibleStorageRoots();
       if (roots.isEmpty) {
         if (mounted) setState(() {
-              _phoneStorageBytes = null;
-            _phoneInaccessibleCount = 0;
-            _phoneScanIncomplete = false;
-            _phoneUnknownSizeCount = 0;
-              _phoneEntries = [];
-            _phoneScanCompleted = true;
-          });
+          _phoneStorageBytes = null;
+          _phoneInaccessibleCount = 0;
+          _phoneScanIncomplete = false;
+          _phoneUnknownSizeCount = 0;
+          _phoneEntries = [];
+          _phoneScanCompleted = true;
+        });
         return;
       }
-      final entries = <Map<String,Object?>>[], seen = <String>{};
-      var inaccessibleRoots=0;
-      for(final root in roots) {
+
+      // Fast first paint: query only each granted root's immediate children.
+      // The complete recursive scan continues afterward and replaces this
+      // provisional list without navigating to another route.
+      final firstLevelEntries = <Map<String, Object?>>[];
+      for (var index = 0; index < roots.length; index++) {
+        final root = roots[index];
+        final label = index == 0 ? 'Internal' : root['name']!;
         try {
-          final found=await storage.listStorageTreeRecursively(root['uri']!,
-            rootLabel:root['name']!, includeEmptyFolders:false);
-          for(final item in found) {
-            final uri=item['uri'] as String? ?? '';
-            if(item['isDirectory']!=true && uri.isNotEmpty && !seen.add(uri)) continue;
+          final children = await storage.listDirectory(root['uri']!);
+          for (final child in children) {
+            final name = child['name'] as String;
+            final isDirectory = child['isDirectory'] == true;
+            if (isDirectory) {
+              firstLevelEntries.add({
+                ...child,
+                'path': '$label/$name',
+                'folderPath': label,
+                'isPending': true,
+              });
+            } else if (name.toLowerCase().endsWith('.pdf')) {
+              firstLevelEntries.add({
+                ...child,
+                'path': label,
+                'folderPath': label,
+              });
+            }
+          }
+        } catch (error) {
+          firstLevelEntries.add({
+            'name': label,
+            'uri': root['uri']!,
+            'folderPath': '',
+            'path': label,
+            'isDirectory': true,
+            'isInaccessible': true,
+            'accessError': error.toString(),
+          });
+        }
+      }
+      if (!mounted) return;
+      setState(() => _phoneEntries = firstLevelEntries);
+
+      final entries = <Map<String, Object?>>[];
+      final seen = <String>{};
+      var inaccessibleRoots = 0;
+      for (var index = 0; index < roots.length; index++) {
+        final root = roots[index];
+        final label = index == 0 ? 'Internal' : root['name']!;
+        try {
+          final found = await storage.listStorageTreeRecursively(
+            root['uri']!,
+            rootLabel: label,
+            includeEmptyFolders: false,
+          );
+          for (final item in found) {
+            final uri = item['uri'] as String? ?? '';
+            if (item['isDirectory'] != true && uri.isNotEmpty && !seen.add(uri)) {
+              continue;
+            }
             entries.add(item);
           }
-        } catch(error) {
+        } catch (error) {
           inaccessibleRoots++;
-          entries.add({'name':root['name']!,'uri':root['uri']!,'folderPath':'',
-            'isDirectory':true,'isInaccessible':true,'accessError':error.toString()});
+          entries.add({
+            'name': label,
+            'uri': root['uri']!,
+            'folderPath': '',
+            'path': label,
+            'isDirectory': true,
+            'isInaccessible': true,
+            'accessError': error.toString(),
+          });
         }
       }
       final pdfs=entries.where((e)=>e['isDirectory']!=true).toList();
@@ -352,7 +418,9 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
         _phoneEntries=entries;
         _phoneScanCompleted = true;
       });
-      if(openBrowser) await _showRecursiveStoragePdfs('Internal Storage',entries);
+      if (openBrowser && !widget.phoneOnly) {
+        await _showRecursiveStoragePdfs('Internal Storage', entries);
+      }
       if(inaccessibleRoots>0 && mounted) _message('$inaccessibleRoots granted location(s) could not be read; they were not marked empty.');
     } catch(error) {
       if (mounted) {
@@ -1524,18 +1592,17 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   @override
   Widget build(BuildContext context) {
     if (widget.phoneOnly) {
-      return Center(
-        child: _phoneScanLoading
-            ? const Column(mainAxisSize: MainAxisSize.min, children: [
-                CircularProgressIndicator(),
-                SizedBox(height: 12),
-                Text('Loading Phone storage…'),
-              ])
-            : FilledButton.icon(
-                onPressed: _browsePhoneStorage,
-                icon: const Icon(Icons.folder_open_outlined),
-                label: const Text('Open Phone storage'),
-              ),
+      return PhoneStorageBrowserScreen(
+        rootName: 'Internal Storage',
+        entries: _phoneEntries,
+        onOpenPdf: _openExternalStoragePdf,
+        onMovePdf: _movePhonePdfToGrid,
+        onRenamePdf: _renamePhonePdf,
+        onSharePdf: _sharePhonePdf,
+        onTrashPdf: _trashPhonePdf,
+        embedded: true,
+        isLoading: _phoneScanLoading,
+        onRefresh: () => _scanPhoneStorage(openBrowser: true),
       );
     }
     return PopScope<void>(

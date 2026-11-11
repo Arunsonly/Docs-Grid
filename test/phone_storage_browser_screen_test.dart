@@ -43,6 +43,7 @@ void main() {
     expect(find.text('Empty Folder'), findsNothing);
     expect(find.text('Policy.pdf'), findsNothing);
     expect(find.text('Root.pdf'), findsNothing);
+    expect(find.text('Internal'), findsOneWidget);
 
     await tester.tap(find.byKey(const ValueKey('phone-folder-Work Files')));
     await tester.pumpAndSettle();
@@ -53,6 +54,58 @@ void main() {
     await tester.pumpAndSettle();
     expect(openedUri, 'content://policy');
     expect(openedName, 'Policy.pdf');
+
+    await tester.tap(find.byTooltip('Back to folders'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('phone-folder-Internal')));
+    await tester.pumpAndSettle();
+    expect(find.text('Root.pdf'), findsOneWidget);
+    await tester.tap(find.text('Root.pdf'));
+    await tester.pumpAndSettle();
+    expect(openedUri, 'content://root');
+  });
+
+  testWidgets('search finds PDFs across phone folders from the root view',
+      (tester) async {
+    setTestViewport(tester);
+    await tester.pumpWidget(MaterialApp(
+      home: PhoneStorageBrowserScreen(
+        rootName: 'Internal Storage',
+        entries: const [
+          {
+            'name': 'Policy-2026.pdf',
+            'uri': 'content://policy-2026',
+            'folderPath': 'Internal/Insurance',
+            'path': 'Internal/Insurance',
+            'isDirectory': false,
+          },
+          {
+            'name': 'Vehicle-Quote.pdf',
+            'uri': 'content://vehicle',
+            'folderPath': 'Internal/Motor',
+            'path': 'Internal/Motor',
+            'isDirectory': false,
+          },
+          {
+            'name': 'Insurance',
+            'uri': '',
+            'folderPath': 'Internal',
+            'path': 'Internal/Insurance',
+            'isDirectory': true,
+            'pdfCount': 1,
+          },
+        ],
+        onOpenPdf: (_, __) async {},
+      ),
+    ));
+
+    await tester.enterText(
+      find.byType(TextField),
+      'Policy-2026',
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Policy-2026.pdf'), findsOneWidget);
+    expect(find.text('Vehicle-Quote.pdf'), findsNothing);
   });
 
   testWidgets('folder menu shows folder name and full path above its action',
