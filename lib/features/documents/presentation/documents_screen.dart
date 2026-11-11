@@ -440,7 +440,6 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
 
   Future<void> _openPhoneRecentSelection(Map<String, Object?> first) async {
     final items = _phoneRecent;
-    final selected = <String>{first['uri'] as String};
     await Navigator.of(context).push<void>(MaterialPageRoute(
       builder: (_) => _PhoneRecentSelectionScreen(
         items: items,
@@ -2229,7 +2228,6 @@ class _RecentSelectionScreenState extends State<_RecentSelectionScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final selected = _selectedItems;
     return Scaffold(
       appBar: AppBar(
         title: Text('${_selected.length} selected'),
