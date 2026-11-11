@@ -353,6 +353,41 @@ class StorageLocationService {
 
   /// Writes a generic UTF-8 metadata file through the platform's granted
   /// folder handle. This intentionally does not use PDF-only storage APIs.
+  /// Publishes a private staged file into a user-selected shared folder.
+  /// Android streams and SHA-256 verifies the copy before the final name appears.
+  Future<String> copyFileToStorage({
+    required String sourcePath,
+    required String parentUri,
+    required String name,
+    String mimeType = 'application/octet-stream',
+  }) async {
+    final result = await _channel.invokeMethod<String>('copyFileToStorage', {
+      'sourcePath': sourcePath,
+      'parentUri': parentUri,
+      'name': name,
+      'mimeType': mimeType,
+    });
+    if (result == null) {
+      throw StateError('The platform did not return the published file location.');
+    }
+    return result;
+  }
+
+  /// Stages a selected provider file into app-private storage and verifies
+  /// its digest before Dart can parse or restore it.
+  Future<void> copyStorageFileToPath({
+    required String sourceUri,
+    required String destinationPath,
+  }) async {
+    final copied = await _channel.invokeMethod<bool>('copyStorageFileToPath', {
+      'sourceUri': sourceUri,
+      'destinationPath': destinationPath,
+    });
+    if (copied != true) {
+      throw StateError('The selected storage file could not be staged safely.');
+    }
+  }
+
   Future<String> writeTextFile({
     required String parentUri,
     required String name,

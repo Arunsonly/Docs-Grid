@@ -163,10 +163,7 @@ class BackupAutomation {
       final fullUri = locations['fullBackupsUri'] ?? locations['backupsUri'];
       // SAF-only trees can still use metadata snapshots and restore existing
       // PDFs in place, but ZIP publishing requires a file-backed destination.
-      if (databaseUri == null || !databaseUri.startsWith('file://') ||
-          fullUri == null || !fullUri.startsWith('file://')) {
-        return;
-      }
+      if (databaseUri == null || fullUri == null) return;
 
       final now = DateTime.now().toUtc();
       final daily = await readStatus(full: false);
