@@ -76,7 +76,6 @@ class StorageLocationService {
 
   /// Actual primary shared-storage occupancy reported by Android StatFs.
   Future<Map<String, int>> phoneStorageUsage() async {
-    if (!Platform.isAndroid) return const <String, int>{};
     final value = await _channel.invokeMapMethod<String, dynamic>('getStorageUsage');
     if (value == null || value['usedBytes'] is! num ||
         value['totalBytes'] is! num || value['availableBytes'] is! num) {

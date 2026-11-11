@@ -405,7 +405,7 @@ void main() {
     );
   });
 
-  test('recursive scan reports inaccessible nested folders instead of treating them as empty', () async {
+  test('recursive scan reports inaccessible nested folders without fabricating a root PDF folder', () async {
     messenger.setMockMethodCallHandler(channel, (call) async {
       final uri = call.arguments['uri'] as String;
       if (uri == 'content://root') {
@@ -430,7 +430,7 @@ void main() {
     expect(rows.where((row) => row['isDirectory'] != true).map((row) => row['uri']),
       contains('content://pdf'));
     expect(rows.singleWhere((row) => row['path'] == 'Phone Storage/Protected')['isInaccessible'], isTrue);
-    expect(rows.singleWhere((row) => row['path'] == 'Phone Storage')['isIncomplete'], isTrue);
+    expect(rows.where((row) => row['path'] == 'Phone Storage'), isEmpty);
   });
 
   test('root permission failure is propagated and is not reported as empty storage', () async {
@@ -456,7 +456,7 @@ void main() {
     expect(roots.last['name'], 'Granted folder');
   });
 
-  test('recursive scan hides empty folders and aggregates nested PDFs case-insensitively', () async {
+  test('recursive scan counts PDFs only in their direct folders case-insensitively', () async {
     final tree = <String, List<Map<String, Object?>>>{
       'content://root':[
         {'name':'Empty','uri':'content://empty','isDirectory':true,'sizeBytes':0},
@@ -478,11 +478,11 @@ void main() {
     expect(folders.map((r)=>r['path']),isNot(contains('Empty')));
     final parent=folders.singleWhere((r)=>r['path']=='Policies');
     final nested=folders.singleWhere((r)=>r['path']=='Policies/Nested');
-    expect(parent['pdfCount'],2); expect(parent['sizeBytes'],350);
+    expect(parent['pdfCount'],1); expect(parent['sizeBytes'],100);
     expect(nested['pdfCount'],1); expect(nested['sizeBytes'],250);
   });
 
-  test('recursive scan flags folder and root size totals when provider sizes are unavailable', () async {
+  test('recursive scan flags direct folder size totals when provider sizes are unavailable', () async {
     messenger.setMockMethodCallHandler(channel, (call) async {
       final uri = call.arguments['uri'] as String;
       if (uri == 'content://root') {
@@ -501,12 +501,11 @@ void main() {
       'content://root', rootLabel: 'Phone Storage',
     );
     final folder = rows.singleWhere((row) => row['path'] == 'Phone Storage/Policies');
-    final root = rows.singleWhere((row) => row['path'] == 'Phone Storage');
+    expect(rows.where((row) => row['path'] == 'Phone Storage'), isEmpty);
     expect(folder['pdfCount'], 2);
     expect(folder['sizeBytes'], 120);
     expect(folder['unknownSizeCount'], 1);
     expect(folder['isSizeIncomplete'], isTrue);
-    expect(root['unknownSizeCount'], 1);
-    expect(root['isSizeIncomplete'], isTrue);
+
   });
 }
