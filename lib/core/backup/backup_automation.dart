@@ -82,9 +82,14 @@ class BackupAutomation {
 
   static Future<void>? _initialization;
 
-  static Future<void> initializeAndroid() {
-    if (!Platform.isAndroid) return Future<void>.value();
-    return _initialization ??= _initializeAndroid();
+  static Future<void> initializeAndroid() async {
+    if (!Platform.isAndroid) return;
+    try {
+      await (_initialization ??= _initializeAndroid());
+    } catch (_) {
+      // Work scheduling is opportunistic and must never block app startup.
+      _initialization = null;
+    }
   }
 
   static Future<void> _initializeAndroid() async {
@@ -97,6 +102,10 @@ class BackupAutomation {
         docsGridDailyDatabaseBackupTask,
         docsGridDailyDatabaseBackupTask,
         frequency: const Duration(hours: 24),
+        constraints: Constraints(
+          requiresBatteryNotLow: true,
+          requiresStorageNotLow: true,
+        ),
       );
     }
     if (!await Workmanager().isScheduledByUniqueName(
@@ -106,6 +115,10 @@ class BackupAutomation {
         docsGridWeeklyFullBackupTask,
         docsGridWeeklyFullBackupTask,
         frequency: const Duration(days: 7),
+        constraints: Constraints(
+          requiresBatteryNotLow: true,
+          requiresStorageNotLow: true,
+        ),
       );
     }
   }
@@ -122,6 +135,21 @@ class BackupAutomation {
     } catch (_) {
       return const <String, Object?>{'status': 'unknown'};
     }
+  }
+
+  /// A failed/unsupported task is retried with backoff instead of repeating
+  /// a large archive on every Activity resume.
+  static bool isBackupDue({
+    required Map<String, Object?> status,
+    required DateTime now,
+    required Duration interval,
+    required Duration retryCooldown,
+  }) {
+    final completed = DateTime.tryParse(status['completedAtUtc'] as String? ?? '');
+    if (completed != null && now.difference(completed) < interval) return false;
+    final attempted = DateTime.tryParse(status['attemptedAtUtc'] as String? ?? '');
+    if (attempted != null && now.difference(attempted) < retryCooldown) return false;
+    return true;
   }
 
   /// Runs due backups while the Activity/native storage bridge is available.
@@ -142,20 +170,22 @@ class BackupAutomation {
 
       final now = DateTime.now().toUtc();
       final daily = await readStatus(full: false);
-      final dailySuccess = DateTime.tryParse(
-        daily['completedAtUtc'] as String? ?? '',
-      );
-      if (dailySuccess == null ||
-          now.difference(dailySuccess) >= const Duration(hours: 24)) {
+      if (isBackupDue(
+        status: daily,
+        now: now,
+        interval: const Duration(hours: 24),
+        retryCooldown: const Duration(hours: 6),
+      )) {
         await _runForegroundBackup(includePdfs: false);
       }
 
       final weekly = await readStatus(full: true);
-      final weeklySuccess = DateTime.tryParse(
-        weekly['completedAtUtc'] as String? ?? '',
-      );
-      if (weeklySuccess == null ||
-          now.difference(weeklySuccess) >= const Duration(days: 7)) {
+      if (isBackupDue(
+        status: weekly,
+        now: now,
+        interval: const Duration(days: 7),
+        retryCooldown: const Duration(hours: 24),
+      )) {
         await _runForegroundBackup(includePdfs: true);
       }
     } catch (_) {

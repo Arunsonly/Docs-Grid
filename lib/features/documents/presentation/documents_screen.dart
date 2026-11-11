@@ -377,7 +377,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
           decoded['entries'] is! List) return false;
       final cached = (decoded['entries'] as List).whereType<Map>()
           .map((entry) => Map<String, Object?>.from(entry)).toList(growable: false);
-      if (!mounted || cached.isEmpty) return false;
+      if (!mounted) return false;
       setState(() { _phoneEntries = cached; _phoneScanCompleted = true; });
       return true;
     } catch (_) {
