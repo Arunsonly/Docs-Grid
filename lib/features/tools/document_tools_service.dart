@@ -1349,7 +1349,12 @@ class DocumentToolsService {
           copy['name'] = folderNameOverrides[oldId] ?? row['name'];
           final oldParentId = row['parent_id'] as String?;
           copy['parent_id'] = oldParentId == null ? null : folderIdMap[oldParentId];
-          copy['storage_uri_or_relative_path'] = folderPath(oldId);
+          // Folder storage columns contain URIs, not bare filesystem paths.
+          // The restore tree is materialized with dart:io, so persist its path
+          // as a file:// URI for Android's native storage dispatcher.
+          copy['storage_uri_or_relative_path'] = Platform.isAndroid
+              ? Uri.file(folderPath(oldId)).toString()
+              : folderPath(oldId);
           queueInsert('folders', copy);
           if (pending >= 500) await flushBatch();
         }
