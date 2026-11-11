@@ -45,7 +45,6 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   int _totalDocumentCount = 0;
   int _starredCount = 0;
   int? _phoneStorageBytes;
-  int _phoneInaccessibleCount = 0;
   bool _phoneScanLoading = false;
   bool _phoneScanCompleted = false;
   int _trashCount = 0;
@@ -342,7 +341,6 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
         final granted = await storage.accessibleStorageRoots();
         if (granted.isEmpty) {
           if (mounted) setState(() {
-            _phoneInaccessibleCount = 0;
             _phoneEntries = [];
             _phoneScanCompleted = false;
           });
@@ -356,7 +354,6 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
       final roots = await storage.accessibleStorageRoots();
       if (roots.isEmpty) {
         if (mounted) setState(() {
-          _phoneInaccessibleCount = 0;
           _phoneEntries = [];
           _phoneScanCompleted = true;
         });
@@ -434,7 +431,6 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
       if(!mounted)return;
       await _persistPhoneStorageIndexCache(roots, entries);
       setState(() {
-        _phoneInaccessibleCount = entries.where((entry) => entry['isInaccessible'] == true).length;
         _phoneEntries=entries;
         _phoneScanCompleted = true;
       });
@@ -445,7 +441,6 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     } catch(error) {
       if (mounted) {
         setState(() {
-          _phoneInaccessibleCount = 0;
           _phoneEntries = [];
           _phoneScanCompleted = false;
         });
