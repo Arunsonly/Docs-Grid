@@ -719,6 +719,7 @@ class _FoldersScreenState extends State<FoldersScreen> {
                     );
                   }
                   final documents = documentSnapshot.data ?? const <DocumentRecord>[];
+                  final displayedFolders = _isReorderingFolders ? _draftFolderOrder : folders;
                   if (folders.isEmpty && documents.isEmpty) {
                     return Center(
                       child: Padding(
@@ -759,57 +760,76 @@ class _FoldersScreenState extends State<FoldersScreen> {
                             child: Text('FOLDERS', style: Theme.of(context).textTheme.labelLarge),
                           ),
                           ReorderableListView.builder(
-                              shrinkWrap: true,
-                              physics: const NeverScrollableScrollPhysics(),
-                              buildDefaultDragHandles: false,
-                              itemCount: displayedFolders.length,
-                              onReorderStart: (_) {
-                                if (!_isReorderingFolders) {
-                                  setState(() => _isReorderingFolders = true);
-                                }
-                              },
-                              onReorderItem: (oldIndex, newIndex) {
+                            shrinkWrap: true,
+                            physics: const NeverScrollableScrollPhysics(),
+                            buildDefaultDragHandles: false,
+                            itemCount: displayedFolders.length,
+                            onReorderStart: (_) {
+                              if (!_isReorderingFolders) {
                                 setState(() {
-                                  final moved = _draftFolderOrder.removeAt(oldIndex);
-                                  _draftFolderOrder.insert(newIndex, moved);
+                                  _isReorderingFolders = true;
+                                  _draftFolderOrder = List<Folder>.from(folders);
                                 });
-                              },
-                              itemBuilder: (context, index) {
-                                final folder = displayedFolders[index];
-                                return Card(
-                                  key: ValueKey('folder-${folder.id}'),
-                                  elevation: 0,
-                                  child: ListTile(
-                                    leading: CircleAvatar(child: const Icon(Icons.folder_outlined)),
-                                    title: Text(folder.name, maxLines: 1, overflow: TextOverflow.ellipsis),
-                                    subtitle: const Text('Folder'),
-                                    onTap: () => _openFolder(folder),
-                                    trailing: Row(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        ReorderableDelayedDragStartListener(
-                                          index: index,
-                                          child: const Padding(
-                                            padding: EdgeInsets.all(10),
-                                            child: Icon(Icons.drag_indicator, color: Colors.grey),
+                              }
+                            },
+                            onReorderItem: (oldIndex, newIndex) {
+                              setState(() {
+                                final moved = _draftFolderOrder.removeAt(oldIndex);
+                                _draftFolderOrder.insert(newIndex, moved);
+                              });
+                            },
+                            itemBuilder: (context, index) {
+                              final folder = displayedFolders[index];
+                              return Card(
+                                key: ValueKey('folder-${folder.id}'),
+                                elevation: 0,
+                                child: ListTile(
+                                  leading: const CircleAvatar(
+                                    child: Icon(Icons.folder_outlined),
+                                  ),
+                                  title: Text(
+                                    folder.name,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                  subtitle: const Text('Folder'),
+                                  onTap: () => _openFolder(folder),
+                                  trailing: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      ReorderableDelayedDragStartListener(
+                                        index: index,
+                                        child: const Padding(
+                                          padding: EdgeInsets.all(10),
+                                          child: Icon(
+                                            Icons.drag_indicator,
+                                            color: Colors.grey,
                                           ),
                                         ),
-                                        PopupMenuButton<String>(
-                                      tooltip: 'Folder actions · Hold folder icon to reorder',
-                                      onSelected: (value) {
-                                        if (value == 'rename') _renameFolder(folder);
-                                        if (value == 'delete') _deleteFolder(folder);
-                                      },
-                                      itemBuilder: (_) => const [
-                                        PopupMenuItem(value: 'rename', child: Text('Rename')),
-                                        PopupMenuItem(value: 'delete', child: Text('Delete')),
-                                      ],
-                                    ),
-                                    ),
+                                      ),
+                                      PopupMenuButton<String>(
+                                        tooltip: 'Folder actions · Drag handle to reorder',
+                                        onSelected: (value) {
+                                          if (value == 'rename') _renameFolder(folder);
+                                          if (value == 'delete') _deleteFolder(folder);
+                                        },
+                                        itemBuilder: (_) => const [
+                                          PopupMenuItem(
+                                            value: 'rename',
+                                            child: Text('Rename'),
+                                          ),
+                                          PopupMenuItem(
+                                            value: 'delete',
+                                            child: Text('Delete'),
+                                          ),
+                                        ],
+                                      ),
+                                    ],
                                   ),
-                                );
-                              },
-                            ),
+                                ),
+                              );
+                            },
+                          ),
                         ],
                         if (documents.isNotEmpty) ...[
                           Padding(
