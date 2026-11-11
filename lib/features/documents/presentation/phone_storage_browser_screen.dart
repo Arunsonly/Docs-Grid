@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import 'document_thumbnail.dart';
+
 class PhoneStorageBrowserScreen extends StatefulWidget {
   const PhoneStorageBrowserScreen({
     super.key,
@@ -60,6 +62,28 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
         .replaceAll(RegExp(r'^/+|/+$'), '');
   }
 
+  String _rootRelativePath(String value) {
+    final raw = _normalizePath(value);
+    final root = _normalizePath(widget.rootName);
+    if (raw.toLowerCase() == root.toLowerCase()) return '';
+    if (raw.length > root.length &&
+        raw.substring(0, root.length).toLowerCase() == root.toLowerCase() &&
+        raw[root.length] == '/') {
+      return raw.substring(root.length + 1);
+    }
+
+    // Scanner root label and visible screen title are intentionally different.
+    const internalRoot = 'Internal';
+    if (raw.toLowerCase() == internalRoot.toLowerCase()) return '';
+    if (raw.length > internalRoot.length &&
+        raw.substring(0, internalRoot.length).toLowerCase() ==
+            internalRoot.toLowerCase() &&
+        raw[internalRoot.length] == '/') {
+      return raw.substring(internalRoot.length + 1);
+    }
+    return raw;
+  }
+
   String _normalizedFolderPath(Map<String, Object?> entry) {
     final folderPath = entry['folderPath'];
     final path = entry['path'];
@@ -67,29 +91,13 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
         ? folderPath
         : path ?? folderPath ?? '';
     if (rawValue is! String) return '';
-    final raw = _normalizePath(rawValue);
-    final root = _normalizePath(widget.rootName);
-    if (raw.toLowerCase() == root.toLowerCase()) return '';
-    if (raw.length > root.length &&
-        raw.substring(0, root.length).toLowerCase() == root.toLowerCase() &&
-        raw[root.length] == '/') {
-      return raw.substring(root.length + 1);
-    }
-    return raw;
+    return _rootRelativePath(rawValue);
   }
 
   String _normalizedDirectoryPath(Map<String, Object?> entry) {
     final rawValue = entry['path'];
     if (rawValue is! String) return '';
-    final raw = _normalizePath(rawValue);
-    final root = _normalizePath(widget.rootName);
-    if (raw.toLowerCase() == root.toLowerCase()) return '';
-    if (raw.length > root.length &&
-        raw.substring(0, root.length).toLowerCase() == root.toLowerCase() &&
-        raw[root.length] == '/') {
-      return raw.substring(root.length + 1);
-    }
-    return raw;
+    return _rootRelativePath(rawValue);
   }
 
   bool _isPdfFile(Map<String, Object?> entry) {
@@ -164,6 +172,26 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
       return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
     }
     return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
+  }
+
+  String _formatModifiedAt(Object? rawValue) {
+    DateTime? value;
+    if (rawValue is num && rawValue > 0) {
+      value = DateTime.fromMillisecondsSinceEpoch(rawValue.toInt()).toLocal();
+    } else if (rawValue is String && rawValue.trim().isNotEmpty) {
+      value = DateTime.tryParse(rawValue)?.toLocal();
+    } else if (rawValue is DateTime) {
+      value = rawValue.toLocal();
+    }
+    if (value == null) return 'Date unavailable';
+    const months = <String>[
+      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+    ];
+    final day = value.day.toString().padLeft(2, '0');
+    final hour = value.hour.toString().padLeft(2, '0');
+    final minute = value.minute.toString().padLeft(2, '0');
+    return '$day-${months[value.month - 1]}-${value.year} $hour:$minute';
   }
 
   Future<void> _runPdfAction(
@@ -273,16 +301,29 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
 
   Widget _buildPdfTile(
     Map<String, Object?> entry, {
-    required String subtitle,
+    String? locationLabel,
   }) {
+    final uri = entry['uri'] as String;
+    final sizeBytes = (entry['sizeBytes'] as num?)?.toInt() ??
+        (entry['size'] as num?)?.toInt() ?? 0;
+    final details = <String>[
+      _formatModifiedAt(entry['lastModified']),
+      _formatSize(sizeBytes),
+      if (locationLabel != null && locationLabel.isNotEmpty) locationLabel,
+    ].join(' · ');
     return ListTile(
-      leading: const Icon(Icons.picture_as_pdf_outlined),
+      leading: DocumentThumbnail(
+        key: ValueKey('phone-thumbnail-$uri'),
+        documentId: 'phone_$uri',
+        storagePath: uri,
+        sizeBytes: sizeBytes,
+      ),
       title: Text(
         entry['name'] as String,
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
       ),
-      subtitle: Text(subtitle, maxLines: 1, overflow: TextOverflow.ellipsis),
+      subtitle: Text(details, maxLines: 1, overflow: TextOverflow.ellipsis),
       trailing: PopupMenuButton<String>(
         onSelected: (action) => _runPdfAction(action, entry),
         itemBuilder: (_) => [
@@ -328,6 +369,7 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
     }).toList(growable: false);
 
     final isSearching = query.isNotEmpty;
+    var visiblePdfCount = matchingPdfs.length;
     final children = <Widget>[];
     if (selectedPath == null) {
       if (folderPaths.isNotEmpty) {
@@ -354,7 +396,7 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
           final path = _normalizedFolderPath(entry);
           children.add(_buildPdfTile(
             entry,
-            subtitle: path.isEmpty ? 'Internal' : _displayPath(path),
+            locationLabel: path.isEmpty ? 'Internal' : _displayPath(path),
           ));
         }
       }
@@ -394,6 +436,7 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
               return name.contains(query);
             }).toList(growable: false)
           : selectedFiles;
+      visiblePdfCount = visibleFiles.length;
       if (visibleFiles.isEmpty) {
         children.add(
           Padding(
@@ -411,7 +454,7 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
         );
       } else {
         for (final entry in visibleFiles) {
-          children.add(_buildPdfTile(entry, subtitle: 'PDF document'));
+          children.add(_buildPdfTile(entry));
         }
       }
     }
@@ -457,7 +500,7 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
             child: Text(
               selectedPath == null
                   ? '${folderPaths.length} folders · ${matchingPdfs.length} PDFs'
-                  : '${matchingPdfs.length} PDFs',
+                  : '$visiblePdfCount PDFs',
               style: Theme.of(context).textTheme.bodySmall,
             ),
           ),

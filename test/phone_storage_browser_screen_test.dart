@@ -65,6 +65,43 @@ void main() {
     expect(openedUri, 'content://root');
   });
 
+  testWidgets('opened folder shows its own PDF count, modified date and size', (tester) async {
+    setTestViewport(tester);
+    final modifiedAt = DateTime(2026, 11, 11, 19, 26).millisecondsSinceEpoch;
+    await tester.pumpWidget(MaterialApp(
+      home: PhoneStorageBrowserScreen(
+        rootName: 'Internal Storage',
+        entries: [
+          {
+            'name': 'Download',
+            'uri': '',
+            'folderPath': 'Internal',
+            'path': 'Internal/Download',
+            'isDirectory': true,
+            'pdfCount': 1,
+            'sizeBytes': 126976,
+          },
+          {
+            'name': 'Policy.pdf',
+            'uri': 'content://download/policy',
+            'folderPath': 'Internal/Download',
+            'path': 'Internal/Download',
+            'isDirectory': false,
+            'sizeBytes': 126976,
+            'lastModified': modifiedAt,
+          },
+        ],
+        onOpenPdf: (_, __) async {},
+      ),
+    ));
+    await tester.tap(find.byKey(const ValueKey('phone-folder-Download')));
+    await tester.pumpAndSettle();
+    expect(find.text('Policy.pdf'), findsOneWidget);
+    expect(find.text('1 PDFs'), findsOneWidget);
+    expect(find.textContaining('11-Nov-2026 19:26'), findsOneWidget);
+    expect(find.textContaining('124.0 KB'), findsOneWidget);
+  });
+
   testWidgets('search finds PDFs across phone folders from the root view',
       (tester) async {
     setTestViewport(tester);

@@ -277,6 +277,32 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
   }
 
+  Future<bool> _confirmMoveToRecycleBin({
+    required int count,
+    required String details,
+  }) async {
+    if (!mounted || count < 1) return false;
+    final noun = count == 1 ? 'file' : 'files';
+    return await showDialog<bool>(
+          context: context,
+          builder: (dialogContext) => AlertDialog(
+            title: Text('Move $count $noun to recycle bin?'),
+            content: Text(details),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext, false),
+                child: const Text('Cancel'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(dialogContext, true),
+                child: const Text('Move to recycle bin'),
+              ),
+            ],
+          ),
+        ) ==
+        true;
+  }
+
   Future<void> _browsePhoneStorage() async {
     // The Phone tab owns an inline browser. A refresh never navigates away.
     if (widget.phoneOnly) {
@@ -511,6 +537,8 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
       await _sharePhonePdf(uri, name);
     } else if (action == 'favorite') {
       await _recordExternalFavorite(uri, name);
+    } else if (action == 'trash') {
+      await _trashPhonePdf(uri, name);
     } else {
       _message('This Phone PDF action is available from the Phone folder browser.');
     }
@@ -518,6 +546,58 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
 
   Future<void> _recordExternalFavorite(String uri, String name) async {
     _message('Phone files can be starred after importing them into Grid.');
+  }
+
+  Future<bool> _movePhoneRecentSelectionToTrash(
+    List<Map<String, Object?>> chosen,
+  ) async {
+    final confirmed = await _confirmMoveToRecycleBin(
+      count: chosen.length,
+      details: 'The selected Phone PDFs will be archived in DocsGrid Recycle Bin. Each Phone original is removed only after its archive is verified.',
+    );
+    if (!confirmed) return false;
+
+    final movedUris = <String>{};
+    var failed = 0;
+    for (final item in chosen) {
+      final uri = item['uri'] as String? ?? '';
+      final name = item['name'] as String? ?? 'PDF';
+      try {
+        final moved = await _repository.moveExternalPdfToTrash(
+          sourceUri: uri,
+          displayName: name,
+        );
+        if (moved) {
+          movedUris.add(uri);
+        } else {
+          failed++;
+        }
+      } catch (_) {
+        failed++;
+      }
+    }
+
+    if (movedUris.isNotEmpty) {
+      final keep = _phoneRecent
+          .where((item) => !movedUris.contains(item['uri']))
+          .toList(growable: false);
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setStringList(
+        'docsgrid_phone_recent_v1',
+        keep.map(jsonEncode).toList(),
+      );
+      if (mounted) setState(() => _phoneRecent = keep);
+      await _scanPhoneStorage(openBrowser: false);
+      await _loadTrashSummary();
+      await _refreshDashboardSummary();
+    }
+    if (mounted) {
+      _message(
+        'Moved ${movedUris.length} of ${chosen.length} PDFs to Recycle Bin'
+        '${failed > 0 ? ' · $failed kept' : ''}',
+      );
+    }
+    return movedUris.isNotEmpty;
   }
 
   Future<void> _openPhoneRecentSelection(Map<String, Object?> first) async {
@@ -533,12 +613,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
           chosen.map((x) => x['uri'] as String).toList(),
           chosen.map((x) => '${x['name']}.pdf').toList(),
         ),
-        onDelete: (chosen) async {
-          final prefs = await SharedPreferences.getInstance();
-          final keep = _phoneRecent.where((item) => !chosen.any((x) => x['uri'] == item['uri'])).toList();
-          await prefs.setStringList('docsgrid_phone_recent_v1', keep.map(jsonEncode).toList());
-          if (mounted) setState(() => _phoneRecent = keep);
-        },
+        onDelete: _movePhoneRecentSelectionToTrash,
       ),
     ));
   }
@@ -674,12 +749,18 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
         '${failures.isEmpty ? '' : ' · ${failures.length} failed'}');
   }
 
-  Future<void> _bulkDeleteDocuments(List<DocumentRecord> selected) async {
+  Future<bool> _bulkDeleteDocuments(List<DocumentRecord> selected) async {
+    final confirmed = await _confirmMoveToRecycleBin(
+      count: selected.length,
+      details: 'The selected PDFs will be hidden from Recent and moved to DocsGrid Recycle Bin. They can be restored later.',
+    );
+    if (!confirmed) return false;
     await _repository.moveManyToTrash(selected);
     if (mounted) {
       _message('Moved ${selected.length} PDFs to Recycle Bin');
       await _refreshDashboardSummary();
     }
+    return true;
   }
 
   Future<void> _bulkShareDocuments(List<DocumentRecord> selected) async {
@@ -819,18 +900,11 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   Future<void> _bulkTrash() async {
     final selected = _documents.where((d) => _selectedIds.contains(d.id)).toList();
     if (selected.isEmpty) return;
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Move selected PDFs to Recycle Bin?'),
-        content: Text('${selected.length} PDFs will be hidden. Files will not be erased.'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
-          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Move')),
-        ],
-      ),
+    final confirmed = await _confirmMoveToRecycleBin(
+      count: selected.length,
+      details: 'The selected PDFs will be hidden from the library. Files are kept in Recycle Bin and can be restored.',
     );
-    if (confirmed != true) return;
+    if (!confirmed) return;
     await _repository.moveManyToTrash(selected);
     if (!mounted) return;
     setState(() {
@@ -1263,18 +1337,11 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   }
 
   Future<bool> _trashPhonePdf(String uri, String name) async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Move PDF to Recycle Bin?'),
-        content: Text('$name will be copied into DocsGrid Recycle Bin. The Phone original is removed only after the archive succeeds.'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')),
-          FilledButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Move')),
-        ],
-      ),
+    final confirmed = await _confirmMoveToRecycleBin(
+      count: 1,
+      details: '$name will first be safely archived in DocsGrid Recycle Bin. The Phone original is removed only after the archive succeeds.',
     );
-    if (confirmed != true) return false;
+    if (!confirmed) return false;
     try {
       final moved = await _repository.moveExternalPdfToTrash(
         sourceUri: uri,
@@ -1283,6 +1350,15 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
       if (!mounted) return false;
       if (moved) {
         _message('PDF moved to Recycle Bin.');
+        final prefs = await SharedPreferences.getInstance();
+        final keep = _phoneRecent
+            .where((item) => item['uri'] != uri)
+            .toList(growable: false);
+        await prefs.setStringList(
+          'docsgrid_phone_recent_v1',
+          keep.map(jsonEncode).toList(),
+        );
+        if (mounted) setState(() => _phoneRecent = keep);
       } else {
         _message('A matching PDF already exists in Grid. The Phone original was kept.');
       }
@@ -2245,7 +2321,7 @@ class _RecentSelectionScreen extends StatefulWidget {
   final Future<void> Function(DocumentRecord) onOpen;
   final Future<void> Function(List<DocumentRecord>) onMove;
   final Future<void> Function(List<DocumentRecord>) onCopy;
-  final Future<void> Function(List<DocumentRecord>) onDelete;
+  final Future<bool> Function(List<DocumentRecord>) onDelete;
   final Future<void> Function(List<DocumentRecord>) onShare;
   final Future<bool> Function(DocumentRecord) onRename;
 
@@ -2277,17 +2353,45 @@ class _RecentSelectionScreenState extends State<_RecentSelectionScreen> {
   List<DocumentRecord> get _selectedItems =>
       _items.where((item) => _selected.contains(item.id)).toList(growable: false);
 
+  void _clearSelection() {
+    if (_selected.isEmpty) return;
+    setState(_selected.clear);
+  }
+
+  void _toggleSelection(DocumentRecord item, bool? value) {
+    setState(() {
+      if (value == true) {
+        _selected.add(item.id);
+      } else {
+        _selected.remove(item.id);
+      }
+    });
+  }
+
   Future<void> _run(Future<void> Function(List<DocumentRecord>) action) async {
     if (_busy || _selectedItems.isEmpty) return;
     setState(() => _busy = true);
     try {
       await action(_selectedItems);
-      if (mounted) {
-        Navigator.of(context).pop();
-      }
+      if (mounted) Navigator.of(context).pop();
     } catch (error) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Action failed: $error')),
+      );
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _deleteSelected() async {
+    if (_busy || _selectedItems.isEmpty) return;
+    setState(() => _busy = true);
+    try {
+      final completed = await widget.onDelete(_selectedItems);
+      if (completed && mounted) Navigator.of(context).pop();
+    } catch (error) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Delete failed: $error')),
       );
     } finally {
       if (mounted) setState(() => _busy = false);
@@ -2300,8 +2404,11 @@ class _RecentSelectionScreenState extends State<_RecentSelectionScreen> {
       showDragHandle: true,
       builder: (ctx) => SafeArea(child: ListView(shrinkWrap: true, children: [
         const ListTile(title: Text('More actions')),
-        ListTile(leading: const Icon(Icons.drive_file_rename_outline),
-          title: const Text('Rename'), onTap: () => Navigator.pop(ctx, 'rename')),
+        ListTile(
+          leading: const Icon(Icons.drive_file_rename_outline),
+          title: const Text('Rename'),
+          onTap: () => Navigator.pop(ctx, 'rename'),
+        ),
       ])),
     );
     if (choice == 'rename' && _selectedItems.length == 1 && mounted) {
@@ -2310,14 +2417,39 @@ class _RecentSelectionScreenState extends State<_RecentSelectionScreen> {
     }
   }
 
+  Widget _actionButton(IconData icon, String label, VoidCallback onPressed) =>
+      Expanded(
+        child: TextButton(
+          style: TextButton.styleFrom(
+            padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 6),
+            minimumSize: Size.zero,
+            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          ),
+          onPressed: _busy || _selected.isEmpty ? null : onPressed,
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            Icon(icon, size: 22),
+            FittedBox(
+              fit: BoxFit.scaleDown,
+              child: Text(label, style: const TextStyle(fontSize: 10)),
+            ),
+          ]),
+        ),
+      );
+
   @override
-  Widget build(BuildContext context) {
-    return Scaffold(
+  Widget build(BuildContext context) => PopScope<void>(
+    canPop: _selected.isEmpty,
+    onPopInvokedWithResult: (didPop, result) {
+      if (!didPop && _selected.isNotEmpty && mounted) _clearSelection();
+    },
+    child: Scaffold(
       appBar: AppBar(
-        title: Text('${_selected.length} selected'),
+        title: Text(_selected.isEmpty ? 'Recent' : '${_selected.length} selected'),
         leading: IconButton(
-          icon: const Icon(Icons.close),
-          onPressed: () => Navigator.of(context).pop(),
+          icon: Icon(_selected.isEmpty ? Icons.arrow_back : Icons.close),
+          onPressed: _selected.isEmpty
+              ? () => Navigator.of(context).pop()
+              : _clearSelection,
         ),
         actions: [
           TextButton(
@@ -2341,50 +2473,37 @@ class _RecentSelectionScreenState extends State<_RecentSelectionScreen> {
                 final item = _items[index];
                 return CheckboxListTile(
                   value: _selected.contains(item.id),
-                  onChanged: (value) => setState(() {
-                    if (value == true) {
-                      _selected.add(item.id);
-                    } else {
-                      _selected.remove(item.id);
-                    }
-                  }),
+                  onChanged: (value) => _toggleSelection(item, value),
+                  onTap: _selected.isEmpty ? () => widget.onOpen(item) : null,
                   secondary: const Icon(Icons.picture_as_pdf_outlined),
                   title: Text('${item.name}.pdf',
                     maxLines: 1, overflow: TextOverflow.ellipsis),
-                  subtitle: Text('${(item.sizeBytes / (1024 * 1024)).toStringAsFixed(1)} MB'),
+                  subtitle: Text(
+                    '${(item.sizeBytes / (1024 * 1024)).toStringAsFixed(1)} MB',
+                  ),
                 );
               },
             ),
-      bottomNavigationBar: SafeArea(
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-          decoration: BoxDecoration(
-            color: Theme.of(context).colorScheme.surface,
-            border: Border(top: BorderSide(color: Theme.of(context).dividerColor)),
-          ),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceAround,
-            children: [
-              _actionButton(Icons.drive_file_move_outline, 'Move', () => _run(widget.onMove)),
-              _actionButton(Icons.copy_outlined, 'Copy', () => _run(widget.onCopy)),
-              _actionButton(Icons.delete_outline, 'Delete', () => _run(widget.onDelete)),
-              _actionButton(Icons.share_outlined, 'Share', () => _run(widget.onShare)),
-              _actionButton(Icons.more_vert, 'More', _more),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _actionButton(IconData icon, String label, VoidCallback onPressed) =>
-      TextButton(
-        onPressed: _busy || _selected.isEmpty ? null : onPressed,
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          Icon(icon),
-          Text(label, style: const TextStyle(fontSize: 11)),
-        ]),
-      );
+      bottomNavigationBar: _selected.isEmpty
+          ? null
+          : SafeArea(
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.surface,
+                  border: Border(top: BorderSide(color: Theme.of(context).dividerColor)),
+                ),
+                child: Row(children: [
+                  _actionButton(Icons.drive_file_move_outline, 'Move', () => _run(widget.onMove)),
+                  _actionButton(Icons.copy_outlined, 'Copy', () => _run(widget.onCopy)),
+                  _actionButton(Icons.delete_outline, 'Delete', _deleteSelected),
+                  _actionButton(Icons.share_outlined, 'Share', () => _run(widget.onShare)),
+                  _actionButton(Icons.more_vert, 'More', _more),
+                ]),
+              ),
+            ),
+    ),
+  );
 }
 
 class _PhoneRecentSelectionScreen extends StatefulWidget {
@@ -2400,7 +2519,7 @@ class _PhoneRecentSelectionScreen extends StatefulWidget {
   final String initialUri;
   final Future<void> Function(Map<String, Object?>) onOpen;
   final Future<void> Function(List<Map<String, Object?>>) onShare;
-  final Future<void> Function(List<Map<String, Object?>>) onDelete;
+  final Future<bool> Function(List<Map<String, Object?>>) onDelete;
 
   @override
   State<_PhoneRecentSelectionScreen> createState() => _PhoneRecentSelectionScreenState();
@@ -2413,6 +2532,21 @@ class _PhoneRecentSelectionScreenState extends State<_PhoneRecentSelectionScreen
   List<Map<String, Object?>> get _chosen => widget.items
       .where((item) => _selected.contains(item['uri']))
       .toList(growable: false);
+
+  void _clearSelection() {
+    if (_selected.isEmpty) return;
+    setState(_selected.clear);
+  }
+
+  void _toggleSelection(String uri, bool? value) {
+    setState(() {
+      if (value == true) {
+        _selected.add(uri);
+      } else {
+        _selected.remove(uri);
+      }
+    });
+  }
 
   Future<void> _run(Future<void> Function(List<Map<String, Object?>>) action) async {
     if (_busy || _chosen.isEmpty) return;
@@ -2429,68 +2563,102 @@ class _PhoneRecentSelectionScreenState extends State<_PhoneRecentSelectionScreen
     }
   }
 
-  @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(
-      title: Text('${_selected.length} selected'),
-      leading: IconButton(
-        icon: const Icon(Icons.close),
-        onPressed: () => Navigator.of(context).pop(),
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => setState(() {
-            if (_selected.length == widget.items.length) {
-              _selected.clear();
-            } else {
-              _selected.addAll(widget.items.map((item) => item['uri'] as String));
-            }
-          }),
-          child: const Text('Select all'),
-        ),
-      ],
-    ),
-    body: ListView.separated(
-      itemCount: widget.items.length,
-      separatorBuilder: (_, _) => const Divider(height: 1),
-      itemBuilder: (context, index) {
-        final item = widget.items[index];
-        final uri = item['uri'] as String;
-        return CheckboxListTile(
-          value: _selected.contains(uri),
-          onChanged: (value) => setState(() {
-            if (value == true) { _selected.add(uri); } else { _selected.remove(uri); }
-          }),
-          title: Text(item['name'] as String? ?? 'PDF'),
-          subtitle: Text('Phone · ${item['openedAt'] ?? ''}'),
-          secondary: const Icon(Icons.picture_as_pdf_outlined),
-        );
-      },
-    ),
-    bottomNavigationBar: SafeArea(
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.spaceAround,
-          children: [
-            TextButton.icon(onPressed: _busy ? null : () => _messageDisabled(),
-              icon: const Icon(Icons.drive_file_move_outline), label: const Text('Move')),
-            TextButton.icon(onPressed: _busy ? null : () => _messageDisabled(),
-              icon: const Icon(Icons.copy_outlined), label: const Text('Copy')),
-            TextButton.icon(onPressed: _busy ? null : () => _run(widget.onDelete),
-              icon: const Icon(Icons.delete_outline), label: const Text('Delete')),
-            TextButton.icon(onPressed: _busy ? null : () => _run(widget.onShare),
-              icon: const Icon(Icons.share_outlined), label: const Text('Share')),
-            PopupMenuButton<String>(
-              tooltip: 'More actions',
-              onSelected: (value) { if (value == 'rename') _messageDisabled(); },
-              itemBuilder: (_) => const [
-                PopupMenuItem(value: 'rename', child: Text('Rename')),
-              ],
+  Future<void> _deleteSelected() async {
+    if (_busy || _chosen.isEmpty) return;
+    setState(() => _busy = true);
+    try {
+      final completed = await widget.onDelete(_chosen);
+      if (completed && mounted) Navigator.of(context).pop();
+    } catch (error) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Delete failed: $error')),
+      );
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Widget _actionButton(IconData icon, String label, VoidCallback onPressed) =>
+      Expanded(
+        child: TextButton(
+          style: TextButton.styleFrom(
+            padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 6),
+            minimumSize: Size.zero,
+            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          ),
+          onPressed: _busy || _selected.isEmpty ? null : onPressed,
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            Icon(icon, size: 22),
+            FittedBox(
+              fit: BoxFit.scaleDown,
+              child: Text(label, style: const TextStyle(fontSize: 10)),
             ),
-          ],
+          ]),
         ),
+      );
+
+  @override
+  Widget build(BuildContext context) => PopScope<void>(
+    canPop: _selected.isEmpty,
+    onPopInvokedWithResult: (didPop, result) {
+      if (!didPop && _selected.isNotEmpty && mounted) _clearSelection();
+    },
+    child: Scaffold(
+      appBar: AppBar(
+        title: Text(_selected.isEmpty ? 'Recent' : '${_selected.length} selected'),
+        leading: IconButton(
+          icon: Icon(_selected.isEmpty ? Icons.arrow_back : Icons.close),
+          onPressed: _selected.isEmpty
+              ? () => Navigator.of(context).pop()
+              : _clearSelection,
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => setState(() {
+              if (_selected.length == widget.items.length) {
+                _selected.clear();
+              } else {
+                _selected.addAll(widget.items.map((item) => item['uri'] as String));
+              }
+            }),
+            child: const Text('Select all'),
+          ),
+        ],
       ),
+      body: ListView.separated(
+        itemCount: widget.items.length,
+        separatorBuilder: (_, _) => const Divider(height: 1),
+        itemBuilder: (context, index) {
+          final item = widget.items[index];
+          final uri = item['uri'] as String;
+          return CheckboxListTile(
+            value: _selected.contains(uri),
+            onChanged: (value) => _toggleSelection(uri, value),
+            onTap: _selected.isEmpty ? () => widget.onOpen(item) : null,
+            title: Text(item['name'] as String? ?? 'PDF'),
+            subtitle: Text('Phone · ${item['openedAt'] ?? ''}'),
+            secondary: const Icon(Icons.picture_as_pdf_outlined),
+          );
+        },
+      ),
+      bottomNavigationBar: _selected.isEmpty
+          ? null
+          : SafeArea(
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.surface,
+                  border: Border(top: BorderSide(color: Theme.of(context).dividerColor)),
+                ),
+                child: Row(children: [
+                  _actionButton(Icons.drive_file_move_outline, 'Move', _messageDisabled),
+                  _actionButton(Icons.copy_outlined, 'Copy', _messageDisabled),
+                  _actionButton(Icons.delete_outline, 'Delete', _deleteSelected),
+                  _actionButton(Icons.share_outlined, 'Share', () => _run(widget.onShare)),
+                  _actionButton(Icons.more_vert, 'More', _messageDisabled),
+                ]),
+              ),
+            ),
     ),
   );
 
@@ -2500,7 +2668,3 @@ class _PhoneRecentSelectionScreenState extends State<_PhoneRecentSelectionScreen
     );
   }
 }
-
-
-
-

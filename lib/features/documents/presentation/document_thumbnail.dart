@@ -109,8 +109,6 @@ class _DocumentThumbnailState extends State<DocumentThumbnail> {
 
   Future<File?> _loadThumbnail() async {
     final id = widget.documentId.replaceAll(RegExp(r'[^A-Za-z0-9_-]'), '_');
-    final directory = await _thumbnailCacheDirectory();
-
     final source = widget.storagePath;
     if (source.isEmpty) return null;
 
@@ -119,6 +117,7 @@ class _DocumentThumbnailState extends State<DocumentThumbnail> {
     pdfx.PdfDocument? document;
     pdfx.PdfPage? page;
     try {
+      final directory = await _thumbnailCacheDirectory();
       if (source.startsWith('content://') || source.startsWith('file://')) {
         final temp = await getTemporaryDirectory();
         staged = File(p.join(
@@ -246,9 +245,10 @@ class _DocumentThumbnailState extends State<DocumentThumbnail> {
                 height: 18,
                 child: CircularProgressIndicator(strokeWidth: 2),
               )
-            : Icon(
-                Icons.picture_as_pdf_outlined,
-                color: Theme.of(context).colorScheme.primary,
+            : const Icon(
+                Icons.picture_as_pdf_rounded,
+                size: 38,
+                color: Color(0xFFD32F2F),
               ),
       );
 }

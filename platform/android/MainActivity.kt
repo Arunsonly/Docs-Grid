@@ -610,7 +610,8 @@ class MainActivity : FlutterActivity() {
                 "uri" to Uri.fromFile(child).toString(),
                 "isDirectory" to child.isDirectory,
                 "size" to if (child.isFile) child.length() else 0L,
-                "sizeKnown" to (!child.isFile || child.length() >= 0L)
+                "sizeKnown" to (!child.isFile || child.length() >= 0L),
+                "lastModified" to child.lastModified()
             )
         }
     }
@@ -776,7 +777,8 @@ class MainActivity : FlutterActivity() {
                 DocumentsContract.Document.COLUMN_DOCUMENT_ID,
                 DocumentsContract.Document.COLUMN_DISPLAY_NAME,
                 DocumentsContract.Document.COLUMN_MIME_TYPE,
-                DocumentsContract.Document.COLUMN_SIZE
+                DocumentsContract.Document.COLUMN_SIZE,
+                DocumentsContract.Document.COLUMN_LAST_MODIFIED
             ),
             null, null, null
         )?.use { cursor ->
@@ -784,6 +786,7 @@ class MainActivity : FlutterActivity() {
             val nameIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
             val mimeIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_MIME_TYPE)
             val sizeIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_SIZE)
+            val modifiedIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_LAST_MODIFIED)
             while (cursor.moveToNext()) {
                 if (idIndex < 0 || nameIndex < 0 || mimeIndex < 0) continue
                 val id = cursor.getString(idIndex)
@@ -793,7 +796,8 @@ class MainActivity : FlutterActivity() {
                     "uri" to DocumentsContract.buildDocumentUriUsingTree(directoryUri, id).toString(),
                     "isDirectory" to (mime == DocumentsContract.Document.MIME_TYPE_DIR),
                     "size" to if (sizeIndex >= 0 && !cursor.isNull(sizeIndex) && cursor.getLong(sizeIndex) >= 0L) cursor.getLong(sizeIndex) else 0L,
-                    "sizeKnown" to (sizeIndex >= 0 && !cursor.isNull(sizeIndex) && cursor.getLong(sizeIndex) >= 0L)
+                    "sizeKnown" to (sizeIndex >= 0 && !cursor.isNull(sizeIndex) && cursor.getLong(sizeIndex) >= 0L),
+                    "lastModified" to if (modifiedIndex >= 0 && !cursor.isNull(modifiedIndex)) cursor.getLong(modifiedIndex) else 0L
                 ))
             }
         } ?: throw IllegalStateException("The storage provider could not list this folder.")

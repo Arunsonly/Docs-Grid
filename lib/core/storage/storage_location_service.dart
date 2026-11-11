@@ -468,6 +468,7 @@ class StorageLocationService {
               'folderPath': current.path,
               'sizeBytes': size < 0 ? 0 : size,
               'sizeKnown': sizeKnown,
+              'lastModified': child['lastModified'],
               'isDirectory': false,
             });
             // Only mark the folder that directly contains this PDF.
