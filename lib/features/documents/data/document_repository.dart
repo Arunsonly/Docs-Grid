@@ -1219,18 +1219,21 @@ class DocumentRepository {
       try {
         final sourcePath = picked.path;
         late final File sourceFile;
-        if (sourcePath != null && sourcePath.isNotEmpty) {
-          sourceFile = File(sourcePath);
-          if (!await sourceFile.exists()) {
-            throw StateError('The selected PDF is no longer accessible.');
-          }
+        final candidate = sourcePath == null || sourcePath.isEmpty
+            ? null
+            : File(sourcePath);
+        if (candidate != null && await candidate.exists()) {
+          sourceFile = candidate;
         } else {
-          // file_picker 13.x provides bytes for providers without a local path.
-          // Stage them in cache immediately and remove the staged copy below.
+          // Some document providers return a path that becomes unreadable
+          // after the picker closes. Fall back to the provider stream instead
+          // of failing solely because that temporary path is stale.
           final temp = await getTemporaryDirectory();
           stagedSource = File(p.join(temp.path, 'import_${_uuid.v4()}.pdf'));
-          // Keep provider-backed imports bounded in memory for large PDFs.
           await writeByteStreamToFile(picked.readAsByteStream(), stagedSource);
+          if (!await stagedSource.exists() || await stagedSource.length() == 0) {
+            throw StateError('The selected PDF could not be read from the document provider.');
+          }
           sourceFile = stagedSource;
         }
 
