@@ -119,4 +119,27 @@ void main() {
     );
     expect(await db.rawQuery('SELECT * FROM history'), hasLength(2));
   });
+
+  test('deleting a folder detaches PDFs that were already in Recycle Bin', () async {
+    final db = await _database();
+    addTearDown(db.close);
+    await _insertFolder(db, 'insurance', 'Insurance');
+    await db.insert('documents', {
+      'id': 'old-trash-entry',
+      'folder_id': 'insurance',
+      'storage_uri': 'file:///docs/Insurance/old.pdf',
+      'deleted_at': '2026-01-02T00:00:00Z',
+      'updated_at': '2026-01-02T00:00:00Z',
+    });
+    final repository = FolderRepository(
+      database: AppDatabase.forTesting(() async => db),
+    );
+
+    await repository.moveManyToRecycleBin(['insurance']);
+
+    final recycled = (await db.query('documents')).single;
+    expect(recycled['deleted_at'], '2026-01-02T00:00:00Z');
+    expect(recycled['folder_id'], isNull);
+    expect(recycled['storage_uri'], 'file:///docs/Insurance/old.pdf');
+  });
 }
