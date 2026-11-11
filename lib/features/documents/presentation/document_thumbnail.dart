@@ -83,28 +83,94 @@ class _DocumentThumbnailState extends State<DocumentThumbnail> {
     }
   }
 
-  Future<Directory> _thumbnailCacheDirectory() async {
-    // Keep the portable thumbnail cache in the agreed DocsGrid-owned tree
-    // whenever Android exposes it. This lets the cache survive app updates and
-    // keeps Recent/Grid previews beside the portable database and recovery data.
-    if (Platform.isAndroid) {
-      try {
-        final locations = await StorageLocationService.instance
-            .portableDataLocationsIfAvailable();
-        final thumbnailsUri = locations['thumbnailsUri'];
-        if (thumbnailsUri != null && thumbnailsUri.startsWith('file://')) {
-          final directory = Directory(Uri.parse(thumbnailsUri).toFilePath());
-          await directory.create(recursive: true);
-          return directory;
-        }
-      } catch (_) {
-        // Without optional shared-storage access, use the private cache below.
-      }
+  static const int _thumbnailCacheBudgetBytes = 512 * 1024 * 1024;
+
+  Future<Map<String, String>> _portableThumbnailLocations() async {
+    if (!Platform.isAndroid) return const <String, String>{};
+    try {
+      return await StorageLocationService.instance
+          .portableDataLocationsIfAvailable();
+    } catch (_) {
+      return const <String, String>{};
     }
+  }
+
+  Future<Directory> _thumbnailCacheDirectory() async {
+    final locations = await _portableThumbnailLocations();
+    // New thumbnails go to the dedicated cache area. The old System/Thumbnails
+    // directory remains readable as a migration source for existing previews.
+    final pagePreviewsUri = locations['pagePreviewsUri'];
+    if (pagePreviewsUri != null && pagePreviewsUri.startsWith('file://')) {
+      final directory = Directory(Uri.parse(pagePreviewsUri).toFilePath());
+      await directory.create(recursive: true);
+      return directory;
+    }
+    final legacyUri = locations['thumbnailsUri'];
+    if (legacyUri != null && legacyUri.startsWith('file://')) {
+      final directory = Directory(Uri.parse(legacyUri).toFilePath());
+      await directory.create(recursive: true);
+      return directory;
+    }
+    // SAF-only or permission-limited providers use the private regenerable cache.
     final support = await getApplicationSupportDirectory();
     final directory = Directory(p.join(support.path, 'docsgrid', 'thumbnails'));
     await directory.create(recursive: true);
     return directory;
+  }
+
+  Future<Directory?> _legacyThumbnailCacheDirectory(
+    Map<String, String> locations,
+    Directory current,
+  ) async {
+    final uri = locations['thumbnailsUri'];
+    if (uri == null || !uri.startsWith('file://')) return null;
+    final legacy = Directory(Uri.parse(uri).toFilePath());
+    if (p.equals(legacy.path, current.path) || !await legacy.exists()) {
+      return null;
+    }
+    return legacy;
+  }
+
+  /// Enforces a soft 512 MiB first-page preview cache using least-recently-used
+  /// file timestamps. The preview currently being rendered is never evicted.
+  Future<void> _enforceThumbnailCacheBudget(
+    Directory directory, {
+    required String keepPath,
+  }) async {
+    try {
+      final candidates = <({File file, int bytes, DateTime modified})>[];
+      var totalBytes = 0;
+      await for (final entity in directory.list(followLinks: false)) {
+        if (entity is! File || p.extension(entity.path).toLowerCase() != '.png') {
+          continue;
+        }
+        try {
+          final bytes = await entity.length();
+          totalBytes += bytes;
+          candidates.add((
+            file: entity,
+            bytes: bytes,
+            modified: await entity.lastModified(),
+          ));
+        } catch (_) {
+          // An unreadable cache entry is ignored; it can be regenerated later.
+        }
+      }
+      if (totalBytes <= _thumbnailCacheBudgetBytes) return;
+      candidates.sort((a, b) => a.modified.compareTo(b.modified));
+      for (final candidate in candidates) {
+        if (totalBytes <= _thumbnailCacheBudgetBytes) break;
+        if (candidate.file.path == keepPath) continue;
+        try {
+          await candidate.file.delete();
+          totalBytes -= candidate.bytes;
+        } catch (_) {
+          // Cache cleanup is best-effort and never affects the source PDF.
+        }
+      }
+    } catch (_) {
+      // Directory providers and low-storage devices can reject cleanup.
+    }
   }
 
   Future<File?> _loadThumbnail() async {
@@ -117,6 +183,7 @@ class _DocumentThumbnailState extends State<DocumentThumbnail> {
     pdfx.PdfDocument? document;
     pdfx.PdfPage? page;
     try {
+      final locations = await _portableThumbnailLocations();
       final directory = await _thumbnailCacheDirectory();
       if (source.startsWith('content://') || source.startsWith('file://')) {
         final temp = await getTemporaryDirectory();
@@ -144,8 +211,23 @@ class _DocumentThumbnailState extends State<DocumentThumbnail> {
         directory.path,
         '${id}_${widget.sizeBytes}_${digest.toString()}.png',
       ));
+      if (!await cache.exists()) {
+        final legacy = await _legacyThumbnailCacheDirectory(locations, directory);
+        if (legacy != null) {
+          final oldCache = File(p.join(legacy.path, p.basename(cache.path)));
+          if (await _isValidPng(oldCache)) {
+            try {
+              await oldCache.copy(cache.path);
+            } catch (_) {
+              // If migration copy fails, the legacy image is still readable.
+            }
+          }
+        }
+      }
       if (await _isValidPng(cache)) {
+        try { await cache.setLastModified(DateTime.now()); } catch (_) {}
         await _removeOldCacheFiles(directory, prefix, keepPath: cache.path);
+        await _enforceThumbnailCacheBudget(directory, keepPath: cache.path);
         return cache;
       }
       if (await cache.exists()) {
@@ -176,6 +258,7 @@ class _DocumentThumbnailState extends State<DocumentThumbnail> {
         if (!await _isValidPng(partial)) return null;
         final saved = await partial.rename(cache.path);
         await _removeOldCacheFiles(directory, prefix, keepPath: saved.path);
+        await _enforceThumbnailCacheBudget(directory, keepPath: saved.path);
         return saved;
       } finally {
         try {
