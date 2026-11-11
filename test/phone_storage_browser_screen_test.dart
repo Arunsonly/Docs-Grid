@@ -181,7 +181,7 @@ void main() {
     ));
     expect(find.text('Android'), findsNothing);
     expect(find.text('data'), findsOneWidget);
-    await tester.tap(find.byKey(const ValueKey('phone-folder-Internal/Android/data')));
+    await tester.tap(find.byKey(const ValueKey('phone-folder-Android/data')));
     await tester.pumpAndSettle();
     expect(find.text('Nested.pdf'), findsOneWidget);
   });
@@ -216,7 +216,7 @@ void main() {
       ),
     ));
 
-    await tester.tap(find.byKey(const ValueKey('phone-folder-Internal/Policies')));
+    await tester.tap(find.byKey(const ValueKey('phone-folder-Policies')));
     await tester.pumpAndSettle();
     expect(find.text('Policy.pdf'), findsOneWidget);
     await tester.tap(find.byTooltip('Back to folders'));
@@ -253,7 +253,7 @@ void main() {
         ),
       ),
     ));
-    await tester.tap(find.byKey(const ValueKey('phone-folder-Internal/Policies')));
+    await tester.tap(find.byKey(const ValueKey('phone-folder-Policies')));
     await tester.pumpAndSettle();
     expect(find.text('Policy.pdf'), findsOneWidget);
     await tester.binding.handlePopRoute();
