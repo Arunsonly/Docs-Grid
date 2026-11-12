@@ -47,6 +47,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
   int _starredCount = 0;
   int? _phoneStorageBytes;
   bool _phoneScanLoading = false;
+  bool _phoneScanInFlight = false;
   bool _phoneScanCompleted = false;
   StreamSubscription<void>? _storageChangesSubscription;
   Timer? _phoneRefreshDebounce;
@@ -420,11 +421,17 @@ class _DocumentsScreenState extends State<DocumentsScreen>
 
   Future<void> _scanPhoneStorage({required bool openBrowser}) async {
     final storage = StorageLocationService.instance;
-    if (_phoneScanLoading) {
+    if (_phoneScanInFlight) {
       _phoneScanPending = true;
       return;
     }
-    if (mounted) setState(() { _phoneScanLoading = true; _phoneScanCompleted = false; });
+    _phoneScanInFlight = true;
+    // Show progress only for the first empty-state scan. Refreshes triggered
+    // by MediaStore observers update cached results quietly in the background.
+    final showInitialProgress = !_phoneScanCompleted && _phoneEntries.isEmpty;
+    if (mounted && showInitialProgress) {
+      setState(() => _phoneScanLoading = true);
+    }
     try {
       if (Platform.isAndroid) {
         try {
@@ -591,7 +598,10 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         _message('Phone Storage scan failed; inaccessible locations were not marked empty: $error');
       }
     } finally {
-      if (mounted) setState(() => _phoneScanLoading = false);
+      _phoneScanInFlight = false;
+      if (mounted && _phoneScanLoading) {
+        setState(() => _phoneScanLoading = false);
+      }
       if (_phoneScanPending && mounted) {
         _phoneScanPending = false;
         _schedulePhoneStorageRefresh();

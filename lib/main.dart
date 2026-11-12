@@ -458,7 +458,16 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
+    return PopScope<void>(
+      // Phone is the app's first/root tab. System Back should return to Home,
+      // not pop the root route and close DocsGrid.
+      canPop: _selectedIndex != 0,
+      onPopInvokedWithResult: (didPop, result) {
+        if (!didPop && _selectedIndex == 0 && mounted) {
+          setState(() => _selectedIndex = 1);
+        }
+      },
+      child: Scaffold(
       appBar: AppBar(
         title: const Text('DocsGrid', style: TextStyle(fontWeight: FontWeight.w700)),
         actions: _selectedIndex == 1
@@ -500,6 +509,7 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
           NavigationDestination(icon: Icon(Icons.dashboard_outlined), label: 'Home'),
           NavigationDestination(icon: Icon(Icons.folder_outlined), label: 'Grid'),
         ],
+      ),
       ),
     );
   }
