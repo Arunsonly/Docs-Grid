@@ -215,7 +215,7 @@ class ReminderRepository {
       'completed_at': null,
       'updated_at': DateTime.now().toUtc().toIso8601String(),
     }, where: 'id = ?', whereArgs: [id]);
-    await _refreshPortableSnapshot();
+    _refreshPortableSnapshot();
     try {
       await ReminderNotifications.instance.cancel(id);
       await ReminderNotifications.instance.schedule(
@@ -239,7 +239,7 @@ class ReminderRepository {
       'snoozed_until': when.toUtc().toIso8601String(),
       'updated_at': DateTime.now().toUtc().toIso8601String(),
     }, where: 'id = ?', whereArgs: [reminder.id]);
-    await _refreshPortableSnapshot();
+    _refreshPortableSnapshot();
     try {
       await ReminderNotifications.instance.scheduleSnooze(
         id: reminder.id, title: reminder.title, body: reminder.note, at: when,
@@ -266,7 +266,7 @@ class ReminderRepository {
       'enabled': enabled ? 1 : 0,
       'updated_at': DateTime.now().toUtc().toIso8601String(),
     }, where: 'id = ?', whereArgs: [reminder.id]);
-    await _refreshPortableSnapshot();
+    _refreshPortableSnapshot();
     try {
       if (enabled) {
         await rescheduleEnabled();
@@ -281,7 +281,7 @@ class ReminderRepository {
   Future<void> delete(String id) async {
     final db = await _database.database;
     await db.delete('reminders', where: 'id = ?', whereArgs: [id]);
-    await _refreshPortableSnapshot();
+    _refreshPortableSnapshot();
     try { await ReminderNotifications.instance.cancel(id); } catch (_) {}
   }
 
@@ -291,7 +291,7 @@ class ReminderRepository {
     await db.update('reminders', {
       'status': 'completed', 'completed_at': now, 'enabled': 0, 'updated_at': now,
     }, where: 'id = ?', whereArgs: [id]);
-    await _refreshPortableSnapshot();
+    _refreshPortableSnapshot();
     try { await ReminderNotifications.instance.cancel(id); } catch (_) {}
   }
 }

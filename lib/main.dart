@@ -126,7 +126,7 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       // Initialize best-effort Android background jobs without blocking first paint.
       unawaited(BackupAutomation.initializeAndroid());
-      unawaited(_schedulePortableSnapshot());
+      _schedulePortableSnapshot();
       unawaited(_refreshReminderSchedules());
       final pendingDocumentId = ReminderNotifications.takePendingDocumentId();
       if (pendingDocumentId != null) await _openReminderDocument(pendingDocumentId);
