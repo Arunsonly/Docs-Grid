@@ -238,6 +238,8 @@ class MainActivity : FlutterActivity() {
                 val sizeIndexName = MediaStore.MediaColumns.SIZE
                 val modifiedIndexName = MediaStore.MediaColumns.DATE_MODIFIED
                 val relativeIndexName = relativePathColumn
+                // Exclude MediaStore's own trash flag; OEMs that implement trash
+                // as a hidden directory are filtered by relativePath below.
                 val pdfSelection = if (android.os.Build.VERSION.SDK_INT >= 30) {
                     "($mimeIndexName = ? OR $nameIndexName LIKE ?) AND " +
                         MediaStore.MediaColumns.IS_TRASHED + " = 0"
