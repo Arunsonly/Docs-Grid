@@ -20,6 +20,7 @@ import 'package:uuid/uuid.dart';
 
 import '../../core/database/app_database.dart';
 import '../../core/storage/storage_location_service.dart';
+import '../../core/storage/storage_migration_gate.dart';
 import '../documents/data/document_repository.dart';
 import '../folders/data/folder_repository.dart';
 import '../reminders/data/reminder_notifications.dart';
@@ -673,6 +674,7 @@ class DocumentToolsService {
     bool includePdfs = true,
     bool backgroundSafe = false,
   }) async {
+    await StorageMigrationGate.waitUntilReady();
     final storage = StorageLocationService.instance;
     final portableLocations = Platform.isAndroid
         ? (backgroundSafe
@@ -682,10 +684,15 @@ class DocumentToolsService {
     final destinationUri = includePdfs
         ? (portableLocations['fullBackupsUri'] ?? portableLocations['backupsUri'])
         : (portableLocations['databaseBackupsUri'] ?? portableLocations['backupsUri']);
+    if (Platform.isAndroid && destinationUri == null) {
+      throw StateError(
+        'Set up DocsGrid storage before creating a backup.',
+      );
+    }
     if (backgroundSafe &&
         (destinationUri == null || !destinationUri.startsWith('file://'))) {
       throw StateError(
-        'Background backup requires the initialized Android/media/com.docsgrid file-backed backup folder. Open DocsGrid with storage access to initialize it.',
+        'Background backup requires the initialized DocsGrid backup folder.',
       );
     }
     final db = await _database.database;
@@ -707,16 +714,21 @@ class DocumentToolsService {
       'files': <Map<String, Object?>>[],
     };
 
-    final directory = await getApplicationDocumentsDirectory();
-    // Android portable backups must survive app uninstall. Keep the live DB
-    // private, but publish completed archives under Android/media/com.docsgrid.
+    // SAF destinations are staged in cache, then copied into the selected tree.
+    // iOS keeps its archive inside the app container; Android never creates
+    // a second app-private DocsGrid backup library.
+    final temporaryBase = await getTemporaryDirectory();
+    final appDocuments = await getApplicationDocumentsDirectory();
     final portableBackupsUri = includePdfs
         ? (portableLocations['fullBackupsUri'] ?? portableLocations['backupsUri'])
         : (portableLocations['databaseBackupsUri'] ?? portableLocations['backupsUri']);
+    final fallbackBackupPath = Platform.isAndroid
+        ? p.join(temporaryBase.path, 'docsgrid_backup_staging', includePdfs ? 'Full' : 'Database')
+        : p.join(appDocuments.path, 'DocsGrid', 'Backups', includePdfs ? 'Full' : 'Database');
     final backups = Directory(
       portableBackupsUri != null && portableBackupsUri.startsWith('file://')
           ? Uri.parse(portableBackupsUri).toFilePath()
-          : p.join(directory.path, 'DocsGrid', 'Backups', includePdfs ? 'Full' : 'Database'),
+          : fallbackBackupPath,
     );
     await backups.create(recursive: true);
     final temporaryUri = portableLocations['tempUri'];
@@ -1021,9 +1033,10 @@ class DocumentToolsService {
   }
 
   /// Rebuilds the library index from surviving shared PDFs after reinstall.
-  /// PDFs are registered in place; they are not duplicated or deleted. Folder
-  /// names are reconstructed, but categories/tags/reminders require a DB backup.
+  /// PDFs are copied into the active library and SHA-256 verified. Source files
+  /// remain untouched; folder names are rebuilt from their paths.
   Future<Map<String, int>> recoverLoosePortablePdfs() async {
+    await StorageMigrationGate.waitUntilReady();
     if (!Platform.isAndroid) {
       throw UnsupportedError('Automatic shared-media recovery is currently Android-only.');
     }
@@ -1109,6 +1122,7 @@ class DocumentToolsService {
   Future<int?> restoreNewestPortableBackup({
     Future<bool> Function(int pdfCount)? confirm,
   }) async {
+    await StorageMigrationGate.waitUntilReady();
     final candidates = await listPortableBackupArchives();
     if (candidates.isEmpty) {
       throw StateError('No portable DocsGrid backup ZIP was found.');
@@ -1180,6 +1194,7 @@ class DocumentToolsService {
     BackupRestoreMode mode = BackupRestoreMode.merge,
     Set<BackupRestoreSection>? selection,
   }) async {
+    await StorageMigrationGate.waitUntilReady();
     final backup = await _decodeValidatedBackup(zipFile);
     try {
       final pdfCount = (backup.manifest['files'] as List<dynamic>).length;
@@ -1374,6 +1389,15 @@ class DocumentToolsService {
         : const <String, String>{};
     final portableUnfiledUri = portableLocations['documentsUri'];
     final portableFoldersUri = portableLocations['libraryUri'];
+    if (Platform.isAndroid &&
+        (portableUnfiledUri == null ||
+            !portableUnfiledUri.startsWith('file://') ||
+            portableFoldersUri == null ||
+            !portableFoldersUri.startsWith('file://'))) {
+      throw StateError(
+        'Allow Full internal storage access before restoring this ZIP backup.',
+      );
+    }
     final fallbackRoot = p.join(
       (await getApplicationDocumentsDirectory()).path,
       'DocsGrid',
@@ -1735,6 +1759,7 @@ class DocumentToolsService {
   /// DocsGrid/System/Database folder. PDF bytes remain in the library folder;
   /// documents.json retains their relative paths and SHA-256 values.
   Future<String> createPortableMetadataSnapshot() async {
+    await StorageMigrationGate.waitUntilReady();
     final locations = await StorageLocationService.instance.portableDataLocationsIfAvailable();
     if (locations['databaseUri'] == null) {
       throw StateError('Portable Database folder is not available. Enable storage access or select an existing recovery tree.');
@@ -1973,6 +1998,7 @@ class DocumentToolsService {
   /// retained; imported IDs are remapped where needed. PDFs are relinked by
   /// SHA-256 from the currently selected library and are never overwritten.
   Future<Map<String, int>> restoreLatestPortableMetadataSnapshot() async {
+    await StorageMigrationGate.waitUntilReady();
     final storage = StorageLocationService.instance;
     final locations = await storage.portableDataLocations();
     final snapshot = await _findLatestVerifiedPortableSnapshot();

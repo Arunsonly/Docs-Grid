@@ -21,6 +21,7 @@ import 'features/tools/document_tools_screen.dart' show DocumentToolsScreen;
 import 'features/tools/document_tools_service.dart';
 import 'core/database/app_database.dart';
 import 'core/storage/portable_snapshot_events.dart';
+import 'core/storage/storage_migration_gate.dart';
 import 'core/backup/backup_automation.dart';
 
 final GlobalKey<NavigatorState> docsGridNavigatorKey = GlobalKey<NavigatorState>();
@@ -124,6 +125,27 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
       unawaited(_openReminderDocument(documentId));
     };
     WidgetsBinding.instance.addPostFrameCallback((_) async {
+      // Paint first, then migrate older library paths. New writes wait for this task.
+      if (Platform.isAndroid) {
+        final migration = StorageMigrationGate.start(() async {
+          final migrated = await DocumentRepository()
+              .migrateLegacyStorageToCanonicalIfNeeded();
+          if (migrated > 0 && mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('$migrated PDF(s) moved to DocsGrid storage.')),
+            );
+          }
+        });
+        unawaited(migration.catchError((Object _) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('Old files could not be moved. Your original files are safe. Restart DocsGrid to retry.'),
+              ),
+            );
+          }
+        }));
+      }
       // Initialize best-effort Android background jobs without blocking first paint.
       unawaited(BackupAutomation.initializeAndroid());
       _schedulePortableSnapshot();

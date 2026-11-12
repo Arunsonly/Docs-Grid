@@ -12,6 +12,7 @@ import '../../../core/database/app_database.dart';
 import '../../../core/storage/byte_stream_file.dart';
 import '../../../core/storage/storage_location_service.dart';
 import '../../../core/storage/portable_snapshot_events.dart';
+import '../../../core/storage/storage_migration_gate.dart';
 import '../../folders/data/folder_repository.dart';
 import '../../reminders/data/reminder_notifications.dart';
 
@@ -147,19 +148,20 @@ String escapeLikeWildcards(String value) {
 }
 
 class PdfImportDestination {
-  const PdfImportDestination(this.uri);
+  const PdfImportDestination(this.uri, {required this.isAndroid});
 
   final String? uri;
+  final bool isAndroid;
 
-  bool get usesPrivateStorage => uri == null;
+  bool get usesPrivateStorage => uri == null && !isAndroid;
+  bool get requiresStorageSetup => uri == null && isAndroid;
 }
 
 /// Resolves the physical destination for a PDF import.
 ///
-/// Android's portable DocsGrid Documents folder takes precedence when it is
-/// available. If it is unavailable, an explicitly selected storage folder
-/// remains a valid destination. App-private storage is used only when neither
-/// shared destination exists.
+/// Android uses a shared portable or explicitly selected folder. If neither
+/// is available, setup is required rather than silently creating a second
+/// app-private DocsGrid library. Non-Android platforms may use private storage.
 PdfImportDestination resolvePdfImportDestination({
   required bool isAndroid,
   String? portableDocumentsUri,
@@ -169,7 +171,7 @@ PdfImportDestination resolvePdfImportDestination({
   final rootUri = isAndroid
       ? (portableDocumentsUri ?? selectedFolderUri)
       : selectedFolderUri;
-  return PdfImportDestination(targetFolderUri ?? rootUri);
+  return PdfImportDestination(targetFolderUri ?? rootUri, isAndroid: isAndroid);
 }
 
 class DocumentRepository {
@@ -383,6 +385,9 @@ class DocumentRepository {
   }
 
   Future<Directory> _privateFolderFor(String? folderId) async {
+    if (Platform.isAndroid) {
+      throw StateError('Allow storage access or choose a folder before adding PDFs.');
+    }
     final base = await getApplicationDocumentsDirectory();
     final root = Directory(p.join(base.path, 'DocsGrid', 'PDFs'));
     await root.create(recursive: true);
@@ -416,6 +421,7 @@ class DocumentRepository {
   }
 
   Future<void> moveToFolder(DocumentRecord document, String? folderId, {String? destinationUri}) async {
+    await StorageMigrationGate.waitUntilReady();
     if (document.folderId == folderId && destinationUri == null) return;
     final db = await _database.database;
     final storage = StorageLocationService.instance;
@@ -443,6 +449,9 @@ class DocumentRepository {
       destinationUri ??= await FolderRepository().ensurePhysicalStorageUri(targetFolderId);
     }
 
+    if (Platform.isAndroid && destinationUri == null) {
+      throw StateError('Allow storage access or choose a folder before moving PDFs.');
+    }
     final sourceUri = document.storagePath;
     final sourceIsShared = sourceUri.startsWith('content://') || sourceUri.startsWith('file://');
     String newStorageUri = sourceUri;
@@ -612,8 +621,8 @@ class DocumentRepository {
         'folders',
         columns: ['id', 'name'],
         where: parentId == null
-            ? 'parent_id IS NULL AND deleted_at IS NULL'
-            : 'parent_id = ? AND deleted_at IS NULL',
+            ? 'parent_id IS NULL'
+            : 'parent_id = ?',
         whereArgs: parentId == null ? null : [parentId],
         orderBy: 'name COLLATE NOCASE ASC',
       );
@@ -639,7 +648,7 @@ class DocumentRepository {
             'storage_uri_or_relative_path': childUri,
             'updated_at': DateTime.now().toUtc().toIso8601String(),
           },
-          where: 'id = ? AND deleted_at IS NULL',
+          where: 'id = ?',
           whereArgs: [id],
         );
         pendingFolders.add((id, childUri));
@@ -658,7 +667,8 @@ class DocumentRepository {
       final name = row['name'] as String;
       final sourceUri = row['storage_uri'] as String?;
       if (sourceUri == null || sourceUri.isEmpty) {
-        throw StateError('PDF "$name" has no saved storage location. Migration stopped without deleting it.');
+        // Metadata-only records have no payload to move; retain them for relinking.
+        continue;
       }
       final folderId = row['folder_id'] as String?;
       final safePdfName = _safePdfName(name);
@@ -764,9 +774,42 @@ class DocumentRepository {
     return migrated;
   }
 
+  /// Checks whether database rows still reference older writable DocsGrid roots.
+  Future<bool> hasLegacyStorageReferences() async {
+    final db = await _database.database;
+    final documents = await db.query('documents', columns: ['storage_uri']);
+    final folders = await db.query(
+      'folders',
+      columns: ['storage_uri_or_relative_path'],
+    );
+    return documents.any((row) =>
+            StorageLocationService.isLegacyDocsGridStorageLocation(
+              row['storage_uri'] as String?,
+            )) ||
+        folders.any((row) =>
+            StorageLocationService.isLegacyDocsGridStorageLocation(
+              row['storage_uri_or_relative_path'] as String?,
+            ));
+  }
+
+  /// Moves older DocsGrid records into Android/media/com.docsgrid. Custom
+  /// SAF destinations remain untouched; old PDFs are SHA-256 verified.
+  Future<int> migrateLegacyStorageToCanonicalIfNeeded() async {
+    if (!Platform.isAndroid) return 0;
+    final storage = StorageLocationService.instance;
+    if (!await storage.hasAllFilesAccess()) return 0;
+    final locations = await storage.portableDataLocationsIfAvailable();
+    if (!StorageLocationService.isCanonicalPortableRootUri(locations['rootUri'])) {
+      return 0;
+    }
+    if (!await hasLegacyStorageReferences()) return 0;
+    return migrateExistingLibraryToSelectedStorage();
+  }
+
   /// Reconnects a missing or inaccessible PDF to a user-selected copy.
   /// If the record has a SHA-256 value, the replacement must match exactly.
   Future<void> relinkDocument(DocumentRecord document) async {
+    await StorageMigrationGate.waitUntilReady();
     final pickedFile = await FilePicker.pickFile(
       type: FileType.custom,
       allowedExtensions: ['pdf'],
@@ -837,6 +880,9 @@ class DocumentRepository {
         destinationUri ??= await FolderRepository().ensurePhysicalStorageUri(folderId);
       }
 
+      if (Platform.isAndroid && destinationUri == null) {
+        throw StateError('Allow storage access or choose a folder before replacing this PDF.');
+      }
       String? relativePath;
       if (destinationUri != null) {
         createdUri = await storage.copyPdf(
@@ -925,6 +971,7 @@ class DocumentRepository {
     required String displayName,
     String? targetFolderId,
   }) async {
+    await StorageMigrationGate.waitUntilReady();
     if (!storageUri.startsWith('file://') && !storageUri.startsWith('content://')) {
       throw ArgumentError('Recovery requires a shared-storage file URI.');
     }
@@ -962,14 +1009,71 @@ class DocumentRepository {
         );
         if (folders.isEmpty) throw StateError('Recovery folder could not be created.');
       }
+
+      final locations = Platform.isAndroid
+          ? await storage.portableDataLocationsIfAvailable()
+          : const <String, String>{};
+      final destinationUri = targetFolderId == null
+          ? locations['documentsUri']
+          : await FolderRepository().ensurePhysicalStorageUri(targetFolderId);
+      if (Platform.isAndroid && destinationUri == null) {
+        throw StateError('Allow storage access or choose a folder before recovering PDFs.');
+      }
+      var recoveredUri = storageUri;
+      var storedName = _safePdfName(displayName);
+      if (destinationUri != null) {
+        var placed = false;
+        final baseName = p.basenameWithoutExtension(storedName);
+        for (var suffix = 0; suffix < 100; suffix++) {
+          final candidateName =
+              suffix == 0 ? storedName : '${baseName}_${suffix + 1}.pdf';
+          try {
+            final existing = await storage.findChildUri(
+              parentUri: destinationUri,
+              name: candidateName,
+            );
+            final existingDigest = await storage.sha256Pdf(existing);
+            if (existingDigest == digest) {
+              recoveredUri = existing;
+              storedName = candidateName;
+              placed = true;
+              break;
+            }
+          } catch (error) {
+            if (!StorageLocationService.isNotFoundError(error)) rethrow;
+            final copied = await storage.copyPdf(
+              sourceUri: storageUri,
+              parentUri: destinationUri,
+              name: candidateName,
+            );
+            try {
+              final copiedDigest = await storage.sha256Pdf(copied);
+              if (copiedDigest != digest) {
+                throw StateError('Recovered PDF did not pass verification.');
+              }
+            } catch (_) {
+              try { await storage.deletePdf(copied); } catch (_) {}
+              rethrow;
+            }
+            recoveredUri = copied;
+            storedName = candidateName;
+            placed = true;
+            break;
+          }
+        }
+        if (!placed) {
+          throw StateError('A safe name could not be found for the recovered PDF.');
+        }
+      }
+
       final id = _uuid.v4();
       final now = DateTime.now().toUtc().toIso8601String();
       await db.transaction((txn) async {
         await txn.insert('documents', {
           'id': id,
-          'name': p.basenameWithoutExtension(displayName),
+          'name': p.basenameWithoutExtension(storedName),
           'original_name': displayName,
-          'storage_uri': storageUri,
+          'storage_uri': recoveredUri,
           'relative_path': null,
           'mime_type': 'application/pdf',
           'size_bytes': size,
@@ -982,11 +1086,13 @@ class DocumentRepository {
           'source': 'reinstall_recovery',
         });
         await _recordHistory(txn, id, 'recovered_after_reinstall', {
-          'storage_uri': storageUri,
+          'storage_uri': recoveredUri,
+          'source_uri': storageUri,
           'folder_id': targetFolderId,
         });
       });
       PortableSnapshotEvents.notifyDataChanged();
+      // Recovery never deletes the original source file.
       return true;
     } finally {
       if (await staged.exists()) await staged.delete();
@@ -994,6 +1100,7 @@ class DocumentRepository {
   }
 
   Future<ImportSummary> importScannedPdf(File source, {String? displayName, String? targetFolderUri, String? targetFolderId, String sourceType = 'scanner'}) async {
+    await StorageMigrationGate.waitUntilReady();
     if (!await source.exists()) throw StateError('Scanned PDF is not available.');
     final header = await source.openRead(0, 5).fold<List<int>>(<int>[], (a, b) => a..addAll(b));
     if (header.length < 5 || String.fromCharCodes(header) != '%PDF-') {
@@ -1024,6 +1131,9 @@ class DocumentRepository {
     final destinationUri = targetFolderUri ?? folderUri ??
         (Platform.isAndroid ? portableLocations['documentsUri'] : selected?['uri']) ??
         selected?['uri'];
+    if (Platform.isAndroid && destinationUri == null) {
+      throw StateError('Allow storage access or choose a folder before adding PDFs.');
+    }
     if (destinationUri != null) {
       uri = await storage.copyPdf(
         sourceUri: Uri.file(source.path).toString(),
@@ -1194,6 +1304,7 @@ class DocumentRepository {
     Future<ImportDecision?> Function(String suggestedName, String? suggestedCategoryId, List<ImportCategoryOption> categories)? review,
     String? targetFolderId,
   }) async {
+    await StorageMigrationGate.waitUntilReady();
     final pickedFiles = await FilePicker.pickFiles(
       type: FileType.custom,
       allowedExtensions: ['pdf'],
@@ -1285,6 +1396,9 @@ class DocumentRepository {
           selectedFolderUri: selectedFolder?['uri'],
           targetFolderUri: targetFolderUri,
         );
+        if (destination.requiresStorageSetup) {
+          throw StateError('Allow storage access or choose a folder before adding PDFs.');
+        }
         final destinationFolderUri = destination.uri;
         // Base the private-storage fallback on the resolved destination, not
         // merely on whether a folder preference exists. A selected SAF folder
@@ -1578,6 +1692,7 @@ class DocumentRepository {
   Future<DocumentRecord> copyDocument(
     DocumentRecord document, {String? targetFolderId}
   ) async {
+    await StorageMigrationGate.waitUntilReady();
     final sourceUri = document.storagePath;
     final storage = StorageLocationService.instance;
     final baseName = document.name;
@@ -1680,6 +1795,7 @@ class DocumentRepository {
   }
 
   Future<void> restoreFromTrash(DocumentRecord document) async {
+    await StorageMigrationGate.waitUntilReady();
     final db = await _database.database;
     await db.transaction((txn) async {
       final count = await txn.update('documents', {
@@ -1694,6 +1810,7 @@ class DocumentRepository {
   }
 
   Future<void> moveToTrash(DocumentRecord document) async {
+    await StorageMigrationGate.waitUntilReady();
     final db = await _database.database;
     await db.transaction((txn) async {
       final changed = await txn.update('documents', {
@@ -1708,6 +1825,7 @@ class DocumentRepository {
   }
 
   Future<void> rename(DocumentRecord document, String newName) async {
+    await StorageMigrationGate.waitUntilReady();
     final cleaned = newName.trim();
     if (cleaned.isEmpty) throw ArgumentError('Name cannot be empty.');
     final rawBase = p.basenameWithoutExtension(cleaned)
@@ -1781,6 +1899,7 @@ class DocumentRepository {
   }
 
   Future<void> permanentlyDelete(DocumentRecord document) async {
+    await StorageMigrationGate.waitUntilReady();
     final db = await _database.database;
     final trashed = await db.query(
       'documents',

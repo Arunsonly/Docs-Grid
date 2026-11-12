@@ -24,11 +24,20 @@ void main() {
       expect(result.usesPrivateStorage, isFalse);
     });
 
-    test('uses app-private storage only when Android has no shared destination', () {
+    test('requires a shared destination instead of creating another Android library', () {
       final result = resolvePdfImportDestination(isAndroid: true);
 
       expect(result.uri, isNull);
+      expect(result.usesPrivateStorage, isFalse);
+      expect(result.requiresStorageSetup, isTrue);
+    });
+
+    test('uses app-private storage on non-Android when no shared target exists', () {
+      final result = resolvePdfImportDestination(isAndroid: false);
+
+      expect(result.uri, isNull);
       expect(result.usesPrivateStorage, isTrue);
+      expect(result.requiresStorageSetup, isFalse);
     });
 
     test('uses the selected folder on non-Android platforms', () {

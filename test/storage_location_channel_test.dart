@@ -605,4 +605,44 @@ void main() {
     expect(folder['isSizeIncomplete'], isTrue);
 
   });
+  
+  test('legacy DocsGrid paths are distinguished from the canonical shared root', () {
+    expect(
+      StorageLocationService.isLegacyDocsGridStorageLocation(
+        'file:///storage/emulated/0/Android/media/DocsGrid/Documents/Policy.pdf',
+      ),
+      isTrue,
+    );
+    expect(
+      StorageLocationService.isLegacyDocsGridStorageLocation(
+        'content://com.android.externalstorage.documents/tree/primary%3AAndroid%2Fmedia%2FDocsGrid/document/primary%3AAndroid%2Fmedia%2FDocsGrid%2FFolders%2FPolicy.pdf',
+      ),
+      isTrue,
+    );
+    expect(
+      StorageLocationService.isLegacyDocsGridStorageLocation(
+        '/data/user/0/com.docsgrid.mobile/app_flutter/DocsGrid/PDFs/Policy.pdf',
+      ),
+      isTrue,
+    );
+    expect(
+      StorageLocationService.isLegacyDocsGridStorageLocation(
+        'file:///storage/emulated/0/Android/media/com.docsgrid/My%20Files/Folders/Insurance/Policy.pdf',
+      ),
+      isFalse,
+    );
+    expect(
+      StorageLocationService.isCanonicalPortableRootUri(
+        'file:///storage/emulated/0/Android/media/com.docsgrid',
+      ),
+      isTrue,
+    );
+    expect(
+      StorageLocationService.isCanonicalPortableRootUri(
+        'content://com.android.externalstorage.documents/tree/primary%3AAndroid%2Fmedia%2FDocsGrid',
+      ),
+      isFalse,
+    );
+  });
+
 }

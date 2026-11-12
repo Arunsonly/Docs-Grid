@@ -11,6 +11,7 @@ import 'package:uuid/uuid.dart';
 import '../../../core/database/app_database.dart';
 import '../../../core/storage/storage_location_service.dart';
 import '../../../core/storage/portable_snapshot_events.dart';
+import '../../../core/storage/storage_migration_gate.dart';
 import '../domain/folder.dart';
 
 class FolderOption {
@@ -120,6 +121,7 @@ class FolderRepository {
   /// Persists the visual order of the active children of one parent.
   /// The supplied ids must be an exact permutation of that parent's folders.
   Future<void> reorderChildren(String? parentId, List<String> orderedIds) async {
+    await StorageMigrationGate.waitUntilReady();
     final db = await _database.database;
     await db.transaction((txn) async {
       final rows = await txn.query(
@@ -176,6 +178,7 @@ class FolderRepository {
   /// Ensures a virtual folder and its ancestors exist in the selected
   /// physical storage tree. Returns null when the library is app-private.
   Future<String?> ensurePhysicalStorageUri(String folderId) async {
+    await StorageMigrationGate.waitUntilReady();
     final db = await _database.database;
     final storage = StorageLocationService.instance;
     final selectedRoot = await storage.selectedFolder();
@@ -257,6 +260,7 @@ class FolderRepository {
   }
 
   Future<Folder> create({required String name, String? parentId}) async {
+    await StorageMigrationGate.waitUntilReady();
     final cleaned = validateFolderName(name);
     final db = await _database.database;
     final storage = StorageLocationService.instance;
@@ -283,6 +287,9 @@ class FolderRepository {
         : const <String, String>{};
     final String? selectedRootUri =
         portableLocations['libraryUri'] ?? selectedRoot?['uri'];
+    if (Platform.isAndroid && selectedRootUri == null) {
+      throw StateError('Allow storage access or choose a folder before creating folders.');
+    }
     final String? parentStorageUri = parentId == null
         ? selectedRootUri
         : await ensurePhysicalStorageUri(parentId);
@@ -346,6 +353,7 @@ class FolderRepository {
   }
 
   Future<void> rename(String id, String name) async {
+    await StorageMigrationGate.waitUntilReady();
     final cleaned = validateFolderName(name);
     final db = await _database.database;
     final rows = await db.query(
@@ -570,6 +578,7 @@ class FolderRepository {
   /// URIs and documents are preserved; only the Grid hierarchy changes.
   /// If both a parent and child are selected, only the parent is reparented.
   Future<void> moveManyToParent(List<String> folderIds, String? parentId) async {
+    await StorageMigrationGate.waitUntilReady();
     final requested = folderIds.toSet();
     if (requested.isEmpty) return;
     final db = await _database.database;
@@ -659,6 +668,7 @@ class FolderRepository {
   /// with their folder_id cleared, so restoring them returns them to Grid root.
   /// Physical files are retained; this operation never permanently deletes PDFs.
   Future<int> moveManyToRecycleBin(List<String> folderIds) async {
+    await StorageMigrationGate.waitUntilReady();
     final requested = folderIds.toSet();
     if (requested.isEmpty) return 0;
     final db = await _database.database;
@@ -733,6 +743,7 @@ class FolderRepository {
   }
 
   Future<void> deleteEmpty(String id) async {
+    await StorageMigrationGate.waitUntilReady();
     final db = await _database.database;
     final folder = await db.query(
       'folders',

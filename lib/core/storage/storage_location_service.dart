@@ -49,6 +49,28 @@ class StorageLocationService {
     };
   }
 
+  /// Recognizes only the former writable DocsGrid roots, not the canonical root.
+  @visibleForTesting
+  static bool isLegacyDocsGridStorageLocation(String? value) {
+    if (value == null || value.isEmpty) return false;
+    String decoded;
+    try { decoded = Uri.decodeComponent(value); } catch (_) { decoded = value; }
+    final normalized = decoded.replaceAll('\\', '/').toLowerCase();
+    // SAF tree document IDs use the form "primary:Android/media/DocsGrid",
+    // so Android's segment may follow a colon rather than a slash.
+    return normalized.contains('android/media/docsgrid') ||
+        normalized.contains('/docsgrid/pdfs');
+  }
+
+  @visibleForTesting
+  static bool isCanonicalPortableRootUri(String? value) {
+    if (value == null || value.isEmpty) return false;
+    String decoded;
+    try { decoded = Uri.decodeComponent(value); } catch (_) { decoded = value; }
+    final normalized = decoded.replaceAll('\\', '/').toLowerCase();
+    return normalized.contains('/android/media/com.docsgrid');
+  }
+
   Future<Map<String, String>> portableDataLocations() async {
     if (!Platform.isAndroid && !Platform.isIOS) {
       throw UnsupportedError('Portable folder storage is not supported on this platform.');

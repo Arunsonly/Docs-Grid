@@ -384,10 +384,25 @@ class MainActivity : FlutterActivity() {
                                 val savedLibrary = saved.getString("folders_uri", null)
                                     ?: saved.getString("my_files_uri", null)
                                 val savedDocuments = saved.getString("documents_uri", null)
+                                val hasAllFilesAccess = android.os.Build.VERSION.SDK_INT < 30 ||
+                                    android.os.Environment.isExternalStorageManager()
+                                val savedRootDocumentId = savedRoot
+                                    ?.takeIf { it.startsWith("content://") }
+                                    ?.let { rootUri ->
+                                        runCatching {
+                                            DocumentsContract.getTreeDocumentId(Uri.parse(rootUri))
+                                        }.getOrNull()
+                                    }
+                                    ?.replace('\\', '/')
+                                    ?.lowercase()
+                                    .orEmpty()
+                                val savedRootIsLegacyDocsGrid =
+                                    savedRootDocumentId.contains("android/media/docsgrid")
                                 if (savedRoot?.startsWith("content://") == true &&
                                     savedDatabase?.startsWith("content://") == true &&
                                     savedRecovery?.startsWith("content://") == true &&
-                                    savedLibrary?.startsWith("content://") == true) {
+                                    savedLibrary?.startsWith("content://") == true &&
+                                    !(hasAllFilesAccess && savedRootIsLegacyDocsGrid)) {
                                     val selectedLocations = mutableMapOf<String, String>(
                                         "rootUri" to savedRoot,
                                         "databaseUri" to savedDatabase,
@@ -441,8 +456,7 @@ class MainActivity : FlutterActivity() {
                                 }
                                 // Initialize the automatic portable tree independently of backup discovery.
                                 // A fresh install must never require an old snapshot to create storage.
-                                if (android.os.Build.VERSION.SDK_INT >= 30 &&
-                                    !android.os.Environment.isExternalStorageManager()) {
+                                if (!hasAllFilesAccess) {
                                     throw IllegalStateException("Allow Full internal storage access in DocsGrid Settings, then retry portable storage setup.")
                                 }
                                 val mediaRoot = java.io.File(
