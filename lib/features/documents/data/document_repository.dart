@@ -1289,9 +1289,12 @@ class DocumentRepository {
       if (rows.isEmpty) {
         throw StateError('The archived PDF record could not be found; original kept.');
       }
-      await moveToTrash(DocumentRecord.fromMap(rows.first));
-      // Delete only after a verified Grid copy is safely present in Recycle Bin.
+      final archivedDocument = DocumentRecord.fromMap(rows.first);
+      // Delete the Phone original only after the Grid copy is verified. If
+      // Android denies deletion, keep the imported copy active and recoverable;
+      // do not leave a failed action half-hidden in Recycle Bin.
       await storage.deletePdf(sourceUri);
+      await moveToTrash(archivedDocument);
       return true;
     } finally {
       try {

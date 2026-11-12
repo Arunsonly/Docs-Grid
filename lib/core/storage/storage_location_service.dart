@@ -140,6 +140,19 @@ class StorageLocationService {
     return normalizePhonePdfIndexResponse(value);
   }
 
+  @visibleForTesting
+  static bool isAndroidTrashPath(String? value) {
+    if (value == null || value.trim().isEmpty) return false;
+    final normalized = value.replaceAll('\\', '/').toLowerCase();
+    final segments = normalized.split('/').where((part) => part.isNotEmpty);
+    return segments.any((part) =>
+        part == '.trash' ||
+        part == '.trashed' ||
+        part == '.recycle' ||
+        part == 'recycle_bin' ||
+        part == 'recycle bin');
+  }
+
   /// Normalizes the native MediaStore response separately from the Android
   /// channel guard, so the response contract can be unit-tested on every host.
   @visibleForTesting
@@ -152,6 +165,9 @@ class StorageLocationService {
     final entries = (value['entries'] as List)
         .whereType<Map>()
         .map((entry) => Map<String, Object?>.from(entry))
+        .where((entry) => !isAndroidTrashPath(
+          entry['folderPath'] as String? ?? entry['path'] as String?,
+        ))
         .toList(growable: false);
     final volumes = value['volumes'] is Map
         ? Map<String, Object?>.from(value['volumes'] as Map)

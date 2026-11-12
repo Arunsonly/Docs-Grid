@@ -209,6 +209,7 @@ class MainActivity : FlutterActivity() {
                 relativePathColumn?.let { projection.add(it) }
                 if (android.os.Build.VERSION.SDK_INT >= 30) {
                     projection.add(MediaStore.MediaColumns.GENERATION_MODIFIED)
+                    projection.add(MediaStore.MediaColumns.IS_TRASHED)
                 }
 
                 val version = if (android.os.Build.VERSION.SDK_INT >= 30) {
@@ -237,10 +238,16 @@ class MainActivity : FlutterActivity() {
                 val sizeIndexName = MediaStore.MediaColumns.SIZE
                 val modifiedIndexName = MediaStore.MediaColumns.DATE_MODIFIED
                 val relativeIndexName = relativePathColumn
+                val pdfSelection = if (android.os.Build.VERSION.SDK_INT >= 30) {
+                    "($mimeIndexName = ? OR $nameIndexName LIKE ?) AND " +
+                        MediaStore.MediaColumns.IS_TRASHED + " = 0"
+                } else {
+                    "$mimeIndexName = ? OR $nameIndexName LIKE ?"
+                }
                 contentResolver.query(
                     collection,
                     projection.toTypedArray(),
-                    "$mimeIndexName = ? OR $nameIndexName LIKE ?",
+                    pdfSelection,
                     arrayOf("application/pdf", "%.pdf"),
                     "$modifiedIndexName DESC"
                 )?.use { cursor ->
@@ -270,6 +277,12 @@ class MainActivity : FlutterActivity() {
                             ""
                         }
                         val normalized = relativePath.lowercase()
+                        // Android/Samsung file-manager trash folders are not live Phone files.
+                        val pathSegments = normalized.split('/').filter { it.isNotBlank() }
+                        if (pathSegments.any {
+                            it == ".trash" || it == ".trashed" || it == ".recycle" ||
+                                it == "recycle_bin" || it == "recycle bin"
+                        }) continue
                         // DocsGrid-managed files belong to the Grid library, not Phone storage.
                         if (normalized.startsWith("android/media/com.docsgrid/") ||
                             normalized == "android/media/com.docsgrid" ||
@@ -768,26 +781,31 @@ class MainActivity : FlutterActivity() {
                                 }
                                 result.success(target.delete())
                             } else {
-                                val documentUri = resolveParentUri(uri)
-                                val metadata = contentResolver.query(
-                                    documentUri, arrayOf(DocumentsContract.Document.COLUMN_MIME_TYPE),
-                                    null, null, null
-                                ) ?: throw IllegalStateException("Could not inspect the selected storage item.")
-                                val mime = metadata.use { if (it.moveToFirst()) it.getString(0) else null }
-                                if (mime == DocumentsContract.Document.MIME_TYPE_DIR) {
-                                    val documentId = DocumentsContract.getDocumentId(documentUri)
-                                    val children = DocumentsContract.buildChildDocumentsUriUsingTree(uri, documentId)
-                                    val cursor = contentResolver.query(
-                                        children, arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID),
+                                if (uri.authority == "media") {
+                                    // MediaStore item URIs are not SAF document URIs.
+                                    result.success(contentResolver.delete(uri, null, null) > 0)
+                                } else {
+                                    val documentUri = resolveParentUri(uri)
+                                    val metadata = contentResolver.query(
+                                        documentUri, arrayOf(DocumentsContract.Document.COLUMN_MIME_TYPE),
                                         null, null, null
-                                    ) ?: throw IllegalStateException("Could not verify whether the folder is empty.")
-                                    cursor.use {
-                                        if (it.moveToFirst()) {
-                                            throw IllegalStateException("Folder contains files or subfolders and cannot be deleted.")
+                                    ) ?: throw IllegalStateException("Could not inspect the selected storage item.")
+                                    val mime = metadata.use { if (it.moveToFirst()) it.getString(0) else null }
+                                    if (mime == DocumentsContract.Document.MIME_TYPE_DIR) {
+                                        val documentId = DocumentsContract.getDocumentId(documentUri)
+                                        val children = DocumentsContract.buildChildDocumentsUriUsingTree(uri, documentId)
+                                        val cursor = contentResolver.query(
+                                            children, arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID),
+                                            null, null, null
+                                        ) ?: throw IllegalStateException("Could not verify whether the folder is empty.")
+                                        cursor.use {
+                                            if (it.moveToFirst()) {
+                                                throw IllegalStateException("Folder contains files or subfolders and cannot be deleted.")
+                                            }
                                         }
                                     }
+                                    result.success(DocumentsContract.deleteDocument(contentResolver, uri))
                                 }
-                                result.success(DocumentsContract.deleteDocument(contentResolver, uri))
                             }
                             }
                             "openPdf" -> {
@@ -900,7 +918,7 @@ class MainActivity : FlutterActivity() {
 
     private fun sharedStorageVolumeRoots(): List<java.io.File> {
         val marker = "/Android/data/$packageName"
-        return getExternalFilesDirs(null).filterNotNull().mapNotNull { appDirectory ->
+        val roots = getExternalFilesDirs(null).filterNotNull().mapNotNull { appDirectory ->
             try {
                 val path = appDirectory.canonicalPath
                 val markerIndex = path.indexOf(marker)
@@ -909,7 +927,21 @@ class MainActivity : FlutterActivity() {
             } catch (_: Exception) {
                 null
             }
-        }.distinctBy { it.path }
+        }.toMutableList()
+        // Include mounted shared volumes even when an OEM omits the app-specific
+        // Android/data path from getExternalFilesDirs().
+        try {
+            roots.add(android.os.Environment.getExternalStorageDirectory().canonicalFile)
+        } catch (_: Exception) {}
+        if (android.os.Build.VERSION.SDK_INT >= 24) {
+            try {
+                val manager = getSystemService(android.os.storage.StorageManager::class.java)
+                manager.storageVolumes.mapNotNull { volume ->
+                    try { volume.directory?.canonicalFile } catch (_: Exception) { null }
+                }.forEach { roots.add(it) }
+            } catch (_: Exception) {}
+        }
+        return roots.distinctBy { it.path }
     }
 
     private fun appPrivateStorageRoots(): List<java.io.File> {

@@ -90,6 +90,12 @@ void main() {
           'volumeName': 'external_primary',
           'generationModified': 88,
         },
+        {
+          'name': 'Deleted-policy.pdf',
+          'uri': 'content://media/external/file/42',
+          'isDirectory': false,
+          'folderPath': 'Internal/Android/.Trash/com.sec.android.app.myfiles',
+        },
       ],
       'volumes': {
         'external_primary': {
@@ -103,6 +109,12 @@ void main() {
     final entries = index['entries'] as List<Map<String, Object?>>;
     expect(entries, hasLength(1));
     expect(entries.single['uri'], 'content://media/external/file/41');
+    expect(StorageLocationService.isAndroidTrashPath(
+      'Internal/Android/.Trash/com.sec.android.app.myfiles',
+    ), isTrue);
+    expect(StorageLocationService.isAndroidTrashPath(
+      'Internal/Download',
+    ), isFalse);
     expect(entries.single['folderPath'], 'Internal/Download');
     expect(entries.single['lastModified'], 1794425160000);
     expect(entries.single['generationModified'], 88);
