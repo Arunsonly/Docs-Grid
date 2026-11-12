@@ -50,7 +50,6 @@ class StorageLocationService {
   }
 
   /// Recognizes only the former writable DocsGrid roots, not the canonical root.
-  @visibleForTesting
   static bool isLegacyDocsGridStorageLocation(String? value) {
     if (value == null || value.isEmpty) return false;
     String decoded;
@@ -62,7 +61,6 @@ class StorageLocationService {
         normalized.contains('/docsgrid/pdfs');
   }
 
-  @visibleForTesting
   static bool isCanonicalPortableRootUri(String? value) {
     if (value == null || value.isEmpty) return false;
     String decoded;
