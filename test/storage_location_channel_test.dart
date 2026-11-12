@@ -75,35 +75,30 @@ void main() {
     );
   });
 
-  test('queryPhonePdfIndex preserves MediaStore URI, folder path, date and generation metadata', () async {
-    messenger.setMockMethodCallHandler(channel, (call) async {
-      expect(call.method, 'queryPhonePdfIndex');
-      return {
-        'complete': true,
-        'entries': [
-          {
-            'name': 'Policy.pdf',
-            'uri': 'content://media/external/file/41',
-            'isDirectory': false,
-            'sizeBytes': 4096,
-            'sizeKnown': true,
-            'lastModified': 1794425160000,
-            'folderPath': 'Internal/Download',
-            'volumeName': 'external_primary',
-            'generationModified': 88,
-          },
-        ],
-        'volumes': {
-          'external_primary': {
-            'version': 'volume-v1',
-            'generation': 90,
-            'label': 'Internal',
-          },
+  test('MediaStore response normalization preserves URI, folder path, date and generation metadata', () {
+    final index = StorageLocationService.normalizePhonePdfIndexResponse({
+      'complete': true,
+      'entries': [
+        {
+          'name': 'Policy.pdf',
+          'uri': 'content://media/external/file/41',
+          'isDirectory': false,
+          'sizeBytes': 4096,
+          'sizeKnown': true,
+          'lastModified': 1794425160000,
+          'folderPath': 'Internal/Download',
+          'volumeName': 'external_primary',
+          'generationModified': 88,
         },
-      };
+      ],
+      'volumes': {
+        'external_primary': {
+          'version': 'volume-v1',
+          'generation': 90,
+          'label': 'Internal',
+        },
+      },
     });
-
-    final index = await StorageLocationService.instance.queryPhonePdfIndex();
     expect(index['complete'], isTrue);
     final entries = index['entries'] as List<Map<String, Object?>>;
     expect(entries, hasLength(1));

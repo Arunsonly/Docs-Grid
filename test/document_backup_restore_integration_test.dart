@@ -142,10 +142,21 @@ Future<Database> _openV7Database(Directory directory) async {
   );
 }
 
-Future<void> _insertExistingDocument(Database db, {String id = 'document-1'}) async {
+Future<File> _makeExistingPdf(Directory directory) async {
+  final file = File('${directory.path}/existing_policy.pdf');
+  await file.writeAsBytes(_pdfBytes, flush: true);
+  return file;
+}
+
+Future<void> _insertExistingDocument(
+  Database db, {
+  String id = 'document-1',
+  required File pdfFile,
+}) async {
   await db.insert('documents', {
     'id': id, 'name': 'Existing policy', 'mime_type': 'application/pdf',
-    'size_bytes': 4, 'sha256': List.filled(64, 'f').join(),
+    'storage_uri': pdfFile.path, 'relative_path': null,
+    'size_bytes': await pdfFile.length(), 'sha256': _pdfHash,
     'created_at': '2025-01-01T00:00:00Z', 'updated_at': '2025-01-01T00:00:00Z',
   });
 }
@@ -159,15 +170,19 @@ void main() {
   final messenger = TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
   late Directory temp;
   late Directory appDocuments;
+  late Directory appSupport;
   late Database db;
   late DocumentToolsService service;
 
   setUp(() async {
     temp = await Directory.systemTemp.createTemp('docsgrid_restore_integration_');
     appDocuments = Directory('${temp.path}/app_documents');
+    appSupport = Directory('${temp.path}/app_support');
     await appDocuments.create(recursive: true);
+    await appSupport.create(recursive: true);
     messenger.setMockMethodCallHandler(pathChannel, (call) async {
       if (call.method == 'getApplicationDocumentsDirectory') return appDocuments.path;
+      if (call.method == 'getApplicationSupportDirectory') return appSupport.path;
       if (call.method == 'getTemporaryDirectory') return temp.path;
       throw MissingPluginException('Unexpected path_provider method: ${call.method}');
     });
@@ -199,7 +214,10 @@ void main() {
   });
 
   test('Merge restores PDFs and remaps an existing document ID collision', () async {
-    await _insertExistingDocument(db);
+    await _insertExistingDocument(
+      db,
+      pdfFile: await _makeExistingPdf(temp),
+    );
     final backup = await _makeBackup(temp);
     final restored = await service.restoreBackup(
       backup, confirm: (_) async => true, mode: BackupRestoreMode.merge,
@@ -277,7 +295,10 @@ void main() {
   });
 
   test('Selective reminders retain links to documents already on this device', () async {
-    await _insertExistingDocument(db);
+    await _insertExistingDocument(
+      db,
+      pdfFile: await _makeExistingPdf(temp),
+    );
     final backup = await _makeBackup(temp, withReminder: true);
     await service.restoreBackup(
       backup,

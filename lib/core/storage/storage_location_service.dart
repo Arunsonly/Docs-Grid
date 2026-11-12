@@ -112,7 +112,19 @@ class StorageLocationService {
       throw UnsupportedError('MediaStore indexing is available on Android only.');
     }
     final value = await _channel.invokeMapMethod<String, dynamic>('queryPhonePdfIndex');
-    if (value == null || value['entries'] is! List) {
+    if (value == null) {
+      throw StateError('Android did not return a valid MediaStore PDF index.');
+    }
+    return normalizePhonePdfIndexResponse(value);
+  }
+
+  /// Normalizes the native MediaStore response separately from the Android
+  /// channel guard, so the response contract can be unit-tested on every host.
+  @visibleForTesting
+  static Map<String, Object?> normalizePhonePdfIndexResponse(
+    Map<String, dynamic> value,
+  ) {
+    if (value['entries'] is! List) {
       throw StateError('Android did not return a valid MediaStore PDF index.');
     }
     final entries = (value['entries'] as List)
