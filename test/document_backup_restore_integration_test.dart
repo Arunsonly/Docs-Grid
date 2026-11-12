@@ -144,7 +144,12 @@ Future<Database> _openV7Database(Directory directory) async {
 
 Future<File> _makeExistingPdf(Directory directory) async {
   final file = File('${directory.path}/existing_policy.pdf');
-  await file.writeAsBytes(_pdfBytes, flush: true);
+  // Use different bytes from the archive fixture so this scenario tests an
+  // ID collision, not the separate same-content deduplication path.
+  final existingBytes = Uint8List.fromList(
+    utf8.encode('%PDF-1.7\\nExisting local policy fixture'),
+  );
+  await file.writeAsBytes(existingBytes, flush: true);
   return file;
 }
 
@@ -156,7 +161,8 @@ Future<void> _insertExistingDocument(
   await db.insert('documents', {
     'id': id, 'name': 'Existing policy', 'mime_type': 'application/pdf',
     'storage_uri': pdfFile.path, 'relative_path': null,
-    'size_bytes': await pdfFile.length(), 'sha256': _pdfHash,
+    'size_bytes': await pdfFile.length(),
+    'sha256': (await sha256.bind(pdfFile.openRead()).first).toString(),
     'created_at': '2025-01-01T00:00:00Z', 'updated_at': '2025-01-01T00:00:00Z',
   });
 }
