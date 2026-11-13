@@ -54,7 +54,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           set -euo pipefail
-          MIRROR='https://maven.wso2.org/nexus/content/repositories/central/'
+          MIRROR='https://repo.maven.apache.org/maven2/'
           ARTIFACT='org/jetbrains/kotlin/kotlin-compiler-embeddable/2.2.21/kotlin-compiler-embeddable-2.2.21.jar'
           EXPECTED='9588fa696ac5507af764fd5660df6894185e12704ec1bc3f5cb772af4987f295'
           curl --fail --location --silent --show-error --retry 3 --retry-all-errors "$MIRROR$ARTIFACT" -o /tmp/kotlin-compiler-embeddable-2.2.21.jar
@@ -66,7 +66,7 @@ jobs:
             if (!repositories.find { it.name == 'docsGridVerifiedKotlinMirror' }) {
               repositories.maven {
                 name = 'docsGridVerifiedKotlinMirror'
-                url = uri('https://maven.wso2.org/nexus/content/repositories/central/')
+                url = uri('https://repo.maven.apache.org/maven2/')
                 content { includeGroupByRegex('org\\.jetbrains\\.kotlin(\\..*)?') }
               }
             }

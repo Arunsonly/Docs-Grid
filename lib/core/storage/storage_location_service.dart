@@ -140,7 +140,6 @@ class StorageLocationService {
 
   /// Removes the synthetic root labels added by the Phone storage browser.
   /// The result is a true path relative to the storage volume.
-  @visibleForTesting
   static String normalizePhoneFolderPath(String? value) {
     final segments = (value ?? '')
         .replaceAll('\\', '/')
