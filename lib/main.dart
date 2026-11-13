@@ -352,7 +352,6 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
         ),
       ),
     ));
-    ));
   }
 
   Future<void> _consumeSharedPdfs() async {

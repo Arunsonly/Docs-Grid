@@ -256,6 +256,43 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
             ? 'Restore completed. No PDF payloads were included; recovered document records may need PDF relinking.'
             : 'Restore completed: $restored PDF payload(s) restored and verified.');
       }
+    } on StateError catch (error) {
+      if (!error.toString().contains('contains no user PDFs') || !mounted) rethrow;
+      final recover = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('This backup has no Grid data'),
+          content: Text(
+            '${error.toString()}\n\nYou can rebuild the PDF library from files '
+            'still present in Phone storage. Existing source PDFs will not be deleted.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Recover existing PDFs'),
+            ),
+          ],
+        ),
+      );
+      if (recover == true && mounted) {
+        final result = await _tools.recoverLoosePortablePdfs(
+          onProgress: (completed, total) {
+            if (mounted) setState(() => _message = 'Recovering PDFs: $completed of $total');
+          },
+        );
+        if (mounted) {
+          setState(() => _message =
+              'Recovery complete. Folders restored: ${result['folders']}; '
+              'PDFs added: ${result['added']}; duplicates: ${result['duplicates']}; '
+              'failed: ${result['failed']}. Original source PDFs were not deleted.');
+        }
+      } else {
+        rethrow;
+      }
     } finally {
       if (temporaryCopy && await file.exists()) await file.delete();
     }
@@ -320,9 +357,10 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
         builder: (context) => AlertDialog(
           title: const Text('No backup with recoverable data found'),
           content: Text(
-            'DocsGrid could not validate the available backup archives. '
-            'You can still discover surviving PDFs and rebuild the file list. '
-            'Categories, tags, reminders, history and settings cannot be recovered from PDFs alone.\n\n$error',
+            'No backup archive with user data was found. A ZIP may be readable but '
+            'contain only default categories and no PDFs or folders. You can rebuild '
+            'the Grid library from surviving Phone PDFs; categories, tags, reminders, '
+            'history and settings require a non-empty DocsGrid backup.\n\n$error',
           ),
           actions: [
             TextButton(
