@@ -138,6 +138,27 @@ class StorageLocationService {
     return normalizePhonePdfIndexResponse(value);
   }
 
+  /// Removes the synthetic root labels added by the Phone storage browser.
+  /// The result is a true path relative to the storage volume.
+  @visibleForTesting
+  static String normalizePhoneFolderPath(String? value) {
+    final segments = (value ?? '')
+        .replaceAll('\\', '/')
+        .split('/')
+        .map((segment) => segment.trim())
+        .where((segment) => segment.isNotEmpty)
+        .toList();
+    if (segments.isEmpty) return '';
+    final first = segments.first.toLowerCase();
+    if (first == 'internal' ||
+        first == 'internal storage' ||
+        first.startsWith('external storage ') ||
+        first.startsWith('granted folder ')) {
+      segments.removeAt(0);
+    }
+    return segments.join('/');
+  }
+
   @visibleForTesting
   static bool isAndroidTrashPath(String? value) {
     if (value == null || value.trim().isEmpty) return false;

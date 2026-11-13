@@ -814,30 +814,152 @@ class DocumentToolsService {
   /// Rebuilds the library index from surviving shared PDFs after reinstall.
   /// PDFs are copied into the active library and SHA-256 verified. Source files
   /// remain untouched; folder names are rebuilt from their paths.
-  Future<Map<String, int>> recoverLoosePortablePdfs() async {
+  Future<Map<String, int>> recoverLoosePortablePdfs({
+    void Function(int completed, int total)? onProgress,
+  }) async {
     await StorageMigrationGate.waitUntilReady();
     if (!Platform.isAndroid) {
       throw UnsupportedError('Automatic shared-media recovery is currently Android-only.');
     }
     final storage = StorageLocationService.instance;
     final locations = await storage.portableDataLocations();
-    final unfiledRoot = locations['documentsUri'];
-    final foldersRoot = locations['libraryUri'];
-    if (unfiledRoot == null || foldersRoot == null) {
-      throw StateError('DocsGrid portable PDF folders are unavailable.');
-    }
     final folderRepository = FolderRepository();
     final documentRepository = DocumentRepository();
-    final folderIdsByPath = <String, String>{};
-    var added = 0;
-    var duplicates = 0;
+    final candidates = <Map<String, Object?>>[];
+    final seenUris = <String>{};
     var failed = 0;
+    var mediaStoreComplete = false;
 
+    void addCandidate(
+      Map<String, Object?> item, {
+      required String folderPath,
+    }) {
+      final name = item['name']?.toString() ?? '';
+      final uri = item['uri']?.toString() ?? '';
+      if (!name.toLowerCase().endsWith('.pdf') ||
+          uri.isEmpty ||
+          !seenUris.add(uri)) {
+        return;
+      }
+      candidates.add({
+        'name': name,
+        'uri': uri,
+        'folderPath': folderPath,
+      });
+    }
+
+    // Phone tab's MediaStore index sees shared folders such as Download and
+    // WhatsApp. The old recovery only walked DocsGrid/My Files, so it missed
+    // the files displayed in Phone storage after reinstall.
+    try {
+      if (await storage.hasAllFilesAccess()) {
+        final index = await storage.queryPhonePdfIndex();
+        mediaStoreComplete = index['complete'] == true;
+        final indexedEntries =
+            index['entries'] as List<Map<String, Object?>>;
+        for (final item in indexedEntries) {
+          addCandidate(
+            item,
+            folderPath: StorageLocationService.normalizePhoneFolderPath(
+              item['folderPath'] as String?,
+            ),
+          );
+        }
+      }
+    } catch (_) {
+      // Continue with explicitly granted SAF roots if MediaStore is unavailable.
+    }
+
+    // Include user-granted SAF/cloud roots. If MediaStore has a complete
+    // local-volume index, skip its file:// roots to avoid scanning them twice.
+    final scanRoots = await storage.accessibleStorageRoots();
+    for (var index = 0; index < scanRoots.length; index++) {
+      final root = scanRoots[index];
+      final uri = root['uri']!;
+      if (mediaStoreComplete && uri.startsWith('file://')) continue;
+      final label = index == 0 ? 'Internal' : root['name']!;
+      try {
+        final found = await storage.listStorageTreeRecursively(
+          uri,
+          rootLabel: label,
+          includeEmptyFolders: false,
+        );
+        for (final item in found) {
+          if (item['isDirectory'] == true) continue;
+          addCandidate(
+            item,
+            folderPath: StorageLocationService.normalizePhoneFolderPath(
+              item['folderPath'] as String?,
+            ),
+          );
+        }
+      } catch (_) {
+        failed++;
+      }
+    }
+
+    // Phone's MediaStore deliberately excludes DocsGrid-managed files. Keep
+    // them in recovery too, including the pre-com.docsgrid legacy tree.
+    Future<void> addPortableRoot(
+      String uri, {
+      required bool preserveFolders,
+    }) async {
+      try {
+        final files = await storage.listPdfFilesRecursively(uri);
+        for (final item in files) {
+          addCandidate(
+            item,
+            folderPath: preserveFolders
+                ? StorageLocationService.normalizePhoneFolderPath(
+                    item['folderPath'] as String?,
+                  )
+                : '',
+          );
+        }
+      } catch (_) {
+        failed++;
+      }
+    }
+
+    final unfiledRoot = locations['documentsUri'];
+    final foldersRoot = locations['libraryUri'];
+    if (unfiledRoot != null) {
+      await addPortableRoot(unfiledRoot, preserveFolders: false);
+    }
+    if (foldersRoot != null) {
+      await addPortableRoot(foldersRoot, preserveFolders: true);
+    }
+    final legacyUri = locations['legacyRootUri'];
+    if (legacyUri != null && legacyUri.startsWith('file://')) {
+      final legacyRoot = Uri.parse(legacyUri).toFilePath();
+      final legacyDocuments = Directory(p.join(legacyRoot, 'Documents'));
+      final legacyFolders = Directory(p.join(legacyRoot, 'Folders'));
+      if (await legacyDocuments.exists()) {
+        await addPortableRoot(
+          Uri.directory(legacyDocuments.path).toString(),
+          preserveFolders: false,
+        );
+      }
+      if (await legacyFolders.exists()) {
+        await addPortableRoot(
+          Uri.directory(legacyFolders.path).toString(),
+          preserveFolders: true,
+        );
+      }
+    }
+
+    // Reuse folders already restored from a snapshot, matching full relative
+    // paths so repeated recovery does not create duplicate folder records.
+    final folderIdsByPath = <String, String>{};
+    for (final existing in await folderRepository.allFoldersWithPaths()) {
+      folderIdsByPath[existing.path] = existing.folder.id;
+    }
+    var createdFolders = 0;
     Future<String?> ensureFolderPath(String path) async {
       if (path.isEmpty) return null;
-      var parentId = null as String?;
+      String? parentId;
       var currentPath = '';
-      for (final segment in path.split('/')) {
+      for (final segment in path.split('/').where((value) => value.isNotEmpty)) {
         currentPath = currentPath.isEmpty ? segment : '$currentPath/$segment';
         final cached = folderIdsByPath[currentPath];
         if (cached != null) {
@@ -850,50 +972,42 @@ class DocumentToolsService {
         );
         folderIdsByPath[currentPath] = created.id;
         parentId = created.id;
+        createdFolders++;
       }
       return parentId;
     }
 
-    final roots = <({String uri, bool preserveFolders})>[
-      (uri: unfiledRoot, preserveFolders: false),
-      (uri: foldersRoot, preserveFolders: true),
-    ];
-    final legacyUri = locations['legacyRootUri'];
-    if (legacyUri != null && legacyUri.startsWith('file://')) {
-      final legacyRoot = Uri.parse(legacyUri).toFilePath();
-      final legacyDocuments = Directory(p.join(legacyRoot, 'Documents'));
-      final legacyFolders = Directory(p.join(legacyRoot, 'Folders'));
-      if (await legacyDocuments.exists()) {
-        roots.add((uri: Uri.directory(legacyDocuments.path).toString(), preserveFolders: false));
-      }
-      if (await legacyFolders.exists()) {
-        roots.add((uri: Uri.directory(legacyFolders.path).toString(), preserveFolders: true));
-      }
-    }
-    for (final root in roots) {
-      final files = await storage.listPdfFilesRecursively(root.uri);
-      for (final item in files) {
-        try {
-          final folderPath = root.preserveFolders
-              ? item['folderPath'] as String
-              : '';
-          final folderId = await ensureFolderPath(folderPath);
-          final imported = await documentRepository.importExistingSharedPdf(
-            storageUri: item['uri'] as String,
-            displayName: item['name'] as String,
-            targetFolderId: folderId,
-          );
-          if (imported) {
-            added++;
-          } else {
-            duplicates++;
-          }
-        } catch (_) {
-          failed++;
+    var added = 0;
+    var duplicates = 0;
+    var processed = 0;
+    final total = candidates.length;
+    onProgress?.call(0, total);
+    for (final item in candidates) {
+      try {
+        final folderId = await ensureFolderPath(item['folderPath'] as String);
+        final imported = await documentRepository.importExistingSharedPdf(
+          storageUri: item['uri'] as String,
+          displayName: item['name'] as String,
+          targetFolderId: folderId,
+        );
+        if (imported) {
+          added++;
+        } else {
+          duplicates++;
         }
+      } catch (_) {
+        failed++;
+      } finally {
+        processed++;
+        onProgress?.call(processed, total);
       }
     }
-    return {'added': added, 'duplicates': duplicates, 'failed': failed};
+    return {
+      'added': added,
+      'duplicates': duplicates,
+      'failed': failed,
+      'folders': createdFolders,
+    };
   }
 
   /// Tries portable archives newest-first. A filename or timestamp is never
@@ -977,6 +1091,29 @@ class DocumentToolsService {
     final backup = await _decodeValidatedBackup(zipFile);
     try {
       final pdfCount = (backup.manifest['files'] as List<dynamic>).length;
+      bool hasRows(String table) =>
+          (backup.rowsByTable[table] ?? const <Map<String, Object?>>[]).isNotEmpty;
+      final hasCustomCategories =
+          (backup.rowsByTable['categories'] ?? const <Map<String, Object?>>[])
+              .any((row) => (row['is_builtin'] as num?)?.toInt() != 1);
+      final hasRecoverableData = pdfCount > 0 ||
+          hasRows('documents') ||
+          hasRows('folders') ||
+          hasCustomCategories ||
+          hasRows('tags') ||
+          hasRows('document_tags') ||
+          hasRows('reminders') ||
+          hasRows('history') ||
+          hasRows('settings') ||
+          hasRows('smart_collections') ||
+          hasRows('document_text_index');
+      if (!hasRecoverableData) {
+        throw StateError(
+          'This ZIP is readable, but contains no user PDFs, folders or records. '
+          'Choose Recover existing PDFs to rebuild the library from files still '
+          'present on this phone.',
+        );
+      }
       if (confirm != null && !await confirm(pdfCount)) return null;
       // All restore modes can mutate file placement or metadata. Create a
       // verified Full safety archive before merge/selective/full replacement.
@@ -1776,7 +1913,9 @@ class DocumentToolsService {
   /// Restores the newest portable snapshot additively. Existing records are
   /// retained; imported IDs are remapped where needed. PDFs are relinked by
   /// SHA-256 from the currently selected library and are never overwritten.
-  Future<Map<String, int>> restoreLatestPortableMetadataSnapshot() async {
+  Future<Map<String, int>> restoreLatestPortableMetadataSnapshot({
+    void Function(int completed, int total)? onProgress,
+  }) async {
     await StorageMigrationGate.waitUntilReady();
     final storage = StorageLocationService.instance;
     final locations = await storage.portableDataLocations();
@@ -2150,6 +2289,12 @@ class DocumentToolsService {
       } catch (_) {
         // The reminder record is restored even if the OS blocks notifications.
       }
+    }
+    if (rowsByTable['documents']!.isEmpty) {
+      final phoneRecovery = await recoverLoosePortablePdfs(onProgress: onProgress);
+      addedDocuments += phoneRecovery['added'] ?? 0;
+      recoveredCounts['folders'] =
+          (recoveredCounts['folders'] ?? 0) + (phoneRecovery['folders'] ?? 0);
     }
     return {
       'documentsAdded': addedDocuments,

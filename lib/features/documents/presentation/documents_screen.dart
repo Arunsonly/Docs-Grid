@@ -1817,7 +1817,8 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         onSharePdf: _sharePhonePdf,
         onTrashPdf: _trashPhonePdf,
         embedded: true,
-        isLoading: _phoneScanLoading,
+        // Keep the last usable index visible while refresh continues silently.
+        isLoading: _phoneScanLoading && _phoneEntries.isEmpty,
         onRefresh: () => _scanPhoneStorage(openBrowser: true),
       );
     }

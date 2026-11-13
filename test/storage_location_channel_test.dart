@@ -121,6 +121,27 @@ void main() {
     expect((index['volumes'] as Map)['external_primary']['generation'], 90);
   });
 
+  test('Phone folder paths discard synthetic volume labels before Grid recovery', () {
+    expect(
+      StorageLocationService.normalizePhoneFolderPath('Internal/Download'),
+      'Download',
+    );
+    expect(
+      StorageLocationService.normalizePhoneFolderPath(
+        'External storage 1/WhatsApp/Media/WhatsApp Documents',
+      ),
+      'WhatsApp/Media/WhatsApp Documents',
+    );
+    expect(
+      StorageLocationService.normalizePhoneFolderPath('Granted folder 2/Policies/2026'),
+      'Policies/2026',
+    );
+    expect(
+      StorageLocationService.normalizePhoneFolderPath('Insurance/Policies'),
+      'Insurance/Policies',
+    );
+  });
+
   test('only explicit NOT_FOUND errors permit missing-child creation', () {
     expect(StorageLocationService.isNotFoundError(
       PlatformException(code: 'NOT_FOUND'),

@@ -318,7 +318,10 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
       await prefs.remove('docsgrid_restore_prompt_snoozed_until');
       await Navigator.of(context).push(MaterialPageRoute(builder: (_) => Scaffold(
         appBar: AppBar(title: const Text('Recover existing PDFs')),
-        body: const DocumentToolsScreen(quickAction: 'recover_loose_pdfs'),
+        body: const DocumentToolsScreen(
+          quickAction: 'recover_loose_pdfs',
+          section: 'backup_restore',
+        ),
       )));
       return;
     }
@@ -337,22 +340,18 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
     if (!mounted) return;
     await prefs.setBool('docsgrid_restore_prompt_shown', true);
     await prefs.remove('docsgrid_restore_prompt_snoozed_until');
+    final restoreAction =
+        hasPortableBackups ? 'restore_latest_backup' : 'restore_portable';
+    // The previous Offstage route hid both recovery progress and its outcome.
     await Navigator.of(context).push(MaterialPageRoute(
-      builder: (_) => Stack(
-        fit: StackFit.expand,
-        children: [
-          DocsGridHome(
-            darkMode: widget.darkMode,
-            onDarkModeChanged: widget.onDarkModeChanged,
-          ),
-          Offstage(
-            offstage: true,
-            child: DocumentToolsScreen(
-              quickAction: hasPortableBackups ? 'restore_latest_backup' : 'restore_portable',
-            ),
-          ),
-        ],
+      builder: (_) => Scaffold(
+        appBar: AppBar(title: const Text('Restore DocsGrid data')),
+        body: DocumentToolsScreen(
+          quickAction: restoreAction,
+          section: 'backup_restore',
+        ),
       ),
+    ));
     ));
   }
 

@@ -262,13 +262,18 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
   });
 
   Future<void> _recoverLoosePortablePdfs() => _run(() async {
-    final recovered = await _tools.recoverLoosePortablePdfs();
+    final recovered = await _tools.recoverLoosePortablePdfs(
+      onProgress: (completed, total) {
+        if (mounted) {
+          setState(() => _message = 'Recovering PDFs: $completed of $total');
+        }
+      },
+    );
     if (mounted) {
       setState(() => _message =
-          'PDF recovery finished. Added: ${recovered['added']}; '
-          'duplicates: ${recovered['duplicates']}; failed: ${recovered['failed']}. '
-          'PDF files and folder names were recovered. Categories, tags, reminders, '
-          'history and settings require a valid DocsGrid backup.');
+          'PDF recovery finished. Folders restored: ${recovered['folders']}; '
+          'PDFs added: ${recovered['added']}; duplicates: ${recovered['duplicates']}; '
+          'failed: ${recovered['failed']}. Original source PDFs were not deleted.');
     }
   });
 
@@ -313,7 +318,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
       final useLoosePdfs = await showDialog<bool>(
         context: context,
         builder: (context) => AlertDialog(
-          title: const Text('No valid backup ZIP found'),
+          title: const Text('No backup with recoverable data found'),
           content: Text(
             'DocsGrid could not validate the available backup archives. '
             'You can still discover surviving PDFs and rebuild the file list. '
@@ -332,11 +337,16 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
         ),
       );
       if (useLoosePdfs == true) {
-        final recovered = await _tools.recoverLoosePortablePdfs();
+        final recovered = await _tools.recoverLoosePortablePdfs(
+          onProgress: (completed, total) {
+            if (mounted) setState(() => _message = 'Recovering PDFs: $completed of $total');
+          },
+        );
         if (mounted) {
           setState(() => _message =
-              'PDF discovery finished. Added: ${recovered['added']}; '
-              'duplicates: ${recovered['duplicates']}; failed: ${recovered['failed']}.');
+              'PDF discovery finished. Folders restored: ${recovered['folders']}; '
+              'PDFs added: ${recovered['added']}; duplicates: ${recovered['duplicates']}; '
+              'failed: ${recovered['failed']}.');
         }
       }
     }
@@ -371,13 +381,16 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
       if (!Platform.isAndroid) {
         throw StateError('No verified DocsGrid snapshot was found in the selected folder.');
       }
-      final recovered = await _tools.recoverLoosePortablePdfs();
+      final recovered = await _tools.recoverLoosePortablePdfs(
+        onProgress: (completed, total) {
+          if (mounted) setState(() => _message = 'Recovering PDFs: $completed of $total');
+        },
+      );
       if (mounted) {
         setState(() => _message =
-            'PDF discovery finished. Added: ${recovered['added']}; '
-            'duplicates: ${recovered['duplicates']}; failed: ${recovered['failed']}. '
-            'Only PDFs and their folder names can be reconstructed this way. '
-            'Categories, tags, reminders, history and settings need a valid backup.');
+            'PDF discovery finished. Folders restored: ${recovered['folders']}; '
+            'PDFs added: ${recovered['added']}; duplicates: ${recovered['duplicates']}; '
+            'failed: ${recovered['failed']}. Other app metadata requires a valid backup.');
       }
       return;
     }
@@ -404,7 +417,11 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
       ),
     );
     if (confirmed != true) return;
-    final result = await _tools.restoreLatestPortableMetadataSnapshot();
+    final result = await _tools.restoreLatestPortableMetadataSnapshot(
+      onProgress: (completed, total) {
+        if (mounted) setState(() => _message = 'Recovering PDFs: $completed of $total');
+      },
+    );
     if (mounted) {
       setState(() => _message =
         'Recovery complete. '
