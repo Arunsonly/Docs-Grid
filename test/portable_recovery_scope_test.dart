@@ -23,11 +23,12 @@ void main() {
         p.join(root, 'Documents'),
         p.join(root, 'Folders'),
         p.join(root, 'Unfiled'),
+        p.join(root, 'PDFs'),
       ],
     );
     expect(
       roots.map((item) => item.preserveFolders).toList(),
-      [false, true, false, true, false],
+      [false, true, false, true, false, false],
     );
 
     // General Phone locations are intentionally not part of the recovery
