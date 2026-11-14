@@ -56,7 +56,7 @@ Map<String, List<Map<String, Object?>>> _backupRows({
   }] : <Map<String, Object?>>[],
 };
 
-Future<File> _makeBackup(Directory directory, {bool withReminder = false, bool withFolder = false, bool withCollection = false}) async {
+Future<File> _makeBackup(Directory directory, {bool withReminder = false, bool withFolder = false, bool withCollection = false, bool databaseOnly = false, String fileName = 'restore_fixture.zip'}) async {
   final archive = Archive();
   final rows = _backupRows(withReminder: withReminder, withFolder: withFolder, withCollection: withCollection);
   final metadataFiles = <Map<String, Object?>>[];
@@ -70,14 +70,14 @@ Future<File> _makeBackup(Directory directory, {bool withReminder = false, bool w
       'sha256': sha256.convert(bytes).toString(),
     });
   }
-  archive.addFile(ArchiveFile('pdfs/policy.pdf', _pdfBytes.length, _pdfBytes));
+  if (!databaseOnly) archive.addFile(ArchiveFile('pdfs/policy.pdf', _pdfBytes.length, _pdfBytes));
   final manifest = {
-    'format': 'DocsGridBackup', 'version': 1, 'backupType': 'full',
+    'format': 'DocsGridBackup', 'version': 1, 'backupType': databaseOnly ? 'database' : 'full',
     'backupId': 'restore-test', 'databaseSchemaVersion': 9,
     'createdAt': '2026-01-01T00:00:00Z',
     'tables': {for (final entry in rows.entries) entry.key: entry.value.length},
     'metadataFiles': metadataFiles,
-    'files': [{
+    'files': databaseOnly ? <Map<String, Object?>>[] : [{
       'documentId': 'document-1', 'entry': 'pdfs/policy.pdf',
       'sha256': _pdfHash, 'originalName': 'Policy.pdf',
     }],
@@ -85,7 +85,7 @@ Future<File> _makeBackup(Directory directory, {bool withReminder = false, bool w
   final manifestBytes = Uint8List.fromList(utf8.encode(jsonEncode(manifest)));
   archive.addFile(ArchiveFile('manifest.json', manifestBytes.length, manifestBytes));
   final encoded = ZipEncoder().encode(archive);
-  final file = File('${directory.path}/restore_fixture.zip');
+  final file = File('${directory.path}/$fileName');
   await file.writeAsBytes(encoded, flush: true);
   return file;
 }
@@ -196,6 +196,34 @@ void main() {
       whereArgs: ['idx_smart_collections_name'],
     );
     expect(indexes, hasLength(1));
+  });
+
+  test('Automatic recovery prefers an older full backup over a newer database-only backup', () async {
+    final backupDirectory = Directory('${appDocuments.path}/DocsGrid/Backups');
+    await backupDirectory.create(recursive: true);
+    final full = await _makeBackup(
+      backupDirectory,
+      fileName: 'DocsGrid_full.zip',
+    );
+    final databaseOnly = await _makeBackup(
+      backupDirectory,
+      databaseOnly: true,
+      fileName: 'DocsGrid_database.zip',
+    );
+    // The database-only archive is deliberately newer, reproducing the
+    // user's two-archive setup where the previous implementation chose it.
+    await full.setLastModified(DateTime(2026, 11, 13));
+    await databaseOnly.setLastModified(DateTime(2026, 11, 14));
+
+    final restored = await service.restoreNewestPortableBackup(
+      confirm: (_) async => true,
+    );
+
+    expect(restored, 1);
+    final document = (await db.query('documents')).single;
+    final restoredPdf = File(document['storage_uri'] as String);
+    expect(await restoredPdf.exists(), isTrue);
+    expect(await restoredPdf.length(), _pdfBytes.length);
   });
 
   test('Merge restores PDFs and remaps an existing document ID collision', () async {
