@@ -343,6 +343,9 @@ import CryptoKit
         var started: [URL] = []
         var refreshedBookmarks: [Data] = []
         var everyBookmarkResolved = true
+        // Install cleanup before resolving any bookmark so an error half-way
+        // through the list cannot leak already-started security scopes.
+        defer { started.forEach { $0.stopAccessingSecurityScopedResource() } }
 
         for data in stored {
             var stale = false
@@ -369,15 +372,18 @@ import CryptoKit
             }
             if accessed { started.append(root) }
             if stale {
-                refreshedBookmarks.append(
-                    try root.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
-                )
+                do {
+                    refreshedBookmarks.append(
+                        try root.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
+                    )
+                } catch {
+                    everyBookmarkResolved = false
+                    continue
+                }
             } else {
                 refreshedBookmarks.append(data)
             }
         }
-
-        defer { started.forEach { $0.stopAccessingSecurityScopedResource() } }
 
         // Keep the original bookmark list intact if any entry could not be
         // resolved. This avoids shifting bookmark indexes or discarding a
