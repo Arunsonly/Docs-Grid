@@ -77,7 +77,6 @@ class FolderRepository {
     );
     final storage = StorageLocationService.instance;
     final visible = <Folder>[];
-    final staleIds = <String>[];
     for (final row in rows) {
       final folder = Folder.fromMap(row);
       final uri = folder.storageUri;
@@ -98,22 +97,10 @@ class FolderRepository {
                 (details.contains('FileNotFoundException') ||
                  details.contains('Missing file')));
         if (!missing) rethrow;
-        staleIds.add(folder.id);
+        // External removal or revoked storage permission is not a user delete.
+        // Keep the database record active so it can reappear after relinking or
+        // restoring provider access; never add it to Grid Recycle Bin.
       }
-    }
-    if (staleIds.isNotEmpty) {
-      final now = DateTime.now().toUtc().toIso8601String();
-      await db.transaction((txn) async {
-        for (final staleId in staleIds) {
-          await txn.update(
-            'folders',
-            {'deleted_at': now, 'updated_at': now},
-            where: 'id = ? AND deleted_at IS NULL',
-            whereArgs: [staleId],
-          );
-        }
-      });
-      PortableSnapshotEvents.notifyDataChanged();
     }
     return visible;
   }
@@ -753,15 +740,31 @@ class FolderRepository {
     final db = await _database.database;
     final rows = await db.query(
       'folders',
-      columns: ['id', 'parent_id', 'deleted_at'],
+      columns: ['id', 'parent_id', 'deleted_at', 'storage_uri_or_relative_path'],
       where: 'deleted_at IS NOT NULL AND trash_operation_id IS NULL',
     );
     if (rows.isEmpty) return;
+    // Only old deleted folders whose physical directory still exists and is
+    // readable can be confidently attributed to the former user-trash flow.
+    // Previously, externally missing folders were also stamped deleted_at;
+    // those records must not be promoted into Recycle Bin.
+    final accessibleRows = <Map<String, Object?>>[];
+    for (final row in rows) {
+      final uri = (row['storage_uri_or_relative_path'] as String?)?.trim() ?? '';
+      if (uri.isEmpty) continue;
+      try {
+        final children = await _listTrashDirectoryChildren(uri);
+        if (children != null) accessibleRows.add(row);
+      } catch (_) {
+        // A permission/provider failure is ambiguous: leave it untouched.
+      }
+    }
+    if (accessibleRows.isEmpty) return;
     final byId = <String, Map<String, Object?>>{
-      for (final row in rows) row['id'] as String: row,
+      for (final row in accessibleRows) row['id'] as String: row,
     };
     await db.transaction((txn) async {
-      for (final row in rows) {
+      for (final row in accessibleRows) {
         final id = row['id'] as String;
         final deletedAt = row['deleted_at'] as String;
         var rootId = id;
@@ -1009,6 +1012,14 @@ class FolderRepository {
 
   /// Deletes only content owned by this trash operation. Any independently
   /// recycled or untracked content blocks directory removal.
+  String _normaliseManagedTrashUri(String raw) {
+    if (raw.startsWith('content://')) return raw;
+    final path = raw.startsWith('file://') || raw.startsWith('file:')
+        ? Uri.parse(raw).toFilePath()
+        : raw;
+    return Uri.file(p.normalize(path)).toString();
+  }
+
   Future<void> permanentlyDeleteTrashFolderTree(String rootFolderId) async {
     await StorageMigrationGate.waitUntilReady();
     final db = await _database.database;
@@ -1041,8 +1052,14 @@ class FolderRepository {
       whereArgs: [operationId],
     );
     final knownUris = <String>{
-      ...documents.map((row) => (row['storage_uri'] as String?) ?? ''),
-      ...folders.map((row) => (row['storage_uri_or_relative_path'] as String?) ?? ''),
+      ...documents
+          .map((row) => (row['storage_uri'] as String?) ?? '')
+          .where((uri) => uri.isNotEmpty)
+          .map(_normaliseManagedTrashUri),
+      ...folders
+          .map((row) => (row['storage_uri_or_relative_path'] as String?) ?? '')
+          .where((uri) => uri.isNotEmpty)
+          .map(_normaliseManagedTrashUri),
     };
     // Preflight every physical folder before deleting any PDF.
     for (final folder in folders) {
@@ -1051,7 +1068,8 @@ class FolderRepository {
       final children = (await _listTrashDirectoryChildren(uri)) ?? const <Map<String, Object?>>[];
       for (final child in children) {
         final childUri = child['uri'] as String? ?? '';
-        if (childUri.isNotEmpty && !knownUris.contains(childUri)) {
+        if (childUri.isNotEmpty &&
+            !knownUris.contains(_normaliseManagedTrashUri(childUri))) {
           throw StateError('Folder contains an untracked item and was kept safe: ${child['name'] ?? ''}');
         }
       }

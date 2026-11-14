@@ -191,6 +191,7 @@ class MainActivity : FlutterActivity() {
         )
         val roots = listOf(
             java.io.File(mediaRoot, "DocsGrid"),
+            java.io.File(mediaRoot, "docsgrid"),
             java.io.File(mediaRoot, "com.docsgrid")
         ).filter { it.exists() && it.isDirectory && it.canRead() }
 

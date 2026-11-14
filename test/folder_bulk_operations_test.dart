@@ -1,5 +1,8 @@
+import 'dart:io';
+
 import 'package:docs_grid/core/database/app_database.dart';
 import 'package:docs_grid/features/folders/data/folder_repository.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
@@ -198,13 +201,31 @@ void main() {
   test('legacy deleted folder rows are grouped into one visible tree', () async {
     final db = await _database();
     addTearDown(db.close);
+    final rootDirectory = await Directory.systemTemp.createTemp('docsgrid-legacy-trash-');
+    addTearDown(() async {
+      if (await rootDirectory.exists()) await rootDirectory.delete(recursive: true);
+    });
+    final childDirectory = Directory('${rootDirectory.path}/Child');
+    await childDirectory.create();
     await _insertFolder(db, 'legacy-root', 'Legacy');
     await _insertFolder(db, 'legacy-child', 'Child', parentId: 'legacy-root');
     await db.update(
       'folders',
-      {'deleted_at': '2026-10-01T00:00:00Z'},
-      where: 'id IN (?, ?)',
-      whereArgs: ['legacy-root', 'legacy-child'],
+      {
+        'deleted_at': '2026-10-01T00:00:00Z',
+        'storage_uri_or_relative_path': Uri.directory(rootDirectory.path).toString(),
+      },
+      where: 'id = ?',
+      whereArgs: ['legacy-root'],
+    );
+    await db.update(
+      'folders',
+      {
+        'deleted_at': '2026-10-01T00:00:00Z',
+        'storage_uri_or_relative_path': Uri.directory(childDirectory.path).toString(),
+      },
+      where: 'id = ?',
+      whereArgs: ['legacy-child'],
     );
     final repository = FolderRepository(
       database: AppDatabase.forTesting(() async => db),
@@ -218,6 +239,37 @@ void main() {
     expect(rows.every((row) =>
         (row['trash_operation_id'] as String?)?.isNotEmpty == true), isTrue);
     expect(rows.map((row) => row['trash_operation_id']).toSet(), hasLength(1));
+  });
+
+
+  test('an externally missing folder is not reclassified as user trash', () async {
+    final db = await _database();
+    addTearDown(db.close);
+    await _insertFolder(db, 'missing', 'Missing');
+    await db.update(
+      'folders',
+      {'storage_uri_or_relative_path': 'content://provider/missing-folder'},
+      where: 'id = ?',
+      whereArgs: ['missing'],
+    );
+    const channel = MethodChannel('docsgrid/storage');
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (call) async {
+      throw PlatformException(code: 'NOT_FOUND', message: 'Folder missing');
+    });
+    addTearDown(() {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, null);
+    });
+
+    final repository = FolderRepository(
+      database: AppDatabase.forTesting(() async => db),
+    );
+    expect(await repository.childrenOf(null), isEmpty);
+    final row = (await db.query('folders',
+        where: 'id = ?', whereArgs: ['missing'])).single;
+    expect(row['deleted_at'], isNull);
+    expect(await repository.listTrashFolderRoots(), isEmpty);
   });
 
 }

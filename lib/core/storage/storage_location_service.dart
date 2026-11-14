@@ -199,7 +199,6 @@ class StorageLocationService {
 
   /// Read-only first-install probe for known DocsGrid-managed Android roots.
   /// Permission failures remain "detection_unavailable", never "no old data".
-  @visibleForTesting
   static bool hasRecoverableLegacyData(Map<String, Object?> detection) {
     return detection['status'] == 'found_recoverable_data' &&
         (detection['hasPdfs'] == true ||
@@ -207,7 +206,6 @@ class StorageLocationService {
             detection['hasSnapshot'] == true);
   }
 
-  @visibleForTesting
   static bool isConfirmedFreshLegacyState(Map<String, Object?> detection) {
     return detection['status'] == 'confirmed_no_previous_data' ||
         detection['status'] == 'found_folder_without_verified_recoverable_data';

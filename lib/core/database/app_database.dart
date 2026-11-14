@@ -373,37 +373,9 @@ class AppDatabase {
       'ON documents(trash_operation_id, deleted_at, folder_id)',
     );
 
-    // Backfill old deleted folder trees conservatively. Descendants are grouped
-    // only when their deleted_at matches the ancestor's timestamp, as the former
-    // atomic tree-delete path stamped the whole subtree in one transaction.
-    // Old detached PDFs cannot be safely re-associated and remain separate.
-    final legacyRows = await db.query(
-      'folders',
-      columns: ['id', 'parent_id', 'deleted_at'],
-      where: 'deleted_at IS NOT NULL AND trash_operation_id IS NULL',
-    );
-    final byId = <String, Map<String, Object?>>{
-      for (final row in legacyRows) row['id'] as String: row,
-    };
-    for (final row in legacyRows) {
-      final id = row['id'] as String;
-      final deletedAt = row['deleted_at'] as String;
-      var rootId = id;
-      var parentId = row['parent_id'] as String?;
-      final visited = <String>{id};
-      while (parentId != null && visited.add(parentId)) {
-        final parent = byId[parentId];
-        if (parent == null || parent['deleted_at'] != deletedAt) break;
-        rootId = parentId;
-        parentId = parent['parent_id'] as String?;
-      }
-      await db.update(
-        'folders',
-        {'trash_operation_id': 'legacy-folder-tree:$rootId'},
-        where: 'id = ? AND deleted_at IS NOT NULL AND trash_operation_id IS NULL',
-        whereArgs: [id],
-      );
-    }
+    // Legacy deleted-folder records are reconciled by FolderRepository only
+    // after verifying that the physical directory still exists and is readable.
+    // Database migration alone must not classify missing/revoked folders as trash.
   }
 
   Future<void> _createV10PortableSnapshotState(DatabaseExecutor db) async {

@@ -32,6 +32,7 @@ class _DocumentThumbnailState extends State<DocumentThumbnail> {
   late Future<File?> _thumbnail;
   static final Map<String, Future<File?>> _inFlightByDocument =
       <String, Future<File?>>{};
+  static const int _thumbnailCacheBudgetBytes = 512 * 1024 * 1024;
   static int _maintenanceRequests = 0;
   static int _activeRenders = 0;
   static const int _maxConcurrentRenders = 3;
@@ -90,6 +91,17 @@ class _DocumentThumbnailState extends State<DocumentThumbnail> {
     } catch (_) {
       return false;
     }
+  }
+
+  /// Creates the regeneratable preview cache in app-private support storage.
+  /// It is intentionally independent of the portable Documents/SAF location.
+  Future<Directory> _thumbnailCacheDirectory() async {
+    final support = await getApplicationSupportDirectory();
+    final directory = Directory(
+      p.join(support.path, 'docsgrid', 'Cache', 'Thumbnails'),
+    );
+    await directory.create(recursive: true);
+    return directory;
   }
 
   /// Enforces a soft 512 MiB first-page preview cache using least-recently-used
