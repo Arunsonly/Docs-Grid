@@ -640,22 +640,64 @@ class MainActivity : FlutterActivity() {
                         if (index >= 0) cursor.getString(index) else null
                     } else null
                 } ?: throw IllegalStateException("Could not read the selected folder name.")
-                val docsGrid = if (selectedName.equals("DocsGrid", ignoreCase = true)) {
+                // Accept both the current Android/media/com.docsgrid layout and
+                // older user-selected DocsGrid trees. When the parent is selected,
+                // prefer the current canonical root and fall back to the legacy name.
+                val docsGrid = if (
+                    selectedName.equals("DocsGrid", ignoreCase = true) ||
+                    selectedName.equals("com.docsgrid", ignoreCase = true)
+                ) {
                     selectedRoot
                 } else {
-                    findChildUri(uri, "DocsGrid")
+                    try {
+                        findChildUri(uri, "com.docsgrid")
+                    } catch (_: MissingStorageChildException) {
+                        findChildUri(uri, "DocsGrid")
+                    }
                 }
-                // Recovery selection is read/validate-only: never create a new
-                // DocsGrid tree that could masquerade as a recoverable backup.
-                val documents = findChildUri(docsGrid, "Documents")
-                val folders = findChildUri(docsGrid, "Folders")
-                val database = findChildUri(docsGrid, "Database")
-                val recovery = findChildUri(docsGrid, "Recovery")
+
+                // Recovery selection is read/validate-only: never create folders
+                // that could make an empty tree look like a recoverable backup.
+                val canonicalMyFiles = try {
+                    findChildUri(docsGrid, "My Files")
+                } catch (_: MissingStorageChildException) {
+                    null
+                }
+                val canonicalSystem = try {
+                    findChildUri(docsGrid, "System")
+                } catch (_: MissingStorageChildException) {
+                    null
+                }
+                if ((canonicalMyFiles == null) != (canonicalSystem == null)) {
+                    throw IllegalStateException("The selected DocsGrid folder has an incomplete My Files/System layout.")
+                }
+                val isCanonicalLayout = canonicalMyFiles != null && canonicalSystem != null
+                val documents = if (isCanonicalLayout) {
+                    findChildUri(canonicalMyFiles!!, "Unfiled")
+                } else {
+                    findChildUri(docsGrid, "Documents")
+                }
+                val folders = if (isCanonicalLayout) {
+                    findChildUri(canonicalMyFiles!!, "Folders")
+                } else {
+                    findChildUri(docsGrid, "Folders")
+                }
+                val database = if (isCanonicalLayout) {
+                    findChildUri(canonicalSystem!!, "Database")
+                } else {
+                    findChildUri(docsGrid, "Database")
+                }
+                val recovery = if (isCanonicalLayout) {
+                    findChildUri(canonicalSystem!!, "Recovery")
+                } else {
+                    findChildUri(docsGrid, "Recovery")
+                }
                 val snapshots = listDirectory(database).filter {
-                    it["isDirectory"] == true && (it["name"] as? String)?.startsWith("snapshot_") == true
+                    it["isDirectory"] == true &&
+                        (it["name"] as? String)?.startsWith("snapshot_") == true
                 }
                 if (snapshots.isEmpty()) {
-                    throw IllegalStateException("The existing DocsGrid/Database folder contains no recovery snapshots.")
+                    throw IllegalStateException("The selected DocsGrid/System/Database (or legacy DocsGrid/Database) folder contains no recovery snapshots.")
                 }
                 getSharedPreferences("docsgrid_storage", MODE_PRIVATE).edit()
                     .putString("tree_uri", uri.toString())
