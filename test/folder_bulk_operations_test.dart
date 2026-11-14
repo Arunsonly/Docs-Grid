@@ -26,6 +26,7 @@ Future<Database> _database() async {
       id TEXT PRIMARY KEY,
       folder_id TEXT,
       storage_uri TEXT,
+      sha256 TEXT,
       deleted_at TEXT,
       updated_at TEXT,
       trash_operation_id TEXT
