@@ -997,8 +997,36 @@ class DocumentToolsService {
     return {'added': added, 'duplicates': duplicates, 'failed': failed};
   }
 
-  /// Tries portable archives newest-first. A filename or timestamp is never
-  /// accepted as proof: every candidate is decoded and checksum-validated.
+  /// Reads only the archive manifest to distinguish a full backup from a
+  /// database-only archive. Older v1 archives without backupType are full
+  /// archives because that was the original format's only backup mode.
+  Future<String> _readPortableBackupType(File zipFile) async {
+    final input = InputFileStream(zipFile.path);
+    try {
+      final archive = ZipDecoder().decodeStream(input);
+      final entry = archive.findFile('manifest.json');
+      if (entry == null || !entry.isFile || entry.isSymbolicLink) {
+        throw StateError('This is not a DocsGrid backup.');
+      }
+      final value = jsonDecode(utf8.decode(entry.content as List<int>));
+      if (value is! Map<String, dynamic> ||
+          value['format'] != 'DocsGridBackup' ||
+          value['version'] != 1) {
+        throw StateError('Unsupported backup format or version.');
+      }
+      final type = value['backupType'];
+      if (type == null || type == 'full') return 'full';
+      if (type == 'database') return 'database';
+      throw StateError('Backup type is not supported.');
+    } finally {
+      try { input.closeSync(); } catch (_) {}
+    }
+  }
+
+  /// Full archives are always attempted before database-only archives,
+  /// regardless of modification time. Otherwise a newer metadata-only ZIP
+  /// can silently win and restore folders with missing PDF payloads even
+  /// though a complete Full backup is available beside it.
   Future<int?> restoreNewestPortableBackup({
     Future<bool> Function(int pdfCount)? confirm,
   }) async {
@@ -1006,17 +1034,41 @@ class DocumentToolsService {
     if (candidates.isEmpty) {
       throw StateError('No portable DocsGrid backup ZIP was found.');
     }
-    Object? lastError;
+    final classified = <({File file, int priority, DateTime modified})>[];
     for (final candidate in candidates) {
       try {
-        return await restoreBackup(candidate, confirm: confirm);
+        final type = await _readPortableBackupType(candidate);
+        classified.add((
+          file: candidate,
+          priority: type == 'full' ? 0 : 1,
+          modified: await candidate.lastModified(),
+        ));
+      } catch (_) {
+        // Invalid archives are still tried last so the normal validator can
+        // surface the precise corruption reason if no valid archive remains.
+        classified.add((
+          file: candidate,
+          priority: 2,
+          modified: await candidate.lastModified(),
+        ));
+      }
+    }
+    classified.sort((a, b) {
+      final byType = a.priority.compareTo(b.priority);
+      return byType != 0 ? byType : b.modified.compareTo(a.modified);
+    });
+    Object? lastError;
+    for (final item in classified) {
+      try {
+        return await restoreBackup(item.file, confirm: confirm);
       } catch (error) {
         lastError = error;
       }
     }
     throw StateError(
       'No valid portable backup could be restored. '
-      'The newest candidates may be incomplete or damaged. Last error: $lastError',
+      'Full backups are checked first; database-only backups are fallback only. '
+      'Last error: $lastError',
     );
   }
 
