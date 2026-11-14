@@ -6,7 +6,7 @@ concurrency:
 
 on:
   push:
-    branches: [main, feature/complete-ten-features, fix/crop-ocr-performance, feature/docsgrid-document-engine-upgrade, feature/docsgrid-completion-pr19]
+    branches: [main, feature/complete-ten-features, fix/crop-ocr-performance, feature/docsgrid-document-engine-upgrade, feature/docsgrid-completion-pr19, audit/release-hardening-2026-11]
   pull_request:
     branches: [main]
   workflow_dispatch:
