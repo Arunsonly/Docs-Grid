@@ -93,6 +93,24 @@ class DocumentToolsService {
   }
   static final Set<String> _indexingDocumentIds = <String>{};
 
+  /// Whitelisted legacy library locations. Recovery must never broaden this
+  /// list to the Phone tab's general shared-storage roots.
+  @visibleForTesting
+  static List<({String path, bool preserveFolders})>
+      legacyManagedRecoveryPaths(String legacyRoot) => [
+        (
+          path: p.join(legacyRoot, 'My Files', 'Unfiled'),
+          preserveFolders: false,
+        ),
+        (
+          path: p.join(legacyRoot, 'My Files', 'Folders'),
+          preserveFolders: true,
+        ),
+        (path: p.join(legacyRoot, 'Documents'), preserveFolders: false),
+        (path: p.join(legacyRoot, 'Folders'), preserveFolders: true),
+        (path: p.join(legacyRoot, 'Unfiled'), preserveFolders: false),
+      ];
+
   /// Normalizes OCR text for exact-content duplicate comparison.
   /// Keeps letters and numbers from all scripts, including Devanagari.
   @visibleForTesting
@@ -923,15 +941,8 @@ class DocumentToolsService {
     final legacyUri = locations['legacyRootUri'];
     if (legacyUri != null && legacyUri.startsWith('file://')) {
       final legacyRoot = Directory(Uri.parse(legacyUri).toFilePath());
-      final legacyLayouts = <({String path, bool preserveFolders})>[
-        (path: p.join(legacyRoot.path, 'My Files', 'Unfiled'),
-          preserveFolders: false),
-        (path: p.join(legacyRoot.path, 'My Files', 'Folders'),
-          preserveFolders: true),
-        (path: p.join(legacyRoot.path, 'Documents'), preserveFolders: false),
-        (path: p.join(legacyRoot.path, 'Folders'), preserveFolders: true),
-        (path: p.join(legacyRoot.path, 'Unfiled'), preserveFolders: false),
-      ];
+      final legacyLayouts =
+          DocumentToolsService.legacyManagedRecoveryPaths(legacyRoot.path);
       for (final legacy in legacyLayouts) {
         final directory = Directory(legacy.path);
         if (await directory.exists()) {
