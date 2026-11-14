@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:open_filex/open_filex.dart';
 
 import '../../documents/data/document_repository.dart';
+import '../../documents/presentation/document_thumbnail.dart';
 import '../../tools/document_tools_service.dart';
 import '../../../core/storage/storage_location_service.dart';
 import '../../reminders/data/reminder_repository.dart';
@@ -27,6 +28,12 @@ class _FoldersScreenState extends State<FoldersScreen> {
   String? _currentFolderId;
   String _currentTitle = 'Folders';
   final Set<String> _selectedDocumentIds = <String>{};
+  final Set<String> _selectedFolderIds = <String>{};
+  final TextEditingController _searchController = TextEditingController();
+  String _searchQuery = '';
+  bool _isSelectingFolders = false;
+  bool _isReorderingFolders = false;
+  List<Folder> _draftFolderOrder = <Folder>[];
   late Future<List<Folder>> _foldersFuture;
   late Future<List<DocumentRecord>> _documentsFuture;
 
@@ -36,13 +43,27 @@ class _FoldersScreenState extends State<FoldersScreen> {
     _load();
   }
 
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
   void _load() {
     _foldersFuture = _repository.childrenOf(_currentFolderId);
-    _documentsFuture = _documents.listInFolder(_currentFolderId);
+    final query = _searchQuery.trim();
+    // Grid search is library-wide, not limited to the currently open folder.
+    _documentsFuture = query.isEmpty
+        ? _documents.listInFolder(_currentFolderId)
+        : _documents.list(query: query);
   }
 
   Future<void> _refresh() async {
-    setState(_load);
+    setState(() {
+      _isReorderingFolders = false;
+      _draftFolderOrder = <Folder>[];
+      _load();
+    });
     // Wait for both sections to settle. FutureBuilder renders any errors;
     // swallowing here prevents a failed refresh from escaping the indicator.
     try {
@@ -357,6 +378,194 @@ class _FoldersScreenState extends State<FoldersScreen> {
     }
   }
 
+  Future<void> _addPdf() async {
+    try {
+      final result = await _documents.importPdfs(
+        targetFolderId: _currentFolderId,
+        review: _reviewSinglePdf,
+      );
+      await _refresh();
+      if (!mounted) return;
+      final details = result.errors.isEmpty ? '' : '\n${result.errors.first}';
+      _message('Added ${result.added} · Duplicates ${result.duplicates} · Failed ${result.failed}$details');
+    } catch (error) {
+      if (mounted) _message('PDF import failed: $error');
+    }
+  }
+
+  void _toggleFolderSelection(Folder folder) {
+    setState(() {
+      _isSelectingFolders = true;
+      if (!_selectedFolderIds.add(folder.id)) _selectedFolderIds.remove(folder.id);
+    });
+  }
+
+  Widget _buildFolderSelectionToolbar() {
+    return FutureBuilder<List<Folder>>(
+      future: _foldersFuture,
+      builder: (context, snapshot) {
+        final selected = (snapshot.data ?? const <Folder>[])
+            .where((folder) => _selectedFolderIds.contains(folder.id))
+            .toList();
+        ButtonStyle actionStyle() => FilledButton.styleFrom(
+              backgroundColor: Colors.white,
+              foregroundColor: const Color(0xFF252A43),
+              disabledBackgroundColor: Colors.white.withValues(alpha: 0.55),
+              disabledForegroundColor: const Color(0xFF252A43).withValues(alpha: 0.35),
+              elevation: 0,
+              padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 10),
+              minimumSize: const Size(0, 44),
+              textStyle: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16),
+              ),
+            );
+        return Padding(
+          padding: const EdgeInsets.fromLTRB(20, 10, 20, 8),
+          child: Material(
+            color: const Color(0xFFE1E6FF),
+            borderRadius: BorderRadius.circular(26),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      '${_selectedFolderIds.length} selected',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w700,
+                        color: Color(0xFF20243A),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  FilledButton(
+                    style: actionStyle(),
+                    onPressed: () => setState(() {
+                      _isSelectingFolders = false;
+                      _selectedFolderIds.clear();
+                    }),
+                    child: const Text('Cancel'),
+                  ),
+                  const SizedBox(width: 6),
+                  FilledButton(
+                    style: actionStyle(),
+                    onPressed: selected.isEmpty ? null : () => _moveFolders(selected),
+                    child: const Text('Move'),
+                  ),
+                  const SizedBox(width: 6),
+                  FilledButton(
+                    style: actionStyle(),
+                    onPressed: selected.isEmpty ? null : () => _deleteSelectedFolders(selected),
+                    child: const Text('Delete'),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  void _beginFolderReorder(List<Folder> visibleFolders) {
+    if (_isSelectingFolders || _isReorderingFolders || visibleFolders.isEmpty) return;
+    setState(() {
+      _searchController.clear();
+      _searchQuery = '';
+      _documentsFuture = _documents.listInFolder(_currentFolderId);
+      _isReorderingFolders = true;
+      _draftFolderOrder = List<Folder>.from(visibleFolders);
+    });
+  }
+
+  Future<void> _moveFolders(List<Folder> selected) async {
+    if (selected.isEmpty) return;
+    final options = await _repository.allFoldersWithPaths();
+    if (!mounted) return;
+    final selectedIds = selected.map((folder) => folder.id).toSet();
+    final selectedPaths = options
+        .where((option) => selectedIds.contains(option.folder.id))
+        .map((option) => option.path)
+        .toList();
+    final validDestinations = options.where((option) {
+      if (selectedIds.contains(option.folder.id)) return false;
+      return !selectedPaths.any((path) =>
+          option.path == path || option.path.startsWith('$path / '));
+    }).toList();
+    final destination = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) => SafeArea(
+        child: ListView(shrinkWrap: true, children: [
+          const ListTile(title: Text('Move selected folders to')),
+          ListTile(
+            leading: const Icon(Icons.home_outlined),
+            title: const Text('Folders (root)'),
+            onTap: () => Navigator.pop(ctx, ''),
+          ),
+          for (final option in validDestinations)
+            ListTile(
+              leading: const Icon(Icons.folder_outlined),
+              title: Text(option.path, maxLines: 1, overflow: TextOverflow.ellipsis),
+              onTap: () => Navigator.pop(ctx, option.folder.id),
+            ),
+        ]),
+      ),
+    );
+    if (destination == null) return;
+    try {
+      await _repository.moveManyToParent(
+        selected.map((folder) => folder.id).toList(),
+        destination.isEmpty ? null : destination,
+      );
+      if (!mounted) return;
+      setState(() {
+        _isSelectingFolders = false;
+        _selectedFolderIds.clear();
+      });
+      await _refresh();
+      _message('Moved ${selected.length} folder(s).');
+    } catch (error) {
+      if (mounted) _message('Could not move folders: $error');
+    }
+  }
+
+  Future<void> _deleteSelectedFolders(List<Folder> selected) async {
+    if (selected.isEmpty) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Move folders to Recycle Bin?'),
+        content: Text(
+          'The selected ${selected.length} folder(s), including their PDFs and subfolders, will be moved to Recycle Bin. Original files will be retained.',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          FilledButton.tonal(onPressed: () => Navigator.pop(ctx, true), child: const Text('Move to Recycle Bin')),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    try {
+      final pdfCount = await _repository.moveManyToRecycleBin(
+        selected.map((folder) => folder.id).toList(),
+      );
+      if (!mounted) return;
+      setState(() {
+        _isSelectingFolders = false;
+        _selectedFolderIds.clear();
+      });
+      await _refresh();
+      _message('Moved ${selected.length} folder(s) and $pdfCount PDF(s) to Recycle Bin.');
+    } catch (error) {
+      if (mounted) _message('Could not delete folders: $error');
+    }
+  }
+
   Future<void> _renameFolder(Folder folder) async {
     final name = await _askName(title: 'Rename folder', initial: folder.name);
     if (name == null) return;
@@ -372,26 +581,7 @@ class _FoldersScreenState extends State<FoldersScreen> {
   }
 
   Future<void> _deleteFolder(Folder folder) async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Delete empty folder?'),
-        content: Text('“${folder.name}” can be deleted only when it has no subfolders or documents.'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
-          FilledButton.tonal(onPressed: () => Navigator.pop(context, true), child: const Text('Delete')),
-        ],
-      ),
-    );
-    if (confirmed != true) return;
-    try {
-      await _repository.deleteEmpty(folder.id);
-      if (!mounted) return;
-      setState(_load);
-      _message('Folder deleted.');
-    } catch (error) {
-      _message(error.toString().replaceFirst('Bad state: ', ''));
-    }
+    await _deleteSelectedFolders([folder]);
   }
 
   Future<void> _moveSelected(List<DocumentRecord> all) async {
@@ -546,10 +736,13 @@ class _FoldersScreenState extends State<FoldersScreen> {
           _goToAncestor(_ancestors.length - 2);
         }
       },
-      child: Column(
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        if (_selectedDocumentIds.isNotEmpty)
+        if (_selectedDocumentIds.isNotEmpty && !_isSelectingFolders)
           FutureBuilder<List<DocumentRecord>>(
             future: _documentsFuture,
             builder: (context, snapshot) {
@@ -604,25 +797,26 @@ class _FoldersScreenState extends State<FoldersScreen> {
                 ),
               ),
               PopupMenuButton<String>(
-                tooltip: 'Folder actions',
+                tooltip: 'Folder selection',
                 icon: const Icon(Icons.more_vert),
-                onSelected: (action) async {
-                  if (action == 'add_pdf') {
-                    final result = await _documents.importPdfs(
-                      targetFolderId: _currentFolderId,
-                      review: _reviewSinglePdf,
-                    );
-                    await _refresh();
-                    if (mounted) _message('Added ${result.added} · Duplicates ${result.duplicates}');
+                onSelected: (action) {
+                  if (action == 'select_folders') {
+                    setState(() {
+                      _isReorderingFolders = false;
+                      _draftFolderOrder.clear();
+                      _isSelectingFolders = true;
+                      _selectedFolderIds.clear();
+                      _selectedDocumentIds.clear();
+                    });
                   }
                 },
                 itemBuilder: (_) => const [
                   PopupMenuItem(
-                    value: 'add_pdf',
+                    value: 'select_folders',
                     child: ListTile(
                       contentPadding: EdgeInsets.zero,
-                      leading: Icon(Icons.picture_as_pdf_outlined),
-                      title: Text('Add PDF to this folder'),
+                      leading: Icon(Icons.check_box_outlined),
+                      title: Text('Select folder'),
                     ),
                   ),
                 ],
@@ -635,6 +829,38 @@ class _FoldersScreenState extends State<FoldersScreen> {
             ],
           ),
         ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+          child: TextField(
+            controller: _searchController,
+            onChanged: (value) => setState(() {
+              _searchQuery = value;
+              final query = value.trim();
+              _documentsFuture = query.isEmpty
+                  ? _documents.listInFolder(_currentFolderId)
+                  : _documents.list(query: query);
+            }),
+            decoration: InputDecoration(
+              hintText: 'Search folders or PDF names',
+              prefixIcon: const Icon(Icons.search),
+              suffixIcon: _searchQuery.isEmpty ? null : IconButton(
+                tooltip: 'Clear search',
+                icon: const Icon(Icons.close),
+                onPressed: () => setState(() {
+                  _searchController.clear();
+                  _searchQuery = '';
+                  _documentsFuture = _documents.listInFolder(_currentFolderId);
+                }),
+              ),
+              filled: true,
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(18),
+                borderSide: BorderSide.none,
+              ),
+            ),
+          ),
+        ),
+        if (_isSelectingFolders) _buildFolderSelectionToolbar(),
         if (_ancestors.isNotEmpty)
           SizedBox(
             height: 44,
@@ -708,7 +934,15 @@ class _FoldersScreenState extends State<FoldersScreen> {
                     );
                   }
                   final documents = documentSnapshot.data ?? const <DocumentRecord>[];
-                  if (folders.isEmpty && documents.isEmpty) {
+                  final query = _searchQuery.trim().toLowerCase();
+                  final folderSource = _isReorderingFolders ? _draftFolderOrder : folders;
+                  final displayedFolders = folderSource
+                      .where((folder) => query.isEmpty || folder.name.toLowerCase().contains(query))
+                      .toList(growable: false);
+                  final displayedDocuments = documents
+                      .where((document) => query.isEmpty || document.name.toLowerCase().contains(query))
+                      .toList(growable: false);
+                  if (folders.isEmpty && documents.isEmpty && query.isEmpty) {
                     return Center(
                       child: Padding(
                         padding: const EdgeInsets.all(28),
@@ -732,73 +966,174 @@ class _FoldersScreenState extends State<FoldersScreen> {
                   return RefreshIndicator(
                     onRefresh: _refresh,
                     child: ListView(
-                      padding: const EdgeInsets.fromLTRB(12, 8, 12, 24),
+                      padding: const EdgeInsets.fromLTRB(12, 8, 12, 104),
                       children: [
-                        if (folders.isNotEmpty) ...[
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(4, 4, 4, 10),
+                          child: Align(
+                            alignment: Alignment.centerLeft,
+                            child: Text('${folders.length} folders · ${documents.length} PDFs',
+                              style: Theme.of(context).textTheme.bodySmall),
+                          ),
+                        ),
+                        if (query.isNotEmpty && displayedFolders.isEmpty && displayedDocuments.isEmpty)
+                          const Padding(
+                            padding: EdgeInsets.all(28),
+                            child: Center(child: Text('No matching folders or PDFs.')),
+                          ),
+                        if (displayedFolders.isNotEmpty) ...[
                           Padding(
                             padding: const EdgeInsets.fromLTRB(4, 8, 4, 4),
                             child: Text('FOLDERS', style: Theme.of(context).textTheme.labelLarge),
                           ),
                           ReorderableListView.builder(
-                              shrinkWrap: true,
-                              physics: const NeverScrollableScrollPhysics(),
-                              buildDefaultDragHandles: false,
-                              itemCount: folders.length,
-                              onReorderItem: (oldIndex, newIndex) async {
-                                final reordered = List<Folder>.of(folders);
-                                final moved = reordered.removeAt(oldIndex);
-                                reordered.insert(newIndex, moved);
-                                try {
-                                  await _repository.reorderChildren(
-                                    _currentFolderId,
-                                    reordered.map((folder) => folder.id).toList(),
-                                  );
-                                  if (mounted) await _refresh();
-                                } catch (error) {
-                                  if (mounted) _message('Could not reorder folders: $error');
-                                }
-                              },
-                              itemBuilder: (context, index) {
-                                final folder = folders[index];
-                                return Card(
-                                  key: ValueKey('folder-${folder.id}'),
-                                  elevation: 0,
-                                  child: ListTile(
-                                    leading: ReorderableDelayedDragStartListener(
-                                      index: index,
-                                      child: const CircleAvatar(child: Icon(Icons.folder_outlined)),
-                                    ),
-                                    title: Text(folder.name, maxLines: 1, overflow: TextOverflow.ellipsis),
-                                    subtitle: const Text('Folder'),
-                                    onTap: () => _openFolder(folder),
-                                    trailing: PopupMenuButton<String>(
-                                      tooltip: 'Folder actions · Hold folder icon to reorder',
-                                      onSelected: (value) {
-                                        if (value == 'rename') _renameFolder(folder);
-                                        if (value == 'delete') _deleteFolder(folder);
-                                      },
-                                      itemBuilder: (_) => const [
-                                        PopupMenuItem(value: 'rename', child: Text('Rename')),
-                                        PopupMenuItem(value: 'delete', child: Text('Delete')),
+                            shrinkWrap: true,
+                            physics: const NeverScrollableScrollPhysics(),
+                            buildDefaultDragHandles: false,
+                            itemCount: displayedFolders.length,
+                            onReorderItem: (oldIndex, newIndex) {
+                              setState(() {
+                                final moved = _draftFolderOrder.removeAt(oldIndex);
+                                _draftFolderOrder.insert(newIndex, moved);
+                              });
+                            },
+                            itemBuilder: (context, index) {
+                              final folder = displayedFolders[index];
+                              final isSelected = _selectedFolderIds.contains(folder.id);
+                              final scheme = Theme.of(context).colorScheme;
+                              return Card(
+                                key: ValueKey('folder-${folder.id}'),
+                                margin: const EdgeInsets.symmetric(vertical: 8),
+                                elevation: 0,
+                                color: isSelected ? const Color(0xFFDDE4FF) : scheme.surface,
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(26),
+                                  side: BorderSide(
+                                    color: isSelected
+                                        ? const Color(0xFF687BC6)
+                                        : scheme.outlineVariant.withValues(alpha: 0.55),
+                                    width: isSelected ? 2 : 1,
+                                  ),
+                                ),
+                                clipBehavior: Clip.antiAlias,
+                                child: InkWell(
+                                  borderRadius: BorderRadius.circular(26),
+                                  onTap: _isSelectingFolders
+                                      ? () => _toggleFolderSelection(folder)
+                                      : _isReorderingFolders
+                                          ? null
+                                          : () => _openFolder(folder),
+                                  onLongPress: _isSelectingFolders || _isReorderingFolders
+                                      ? null
+                                      : () => _beginFolderReorder(folders),
+                                  child: Padding(
+                                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+                                    child: Row(
+                                      children: [
+                                        if (_isSelectingFolders) ...[
+                                          SizedBox(
+                                            width: 40,
+                                            child: Checkbox(
+                                              value: isSelected,
+                                              onChanged: _isReorderingFolders
+                                                  ? null
+                                                  : (_) => _toggleFolderSelection(folder),
+                                              shape: RoundedRectangleBorder(
+                                                borderRadius: BorderRadius.circular(4),
+                                              ),
+                                            ),
+                                          ),
+                                          const SizedBox(width: 10),
+                                        ],
+                                        Container(
+                                          width: 56,
+                                          height: 56,
+                                          decoration: BoxDecoration(
+                                            color: isSelected
+                                                ? const Color(0xFFC9D4FF)
+                                                : const Color(0xFFE2E7FF),
+                                            shape: BoxShape.circle,
+                                          ),
+                                          alignment: Alignment.center,
+                                          child: const Icon(
+                                            Icons.folder_outlined,
+                                            color: Color(0xFF405582),
+                                            size: 30,
+                                          ),
+                                        ),
+                                        const SizedBox(width: 16),
+                                        Expanded(
+                                          child: Column(
+                                            crossAxisAlignment: CrossAxisAlignment.start,
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              Text(
+                                                folder.name,
+                                                maxLines: 1,
+                                                overflow: TextOverflow.ellipsis,
+                                                style: const TextStyle(
+                                                  fontSize: 18,
+                                                  fontWeight: FontWeight.w700,
+                                                ),
+                                              ),
+                                              const SizedBox(height: 4),
+                                              Text(
+                                                'Folder · ${folder.pdfCount} PDFs',
+                                                style: TextStyle(
+                                                  fontSize: 15,
+                                                  color: scheme.onSurfaceVariant,
+                                                  fontWeight: FontWeight.w500,
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                        if (_isReorderingFolders)
+                                          ReorderableDelayedDragStartListener(
+                                            index: index,
+                                            child: const Padding(
+                                              padding: EdgeInsets.all(10),
+                                              child: Icon(Icons.drag_indicator, color: Colors.grey),
+                                            ),
+                                          )
+                                        else
+                                          PopupMenuButton<String>(
+                                            tooltip: 'Folder actions',
+                                            onSelected: (value) {
+                                              if (value == 'rename') _renameFolder(folder);
+                                              if (value == 'move') _moveFolders([folder]);
+                                              if (value == 'delete') _deleteFolder(folder);
+                                            },
+                                            itemBuilder: (_) => const [
+                                              PopupMenuItem(value: 'rename', child: Text('Rename')),
+                                              PopupMenuItem(value: 'move', child: Text('Move')),
+                                              PopupMenuItem(value: 'delete', child: Text('Delete')),
+                                            ],
+                                          ),
                                       ],
                                     ),
                                   ),
-                                );
-                              },
-                            ),
+                                ),
+                              );
+                            },
+                          ),
                         ],
-                        if (documents.isNotEmpty) ...[
+                        if (displayedDocuments.isNotEmpty) ...[
                           Padding(
                             padding: const EdgeInsets.fromLTRB(4, 18, 4, 4),
                             child: Text('PDF DOCUMENTS', style: Theme.of(context).textTheme.labelLarge),
                           ),
-                          for (final document in documents)
+                          for (final document in displayedDocuments)
                             Card(
                               elevation: 0,
                               child: ListTile(
                                 leading: _selectedDocumentIds.isNotEmpty
                                     ? Checkbox(value: _selectedDocumentIds.contains(document.id), onChanged: (_) => setState(() { if (!_selectedDocumentIds.add(document.id)) _selectedDocumentIds.remove(document.id); }))
-                                    : const Icon(Icons.picture_as_pdf_outlined),
+                                    : DocumentThumbnail(
+                                        documentId: document.id,
+                                        storagePath: document.storagePath,
+                                        sizeBytes: document.sizeBytes,
+                                      ),
                                 title: Text('${document.name}.pdf', maxLines: 1, overflow: TextOverflow.ellipsis),
                                 subtitle: Text(_size(document.sizeBytes)),
                                 onLongPress: () {
@@ -862,8 +1197,49 @@ class _FoldersScreenState extends State<FoldersScreen> {
               );
             },
           ),
-        )
+        ),
+        if (_isReorderingFolders)
+          SafeArea(
+            top: false,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+              child: SizedBox(
+                width: double.infinity,
+                child: FilledButton.icon(
+                  key: const ValueKey('finish-folder-reorder'),
+                  icon: const Icon(Icons.check),
+                  label: const Text('Finish'),
+                  onPressed: () async {
+                    try {
+                      await _repository.reorderChildren(
+                        _currentFolderId,
+                        _draftFolderOrder.map((folder) => folder.id).toList(),
+                      );
+                      if (!mounted) return;
+                      setState(() => _isReorderingFolders = false);
+                      await _refresh();
+                      _message('Folder order saved.');
+                    } catch (error) {
+                      if (mounted) _message('Could not save folder order: $error');
+                    }
+                  },
+                ),
+              ),
+            ),
+          ),
       ],
+          ),
+          if (!_isReorderingFolders && !_isSelectingFolders)
+            Positioned(
+              right: 18,
+              bottom: 18,
+              child: FloatingActionButton(
+                tooltip: 'Add PDF',
+                onPressed: _addPdf,
+                child: const Icon(Icons.picture_as_pdf_outlined),
+              ),
+            ),
+        ],
       ),
     );
   }

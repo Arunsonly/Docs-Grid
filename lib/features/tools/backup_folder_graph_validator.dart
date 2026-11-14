@@ -32,4 +32,34 @@ class BackupFolderGraphValidator {
       visited.addAll(chain);
     }
   }
+
+  /// Returns folders in stable parent-before-child order for FK-safe inserts.
+  static List<Map<String, Object?>> parentFirst(
+    List<Map<String, Object?>> folders,
+  ) {
+    validate(folders);
+    final children = <String?, List<Map<String, Object?>>>{};
+    for (final folder in folders) {
+      children.putIfAbsent(folder['parent_id'] as String?, () => []).add(folder);
+    }
+    final ordered = <Map<String, Object?>>[];
+    final queue = List<Map<String, Object?>>.from(children[null] ?? const []);
+    var index = 0;
+    while (index < queue.length) {
+      final folder = queue[index++];
+      ordered.add(folder);
+      final id = folder['id'] as String;
+      queue.addAll(children[id] ?? const []);
+    }
+    if (ordered.length != folders.length) {
+      throw StateError('Backup folder hierarchy contains a cycle.');
+    }
+    return List.unmodifiable(ordered);
+  }
+
+  /// Returns folders in child-before-parent order for RESTRICT foreign keys.
+  static List<Map<String, Object?>> childFirst(
+    List<Map<String, Object?>> folders,
+  ) => parentFirst(folders).reversed.toList(growable: false);
+
 }

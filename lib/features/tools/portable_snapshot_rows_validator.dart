@@ -2,13 +2,17 @@
 class PortableSnapshotRowsValidator {
   const PortableSnapshotRowsValidator._();
 
-  static void validate(Map<String, List<Map<String, Object?>>> tables) {
+  static void validate(
+    Map<String, List<Map<String, Object?>>> tables, {
+    Set<String> allowedExternalDocumentIds = const <String>{},
+  }) {
     final folderIds = _ids(tables, 'folders');
     final documentIds = _ids(tables, 'documents');
     final categoryIds = _ids(tables, 'categories');
     final tagIds = _ids(tables, 'tags');
     _ids(tables, 'reminders');
     _ids(tables, 'history');
+    _ids(tables, 'smart_collections');
 
     void requiredString(String table, String field, {bool nonEmpty = true}) {
       for (final row in tables[table] ?? const <Map<String, Object?>>[]) {
@@ -120,6 +124,10 @@ class PortableSnapshotRowsValidator {
     requiredString('settings', 'key');
     requiredString('settings', 'value_json', nonEmpty: false);
     requiredString('settings', 'updated_at');
+    requiredString('smart_collections', 'name');
+    requiredString('smart_collections', 'query_text', nonEmpty: false);
+    requiredString('smart_collections', 'created_at');
+    requiredString('smart_collections', 'updated_at');
     requiredString('document_text_index', 'extracted_text', nonEmpty: false);
     requiredString('document_text_index', 'indexed_at');
     for (final (table, field) in <(String, String)>[
@@ -129,6 +137,7 @@ class PortableSnapshotRowsValidator {
       ('reminders', 'remind_at_utc'), ('reminders', 'next_fire_at_utc'),
       ('reminders', 'created_at'), ('reminders', 'updated_at'),
       ('history', 'created_at'), ('settings', 'updated_at'),
+      ('smart_collections', 'created_at'), ('smart_collections', 'updated_at'),
       ('document_text_index', 'indexed_at'),
     ]) {
       requiredDateTime(table, field);
@@ -143,6 +152,8 @@ class PortableSnapshotRowsValidator {
     }
     requiredInt('documents', 'size_bytes', min: 0);
     requiredInt('reminders', 'enabled', min: 0);
+    requiredInt('smart_collections', 'favorites_only', min: 0);
+    requiredInt('smart_collections', 'recent_only', min: 0);
     requiredInt('document_text_index', 'page_count', min: 0);
 
     for (final field in ['original_name', 'storage_uri', 'relative_path', 'sha256',
@@ -150,6 +161,8 @@ class PortableSnapshotRowsValidator {
       optionalString('documents', field);
     }
     optionalString('folders', 'storage_uri_or_relative_path');
+    optionalString('folders', 'trash_operation_id');
+    optionalString('documents', 'trash_operation_id');
     optionalString('reminders', 'note');
     optionalString('reminders', 'recurrence_rule');
     optionalInt('reminders', 'lead_days');
@@ -162,13 +175,15 @@ class PortableSnapshotRowsValidator {
     optionalReference('documents', 'category_id', categoryIds);
     optionalReference('document_tags', 'document_id', documentIds, nullable: false);
     optionalReference('document_tags', 'tag_id', tagIds, nullable: false);
-    optionalReference('reminders', 'document_id', documentIds);
-    optionalReference('history', 'document_id', documentIds);
-    optionalReference('document_text_index', 'document_id', documentIds, nullable: false);
+    final validDocumentReferences = <String>{...documentIds, ...allowedExternalDocumentIds};
+    optionalReference('reminders', 'document_id', validDocumentReferences);
+    optionalReference('history', 'document_id', validDocumentReferences);
+    optionalReference('document_text_index', 'document_id', validDocumentReferences, nullable: false);
 
     uniqueText('categories', 'name', caseInsensitive: true);
     uniqueText('tags', 'name', caseInsensitive: true);
     uniqueText('settings', 'key');
+    uniqueText('smart_collections', 'name', caseInsensitive: true);
 
     final pairs = <String>{};
     for (final row in tables['document_tags'] ?? const <Map<String, Object?>>[]) {

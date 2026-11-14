@@ -2,9 +2,12 @@ package com.docsgrid.docs_grid
 
 import android.app.Activity
 import android.content.Intent
-import android.provider.OpenableColumns
+import android.database.ContentObserver
 import android.database.Cursor
 import android.net.Uri
+import android.content.ContentUris
+import android.provider.MediaStore
+import android.provider.OpenableColumns
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -13,6 +16,7 @@ import java.security.MessageDigest
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
+import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodCall
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.RejectedExecutionException
@@ -22,12 +26,18 @@ import java.util.concurrent.TimeUnit
 private class MissingStorageChildException(message: String) : IllegalStateException(message)
 
 class MainActivity : FlutterActivity() {
-    private val storageExecutor = ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS, ArrayBlockingQueue<Runnable>(64))
+    // Storage providers may perform a remote query for every directory.
+    // A small bounded pool keeps scans responsive without creating unbounded IO.
+    private val storageExecutor = ThreadPoolExecutor(4, 4, 0L, TimeUnit.MILLISECONDS, ArrayBlockingQueue<Runnable>(64))
     private val mainHandler = Handler(Looper.getMainLooper())
     private val channelName = "docsgrid/storage"
     private val requestChooseFolder = 4817
     private var pendingFolderResult: MethodChannel.Result? = null
     private var pendingRecoverySelection = false
+    private var storageChangeSink: EventChannel.EventSink? = null
+    private val storageObservers = mutableListOf<ContentObserver>()
+    private var storageObserversRegistered = false
+    private var storageChangeRunnable: Runnable? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -54,6 +64,18 @@ class MainActivity : FlutterActivity() {
                     else -> result.notImplemented()
                 }
             }
+        EventChannel(flutterEngine.dartExecutor.binaryMessenger, "docsgrid/storage_changes")
+            .setStreamHandler(object : EventChannel.StreamHandler {
+                override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
+                    storageChangeSink = events
+                    registerStorageChangeObservers()
+                }
+
+                override fun onCancel(arguments: Any?) {
+                    storageChangeSink = null
+                    unregisterStorageChangeObservers()
+                }
+            })
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName)
             .setMethodCallHandler { call, result ->
                 val mainThreadOnly = call.method == "chooseFolder" || call.method == "chooseRecoveryFolder" || call.method == "openPdf"
@@ -73,6 +95,460 @@ class MainActivity : FlutterActivity() {
                     }
                 }
             }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        registerStorageChangeObservers()
+    }
+
+    override fun onPause() {
+        unregisterStorageChangeObservers()
+        super.onPause()
+    }
+
+    private fun registerStorageChangeObservers() {
+        if (storageObserversRegistered || storageChangeSink == null) return
+        val observedUris = linkedMapOf<String, Uri>()
+        observedUris["media"] = MediaStore.Files.getContentUri("external")
+        if (android.os.Build.VERSION.SDK_INT >= 29) {
+            try {
+                MediaStore.getExternalVolumeNames(this).forEach { volume ->
+                    observedUris["volume:$volume"] = MediaStore.Files.getContentUri(volume)
+                }
+            } catch (_: Exception) {
+                // The aggregate external observer above remains as a fallback.
+            }
+        }
+        try {
+            contentResolver.persistedUriPermissions
+                .filter { it.isReadPermission }
+                .forEach { permission ->
+                    observedUris[permission.uri.toString()] = permission.uri
+                }
+        } catch (_: Exception) {
+            // MediaStore observation remains available when SAF grants cannot be read.
+        }
+
+        observedUris.values.forEach { uri ->
+            try {
+                val observer = object : ContentObserver(mainHandler) {
+                    override fun onChange(selfChange: Boolean) {
+                        scheduleStorageChangeEvent()
+                    }
+
+                    override fun onChange(selfChange: Boolean, changedUri: Uri?) {
+                        scheduleStorageChangeEvent()
+                    }
+                }
+                contentResolver.registerContentObserver(uri, true, observer)
+                storageObservers.add(observer)
+            } catch (_: Exception) {
+                // A provider can reject observation. Resume reconciliation still runs.
+            }
+        }
+        storageObserversRegistered = true
+    }
+
+    private fun unregisterStorageChangeObservers() {
+        storageChangeRunnable?.let { mainHandler.removeCallbacks(it) }
+        storageChangeRunnable = null
+        storageObservers.forEach { observer ->
+            try { contentResolver.unregisterContentObserver(observer) } catch (_: Exception) {}
+        }
+        storageObservers.clear()
+        storageObserversRegistered = false
+    }
+
+    private fun scheduleStorageChangeEvent() {
+        storageChangeRunnable?.let { mainHandler.removeCallbacks(it) }
+        val task = Runnable {
+            storageChangeSink?.success(mapOf("changedAt" to System.currentTimeMillis()))
+        }
+        storageChangeRunnable = task
+        mainHandler.postDelayed(task, 650L)
+    }
+
+    private fun isAppUpdateInstall(): Boolean {
+        return try {
+            @Suppress("DEPRECATION")
+            val info = packageManager.getPackageInfo(packageName, 0)
+            info.lastUpdateTime > info.firstInstallTime
+        } catch (_: Exception) {
+            // Unknown install state must not suppress a possible recovery prompt.
+            false
+        }
+    }
+
+    private fun detectLegacyDocsGridData(): Map<String, Any> {
+        if (android.os.Build.VERSION.SDK_INT >= 30 &&
+            !android.os.Environment.isExternalStorageManager()) {
+            return mapOf("status" to "detection_unavailable")
+        }
+        val mediaRoot = java.io.File(
+            android.os.Environment.getExternalStorageDirectory(),
+            "Android/media"
+        )
+        val roots = listOf(
+            java.io.File(mediaRoot, "DocsGrid"),
+            java.io.File(mediaRoot, "docsgrid"),
+            java.io.File(mediaRoot, "com.docsgrid")
+        ).filter { it.exists() && it.isDirectory && it.canRead() }
+
+        fun isPdf(file: java.io.File): Boolean {
+            if (!file.isFile || !file.name.lowercase().endsWith(".pdf")) return false
+            return try {
+                file.inputStream().use { input ->
+                    val header = ByteArray(5)
+                    input.read(header) == 5 && String(header) == "%PDF-"
+                }
+            } catch (_: Exception) { false }
+        }
+
+        fun hasValidBackup(file: java.io.File): Boolean {
+            if (!file.isFile || !file.name.lowercase().endsWith(".zip")) return false
+            return try {
+                java.util.zip.ZipFile(file).use { zip ->
+                    val entry = zip.getEntry("manifest.json") ?: return@use false
+                    val manifestText = zip.getInputStream(entry).bufferedReader().use {
+                        it.readText().take(128 * 1024)
+                    }
+                    val manifest = org.json.JSONObject(manifestText)
+                    val backupType = manifest.optString("backupType")
+                    if (manifest.optString("format") != "DocsGridBackup" ||
+                        manifest.optInt("version") != 1 ||
+                        (backupType != "full" && backupType != "database") ||
+                        manifest.optInt("databaseSchemaVersion", 1) !in 1..11) {
+                        return@use false
+                    }
+                    val tables = manifest.optJSONObject("tables") ?: return@use false
+                    if (!tables.has("documents") || !tables.has("folders")) return@use false
+                    val metadata = manifest.optJSONArray("metadataFiles") ?: return@use false
+                    if (metadata.length() == 0) return@use false
+                    val seen = mutableSetOf<String>()
+                    for (index in 0 until metadata.length()) {
+                        val record = metadata.optJSONObject(index) ?: return@use false
+                        val name = record.optString("entry")
+                        val size = record.optLong("sizeBytes", -1L)
+                        val expected = record.optString("sha256")
+                        if (name.isBlank() || name.contains("/") || name.contains("\\") ||
+                            !name.endsWith(".json") || !seen.add(name) || size < 0 ||
+                            !expected.matches(Regex("(?i)^[a-f0-9]{64}$"))) return@use false
+                        val payload = zip.getEntry(name) ?: return@use false
+                        if (payload.size >= 0 && payload.size != size) return@use false
+                        val digest = java.security.MessageDigest.getInstance("SHA-256")
+                        zip.getInputStream(payload).buffered().use { input ->
+                            val buffer = ByteArray(64 * 1024)
+                            while (true) {
+                                val count = input.read(buffer)
+                                if (count < 0) break
+                                digest.update(buffer, 0, count)
+                            }
+                        }
+                        val actual = digest.digest().joinToString("") { "%02x".format(it) }
+                        if (!actual.equals(expected, ignoreCase = true)) return@use false
+                        if (!tables.has(name.removeSuffix(".json"))) return@use false
+                    }
+                    val pdfs = manifest.optJSONArray("files") ?: return@use false
+                    if (backupType == "database" && pdfs.length() != 0) return@use false
+                    for (index in 0 until pdfs.length()) {
+                        val record = pdfs.optJSONObject(index) ?: return@use false
+                        val entryName = record.optString("entry")
+                        val digest = record.optString("sha256")
+                        if (!entryName.startsWith("pdfs/") ||
+                            entryName.contains("..") ||
+                            !digest.matches(Regex("(?i)^[a-f0-9]{64}$")) ||
+                            zip.getEntry(entryName) == null) return@use false
+                    }
+                    true
+                }
+            } catch (_: Exception) { false }
+        }
+
+        fun hasValidSnapshot(directory: java.io.File): Boolean {
+            if (!directory.isDirectory || !directory.name.startsWith("snapshot_")) return false
+            return try {
+                val manifestFile = java.io.File(directory, "manifest.json")
+                if (!manifestFile.isFile) return false
+                val manifest = org.json.JSONObject(
+                    manifestFile.readText(Charsets.UTF_8).take(128 * 1024)
+                )
+                if (manifest.optString("format") != "DocsGridPortableData" ||
+                    manifest.optInt("formatVersion") != 1 ||
+                    manifest.optInt("databaseSchemaVersion", 0) !in 1..11) return false
+                val tables = manifest.optJSONObject("tables") ?: return false
+                if (!tables.has("documents") || !tables.has("folders")) return false
+                val records = manifest.optJSONArray("files") ?: return false
+                if (records.length() == 0) return false
+                val seen = mutableSetOf<String>()
+                for (index in 0 until records.length()) {
+                    val record = records.optJSONObject(index) ?: return false
+                    val name = record.optString("path")
+                    if (name.isBlank() || name.contains("/") || name.contains("\\") ||
+                        !name.endsWith(".json") || !seen.add(name)) return false
+                    val size = record.optLong("sizeBytes", -1L)
+                    val expected = record.optString("sha256")
+                    if (size < 0 || !expected.matches(Regex("(?i)^[a-f0-9]{64}$"))) return false
+                    val payload = java.io.File(directory, name)
+                    if (!payload.isFile || payload.length() != size) return false
+                    val digest = java.security.MessageDigest.getInstance("SHA-256")
+                    payload.inputStream().buffered().use { input ->
+                        val buffer = ByteArray(64 * 1024)
+                        while (true) {
+                            val count = input.read(buffer)
+                            if (count < 0) break
+                            digest.update(buffer, 0, count)
+                        }
+                    }
+                    val actual = digest.digest().joinToString("") { "%02x".format(it) }
+                    if (!actual.equals(expected, ignoreCase = true)) return false
+                    if (!tables.has(name.removeSuffix(".json"))) return false
+                }
+                true
+            } catch (_: Exception) { false }
+        }
+
+        var hasPdfs = false
+        var hasBackup = false
+        var hasSnapshot = false
+        for (root in roots) {
+            val libraryRoots = listOf(
+                java.io.File(root, "My Files/Unfiled"),
+                java.io.File(root, "My Files/Folders"),
+                java.io.File(root, "Documents"),
+                java.io.File(root, "Folders"),
+                java.io.File(root, "Unfiled"),
+                java.io.File(root, "PDFs")
+            )
+            val queue = java.util.ArrayDeque<Pair<java.io.File, Int>>()
+            libraryRoots.filter { it.isDirectory && it.canRead() }
+                .forEach { queue.add(it to 0) }
+            var visitedDirectories = 0
+            while (queue.isNotEmpty() && visitedDirectories < 1500 && !hasPdfs) {
+                val (directory, depth) = queue.removeFirst()
+                visitedDirectories++
+                val children = try { directory.listFiles() } catch (_: Exception) { null } ?: continue
+                for (child in children) {
+                    if (isPdf(child)) {
+                        hasPdfs = true
+                        break
+                    }
+                    if (child.isDirectory && depth < 12 && child.canRead()) {
+                        queue.add(child to (depth + 1))
+                    }
+                }
+            }
+            val backupDirectories = listOf(
+                java.io.File(root, "Backups"),
+                java.io.File(root, "Backups/Full"),
+                java.io.File(root, "Backups/Database"),
+                java.io.File(root, "System/Backups"),
+                java.io.File(root, "System/Backups/Full"),
+                java.io.File(root, "System/Backups/Database")
+            )
+            hasBackup = hasBackup || backupDirectories.any { directory ->
+                (directory.listFiles() ?: emptyArray()).any { hasValidBackup(it) }
+            }
+            val snapshotDirectories = listOf(
+                java.io.File(root, "Database"),
+                java.io.File(root, "System/Database"),
+                java.io.File(root, "MetadataSnapshots"),
+                java.io.File(root, "System/MetadataSnapshots")
+            )
+            hasSnapshot = hasSnapshot || snapshotDirectories.any { parent ->
+                (parent.listFiles() ?: emptyArray()).any { hasValidSnapshot(it) }
+            }
+        }
+        val found = hasPdfs || hasBackup || hasSnapshot
+        return mapOf(
+            "status" to when {
+                found -> "found_recoverable_data"
+                roots.isNotEmpty() -> "found_folder_without_verified_recoverable_data"
+                else -> "confirmed_no_previous_data"
+            },
+            "hasPdfs" to hasPdfs,
+            "hasBackup" to hasBackup,
+            "hasSnapshot" to hasSnapshot,
+            "legacyRoots" to roots.map { it.absolutePath }
+        )
+    }
+
+    private fun queryPhonePdfIndex(): Map<String, Any> {
+        if (android.os.Build.VERSION.SDK_INT >= 30 &&
+            !android.os.Environment.isExternalStorageManager()) {
+            throw SecurityException("Allow Full internal storage access to index all shared PDF files.")
+        }
+
+        val entries = mutableListOf<Map<String, Any>>()
+        val volumeStates = linkedMapOf<String, Map<String, Any>>()
+        val volumes = if (android.os.Build.VERSION.SDK_INT >= 29) {
+            MediaStore.getExternalVolumeNames(this).toList().sorted()
+        } else {
+            listOf("external")
+        }
+        // Android 9 and earlier do not expose RELATIVE_PATH or per-volume
+        // generation values consistently. The caller will use the verified
+        // recursive scan on those releases instead of mis-grouping every PDF.
+        var complete = android.os.Build.VERSION.SDK_INT >= 29
+
+        volumes.forEachIndexed { volumeIndex, volumeName ->
+            try {
+                val collection = if (android.os.Build.VERSION.SDK_INT >= 29) {
+                    MediaStore.Files.getContentUri(volumeName)
+                } else {
+                    MediaStore.Files.getContentUri("external")
+                }
+                val relativePathColumn = if (android.os.Build.VERSION.SDK_INT >= 29) {
+                    MediaStore.MediaColumns.RELATIVE_PATH
+                } else {
+                    null
+                }
+                val projection = mutableListOf(
+                    MediaStore.MediaColumns._ID,
+                    MediaStore.MediaColumns.DISPLAY_NAME,
+                    MediaStore.MediaColumns.MIME_TYPE,
+                    MediaStore.MediaColumns.SIZE,
+                    MediaStore.MediaColumns.DATE_MODIFIED
+                )
+                relativePathColumn?.let { projection.add(it) }
+                if (android.os.Build.VERSION.SDK_INT >= 30) {
+                    projection.add(MediaStore.MediaColumns.GENERATION_MODIFIED)
+                    projection.add(MediaStore.MediaColumns.IS_TRASHED)
+                }
+
+                val version = if (android.os.Build.VERSION.SDK_INT >= 30) {
+                    MediaStore.getVersion(this, volumeName)
+                } else {
+                    "legacy"
+                }
+                val generation = if (android.os.Build.VERSION.SDK_INT >= 30) {
+                    MediaStore.getGeneration(this, volumeName)
+                } else {
+                    0L
+                }
+                volumeStates[volumeName] = mapOf(
+                    "version" to version,
+                    "generation" to generation,
+                    "label" to if (volumeName == MediaStore.VOLUME_EXTERNAL_PRIMARY) {
+                        "Internal"
+                    } else {
+                        "External storage ${volumeIndex}"
+                    }
+                )
+
+                val idIndexName = MediaStore.MediaColumns._ID
+                val nameIndexName = MediaStore.MediaColumns.DISPLAY_NAME
+                val mimeIndexName = MediaStore.MediaColumns.MIME_TYPE
+                val sizeIndexName = MediaStore.MediaColumns.SIZE
+                val modifiedIndexName = MediaStore.MediaColumns.DATE_MODIFIED
+                val relativeIndexName = relativePathColumn
+                // Exclude MediaStore's own trash flag; OEMs that implement trash
+                // as a hidden directory are filtered by relativePath below.
+                val pdfSelection = if (android.os.Build.VERSION.SDK_INT >= 30) {
+                    "($mimeIndexName = ? OR $nameIndexName LIKE ?) AND " +
+                        MediaStore.MediaColumns.IS_TRASHED + " = 0"
+                } else {
+                    "$mimeIndexName = ? OR $nameIndexName LIKE ?"
+                }
+                contentResolver.query(
+                    collection,
+                    projection.toTypedArray(),
+                    pdfSelection,
+                    arrayOf("application/pdf", "%.pdf"),
+                    "$modifiedIndexName DESC"
+                )?.use { cursor ->
+                    val idIndex = cursor.getColumnIndex(idIndexName)
+                    val nameIndex = cursor.getColumnIndex(nameIndexName)
+                    val mimeIndex = cursor.getColumnIndex(mimeIndexName)
+                    val sizeIndex = cursor.getColumnIndex(sizeIndexName)
+                    val modifiedIndex = cursor.getColumnIndex(modifiedIndexName)
+                    val relativeIndex = relativeIndexName?.let {
+                        cursor.getColumnIndex(it)
+                    } ?: -1
+                    val generationIndex = if (android.os.Build.VERSION.SDK_INT >= 30) {
+                        cursor.getColumnIndex(MediaStore.MediaColumns.GENERATION_MODIFIED)
+                    } else {
+                        -1
+                    }
+                    if (idIndex < 0 || nameIndex < 0) {
+                        throw IllegalStateException("MediaStore returned incomplete PDF columns.")
+                    }
+                    while (cursor.moveToNext()) {
+                        val name = cursor.getString(nameIndex) ?: continue
+                        if (!name.lowercase().endsWith(".pdf")) continue
+                        val relativePath = if (relativeIndex >= 0 && !cursor.isNull(relativeIndex)) {
+                            cursor.getString(relativeIndex).orEmpty()
+                                .replace('\\', '/').trim('/')
+                        } else {
+                            ""
+                        }
+                        val normalized = relativePath.lowercase()
+                        // Android/Samsung file-manager trash folders are not live Phone files.
+                        val pathSegments = normalized.split('/').filter { it.isNotBlank() }
+                        if (pathSegments.any {
+                            it == ".trash" || it == ".trashed" || it == ".recycle" ||
+                                it == "recycle_bin" || it == "recycle bin"
+                        }) continue
+                        // DocsGrid-managed files belong to the Grid library, not Phone storage.
+                        if (normalized.startsWith("android/media/com.docsgrid/") ||
+                            normalized == "android/media/com.docsgrid" ||
+                            normalized.startsWith("android/media/docsgrid/") ||
+                            normalized == "android/media/docsgrid") {
+                            continue
+                        }
+                        val sizeKnown = sizeIndex >= 0 && !cursor.isNull(sizeIndex) &&
+                            cursor.getLong(sizeIndex) >= 0L
+                        val size = if (sizeKnown) cursor.getLong(sizeIndex) else 0L
+                        val modifiedMillis = if (modifiedIndex >= 0 && !cursor.isNull(modifiedIndex)) {
+                            cursor.getLong(modifiedIndex).coerceAtLeast(0L) * 1000L
+                        } else {
+                            0L
+                        }
+                        val label = if (volumeName == MediaStore.VOLUME_EXTERNAL_PRIMARY) {
+                            "Internal"
+                        } else {
+                            "External storage ${volumeIndex}"
+                        }
+                        val folderPath = when {
+                            relativePath.isEmpty() -> ""
+                            label == "Internal" -> "Internal/$relativePath"
+                            else -> "$label/$relativePath"
+                        }
+                        val item = mutableMapOf<String, Any>(
+                            "name" to name,
+                            "uri" to ContentUris.withAppendedId(collection, cursor.getLong(idIndex)).toString(),
+                            "isDirectory" to false,
+                            "sizeBytes" to size,
+                            "sizeKnown" to sizeKnown,
+                            "lastModified" to modifiedMillis,
+                            "folderPath" to folderPath,
+                            "volumeName" to volumeName
+                        )
+                        if (generationIndex >= 0 && !cursor.isNull(generationIndex)) {
+                            item["generationModified"] = cursor.getLong(generationIndex)
+                        }
+                        entries.add(item)
+                    }
+                } ?: throw IllegalStateException("MediaStore could not query volume $volumeName.")
+            } catch (error: Exception) {
+                complete = false
+                volumeStates[volumeName] = mapOf(
+                    "error" to (error.message ?: "Volume query failed"),
+                    "label" to if (volumeName == MediaStore.VOLUME_EXTERNAL_PRIMARY) {
+                        "Internal"
+                    } else {
+                        "External storage ${volumeIndex}"
+                    }
+                )
+            }
+        }
+
+        entries.sortByDescending { it["lastModified"] as Long }
+        return mapOf(
+            "entries" to entries,
+            "volumes" to volumeStates,
+            "complete" to complete
+        )
     }
 
     private fun enqueueStorageCall(result: MethodChannel.Result, task: () -> Unit): Boolean {
@@ -116,50 +592,183 @@ class MainActivity : FlutterActivity() {
                                     startActivityForResult(intent, requestChooseFolder)
                                 }
                             }
+                            "isAppUpdateInstall" -> result.success(isAppUpdateInstall())
+                            "detectLegacyDocsGridData" -> result.success(detectLegacyDocsGridData())
                             "getPortableDataLocations" -> {
-                                val prefs = getSharedPreferences("docsgrid_storage", MODE_PRIVATE)
-                                var database = prefs.getString("database_uri", null)
-                                var recovery = prefs.getString("recovery_uri", null)
-                                var library = prefs.getString("folders_uri", null)
-                                    ?: prefs.getString("my_files_uri", null)
-                                var documents = prefs.getString("documents_uri", null)
-                                if (database == null || recovery == null || library == null || documents == null) {
-                                    if (android.os.Build.VERSION.SDK_INT >= 30 &&
-                                        !android.os.Environment.isExternalStorageManager()) {
-                                        throw IllegalStateException("Allow Full internal storage access in DocsGrid Settings, then retry recovery.")
+                                // A user-selected SAF recovery tree remains usable without
+                                // MANAGE_EXTERNAL_STORAGE. Return its persisted opaque URIs
+                                // before attempting the automatic Android/media layout.
+                                val saved = getSharedPreferences("docsgrid_storage", MODE_PRIVATE)
+                                val savedRoot = saved.getString("docsgrid_uri", null)
+                                val savedDatabase = saved.getString("database_uri", null)
+                                val savedRecovery = saved.getString("recovery_uri", null)
+                                val savedLibrary = saved.getString("folders_uri", null)
+                                    ?: saved.getString("my_files_uri", null)
+                                val savedDocuments = saved.getString("documents_uri", null)
+                                val hasAllFilesAccess = android.os.Build.VERSION.SDK_INT < 30 ||
+                                    android.os.Environment.isExternalStorageManager()
+                                val savedRootDocumentId = savedRoot
+                                    ?.takeIf { it.startsWith("content://") }
+                                    ?.let { rootUri ->
+                                        runCatching {
+                                            DocumentsContract.getTreeDocumentId(Uri.parse(rootUri))
+                                        }.getOrNull()
                                     }
-                                    val root = java.io.File(
-                                        android.os.Environment.getExternalStorageDirectory(),
-                                        "Android/media/DocsGrid"
+                                    ?.replace('\\', '/')
+                                    ?.lowercase()
+                                    .orEmpty()
+                                val savedRootIsLegacyDocsGrid =
+                                    savedRootDocumentId.contains("android/media/docsgrid")
+                                if (savedRoot?.startsWith("content://") == true &&
+                                    savedDatabase?.startsWith("content://") == true &&
+                                    savedRecovery?.startsWith("content://") == true &&
+                                    savedLibrary?.startsWith("content://") == true &&
+                                    !(hasAllFilesAccess && savedRootIsLegacyDocsGrid)) {
+                                    val selectedLocations = mutableMapOf<String, String>(
+                                        "rootUri" to savedRoot,
+                                        "databaseUri" to savedDatabase,
+                                        "recoveryUri" to savedRecovery,
+                                        "libraryUri" to savedLibrary
                                     )
-                                    val docs = java.io.File(root, "Documents")
-                                    val folders = java.io.File(root, "Folders")
-                                    val dbFolder = java.io.File(root, "Database")
-                                    val recoveryFolder = java.io.File(root, "Recovery")
-                                    if (!root.isDirectory || !docs.isDirectory || !folders.isDirectory ||
-                                        !dbFolder.isDirectory || !recoveryFolder.isDirectory) {
-                                        throw IllegalStateException("No existing Android/media/DocsGrid recovery tree was found.")
+                                    if (savedDocuments?.startsWith("content://") == true) {
+                                        selectedLocations["documentsUri"] = savedDocuments
                                     }
-                                    val snapshots = dbFolder.listFiles()?.filter {
-                                        it.isDirectory && it.name.startsWith("snapshot_")
-                                    }.orEmpty()
-                                    if (snapshots.isEmpty()) {
-                                        throw IllegalStateException("Android/media/DocsGrid exists, but no recovery snapshot was found in Database.")
+                                    // Extend an existing, user-selected portable tree in place.
+                                    // All additions are idempotent; no old recovery data is moved.
+                                    try {
+                                        val rootUri = Uri.parse(savedRoot)
+                                        val systemUri = ensureDirectory(rootUri, "System")
+                                        val cacheUri = ensureDirectory(systemUri, "Cache")
+                                        val pagePreviewsUri = ensureDirectory(cacheUri, "PagePreviews")
+                                        val searchIndexUri = ensureDirectory(cacheUri, "SearchIndex")
+                                        val folderIndexUri = ensureDirectory(cacheUri, "FolderIndex")
+                                        val backupsUri = ensureDirectory(systemUri, "Backups")
+                                        val fullBackupsUri = ensureDirectory(backupsUri, "Full")
+                                        val databaseBackupsUri = ensureDirectory(backupsUri, "Database")
+                                        val recoveryUri = Uri.parse(savedRecovery)
+                                        val restoreReportsUri = ensureDirectory(recoveryUri, "Reports")
+                                        val restoreCheckpointsUri = ensureDirectory(recoveryUri, "Checkpoints")
+                                        selectedLocations["cacheUri"] = cacheUri.toString()
+                                        selectedLocations["pagePreviewsUri"] = pagePreviewsUri.toString()
+                                        selectedLocations["searchIndexUri"] = searchIndexUri.toString()
+                                        selectedLocations["folderIndexUri"] = folderIndexUri.toString()
+                                        selectedLocations["backupsUri"] = backupsUri.toString()
+                                        selectedLocations["fullBackupsUri"] = fullBackupsUri.toString()
+                                        selectedLocations["databaseBackupsUri"] = databaseBackupsUri.toString()
+                                        selectedLocations["restoreReportsUri"] = restoreReportsUri.toString()
+                                        selectedLocations["restoreCheckpointsUri"] = restoreCheckpointsUri.toString()
+                                        saved.edit()
+                                            .putString("cache_uri", cacheUri.toString())
+                                            .putString("page_previews_uri", pagePreviewsUri.toString())
+                                            .putString("search_index_uri", searchIndexUri.toString())
+                                            .putString("folder_index_uri", folderIndexUri.toString())
+                                            .putString("backups_uri", backupsUri.toString())
+                                            .putString("full_backups_uri", fullBackupsUri.toString())
+                                            .putString("database_backups_uri", databaseBackupsUri.toString())
+                                            .putString("restore_reports_uri", restoreReportsUri.toString())
+                                            .putString("restore_checkpoints_uri", restoreCheckpointsUri.toString())
+                                            .apply()
+                                    } catch (_: Exception) {
+                                        // Older or limited SAF providers may not support all
+                                        // optional subfolders. Existing core URIs remain valid.
                                     }
-                                    database = Uri.fromFile(dbFolder).toString()
-                                    recovery = Uri.fromFile(recoveryFolder).toString()
-                                    library = Uri.fromFile(folders).toString()
-                                    documents = Uri.fromFile(docs).toString()
-                                    prefs.edit()
-                                        .putString("docsgrid_uri", Uri.fromFile(root).toString())
-                                        .putString("database_uri", database)
-                                        .putString("recovery_uri", recovery)
-                                        .putString("folders_uri", library)
-                                        .putString("my_files_uri", library)
-                                        .putString("documents_uri", documents)
-                                        .apply()
+                                    result.success(selectedLocations)
+                                    return
                                 }
-                                result.success(mapOf("databaseUri" to database, "recoveryUri" to recovery, "libraryUri" to library, "documentsUri" to documents))
+                                // Initialize the automatic portable tree independently of backup discovery.
+                                // A fresh install must never require an old snapshot to create storage.
+                                if (!hasAllFilesAccess) {
+                                    throw IllegalStateException("Allow Full internal storage access in DocsGrid Settings, then retry portable storage setup.")
+                                }
+                                val mediaRoot = java.io.File(
+                                    android.os.Environment.getExternalStorageDirectory(),
+                                    "Android/media"
+                                )
+                                val legacyRoot = java.io.File(mediaRoot, "DocsGrid")
+                                val root = java.io.File(mediaRoot, "com.docsgrid")
+                                val myFiles = java.io.File(root, "My Files")
+                                val unfiled = java.io.File(myFiles, "Unfiled")
+                                val folders = java.io.File(myFiles, "Folders")
+                                val shared = java.io.File(myFiles, "Shared")
+                                val system = java.io.File(root, "System")
+                                val databaseFolder = java.io.File(system, "Database")
+                                val recoveryFolder = java.io.File(system, "Recovery")
+                                val backupsFolder = java.io.File(system, "Backups")
+                                val fullBackupsFolder = java.io.File(backupsFolder, "Full")
+                                val databaseBackupsFolder = java.io.File(backupsFolder, "Database")
+                                val restoreReportsFolder = java.io.File(recoveryFolder, "Reports")
+                                val restoreCheckpointsFolder = java.io.File(recoveryFolder, "Checkpoints")
+                                val tempFolder = java.io.File(system, "Temp")
+                                val logsFolder = java.io.File(system, "Logs")
+                                val exportsFolder = java.io.File(system, "Exports")
+                                // Preserve the original System/Thumbnails path for existing caches.
+                                val thumbnailsFolder = java.io.File(system, "Thumbnails")
+                                val cacheFolder = java.io.File(system, "Cache")
+                                val pagePreviewsFolder = java.io.File(cacheFolder, "PagePreviews")
+                                val searchIndexFolder = java.io.File(cacheFolder, "SearchIndex")
+                                val folderIndexFolder = java.io.File(cacheFolder, "FolderIndex")
+                                val required = listOf(root, myFiles, unfiled, folders, shared, system,
+                                    databaseFolder, recoveryFolder, backupsFolder, fullBackupsFolder,
+                                    databaseBackupsFolder, restoreReportsFolder, restoreCheckpointsFolder,
+                                    tempFolder, logsFolder, exportsFolder, thumbnailsFolder,
+                                    cacheFolder, pagePreviewsFolder, searchIndexFolder, folderIndexFolder)
+                                required.forEach { directory ->
+                                    if (!directory.exists() && !directory.mkdirs() && !directory.isDirectory) {
+                                        throw IllegalStateException("Could not create DocsGrid storage folder: ${directory.name}")
+                                    }
+                                    if (!directory.isDirectory) {
+                                        throw IllegalStateException("DocsGrid storage path is not a directory: ${directory.name}")
+                                    }
+                                }
+                                val database = Uri.fromFile(databaseFolder).toString()
+                                val recovery = Uri.fromFile(recoveryFolder).toString()
+                                val library = Uri.fromFile(folders).toString()
+                                val documents = Uri.fromFile(unfiled).toString()
+                                val prefs = getSharedPreferences("docsgrid_storage", MODE_PRIVATE)
+                                prefs.edit()
+                                    .putString("docsgrid_uri", Uri.fromFile(root).toString())
+                                    .putString("database_uri", database)
+                                    .putString("recovery_uri", recovery)
+                                    .putString("folders_uri", library)
+                                    .putString("my_files_uri", library)
+                                    .putString("documents_uri", documents)
+                                    .putString("shared_uri", Uri.fromFile(shared).toString())
+                                    .putString("backups_uri", Uri.fromFile(backupsFolder).toString())
+                                    .putString("full_backups_uri", Uri.fromFile(fullBackupsFolder).toString())
+                                    .putString("database_backups_uri", Uri.fromFile(databaseBackupsFolder).toString())
+                                    .putString("restore_reports_uri", Uri.fromFile(restoreReportsFolder).toString())
+                                    .putString("restore_checkpoints_uri", Uri.fromFile(restoreCheckpointsFolder).toString())
+                                    .putString("cache_uri", Uri.fromFile(cacheFolder).toString())
+                                    .putString("page_previews_uri", Uri.fromFile(pagePreviewsFolder).toString())
+                                    .putString("search_index_uri", Uri.fromFile(searchIndexFolder).toString())
+                                    .putString("folder_index_uri", Uri.fromFile(folderIndexFolder).toString())
+                                    .putString("temp_uri", Uri.fromFile(tempFolder).toString())
+                                    .putString("logs_uri", Uri.fromFile(logsFolder).toString())
+                                    .putString("exports_uri", Uri.fromFile(exportsFolder).toString())
+                                    .putString("thumbnails_uri", Uri.fromFile(thumbnailsFolder).toString())
+                                    .apply()
+                                result.success(mapOf(
+                                    "rootUri" to Uri.fromFile(root).toString(),
+                                    "legacyRootUri" to Uri.fromFile(legacyRoot).toString(),
+                                    "databaseUri" to database,
+                                    "recoveryUri" to recovery,
+                                    "libraryUri" to library,
+                                    "documentsUri" to documents,
+                                    "sharedUri" to Uri.fromFile(shared).toString(),
+                                    "backupsUri" to Uri.fromFile(backupsFolder).toString(),
+                                    "fullBackupsUri" to Uri.fromFile(fullBackupsFolder).toString(),
+                                    "databaseBackupsUri" to Uri.fromFile(databaseBackupsFolder).toString(),
+                                    "restoreReportsUri" to Uri.fromFile(restoreReportsFolder).toString(),
+                                    "restoreCheckpointsUri" to Uri.fromFile(restoreCheckpointsFolder).toString(),
+                                    "cacheUri" to Uri.fromFile(cacheFolder).toString(),
+                                    "pagePreviewsUri" to Uri.fromFile(pagePreviewsFolder).toString(),
+                                    "searchIndexUri" to Uri.fromFile(searchIndexFolder).toString(),
+                                    "folderIndexUri" to Uri.fromFile(folderIndexFolder).toString(),
+                                    "tempUri" to Uri.fromFile(tempFolder).toString(),
+                                    "logsUri" to Uri.fromFile(logsFolder).toString(),
+                                    "exportsUri" to Uri.fromFile(exportsFolder).toString(),
+                                    "thumbnailsUri" to Uri.fromFile(thumbnailsFolder).toString()
+                                ))
                             }
                             "getSelectedFolder" -> {
                                 val prefs = getSharedPreferences("docsgrid_storage", MODE_PRIVATE)
@@ -173,12 +782,74 @@ class MainActivity : FlutterActivity() {
                                     mapOf("uri" to it, "name" to if (hasAllFiles) "Internal storage" else "DocsGrid/Folders")
                                 })
                             }
+                            "queryPhonePdfIndex" -> result.success(queryPhonePdfIndex())
+                            "getAccessibleScanRoots" -> {
+                                val roots = linkedMapOf<String, Map<String, String>>()
+                                val hasAllFiles = android.os.Build.VERSION.SDK_INT < 30 ||
+                                    android.os.Environment.isExternalStorageManager()
+                                if (hasAllFiles) {
+                                    // getExternalFilesDirs exposes the app-specific directory on
+                                    // each mounted shared-storage volume. Walk back to each volume
+                                    // root so removable SD cards are included when Android grants
+                                    // MANAGE_EXTERNAL_STORAGE.
+                                    getExternalFilesDirs(null).filterNotNull().forEachIndexed { index, appDirectory ->
+                                        val appPath = appDirectory.canonicalPath
+                                        val marker = "/Android/data/$packageName"
+                                        val markerIndex = appPath.indexOf(marker)
+                                        if (markerIndex >= 0) {
+                                            val volumeRoot = java.io.File(appPath.substring(0, markerIndex))
+                                            if (volumeRoot.isDirectory && volumeRoot.canRead()) {
+                                                val label = if (index == 0) "Internal storage" else "External storage $index"
+                                                roots[volumeRoot.canonicalPath] = mapOf(
+                                                    "uri" to Uri.fromFile(volumeRoot).toString(),
+                                                    "name" to label
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                                val prefs = getSharedPreferences("docsgrid_storage", MODE_PRIVATE)
+                                val docsGridRoots = listOfNotNull(
+                                    prefs.getString("docsgrid_uri", null),
+                                    prefs.getString("folders_uri", null),
+                                    prefs.getString("my_files_uri", null),
+                                    prefs.getString("documents_uri", null),
+                                    prefs.getString("database_uri", null),
+                                    prefs.getString("recovery_uri", null)
+                                ).toSet()
+                                contentResolver.persistedUriPermissions.filter { it.isReadPermission }
+                                    .forEachIndexed { index, permission ->
+                                        val uri = permission.uri
+                                        if (uri.toString() in docsGridRoots) return@forEachIndexed
+                                        // When full shared-storage access is already available, the
+                                        // primary: SAF subtree is covered by the file root. Keep
+                                        // non-primary/removable SAF roots as independent locations.
+                                        if (hasAllFiles) {
+                                            val treeId = try { DocumentsContract.getTreeDocumentId(uri) } catch (_: Exception) { "" }
+                                            if (treeId.startsWith("primary:")) return@forEachIndexed
+                                        }
+                                        roots.putIfAbsent(uri.toString(), mapOf("uri" to uri.toString(), "name" to "Granted folder ${index + 1}"))
+                                    }
+                                result.success(roots.values.toList())
+                            }
                             "consumeSharedPdfs" -> result.success(consumeSharedPdfs(incomingShareIntent))
                             "checkStorageAccess" -> result.success(checkStorageAccess())
                             "hasAllFilesAccess" -> result.success(
                                 android.os.Build.VERSION.SDK_INT < 30 ||
                                     android.os.Environment.isExternalStorageManager()
                             )
+                            "getStorageUsage" -> {
+                                val stats = android.os.StatFs(
+                                    android.os.Environment.getExternalStorageDirectory().absolutePath
+                                )
+                                val totalBytes = stats.totalBytes.coerceAtLeast(0L)
+                                val availableBytes = stats.availableBytes.coerceIn(0L, totalBytes)
+                                result.success(mapOf(
+                                    "totalBytes" to totalBytes,
+                                    "availableBytes" to availableBytes,
+                                    "usedBytes" to (totalBytes - availableBytes)
+                                ))
+                            }
                             "requestAllFilesAccess" -> {
                                 if (android.os.Build.VERSION.SDK_INT < 30 ||
                                     android.os.Environment.isExternalStorageManager()) {
@@ -208,6 +879,18 @@ class MainActivity : FlutterActivity() {
                                 val parent = Uri.parse(call.argument<String>("parentUri")!!)
                                 val name = call.argument<String>("name")!!
                                 result.success((if (parent.scheme == "file") copyFilePdf(source, parent, name) else copyPdf(source, parent, name)).toString())
+                            }
+                            "copyFileToStorage" -> {
+                                val sourcePath = call.argument<String>("sourcePath")!!
+                                val parent = Uri.parse(call.argument<String>("parentUri")!!)
+                                val name = call.argument<String>("name")!!
+                                val mimeType = call.argument<String>("mimeType") ?: "application/octet-stream"
+                                result.success(copyPrivateFileToStorage(sourcePath, parent, name, mimeType).toString())
+                            }
+                            "copyStorageFileToPath" -> {
+                                val source = Uri.parse(call.argument<String>("sourceUri")!!)
+                                val destinationPath = call.argument<String>("destinationPath")!!
+                                result.success(copyStorageFileToPrivatePath(source, destinationPath))
                             }
                             "copyPdfToPath" -> {
                                 val source = Uri.parse(call.argument<String>("sourceUri")!!)
@@ -306,26 +989,31 @@ class MainActivity : FlutterActivity() {
                                 }
                                 result.success(target.delete())
                             } else {
-                                val documentUri = resolveParentUri(uri)
-                                val metadata = contentResolver.query(
-                                    documentUri, arrayOf(DocumentsContract.Document.COLUMN_MIME_TYPE),
-                                    null, null, null
-                                ) ?: throw IllegalStateException("Could not inspect the selected storage item.")
-                                val mime = metadata.use { if (it.moveToFirst()) it.getString(0) else null }
-                                if (mime == DocumentsContract.Document.MIME_TYPE_DIR) {
-                                    val documentId = DocumentsContract.getDocumentId(documentUri)
-                                    val children = DocumentsContract.buildChildDocumentsUriUsingTree(uri, documentId)
-                                    val cursor = contentResolver.query(
-                                        children, arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID),
+                                if (uri.authority == "media") {
+                                    // MediaStore item URIs are not SAF document URIs.
+                                    result.success(contentResolver.delete(uri, null, null) > 0)
+                                } else {
+                                    val documentUri = resolveParentUri(uri)
+                                    val metadata = contentResolver.query(
+                                        documentUri, arrayOf(DocumentsContract.Document.COLUMN_MIME_TYPE),
                                         null, null, null
-                                    ) ?: throw IllegalStateException("Could not verify whether the folder is empty.")
-                                    cursor.use {
-                                        if (it.moveToFirst()) {
-                                            throw IllegalStateException("Folder contains files or subfolders and cannot be deleted.")
+                                    ) ?: throw IllegalStateException("Could not inspect the selected storage item.")
+                                    val mime = metadata.use { if (it.moveToFirst()) it.getString(0) else null }
+                                    if (mime == DocumentsContract.Document.MIME_TYPE_DIR) {
+                                        val documentId = DocumentsContract.getDocumentId(documentUri)
+                                        val children = DocumentsContract.buildChildDocumentsUriUsingTree(uri, documentId)
+                                        val cursor = contentResolver.query(
+                                            children, arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID),
+                                            null, null, null
+                                        ) ?: throw IllegalStateException("Could not verify whether the folder is empty.")
+                                        cursor.use {
+                                            if (it.moveToFirst()) {
+                                                throw IllegalStateException("Folder contains files or subfolders and cannot be deleted.")
+                                            }
                                         }
                                     }
+                                    result.success(DocumentsContract.deleteDocument(contentResolver, uri))
                                 }
-                                result.success(DocumentsContract.deleteDocument(contentResolver, uri))
                             }
                             }
                             "openPdf" -> {
@@ -436,17 +1124,63 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    private fun fileForUri(uri: Uri): java.io.File {
+    private fun sharedStorageVolumeRoots(): List<java.io.File> {
+        val marker = "/Android/data/$packageName"
+        val roots = getExternalFilesDirs(null).filterNotNull().mapNotNull { appDirectory ->
+            try {
+                val path = appDirectory.canonicalPath
+                val markerIndex = path.indexOf(marker)
+                if (markerIndex < 0) null
+                else java.io.File(path.substring(0, markerIndex)).canonicalFile
+            } catch (_: Exception) {
+                null
+            }
+        }.toMutableList()
+        // Include mounted shared volumes even when an OEM omits the app-specific
+        // Android/data path from getExternalFilesDirs().
+        try {
+            roots.add(android.os.Environment.getExternalStorageDirectory().canonicalFile)
+        } catch (_: Exception) {}
+        if (android.os.Build.VERSION.SDK_INT >= 24) {
+            try {
+                val manager = getSystemService(android.os.storage.StorageManager::class.java)
+                manager.storageVolumes.mapNotNull { volume ->
+                    try { volume.directory?.canonicalFile } catch (_: Exception) { null }
+                }.forEach { roots.add(it) }
+            } catch (_: Exception) {}
+        }
+        return roots.distinctBy { it.path }
+    }
+
+    private fun appPrivateStorageRoots(): List<java.io.File> {
+        val roots = mutableListOf(filesDir, cacheDir, codeCacheDir, noBackupFilesDir)
+        externalCacheDir?.let { roots.add(it) }
+        getExternalFilesDirs(null).filterNotNull().forEach { roots.add(it) }
+        return roots.mapNotNull { directory ->
+            try { directory.canonicalFile } catch (_: Exception) { null }
+        }
+    }
+
+    private fun fileForUri(uri: Uri, allowAppPrivate: Boolean = false): java.io.File {
         if (uri.scheme != "file") throw IllegalArgumentException("Expected a local file URI.")
+        val file = java.io.File(uri.path ?: throw IllegalArgumentException("Invalid file URI."))
+        val canonical = file.canonicalFile
+        val separator = java.io.File.separator
+        if (allowAppPrivate) {
+            val isAppPrivate = appPrivateStorageRoots().any { root ->
+                canonical.path == root.path || canonical.path.startsWith(root.path + separator)
+            }
+            if (isAppPrivate) return canonical
+        }
         if (android.os.Build.VERSION.SDK_INT >= 30 &&
             !android.os.Environment.isExternalStorageManager()) {
             throw SecurityException("Allow Full internal storage access in DocsGrid Settings.")
         }
-        val file = java.io.File(uri.path ?: throw IllegalArgumentException("Invalid file URI."))
-        val root = android.os.Environment.getExternalStorageDirectory().canonicalFile
-        val canonical = file.canonicalFile
-        if (canonical.path != root.path && !canonical.path.startsWith(root.path + java.io.File.separator)) {
-            throw SecurityException("DocsGrid file access is limited to shared internal storage.")
+        val allowed = sharedStorageVolumeRoots().any { root ->
+            canonical.path == root.path || canonical.path.startsWith(root.path + separator)
+        }
+        if (!allowed) {
+            throw SecurityException("DocsGrid file access is limited to Android shared-storage volumes.")
         }
         return canonical
     }
@@ -455,17 +1189,17 @@ class MainActivity : FlutterActivity() {
         val directory = fileForUri(uri)
         if (!directory.exists()) throw java.io.FileNotFoundException("Missing directory: ${directory.path}")
         if (!directory.isDirectory) throw IllegalStateException("The selected storage item is not a folder.")
-        // Android intentionally blocks some protected subtrees (notably
-        // Android/data and Android/obb) even with all-files access. Skip those
-        // inaccessible branches without aborting the scan of the rest of storage.
-        val children = try { directory.listFiles() } catch (_: SecurityException) { null }
-            ?: return emptyList()
+        // Do not disguise inaccessible directories as empty.
+        val children = directory.listFiles()
+            ?: throw SecurityException("Android could not enumerate this directory: ${directory.name}")
         return children.sortedBy { it.name.lowercase() }.map { child ->
             mapOf(
                 "name" to child.name,
                 "uri" to Uri.fromFile(child).toString(),
                 "isDirectory" to child.isDirectory,
-                "size" to if (child.isFile) child.length() else 0L
+                "size" to if (child.isFile) child.length() else 0L,
+                "sizeKnown" to (!child.isFile || child.length() >= 0L),
+                "lastModified" to child.lastModified()
             )
         }
     }
@@ -491,7 +1225,10 @@ class MainActivity : FlutterActivity() {
 
     private fun copyFilePdf(source: Uri, parent: Uri, requestedName: String): Uri {
         validateLeafName(requestedName)
-        val sourceFile = fileForUri(source)
+        // The picker may stage the source under this app's private cache.
+        // Permit that path for reading only; the destination remains restricted
+        // to an approved shared-storage volume.
+        val sourceFile = fileForUri(source, allowAppPrivate = true)
         val destinationFolder = fileForUri(parent)
         val base = requestedName.removeSuffix(".pdf")
         var candidate = "$base.pdf"
@@ -506,7 +1243,8 @@ class MainActivity : FlutterActivity() {
             sourceFile.inputStream().buffered().use { input ->
                 temporary.outputStream().buffered().use { output -> input.copyTo(output, 64 * 1024); output.flush() }
             }
-            if (!digest(Uri.fromFile(sourceFile)).contentEquals(digest(Uri.fromFile(temporary))) ||
+            if (!digest(Uri.fromFile(sourceFile), allowAppPrivateFile = true)
+                    .contentEquals(digest(Uri.fromFile(temporary))) ||
                 !temporary.renameTo(destination)) {
                 throw IllegalStateException("PDF copy verification or publish failed.")
             }
@@ -627,7 +1365,8 @@ class MainActivity : FlutterActivity() {
                 DocumentsContract.Document.COLUMN_DOCUMENT_ID,
                 DocumentsContract.Document.COLUMN_DISPLAY_NAME,
                 DocumentsContract.Document.COLUMN_MIME_TYPE,
-                DocumentsContract.Document.COLUMN_SIZE
+                DocumentsContract.Document.COLUMN_SIZE,
+                DocumentsContract.Document.COLUMN_LAST_MODIFIED
             ),
             null, null, null
         )?.use { cursor ->
@@ -635,6 +1374,7 @@ class MainActivity : FlutterActivity() {
             val nameIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
             val mimeIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_MIME_TYPE)
             val sizeIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_SIZE)
+            val modifiedIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_LAST_MODIFIED)
             while (cursor.moveToNext()) {
                 if (idIndex < 0 || nameIndex < 0 || mimeIndex < 0) continue
                 val id = cursor.getString(idIndex)
@@ -643,7 +1383,9 @@ class MainActivity : FlutterActivity() {
                     "name" to cursor.getString(nameIndex),
                     "uri" to DocumentsContract.buildDocumentUriUsingTree(directoryUri, id).toString(),
                     "isDirectory" to (mime == DocumentsContract.Document.MIME_TYPE_DIR),
-                    "size" to if (sizeIndex >= 0 && !cursor.isNull(sizeIndex)) cursor.getLong(sizeIndex) else 0L
+                    "size" to if (sizeIndex >= 0 && !cursor.isNull(sizeIndex) && cursor.getLong(sizeIndex) >= 0L) cursor.getLong(sizeIndex) else 0L,
+                    "sizeKnown" to (sizeIndex >= 0 && !cursor.isNull(sizeIndex) && cursor.getLong(sizeIndex) >= 0L),
+                    "lastModified" to if (modifiedIndex >= 0 && !cursor.isNull(modifiedIndex)) cursor.getLong(modifiedIndex) else 0L
                 ))
             }
         } ?: throw IllegalStateException("The storage provider could not list this folder.")
@@ -705,13 +1447,141 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    private fun digest(uri: Uri): ByteArray {
-        val md = MessageDigest.getInstance("SHA-256")
-        val inputStream = if (uri.scheme == "file") {
-            fileForUri(uri).inputStream()
+    private fun openPdfSource(uri: Uri, allowAppPrivateFile: Boolean = false): java.io.InputStream? {
+        return if (uri.scheme == "file") {
+            fileForUri(uri, allowAppPrivate = allowAppPrivateFile).inputStream()
         } else {
             contentResolver.openInputStream(uri)
-        } ?: throw IllegalStateException("Could not read PDF for verification.")
+        }
+    }
+
+    private fun isInsideAppPrivateStorage(file: java.io.File): Boolean {
+        val canonical = file.canonicalFile
+        val separator = java.io.File.separator
+        return appPrivateStorageRoots().any { root ->
+            canonical.path == root.path || canonical.path.startsWith(root.path + separator)
+        }
+    }
+
+    private fun fileSha256(file: java.io.File): ByteArray {
+        val md = MessageDigest.getInstance("SHA-256")
+        file.inputStream().buffered().use { input ->
+            val buffer = ByteArray(64 * 1024)
+            while (true) {
+                val count = input.read(buffer)
+                if (count < 0) break
+                md.update(buffer, 0, count)
+            }
+        }
+        return md.digest()
+    }
+
+    /// Copies an app-private staged archive to selected SAF storage and verifies it
+    /// before publishing the final name.
+    private fun copyPrivateFileToStorage(
+        sourcePath: String,
+        parentUri: Uri,
+        name: String,
+        mimeType: String
+    ): Uri {
+        validateLeafName(name)
+        val source = java.io.File(sourcePath).canonicalFile
+        if (!source.isFile || !isInsideAppPrivateStorage(source)) {
+            throw SecurityException("DocsGrid can only publish an app-staged file to selected storage.")
+        }
+        if (parentUri.scheme == "file") {
+            val directory = fileForUri(parentUri)
+            if (!directory.isDirectory) throw IllegalStateException("The selected destination is not a folder.")
+            val destination = java.io.File(directory, name)
+            if (destination.exists()) throw IllegalStateException("A file with this name already exists.")
+            val temporary = java.io.File(directory, ".$name.tmp-${java.util.UUID.randomUUID()}")
+            try {
+                source.inputStream().buffered().use { input ->
+                    temporary.outputStream().buffered().use { output ->
+                        input.copyTo(output, 64 * 1024)
+                        output.flush()
+                    }
+                }
+                if (!fileSha256(source).contentEquals(fileSha256(temporary))) {
+                    throw IllegalStateException("Backup copy failed SHA-256 verification.")
+                }
+                if (destination.exists() || !temporary.renameTo(destination)) {
+                    throw IllegalStateException("Could not safely publish the copied file.")
+                }
+                return Uri.fromFile(destination)
+            } finally {
+                if (temporary.exists()) temporary.delete()
+            }
+        }
+
+        val parent = resolveParentUri(parentUri)
+        val temporaryName = ".$name.tmp-${java.util.UUID.randomUUID()}"
+        val temporary = DocumentsContract.createDocument(
+            contentResolver, parent, mimeType, temporaryName
+        ) ?: throw IllegalStateException("Could not create a temporary file in the selected folder.")
+        var published = false
+        try {
+            source.inputStream().buffered().use { input ->
+                contentResolver.openOutputStream(temporary, "w")?.buffered()?.use { output ->
+                    input.copyTo(output, 64 * 1024)
+                    output.flush()
+                } ?: throw IllegalStateException("Could not write the selected-storage file.")
+            }
+            if (!fileSha256(source).contentEquals(digest(temporary))) {
+                throw IllegalStateException("Selected-storage copy failed SHA-256 verification.")
+            }
+            val finalUri = DocumentsContract.renameDocument(
+                contentResolver, temporary, name
+            ) ?: throw IllegalStateException("Could not publish the verified file in the selected folder.")
+            published = true
+            return finalUri
+        } finally {
+            if (!published) {
+                try { DocumentsContract.deleteDocument(contentResolver, temporary) }
+                catch (_: Exception) {}
+            }
+        }
+    }
+
+    /// Stages a selected SAF file into app-private storage for ZIP validation.
+    private fun copyStorageFileToPrivatePath(sourceUri: Uri, destinationPath: String): Boolean {
+        val destination = java.io.File(destinationPath).canonicalFile
+        val parent = destination.parentFile
+            ?: throw IllegalArgumentException("Destination path is invalid.")
+        if (!isInsideAppPrivateStorage(parent)) {
+            throw SecurityException("DocsGrid can only stage selected files inside its private storage.")
+        }
+        if (!parent.exists() && !parent.mkdirs()) {
+            throw IllegalStateException("Could not create the temporary staging folder.")
+        }
+        if (destination.exists()) {
+            throw IllegalStateException("The temporary staging file already exists.")
+        }
+        val temporary = java.io.File(parent, ".docsgrid-stage-${java.util.UUID.randomUUID()}.tmp")
+        try {
+            val sourceDigest = digest(sourceUri)
+            contentResolver.openInputStream(sourceUri)?.buffered()?.use { input ->
+                temporary.outputStream().buffered().use { output ->
+                    input.copyTo(output, 64 * 1024)
+                    output.flush()
+                }
+            } ?: throw IllegalStateException("Could not read the selected storage file.")
+            if (!sourceDigest.contentEquals(fileSha256(temporary))) {
+                throw IllegalStateException("The staged file failed SHA-256 verification.")
+            }
+            if (destination.exists() || !temporary.renameTo(destination)) {
+                throw IllegalStateException("Could not safely publish the staged file.")
+            }
+            return true
+        } finally {
+            if (temporary.exists()) temporary.delete()
+        }
+    }
+
+    private fun digest(uri: Uri, allowAppPrivateFile: Boolean = false): ByteArray {
+        val md = MessageDigest.getInstance("SHA-256")
+        val inputStream = openPdfSource(uri, allowAppPrivateFile)
+            ?: throw IllegalStateException("Could not read PDF for verification.")
         inputStream.use { input ->
             val buffer = ByteArray(64 * 1024)
             while (true) {
@@ -750,13 +1620,13 @@ class MainActivity : FlutterActivity() {
             contentResolver, parent, "application/pdf", candidate
         ) ?: throw IllegalStateException("Could not create the destination PDF.")
         try {
-            contentResolver.openInputStream(source)?.use { input ->
+            openPdfSource(source, allowAppPrivateFile = true)?.use { input ->
                 contentResolver.openOutputStream(destination, "w")?.use { output ->
                     input.copyTo(output)
                     output.flush()
                 } ?: throw IllegalStateException("Could not write the destination PDF.")
             } ?: throw IllegalStateException("Could not read the source PDF.")
-            if (!digest(source).contentEquals(digest(destination))) {
+            if (!digest(source, allowAppPrivateFile = true).contentEquals(digest(destination))) {
                 throw IllegalStateException("PDF verification failed; both source and destination were retained.")
             }
             return destination
@@ -840,22 +1710,64 @@ class MainActivity : FlutterActivity() {
                         if (index >= 0) cursor.getString(index) else null
                     } else null
                 } ?: throw IllegalStateException("Could not read the selected folder name.")
-                val docsGrid = if (selectedName.equals("DocsGrid", ignoreCase = true)) {
+                // Accept both the current Android/media/com.docsgrid layout and
+                // older user-selected DocsGrid trees. When the parent is selected,
+                // prefer the current canonical root and fall back to the legacy name.
+                val docsGrid = if (
+                    selectedName.equals("DocsGrid", ignoreCase = true) ||
+                    selectedName.equals("com.docsgrid", ignoreCase = true)
+                ) {
                     selectedRoot
                 } else {
-                    findChildUri(uri, "DocsGrid")
+                    try {
+                        findChildUri(uri, "com.docsgrid")
+                    } catch (_: MissingStorageChildException) {
+                        findChildUri(uri, "DocsGrid")
+                    }
                 }
-                // Recovery selection is read/validate-only: never create a new
-                // DocsGrid tree that could masquerade as a recoverable backup.
-                val documents = findChildUri(docsGrid, "Documents")
-                val folders = findChildUri(docsGrid, "Folders")
-                val database = findChildUri(docsGrid, "Database")
-                val recovery = findChildUri(docsGrid, "Recovery")
+
+                // Recovery selection is read/validate-only: never create folders
+                // that could make an empty tree look like a recoverable backup.
+                val canonicalMyFiles = try {
+                    findChildUri(docsGrid, "My Files")
+                } catch (_: MissingStorageChildException) {
+                    null
+                }
+                val canonicalSystem = try {
+                    findChildUri(docsGrid, "System")
+                } catch (_: MissingStorageChildException) {
+                    null
+                }
+                if ((canonicalMyFiles == null) != (canonicalSystem == null)) {
+                    throw IllegalStateException("The selected DocsGrid folder has an incomplete My Files/System layout.")
+                }
+                val isCanonicalLayout = canonicalMyFiles != null && canonicalSystem != null
+                val documents = if (isCanonicalLayout) {
+                    findChildUri(canonicalMyFiles!!, "Unfiled")
+                } else {
+                    findChildUri(docsGrid, "Documents")
+                }
+                val folders = if (isCanonicalLayout) {
+                    findChildUri(canonicalMyFiles!!, "Folders")
+                } else {
+                    findChildUri(docsGrid, "Folders")
+                }
+                val database = if (isCanonicalLayout) {
+                    findChildUri(canonicalSystem!!, "Database")
+                } else {
+                    findChildUri(docsGrid, "Database")
+                }
+                val recovery = if (isCanonicalLayout) {
+                    findChildUri(canonicalSystem!!, "Recovery")
+                } else {
+                    findChildUri(docsGrid, "Recovery")
+                }
                 val snapshots = listDirectory(database).filter {
-                    it["isDirectory"] == true && (it["name"] as? String)?.startsWith("snapshot_") == true
+                    it["isDirectory"] == true &&
+                        (it["name"] as? String)?.startsWith("snapshot_") == true
                 }
                 if (snapshots.isEmpty()) {
-                    throw IllegalStateException("The existing DocsGrid/Database folder contains no recovery snapshots.")
+                    throw IllegalStateException("The selected DocsGrid/System/Database (or legacy DocsGrid/Database) folder contains no recovery snapshots.")
                 }
                 getSharedPreferences("docsgrid_storage", MODE_PRIVATE).edit()
                     .putString("tree_uri", uri.toString())

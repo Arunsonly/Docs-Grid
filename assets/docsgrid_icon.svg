@@ -1,12 +1,21 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
-<defs>
-  <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#123B91"/><stop offset=".55" stop-color="#087FC7"/><stop offset="1" stop-color="#08AFC0"/></linearGradient>
-  <linearGradient id="paper" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#FFFFFF"/><stop offset="1" stop-color="#DDEBFF"/></linearGradient>
-</defs>
-<rect width="1024" height="1024" rx="210" fill="url(#bg)"/>
-<path d="M260 190h360l150 150v470H260z" fill="url(#paper)" opacity=".16" stroke="#FFFFFF" stroke-width="24" stroke-linejoin="round"/>
-<path d="M620 190v150h150" fill="none" stroke="#FFFFFF" stroke-width="24" stroke-linejoin="round"/>
-<text x="512" y="605" text-anchor="middle" font-family="DejaVu Sans, Arial, sans-serif" font-size="300" font-weight="900" letter-spacing="-22" fill="#FFFFFF">D&amp;G</text>
-<path d="M300 710h424" stroke="#FFFFFF" stroke-width="22" stroke-linecap="round" opacity=".9"/>
-<text x="512" y="790" text-anchor="middle" font-family="DejaVu Sans, Arial, sans-serif" font-size="72" font-weight="700" letter-spacing="14" fill="#FFFFFF">DOCSGRID</text>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#A7B8F5"/>
+      <stop offset="0.52" stop-color="#879AE9"/>
+      <stop offset="1" stop-color="#687CD5"/>
+    </linearGradient>
+  </defs>
+  <rect width="1024" height="1024" rx="210" fill="url(#background)"/>
+  <path d="M326 218h286l128 128v456H326z"
+        fill="none" stroke="#FFFFFF" stroke-width="42"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M612 220v126h128"
+        fill="none" stroke="#FFFFFF" stroke-width="42"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="382" y="480" width="260" height="150" rx="30" fill="#FFFFFF"/>
+  <text x="512" y="594" text-anchor="middle"
+        font-family="DejaVu Sans, Arial, sans-serif"
+        font-size="112" font-weight="800" letter-spacing="-7"
+        fill="#5269C8">PDF</text>
 </svg>

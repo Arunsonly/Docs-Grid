@@ -7,13 +7,13 @@ import 'package:crypto/crypto.dart';
 import 'package:docs_grid/features/tools/document_tools_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-Map<String, List<Map<String, Object?>>> _validRows() => {
+Map<String, List<Map<String, Object?>>> _validRows({bool databaseOnly = false}) => {
   'folders': <Map<String, Object?>>[],
   'categories': <Map<String, Object?>>[],
   'tags': <Map<String, Object?>>[],
   'documents': [{
     'id': 'document-1', 'name': 'Policy', 'original_name': null,
-    'storage_uri': '/unused/policy.pdf', 'relative_path': null,
+    'storage_uri': databaseOnly ? 'missing://document-1' : '/unused/policy.pdf', 'relative_path': null,
     'mime_type': 'application/pdf', 'size_bytes': 12, 'sha256': null,
     'folder_id': null, 'category_id': null, 'extracted_text_status': 'pending',
     'expiry_date': null, 'created_at': '2026-01-01T00:00:00Z',
@@ -33,22 +33,39 @@ Future<File> _makeBackup(
   List<int>? pdfBytes,
   String? shaOverride,
   bool includeFileRecord = true,
+  bool databaseOnly = false,
+  bool corruptMetadataChecksum = false,
+  bool malformedMetadataChecksum = false,
 }) async {
   final bytes = pdfBytes ?? utf8.encode('%PDF-1.7\nDocsGrid test PDF');
   final archive = Archive();
-  for (final table in _validRows().entries) {
+  final metadataFiles = <Map<String, Object?>>[];
+  for (final table in _validRows(databaseOnly: databaseOnly).entries) {
     final json = Uint8List.fromList(utf8.encode(jsonEncode(table.value)));
     archive.addFile(ArchiveFile('${table.key}.json', json.length, json));
+    metadataFiles.add(malformedMetadataChecksum
+        ? {'entry': '${table.key}.json'}
+        : {
+            'entry': '${table.key}.json',
+            'sizeBytes': json.length,
+            'sha256': corruptMetadataChecksum
+                ? List.filled(64, '0').join()
+                : sha256.convert(json).toString(),
+          });
   }
-  archive.addFile(ArchiveFile(entry, bytes.length, Uint8List.fromList(bytes)));
+  if (!databaseOnly) {
+    archive.addFile(ArchiveFile(entry, bytes.length, Uint8List.fromList(bytes)));
+  }
   final manifest = <String, Object?>{
     'format': 'DocsGridBackup',
     'version': 1,
+    if (databaseOnly) 'backupType': 'database',
     'createdAt': '2026-01-01T00:00:00Z',
     'tables': <String, int>{
-      for (final table in _validRows().entries) table.key: table.value.length,
+      for (final table in _validRows(databaseOnly: databaseOnly).entries) table.key: table.value.length,
     },
-    'files': includeFileRecord ? [{
+    'metadataFiles': metadataFiles,
+    'files': includeFileRecord && !databaseOnly ? [{
       'documentId': 'document-1',
       'entry': entry,
       'sha256': shaOverride ?? sha256.convert(bytes).toString(),
@@ -99,6 +116,21 @@ void main() {
       expect(restored, isNull);
     },
   );
+
+  test('rejects metadata JSON whose manifest checksum does not match', () async {
+    final file = await _makeBackup(temp, corruptMetadataChecksum: true);
+    await expectLater(service.validateBackup(file), throwsA(isA<StateError>()));
+  });
+
+  test('rejects malformed metadata checksum records', () async {
+    final file = await _makeBackup(temp, malformedMetadataChecksum: true);
+    await expectLater(service.validateBackup(file), throwsA(isA<StateError>()));
+  });
+
+  test('accepts database-only backup with document metadata and no PDF payload', () async {
+    final file = await _makeBackup(temp, databaseOnly: true);
+    expect(await service.validateBackup(file), 0);
+  });
 
   test('rejects unsafe archive paths before extracting any file', () async {
     final file = await _makeBackup(temp, entry: 'pdfs/../escape.pdf');

@@ -20,6 +20,14 @@ void main() {
         version: 1,
         onCreate: (db, version) async {
           await db.execute('''
+            CREATE TABLE folders (
+              id TEXT PRIMARY KEY, name TEXT NOT NULL, parent_id TEXT,
+              sort_order INTEGER NOT NULL DEFAULT 0,
+              storage_uri_or_relative_path TEXT, created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL, deleted_at TEXT
+            )
+          ''');
+          await db.execute('''
             CREATE TABLE documents (
               id TEXT PRIMARY KEY, name TEXT NOT NULL, original_name TEXT,
               storage_uri TEXT, relative_path TEXT, mime_type TEXT NOT NULL,
