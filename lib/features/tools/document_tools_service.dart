@@ -2423,23 +2423,33 @@ class DocumentToolsService {
         final digest = row['sha256'] as String?;
         final linkedUri = digest == null ? null : pdfUris[digest];
         if (alreadyPresent) {
-          if (linkedUri != null) {
+          final existing = existingDocuments.firstWhere(
+            (value) => value['id'] == newId,
+          );
+          if (linkedUri != null ||
+              usableExistingDocumentIds.contains(newId)) {
+            // Clear an old relink-required marker when the existing source is
+            // verified or a SHA-256-matching replacement has been discovered.
+            final metadata = <String, dynamic>{};
+            final oldMetadata = existing['metadata_json'];
+            if (oldMetadata is String && oldMetadata.isNotEmpty) {
+              try {
+                final decoded = jsonDecode(oldMetadata);
+                if (decoded is Map) {
+                  metadata.addAll(Map<String, dynamic>.from(decoded));
+                }
+              } catch (_) {}
+            }
+            metadata.remove('docsGridRecoveryStatus');
             await txn.update('documents', {
-              'storage_uri': linkedUri,
-              'relative_path': null,
+              if (linkedUri != null) 'storage_uri': linkedUri,
+              if (linkedUri != null) 'relative_path': null,
+              'metadata_json': jsonEncode(metadata),
               'updated_at': DateTime.now().toUtc().toIso8601String(),
             }, where: 'id = ?', whereArgs: [newId]);
             linkedDocuments++;
-          } else if (usableExistingDocumentIds.contains(newId)) {
-            // A previous install's registered PDF is still readable and its
-            // bytes match the snapshot, even though it was outside the current
-            // managed-folder discovery roots.
-            linkedDocuments++;
           } else {
             missingPdfs++;
-            final existing = existingDocuments.firstWhere(
-              (value) => value['id'] == newId,
-            );
             final metadata = <String, dynamic>{};
             final oldMetadata = existing['metadata_json'];
             if (oldMetadata is String && oldMetadata.isNotEmpty) {
