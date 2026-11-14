@@ -814,92 +814,73 @@ class DocumentToolsService {
   /// Rebuilds the library index from surviving shared PDFs after reinstall.
   /// PDFs are copied into the active library and SHA-256 verified. Source files
   /// remain untouched; folder names are rebuilt from their paths.
+  /// Rebuilds the managed DocsGrid library index from PDFs that survived an
+  /// reinstall. This deliberately scans only DocsGrid-owned portable folders;
+  /// the Phone tab's MediaStore/SAF index is a separate, read-only browser.
+  ///
+  /// Normal Downloads, WhatsApp, Documents and other phone folders are never
+  /// imported as a side effect of recovery. A user can still move an individual
+  /// Phone PDF into Grid from the Phone browser.
   Future<Map<String, int>> recoverLoosePortablePdfs({
     void Function(int completed, int total)? onProgress,
   }) async {
     await StorageMigrationGate.waitUntilReady();
     if (!Platform.isAndroid) {
-      throw UnsupportedError('Automatic shared-media recovery is currently Android-only.');
+      throw UnsupportedError(
+        'Automatic shared-media recovery is currently Android-only.',
+      );
     }
+
     final storage = StorageLocationService.instance;
-    final locations = await storage.portableDataLocations();
-    final folderRepository = FolderRepository();
-    final documentRepository = DocumentRepository();
+    final locations = await storage.portableDataLocationsIfAvailable();
+    final documentsRoot = locations['documentsUri'];
+    final foldersRoot = locations['libraryUri'];
+    if (documentsRoot == null && foldersRoot == null) {
+      throw StateError(
+        'No accessible DocsGrid recovery folders were found. '
+        'Restore the existing DocsGrid storage location first.',
+      );
+    }
+
+    final roots = <({String uri, bool preserveFolders})>[];
+    if (documentsRoot != null) {
+      roots.add((uri: documentsRoot, preserveFolders: false));
+    }
+    if (foldersRoot != null) {
+      roots.add((uri: foldersRoot, preserveFolders: true));
+    }
+
+    // Older releases stored the same managed library below Android/media/DocsGrid.
+    // Support both the original direct layout and the later "My Files" layout,
+    // but never recurse through the legacy root itself (which also contains
+    // backups, snapshots, caches and other non-library content).
+    final legacyUri = locations['legacyRootUri'];
+    if (legacyUri != null && legacyUri.startsWith('file://')) {
+      final legacyRoot = Directory(Uri.parse(legacyUri).toFilePath());
+      final legacyLayouts = <({String path, bool preserveFolders})>[
+        (path: p.join(legacyRoot.path, 'My Files', 'Unfiled'),
+          preserveFolders: false),
+        (path: p.join(legacyRoot.path, 'My Files', 'Folders'),
+          preserveFolders: true),
+        (path: p.join(legacyRoot.path, 'Documents'), preserveFolders: false),
+        (path: p.join(legacyRoot.path, 'Folders'), preserveFolders: true),
+        (path: p.join(legacyRoot.path, 'Unfiled'), preserveFolders: false),
+      ];
+      for (final legacy in legacyLayouts) {
+        final directory = Directory(legacy.path);
+        if (await directory.exists()) {
+          roots.add((
+            uri: Uri.directory(directory.path).toString(),
+            preserveFolders: legacy.preserveFolders,
+          ));
+        }
+      }
+    }
+
     final candidates = <Map<String, Object?>>[];
     final seenUris = <String>{};
     var failed = 0;
-    var mediaStoreComplete = false;
 
-    void addCandidate(
-      Map<String, Object?> item, {
-      required String folderPath,
-    }) {
-      final name = item['name']?.toString() ?? '';
-      final uri = item['uri']?.toString() ?? '';
-      if (!name.toLowerCase().endsWith('.pdf') ||
-          uri.isEmpty ||
-          !seenUris.add(uri)) {
-        return;
-      }
-      candidates.add({
-        'name': name,
-        'uri': uri,
-        'folderPath': folderPath,
-      });
-    }
-
-    // Phone tab's MediaStore index sees shared folders such as Download and
-    // WhatsApp. The old recovery only walked DocsGrid/My Files, so it missed
-    // the files displayed in Phone storage after reinstall.
-    try {
-      if (await storage.hasAllFilesAccess()) {
-        final index = await storage.queryPhonePdfIndex();
-        mediaStoreComplete = index['complete'] == true;
-        final indexedEntries =
-            index['entries'] as List<Map<String, Object?>>;
-        for (final item in indexedEntries) {
-          addCandidate(
-            item,
-            folderPath: StorageLocationService.normalizePhoneFolderPath(
-              item['folderPath'] as String?,
-            ),
-          );
-        }
-      }
-    } catch (_) {
-      // Continue with explicitly granted SAF roots if MediaStore is unavailable.
-    }
-
-    // Include user-granted SAF/cloud roots. If MediaStore has a complete
-    // local-volume index, skip its file:// roots to avoid scanning them twice.
-    final scanRoots = await storage.accessibleStorageRoots();
-    for (var index = 0; index < scanRoots.length; index++) {
-      final root = scanRoots[index];
-      final uri = root['uri']!;
-      if (mediaStoreComplete && uri.startsWith('file://')) continue;
-      final label = index == 0 ? 'Internal' : root['name']!;
-      try {
-        final found = await storage.listStorageTreeRecursively(
-          uri,
-          rootLabel: label,
-          includeEmptyFolders: false,
-        );
-        for (final item in found) {
-          if (item['isDirectory'] == true) continue;
-          addCandidate(
-            item,
-            folderPath: StorageLocationService.normalizePhoneFolderPath(
-              item['folderPath'] as String?,
-            ),
-          );
-        }
-      } catch (_) {
-        failed++;
-      }
-    }
-
-    // Phone's MediaStore deliberately excludes DocsGrid-managed files. Keep
-    // them in recovery too, including the pre-com.docsgrid legacy tree.
     Future<void> addPortableRoot(
       String uri, {
       required bool preserveFolders,
@@ -907,59 +888,53 @@ class DocumentToolsService {
       try {
         final files = await storage.listPdfFilesRecursively(uri);
         for (final item in files) {
-          addCandidate(
-            item,
-            folderPath: preserveFolders
-                ? StorageLocationService.normalizePhoneFolderPath(
-                    item['folderPath'] as String?,
-                  )
+          final name = item['name'] as String? ?? '';
+          final fileUri = item['uri'] as String? ?? '';
+          if (!name.toLowerCase().endsWith('.pdf') ||
+              fileUri.isEmpty ||
+              !seenUris.add(fileUri)) {
+            continue;
+          }
+          candidates.add({
+            'name': name,
+            'uri': fileUri,
+            // "Unfiled" PDFs are library root documents. Only PDFs already
+            // stored under the managed Folders tree retain a folder hierarchy.
+            'folderPath': preserveFolders
+                ? (item['folderPath'] as String? ?? '')
                 : '',
-          );
+          });
         }
       } catch (_) {
+        // Preserve partial recovery from other valid DocsGrid roots.
         failed++;
       }
     }
 
-    final unfiledRoot = locations['documentsUri'];
-    final foldersRoot = locations['libraryUri'];
-    if (unfiledRoot != null) {
-      await addPortableRoot(unfiledRoot, preserveFolders: false);
-    }
-    if (foldersRoot != null) {
-      await addPortableRoot(foldersRoot, preserveFolders: true);
-    }
-    final legacyUri = locations['legacyRootUri'];
-    if (legacyUri != null && legacyUri.startsWith('file://')) {
-      final legacyRoot = Uri.parse(legacyUri).toFilePath();
-      final legacyDocuments = Directory(p.join(legacyRoot, 'Documents'));
-      final legacyFolders = Directory(p.join(legacyRoot, 'Folders'));
-      if (await legacyDocuments.exists()) {
-        await addPortableRoot(
-          Uri.directory(legacyDocuments.path).toString(),
-          preserveFolders: false,
-        );
-      }
-      if (await legacyFolders.exists()) {
-        await addPortableRoot(
-          Uri.directory(legacyFolders.path).toString(),
-          preserveFolders: true,
-        );
-      }
+    for (final root in roots) {
+      await addPortableRoot(
+        root.uri,
+        preserveFolders: root.preserveFolders,
+      );
     }
 
-    // Reuse folders already restored from a snapshot, matching full relative
-    // paths so repeated recovery does not create duplicate folder records.
+    final folderRepository = FolderRepository();
+    final documentRepository = DocumentRepository();
+
+    // Reuse paths already restored from a metadata snapshot. This makes
+    // repeated recovery idempotent and prevents duplicate nested folders.
     final folderIdsByPath = <String, String>{};
     for (final existing in await folderRepository.allFoldersWithPaths()) {
       folderIdsByPath[existing.path] = existing.folder.id;
     }
     var createdFolders = 0;
+
     Future<String?> ensureFolderPath(String path) async {
       if (path.isEmpty) return null;
       String? parentId;
       var currentPath = '';
-      for (final segment in path.split('/').where((value) => value.isNotEmpty)) {
+      for (final rawSegment in path.split('/').where((value) => value.isNotEmpty)) {
+        final segment = FolderRepository.validateFolderName(rawSegment);
         currentPath = currentPath.isEmpty ? segment : '$currentPath/$segment';
         final cached = folderIdsByPath[currentPath];
         if (cached != null) {
@@ -967,7 +942,7 @@ class DocumentToolsService {
           continue;
         }
         final created = await folderRepository.create(
-          name: FolderRepository.validateFolderName(segment),
+          name: segment,
           parentId: parentId,
         );
         folderIdsByPath[currentPath] = created.id;
@@ -1002,6 +977,7 @@ class DocumentToolsService {
         onProgress?.call(processed, total);
       }
     }
+
     return {
       'added': added,
       'duplicates': duplicates,
