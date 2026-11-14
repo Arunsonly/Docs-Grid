@@ -115,6 +115,16 @@ class DocumentToolsService {
         (path: p.join(legacyRoot, 'PDFs'), preserveFolders: false),
       ];
 
+  /// Converts the UI breadcrumb separator ("Parent / Child") into the
+  /// portable relative-path form ("Parent/Child") used by storage traversal.
+  /// Folder names themselves cannot contain slashes, so this is unambiguous.
+  @visibleForTesting
+  static String normalizeRecoveryFolderPath(String value) => value
+      .split('/')
+      .map((segment) => segment.trim())
+      .where((segment) => segment.isNotEmpty)
+      .join('/');
+
   /// Normalizes OCR text for exact-content duplicate comparison.
   /// Keeps letters and numbers from all scripts, including Devanagari.
   @visibleForTesting
@@ -1006,7 +1016,8 @@ class DocumentToolsService {
     // repeated recovery idempotent and prevents duplicate nested folders.
     final folderIdsByPath = <String, String>{};
     for (final existing in await folderRepository.allFoldersWithPaths()) {
-      folderIdsByPath[existing.path] = existing.folder.id;
+      folderIdsByPath[normalizeRecoveryFolderPath(existing.path)] =
+          existing.folder.id;
     }
     var createdFolders = 0;
 
@@ -1014,7 +1025,9 @@ class DocumentToolsService {
       if (path.isEmpty) return null;
       String? parentId;
       var currentPath = '';
-      for (final rawSegment in path.split('/').where((value) => value.isNotEmpty)) {
+      for (final rawSegment in normalizeRecoveryFolderPath(path)
+          .split('/')
+          .where((value) => value.isNotEmpty)) {
         final segment = FolderRepository.validateFolderName(rawSegment);
         currentPath = currentPath.isEmpty ? segment : '$currentPath/$segment';
         final cached = folderIdsByPath[currentPath];
