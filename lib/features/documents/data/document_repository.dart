@@ -996,12 +996,74 @@ class DocumentRepository {
       final db = await _database.database;
       final duplicates = await db.query(
         'documents',
-        columns: ['id'],
+        columns: ['id', 'storage_uri', 'metadata_json'],
         where: 'sha256 = ? AND deleted_at IS NULL',
         whereArgs: [digest],
         limit: 1,
       );
-      if (duplicates.isNotEmpty) return false;
+      if (duplicates.isNotEmpty) {
+        // A metadata snapshot may already have inserted this PDF's record with
+        // storage_uri=null because its first hash scan could not reach the file.
+        // Reuse the verified candidate to repair that record rather than
+        // incorrectly treating it as a complete duplicate.
+        final duplicate = duplicates.first;
+        final previousUri = duplicate['storage_uri'] as String?;
+        if (previousUri == storageUri) return false;
+        var needsRelink = previousUri == null || previousUri.isEmpty;
+        if (!needsRelink) {
+          try {
+            final existingDigest = previousUri.startsWith('content://') ||
+                    previousUri.startsWith('file://')
+                ? await storage.sha256Pdf(previousUri)
+                : (await sha256.bind(File(previousUri).openRead()).first)
+                    .toString();
+            needsRelink = existingDigest != digest;
+          } catch (_) {
+            // Missing/revoked old paths may be repaired from this verified copy.
+            needsRelink = true;
+          }
+        }
+        if (!needsRelink) return false;
+
+        final metadata = <String, dynamic>{};
+        final previousMetadata = duplicate['metadata_json'];
+        if (previousMetadata is String && previousMetadata.isNotEmpty) {
+          try {
+            final decoded = jsonDecode(previousMetadata);
+            if (decoded is Map) {
+              metadata.addAll(Map<String, dynamic>.from(decoded));
+            }
+          } catch (_) {
+            // Preserve what can be parsed; the SHA-256-verified link is primary.
+          }
+        }
+        metadata.remove('docsGridRecoveryStatus');
+        final relinkedAt = DateTime.now().toUtc().toIso8601String();
+        await db.transaction((txn) async {
+          final count = await txn.update(
+            'documents',
+            {
+              'storage_uri': storageUri,
+              'relative_path': null,
+              'size_bytes': size,
+              'sha256': digest,
+              'metadata_json': jsonEncode(metadata),
+              'updated_at': relinkedAt,
+            },
+            where: 'id = ? AND deleted_at IS NULL',
+            whereArgs: [duplicate['id']],
+          );
+          if (count > 0) {
+            await _recordHistory(txn, duplicate['id'] as String,
+                'relinked_after_reinstall', {
+              'storage_uri': storageUri,
+              'previous_storage_uri': previousUri,
+            });
+          }
+        });
+        PortableSnapshotEvents.notifyDataChanged();
+        return true;
+      }
       if (targetFolderId != null) {
         final folders = await db.query(
           'folders',
