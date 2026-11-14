@@ -743,7 +743,9 @@ class DocumentToolsService {
   /// of validity. The restore decoder performs the full manifest/checksum scan.
   Future<List<File>> listPortableBackupArchives() async {
     final storage = StorageLocationService.instance;
-    final locations = await storage.portableDataLocationsIfAvailable();
+    final locations = Platform.isAndroid
+        ? await storage.portableDataLocationsIfAvailable()
+        : const <String, String>{};
     final directories = <String, Directory>{};
 
     void addDirectory(Directory directory) {
