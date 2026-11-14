@@ -2288,6 +2288,35 @@ class DocumentToolsService {
         }
       }
     }
+
+    // Some Android/OEM backup flows may restore the app-private SQLite DB on
+    // reinstall while leaving its former PDF storage paths unavailable. Track
+    // those rows before the import transaction so a stale existing ID is never
+    // reported as a successful link merely because the DB row already exists.
+    final usableExistingDocumentIds = <String>{};
+    for (final row in rowsByTable['documents']!) {
+      final oldId = row['id'] as String;
+      final mappedId = documentIdMap[oldId]!;
+      if (!existingDocuments.any((value) => value['id'] == mappedId)) continue;
+      final digest = row['sha256'] as String?;
+      if (digest != null && pdfUris.containsKey(digest)) continue;
+      final existing = existingDocuments.firstWhere(
+        (value) => value['id'] == mappedId,
+      );
+      final uri = existing['storage_uri'] as String?;
+      if (uri == null || uri.isEmpty || uri.startsWith('missing://')) continue;
+      try {
+        final actualDigest = uri.startsWith('content://') || uri.startsWith('file://')
+            ? await storage.sha256Pdf(uri)
+            : (await sha256.bind(File(uri).openRead()).first).toString();
+        if (digest == null || digest == actualDigest) {
+          usableExistingDocumentIds.add(mappedId);
+        }
+      } catch (_) {
+        // Missing, revoked or unreadable old paths remain explicitly relinkable.
+      }
+    }
+
     try {
       for (final row in folderRows) {
         await ensureFolder(row['id'] as String, <String>{});
@@ -2395,9 +2424,37 @@ class DocumentToolsService {
         final linkedUri = digest == null ? null : pdfUris[digest];
         if (alreadyPresent) {
           if (linkedUri != null) {
-            await txn.update('documents', {'storage_uri': linkedUri},
-              where: 'id = ?', whereArgs: [newId]);
+            await txn.update('documents', {
+              'storage_uri': linkedUri,
+              'relative_path': null,
+              'updated_at': DateTime.now().toUtc().toIso8601String(),
+            }, where: 'id = ?', whereArgs: [newId]);
             linkedDocuments++;
+          } else if (usableExistingDocumentIds.contains(newId)) {
+            // A previous install's registered PDF is still readable and its
+            // bytes match the snapshot, even though it was outside the current
+            // managed-folder discovery roots.
+            linkedDocuments++;
+          } else {
+            missingPdfs++;
+            final existing = existingDocuments.firstWhere(
+              (value) => value['id'] == newId,
+            );
+            final metadata = <String, dynamic>{};
+            final oldMetadata = existing['metadata_json'];
+            if (oldMetadata is String && oldMetadata.isNotEmpty) {
+              try {
+                final decoded = jsonDecode(oldMetadata);
+                if (decoded is Map) {
+                  metadata.addAll(Map<String, dynamic>.from(decoded));
+                }
+              } catch (_) {}
+            }
+            metadata['docsGridRecoveryStatus'] = 'pdf_missing_relink_required';
+            await txn.update('documents', {
+              'metadata_json': jsonEncode(metadata),
+              'updated_at': DateTime.now().toUtc().toIso8601String(),
+            }, where: 'id = ?', whereArgs: [newId]);
           }
           continue;
         }
