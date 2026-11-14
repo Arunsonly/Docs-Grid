@@ -742,85 +742,149 @@ class DocumentToolsService {
   /// Lists portable ZIP archives without trusting their filenames as proof
   /// of validity. The restore decoder performs the full manifest/checksum scan.
   Future<List<File>> listPortableBackupArchives() async {
-    final locations = Platform.isAndroid
-        ? await StorageLocationService.instance.portableDataLocationsIfAvailable()
-        : const <String, String>{};
-    final directories = <Directory>[];
-    final uri = locations['backupsUri'];
-    final fullBackupsUri = locations['fullBackupsUri'];
-    final databaseBackupsUri = locations['databaseBackupsUri'];
-    for (final backupUri in [uri, fullBackupsUri, databaseBackupsUri]) {
-      if (backupUri != null && backupUri.startsWith('file://')) {
-        directories.add(Directory(Uri.parse(backupUri).toFilePath()));
+    final storage = StorageLocationService.instance;
+    final locations = await storage.portableDataLocationsIfAvailable();
+    final directories = <String, Directory>{};
+
+    void addDirectory(Directory directory) {
+      directories[directory.path] = directory;
+    }
+
+    // Current installations write Full and Database archives to separate
+    // directories. Inspect those exact directories and the parent for legacy
+    // archives created before the split.
+    for (final key in ['fullBackupsUri', 'databaseBackupsUri', 'backupsUri']) {
+      final uri = locations[key];
+      if (uri != null && uri.startsWith('file://')) {
+        addDirectory(Directory(Uri.parse(uri).toFilePath()));
       }
     }
-    if (directories.isEmpty) {
-      directories.add(Directory(
-        p.join((await getApplicationDocumentsDirectory()).path, 'DocsGrid', 'Backups'),
-      ));
-    }
+
     final legacyUri = locations['legacyRootUri'];
     if (legacyUri != null && legacyUri.startsWith('file://')) {
       final legacyRoot = Uri.parse(legacyUri).toFilePath();
-      directories
-        ..add(Directory(p.join(legacyRoot, 'Backups')))
-        ..add(Directory(p.join(legacyRoot, 'System', 'Backups')));
-    }
-    final files = <File>[];
-    final storage = StorageLocationService.instance;
-    for (final backupUri in [uri, fullBackupsUri, databaseBackupsUri]) {
-      if (backupUri == null || !backupUri.startsWith('content://')) continue;
-      final entries = await storage.listDirectory(backupUri);
-      final stagingRoot = Directory(p.join(
-        (await getTemporaryDirectory()).path,
-        'docsgrid_portable_backup_staging',
-      ));
-      await stagingRoot.create(recursive: true);
-      for (final entry in entries) {
-        final name = entry['name'] as String? ?? '';
-        final sourceUri = entry['uri'] as String? ?? '';
-        if (entry['isDirectory'] == true ||
-            p.extension(name).toLowerCase() != '.zip' ||
-            !sourceUri.startsWith('content://')) continue;
-        final safeName = sha256.convert(utf8.encode(sourceUri)).toString();
-        final staged = File(p.join(stagingRoot.path, '$safeName.zip'));
-        try {
-          if (await staged.exists()) await staged.delete();
-          await storage.copyStorageFileToPath(
-            sourceUri: sourceUri,
-            destinationPath: staged.path,
-          );
-          files.add(staged);
-        } catch (_) {
-          // An unreadable provider entry is skipped, not considered a backup.
-        }
+      for (final path in [
+        p.join(legacyRoot, 'Backups'),
+        p.join(legacyRoot, 'Backups', 'Full'),
+        p.join(legacyRoot, 'Backups', 'Database'),
+        p.join(legacyRoot, 'System', 'Backups'),
+        p.join(legacyRoot, 'System', 'Backups', 'Full'),
+        p.join(legacyRoot, 'System', 'Backups', 'Database'),
+      ]) {
+        addDirectory(Directory(path));
       }
     }
-    for (final directory in directories) {
+
+    // iOS and private fallback archives are also separated into Full/Database.
+    if (!Platform.isAndroid || directories.isEmpty) {
+      final backupRoot = p.join(
+        (await getApplicationDocumentsDirectory()).path,
+        'DocsGrid',
+        'Backups',
+      );
+      addDirectory(Directory(backupRoot));
+      addDirectory(Directory(p.join(backupRoot, 'Full')));
+      addDirectory(Directory(p.join(backupRoot, 'Database')));
+    }
+
+    final files = <String, File>{};
+    for (final directory in directories.values) {
       if (!await directory.exists()) continue;
-      files.addAll(await directory
+      final entries = await directory
           .list(followLinks: false)
-          .where((entity) => entity is File &&
+          .where((entity) =>
+              entity is File &&
+              p.basename(entity.path).startsWith('DocsGrid_') &&
               p.extension(entity.path).toLowerCase() == '.zip')
           .cast<File>()
-          .toList());
+          .toList();
+      for (final file in entries) {
+        files[file.path] = file;
+      }
     }
-    final unique = <String, File>{for (final file in files) file.path: file};
-    final result = unique.values.toList()
+
+    // SAF trees expose opaque content:// URIs. Stage only DocsGrid-owned ZIP
+    // files via the native streaming copy bridge; never read archives into RAM.
+    final stagedRoot = Directory(p.join(
+      (await getTemporaryDirectory()).path,
+      'docsgrid_portable_backup_staging',
+    ));
+    if (await stagedRoot.exists()) {
+      await stagedRoot.delete(recursive: true);
+    }
+    await stagedRoot.create(recursive: true);
+
+    Future<void> stageContentDirectory(
+      String uri, {
+      required String folderName,
+    }) async {
+      try {
+        final entries = await storage.listDirectory(uri);
+        final targetDirectory = Directory(p.join(stagedRoot.path, folderName));
+        await targetDirectory.create(recursive: true);
+        for (final entry in entries) {
+          if (entry['isDirectory'] == true) continue;
+          final name = entry['name'] as String? ?? '';
+          final sourceUri = entry['uri'] as String? ?? '';
+          if (!name.startsWith('DocsGrid_') ||
+              !name.toLowerCase().endsWith('.zip') ||
+              sourceUri.isEmpty) {
+            continue;
+          }
+          final staged = File(p.join(targetDirectory.path, '${_uuid.v4()}_$name'));
+          try {
+            await storage.copyStorageFileToPath(
+              sourceUri: sourceUri,
+              destinationPath: staged.path,
+            );
+            files[staged.path] = staged;
+          } catch (_) {
+            // Skip only this unreadable item; other backups remain eligible.
+          }
+        }
+      } catch (_) {
+        // One inaccessible SAF/cloud folder must not hide other backup sources.
+      }
+    }
+
+    final contentUris = <String, String>{};
+    for (final key in ['fullBackupsUri', 'databaseBackupsUri', 'backupsUri']) {
+      final uri = locations[key];
+      if (uri != null && uri.startsWith('content://')) {
+        contentUris[uri] = key;
+      }
+    }
+    for (final entry in contentUris.entries) {
+      final uri = entry.key;
+      final key = entry.value;
+      if (key == 'backupsUri') {
+        await stageContentDirectory(uri, folderName: 'Legacy');
+        // The parent contains the known Full and Database children. Do not
+        // recurse into arbitrary provider folders.
+        try {
+          final children = await storage.listDirectory(uri);
+          for (final child in children) {
+            if (child['isDirectory'] != true) continue;
+            final name = child['name'] as String? ?? '';
+            if (name != 'Full' && name != 'Database') continue;
+            final childUri = child['uri'] as String? ?? '';
+            if (childUri.startsWith('content://')) {
+              await stageContentDirectory(childUri, folderName: name);
+            }
+          }
+        } catch (_) {}
+      } else {
+        await stageContentDirectory(
+          uri,
+          folderName: key == 'fullBackupsUri' ? 'Full' : 'Database',
+        );
+      }
+    }
+
+    return files.values.toList()
       ..sort((a, b) => b.lastModifiedSync().compareTo(a.lastModifiedSync()));
-    return result;
   }
 
-  /// Rebuilds the library index from surviving shared PDFs after reinstall.
-  /// PDFs are copied into the active library and SHA-256 verified. Source files
-  /// remain untouched; folder names are rebuilt from their paths.
-  /// Rebuilds the managed DocsGrid library index from PDFs that survived an
-  /// reinstall. This deliberately scans only DocsGrid-owned portable folders;
-  /// the Phone tab's MediaStore/SAF index is a separate, read-only browser.
-  ///
-  /// Normal Downloads, WhatsApp, Documents and other phone folders are never
-  /// imported as a side effect of recovery. A user can still move an individual
-  /// Phone PDF into Grid from the Phone browser.
   Future<Map<String, int>> recoverLoosePortablePdfs({
     void Function(int completed, int total)? onProgress,
   }) async {
@@ -986,8 +1050,36 @@ class DocumentToolsService {
     };
   }
 
-  /// Tries portable archives newest-first. A filename or timestamp is never
-  /// accepted as proof: every candidate is decoded and checksum-validated.
+  /// Reads only the declared backup type after ZIP bounds and path checks.
+  /// v1 archives without backupType are treated as Full for compatibility with
+  /// the original format, which had no database-only mode.
+  Future<String> _readPortableBackupType(File zipFile) async {
+    await BackupArchiveLimits.validate(zipFile);
+    final input = InputFileStream(zipFile.path);
+    try {
+      final archive = ZipDecoder().decodeStream(input);
+      final entry = archive.findFile('manifest.json');
+      if (entry == null || !entry.isFile || entry.isSymbolicLink) {
+        throw StateError('This is not a DocsGrid backup.');
+      }
+      final value = jsonDecode(utf8.decode(entry.content as List<int>));
+      if (value is! Map<String, dynamic> ||
+          value['format'] != 'DocsGridBackup' ||
+          value['version'] != 1) {
+        throw StateError('Unsupported backup format or version.');
+      }
+      final type = value['backupType'];
+      if (type == null || type == 'full') return 'full';
+      if (type == 'database') return 'database';
+      throw StateError('Backup type is not supported.');
+    } finally {
+      try { input.closeSync(); } catch (_) {}
+    }
+  }
+
+  /// Full archives always take priority over database-only archives, regardless
+  /// of modification time. A broken archive is skipped and the next candidate
+  /// is tried; Database archives are used only after every Full archive fails.
   Future<int?> restoreNewestPortableBackup({
     Future<bool> Function(int pdfCount)? confirm,
   }) async {
@@ -996,18 +1088,51 @@ class DocumentToolsService {
     if (candidates.isEmpty) {
       throw StateError('No portable DocsGrid backup ZIP was found.');
     }
-    Object? lastError;
+
+    final stagedRoot = Directory(p.join(
+      (await getTemporaryDirectory()).path,
+      'docsgrid_portable_backup_staging',
+    ));
+    final classified = <({File file, int priority, DateTime modified})>[];
     for (final candidate in candidates) {
       try {
-        return await restoreBackup(candidate, confirm: confirm);
-      } catch (error) {
-        lastError = error;
+        final type = await _readPortableBackupType(candidate);
+        classified.add((
+          file: candidate,
+          priority: type == 'full' ? 0 : 1,
+          modified: await candidate.lastModified(),
+        ));
+      } catch (_) {
+        classified.add((
+          file: candidate,
+          priority: 2,
+          modified: await candidate.lastModified(),
+        ));
       }
     }
-    throw StateError(
-      'No valid portable backup could be restored. '
-      'The newest candidates may be incomplete or damaged. Last error: $lastError',
-    );
+    classified.sort((a, b) {
+      final byType = a.priority.compareTo(b.priority);
+      return byType != 0 ? byType : b.modified.compareTo(a.modified);
+    });
+
+    Object? lastError;
+    try {
+      for (final item in classified) {
+        try {
+          return await restoreBackup(item.file, confirm: confirm);
+        } catch (error) {
+          lastError = error;
+        }
+      }
+      throw StateError(
+        'No valid portable backup could be restored. '
+        'Full archives were checked before Database archives. Last error: $lastError',
+      );
+    } finally {
+      if (await stagedRoot.exists()) {
+        try { await stagedRoot.delete(recursive: true); } catch (_) {}
+      }
+    }
   }
 
   /// Creates a verified Full archive and portable pointer record before
