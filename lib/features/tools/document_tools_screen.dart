@@ -264,7 +264,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
           title: const Text('This backup has no Grid data'),
           content: Text(
             '${error.toString()}\n\nYou can rebuild the PDF library from files '
-            'still present in Phone storage. Existing source PDFs will not be deleted.',
+            'still present in the DocsGrid storage folders. Original source PDFs will not be deleted.',
           ),
           actions: [
             TextButton(
@@ -359,7 +359,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
           content: Text(
             'No backup archive with user data was found. A ZIP may be readable but '
             'contain only default categories and no PDFs or folders. You can rebuild '
-            'the Grid library from surviving Phone PDFs; categories, tags, reminders, '
+            'the Grid library from PDFs retained in the existing DocsGrid storage folders; categories, tags, reminders, '
             'history and settings require a non-empty DocsGrid backup.\n\n$error',
           ),
           actions: [
@@ -369,7 +369,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
             ),
             FilledButton(
               onPressed: () => Navigator.pop(context, true),
-              child: const Text('Find existing PDFs'),
+              child: const Text('Find DocsGrid PDFs'),
             ),
           ],
         ),
