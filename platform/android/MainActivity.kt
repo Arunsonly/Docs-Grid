@@ -169,6 +169,209 @@ class MainActivity : FlutterActivity() {
         mainHandler.postDelayed(task, 650L)
     }
 
+    private fun isAppUpdateInstall(): Boolean {
+        return try {
+            @Suppress("DEPRECATION")
+            val info = packageManager.getPackageInfo(packageName, 0)
+            info.lastUpdateTime > info.firstInstallTime
+        } catch (_: Exception) {
+            // Unknown install state must not suppress a possible recovery prompt.
+            false
+        }
+    }
+
+    private fun detectLegacyDocsGridData(): Map<String, Any> {
+        if (android.os.Build.VERSION.SDK_INT >= 30 &&
+            !android.os.Environment.isExternalStorageManager()) {
+            return mapOf("status" to "detection_unavailable")
+        }
+        val mediaRoot = java.io.File(
+            android.os.Environment.getExternalStorageDirectory(),
+            "Android/media"
+        )
+        val roots = listOf(
+            java.io.File(mediaRoot, "DocsGrid"),
+            java.io.File(mediaRoot, "com.docsgrid")
+        ).filter { it.exists() && it.isDirectory && it.canRead() }
+
+        fun isPdf(file: java.io.File): Boolean {
+            if (!file.isFile || !file.name.lowercase().endsWith(".pdf")) return false
+            return try {
+                file.inputStream().use { input ->
+                    val header = ByteArray(5)
+                    input.read(header) == 5 && String(header) == "%PDF-"
+                }
+            } catch (_: Exception) { false }
+        }
+
+        fun hasValidBackup(file: java.io.File): Boolean {
+            if (!file.isFile || !file.name.lowercase().endsWith(".zip")) return false
+            return try {
+                java.util.zip.ZipFile(file).use { zip ->
+                    val entry = zip.getEntry("manifest.json") ?: return@use false
+                    val manifestText = zip.getInputStream(entry).bufferedReader().use {
+                        it.readText().take(128 * 1024)
+                    }
+                    val manifest = org.json.JSONObject(manifestText)
+                    val backupType = manifest.optString("backupType")
+                    if (manifest.optString("format") != "DocsGridBackup" ||
+                        manifest.optInt("version") != 1 ||
+                        (backupType != "full" && backupType != "database") ||
+                        manifest.optInt("databaseSchemaVersion", 1) !in 1..11) {
+                        return@use false
+                    }
+                    val tables = manifest.optJSONObject("tables") ?: return@use false
+                    if (!tables.has("documents") || !tables.has("folders")) return@use false
+                    val metadata = manifest.optJSONArray("metadataFiles") ?: return@use false
+                    if (metadata.length() == 0) return@use false
+                    val seen = mutableSetOf<String>()
+                    for (index in 0 until metadata.length()) {
+                        val record = metadata.optJSONObject(index) ?: return@use false
+                        val name = record.optString("entry")
+                        val size = record.optLong("sizeBytes", -1L)
+                        val expected = record.optString("sha256")
+                        if (name.isBlank() || name.contains("/") || name.contains("\\") ||
+                            !name.endsWith(".json") || !seen.add(name) || size < 0 ||
+                            !expected.matches(Regex("(?i)^[a-f0-9]{64}$"))) return@use false
+                        val payload = zip.getEntry(name) ?: return@use false
+                        if (payload.size >= 0 && payload.size != size) return@use false
+                        val digest = java.security.MessageDigest.getInstance("SHA-256")
+                        zip.getInputStream(payload).buffered().use { input ->
+                            val buffer = ByteArray(64 * 1024)
+                            while (true) {
+                                val count = input.read(buffer)
+                                if (count < 0) break
+                                digest.update(buffer, 0, count)
+                            }
+                        }
+                        val actual = digest.digest().joinToString("") { "%02x".format(it) }
+                        if (!actual.equals(expected, ignoreCase = true)) return@use false
+                        if (!tables.has(name.removeSuffix(".json"))) return@use false
+                    }
+                    val pdfs = manifest.optJSONArray("files") ?: return@use false
+                    if (backupType == "database" && pdfs.length() != 0) return@use false
+                    for (index in 0 until pdfs.length()) {
+                        val record = pdfs.optJSONObject(index) ?: return@use false
+                        val entryName = record.optString("entry")
+                        val digest = record.optString("sha256")
+                        if (!entryName.startsWith("pdfs/") ||
+                            entryName.contains("..") ||
+                            !digest.matches(Regex("(?i)^[a-f0-9]{64}$")) ||
+                            zip.getEntry(entryName) == null) return@use false
+                    }
+                    true
+                }
+            } catch (_: Exception) { false }
+        }
+
+        fun hasValidSnapshot(directory: java.io.File): Boolean {
+            if (!directory.isDirectory || !directory.name.startsWith("snapshot_")) return false
+            return try {
+                val manifestFile = java.io.File(directory, "manifest.json")
+                if (!manifestFile.isFile) return false
+                val manifest = org.json.JSONObject(
+                    manifestFile.readText(Charsets.UTF_8).take(128 * 1024)
+                )
+                if (manifest.optString("format") != "DocsGridPortableData" ||
+                    manifest.optInt("formatVersion") != 1 ||
+                    manifest.optInt("databaseSchemaVersion", 0) !in 1..11) return false
+                val tables = manifest.optJSONObject("tables") ?: return false
+                if (!tables.has("documents") || !tables.has("folders")) return false
+                val records = manifest.optJSONArray("files") ?: return false
+                if (records.length() == 0) return false
+                val seen = mutableSetOf<String>()
+                for (index in 0 until records.length()) {
+                    val record = records.optJSONObject(index) ?: return false
+                    val name = record.optString("path")
+                    if (name.isBlank() || name.contains("/") || name.contains("\\") ||
+                        !name.endsWith(".json") || !seen.add(name)) return false
+                    val size = record.optLong("sizeBytes", -1L)
+                    val expected = record.optString("sha256")
+                    if (size < 0 || !expected.matches(Regex("(?i)^[a-f0-9]{64}$"))) return false
+                    val payload = java.io.File(directory, name)
+                    if (!payload.isFile || payload.length() != size) return false
+                    val digest = java.security.MessageDigest.getInstance("SHA-256")
+                    payload.inputStream().buffered().use { input ->
+                        val buffer = ByteArray(64 * 1024)
+                        while (true) {
+                            val count = input.read(buffer)
+                            if (count < 0) break
+                            digest.update(buffer, 0, count)
+                        }
+                    }
+                    val actual = digest.digest().joinToString("") { "%02x".format(it) }
+                    if (!actual.equals(expected, ignoreCase = true)) return false
+                    if (!tables.has(name.removeSuffix(".json"))) return false
+                }
+                true
+            } catch (_: Exception) { false }
+        }
+
+        var hasPdfs = false
+        var hasBackup = false
+        var hasSnapshot = false
+        for (root in roots) {
+            val libraryRoots = listOf(
+                java.io.File(root, "My Files/Unfiled"),
+                java.io.File(root, "My Files/Folders"),
+                java.io.File(root, "Documents"),
+                java.io.File(root, "Folders"),
+                java.io.File(root, "Unfiled"),
+                java.io.File(root, "PDFs")
+            )
+            val queue = java.util.ArrayDeque<Pair<java.io.File, Int>>()
+            libraryRoots.filter { it.isDirectory && it.canRead() }
+                .forEach { queue.add(it to 0) }
+            var visitedDirectories = 0
+            while (queue.isNotEmpty() && visitedDirectories < 1500 && !hasPdfs) {
+                val (directory, depth) = queue.removeFirst()
+                visitedDirectories++
+                val children = try { directory.listFiles() } catch (_: Exception) { null } ?: continue
+                for (child in children) {
+                    if (isPdf(child)) {
+                        hasPdfs = true
+                        break
+                    }
+                    if (child.isDirectory && depth < 12 && child.canRead()) {
+                        queue.add(child to (depth + 1))
+                    }
+                }
+            }
+            val backupDirectories = listOf(
+                java.io.File(root, "Backups"),
+                java.io.File(root, "Backups/Full"),
+                java.io.File(root, "Backups/Database"),
+                java.io.File(root, "System/Backups"),
+                java.io.File(root, "System/Backups/Full"),
+                java.io.File(root, "System/Backups/Database")
+            )
+            hasBackup = hasBackup || backupDirectories.any { directory ->
+                (directory.listFiles() ?: emptyArray()).any { hasValidBackup(it) }
+            }
+            val snapshotDirectories = listOf(
+                java.io.File(root, "Database"),
+                java.io.File(root, "System/Database"),
+                java.io.File(root, "MetadataSnapshots"),
+                java.io.File(root, "System/MetadataSnapshots")
+            )
+            hasSnapshot = hasSnapshot || snapshotDirectories.any { parent ->
+                (parent.listFiles() ?: emptyArray()).any { hasValidSnapshot(it) }
+            }
+        }
+        val found = hasPdfs || hasBackup || hasSnapshot
+        return mapOf(
+            "status" to when {
+                found -> "found_recoverable_data"
+                roots.isNotEmpty() -> "found_folder_without_verified_recoverable_data"
+                else -> "confirmed_no_previous_data"
+            },
+            "hasPdfs" to hasPdfs,
+            "hasBackup" to hasBackup,
+            "hasSnapshot" to hasSnapshot,
+            "legacyRoots" to roots.map { it.absolutePath }
+        )
+    }
+
     private fun queryPhonePdfIndex(): Map<String, Any> {
         if (android.os.Build.VERSION.SDK_INT >= 30 &&
             !android.os.Environment.isExternalStorageManager()) {
@@ -388,6 +591,8 @@ class MainActivity : FlutterActivity() {
                                     startActivityForResult(intent, requestChooseFolder)
                                 }
                             }
+                            "isAppUpdateInstall" -> result.success(isAppUpdateInstall())
+                            "detectLegacyDocsGridData" -> result.success(detectLegacyDocsGridData())
                             "getPortableDataLocations" -> {
                                 // A user-selected SAF recovery tree remains usable without
                                 // MANAGE_EXTERNAL_STORAGE. Return its persisted opaque URIs

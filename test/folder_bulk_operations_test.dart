@@ -14,7 +14,8 @@ Future<Database> _database() async {
       storage_uri_or_relative_path TEXT,
       created_at TEXT NOT NULL DEFAULT '2026-01-01T00:00:00Z',
       updated_at TEXT NOT NULL DEFAULT '2026-01-01T00:00:00Z',
-      deleted_at TEXT
+      deleted_at TEXT,
+      trash_operation_id TEXT
     )
   ''');
   await db.execute('''
@@ -23,7 +24,8 @@ Future<Database> _database() async {
       folder_id TEXT,
       storage_uri TEXT,
       deleted_at TEXT,
-      updated_at TEXT
+      updated_at TEXT,
+      trash_operation_id TEXT
     )
   ''');
   await db.execute('''
@@ -112,7 +114,16 @@ void main() {
     expect(deletedFolders.every((row) => row['deleted_at'] != null), isTrue);
     final recycled = await db.query('documents', orderBy: 'id');
     expect(recycled.every((row) => row['deleted_at'] != null), isTrue);
-    expect(recycled.every((row) => row['folder_id'] == null), isTrue);
+    expect(recycled.every((row) => row['folder_id'] != null), isTrue);
+    expect(recycled.map((row) => row['folder_id']).toList(),
+        ['insurance', 'policies']);
+    final operationIds = recycled
+        .map((row) => row['trash_operation_id'] as String?)
+        .toSet();
+    expect(operationIds, hasLength(1));
+    expect(operationIds.single, isNotNull);
+    expect(deletedFolders.map((row) => row['trash_operation_id']).toSet(),
+        operationIds);
     expect(
       recycled.map((row) => row['storage_uri']).toList(),
       ['file:///docs/Insurance/a.pdf', 'file:///docs/Insurance/Policies/b.pdf'],
@@ -120,7 +131,7 @@ void main() {
     expect(await db.rawQuery('SELECT * FROM history'), hasLength(2));
   });
 
-  test('deleting a folder detaches PDFs that were already in Recycle Bin', () async {
+  test('deleting a folder preserves independently recycled PDF folder references', () async {
     final db = await _database();
     addTearDown(db.close);
     await _insertFolder(db, 'insurance', 'Insurance');
@@ -139,7 +150,74 @@ void main() {
 
     final recycled = (await db.query('documents')).single;
     expect(recycled['deleted_at'], '2026-01-02T00:00:00Z');
-    expect(recycled['folder_id'], isNull);
+    expect(recycled['folder_id'], 'insurance');
+    expect(recycled['trash_operation_id'], isNull);
     expect(recycled['storage_uri'], 'file:///docs/Insurance/old.pdf');
   });
+
+  test('folder trash lists one root and restores its original hierarchy', () async {
+    final db = await _database();
+    addTearDown(db.close);
+    await _insertFolder(db, 'insurance', 'Insurance');
+    await _insertFolder(db, 'motor', 'Motor', parentId: 'insurance');
+    await _insertFolder(db, 'policies', 'Policies', parentId: 'motor');
+    final repository = FolderRepository(
+      database: AppDatabase.forTesting(() async => db),
+    );
+
+    await repository.moveManyToRecycleBin(['insurance']);
+    final roots = await repository.listTrashFolderRoots();
+    expect(roots, hasLength(1));
+    expect(roots.single['id'], 'insurance');
+    expect(roots.single['folder_count'], 3);
+
+    await repository.restoreTrashFolderTree('insurance');
+    final restored = await db.query('folders', orderBy: 'id');
+    expect(restored.every((row) => row['deleted_at'] == null), isTrue);
+    expect(restored.firstWhere((row) => row['id'] == 'motor')['parent_id'], 'insurance');
+    expect(restored.firstWhere((row) => row['id'] == 'policies')['parent_id'], 'motor');
+    expect(restored.every((row) => row['trash_operation_id'] == null), isTrue);
+  });
+
+  test('deleting an empty folder moves it to the Grid Recycle Bin', () async {
+    final db = await _database();
+    addTearDown(db.close);
+    await _insertFolder(db, 'empty', 'Empty');
+    final repository = FolderRepository(
+      database: AppDatabase.forTesting(() async => db),
+    );
+
+    await repository.deleteEmpty('empty');
+    final roots = await repository.listTrashFolderRoots();
+    expect(roots, hasLength(1));
+    expect(roots.single['name'], 'Empty');
+    expect(roots.single['pdf_count'], 0);
+  });
+
+
+  test('legacy deleted folder rows are grouped into one visible tree', () async {
+    final db = await _database();
+    addTearDown(db.close);
+    await _insertFolder(db, 'legacy-root', 'Legacy');
+    await _insertFolder(db, 'legacy-child', 'Child', parentId: 'legacy-root');
+    await db.update(
+      'folders',
+      {'deleted_at': '2026-10-01T00:00:00Z'},
+      where: 'id IN (?, ?)',
+      whereArgs: ['legacy-root', 'legacy-child'],
+    );
+    final repository = FolderRepository(
+      database: AppDatabase.forTesting(() async => db),
+    );
+
+    final roots = await repository.listTrashFolderRoots();
+    expect(roots, hasLength(1));
+    expect(roots.single['id'], 'legacy-root');
+    expect(roots.single['folder_count'], 2);
+    final rows = await db.query('folders', orderBy: 'id');
+    expect(rows.every((row) =>
+        (row['trash_operation_id'] as String?)?.isNotEmpty == true), isTrue);
+    expect(rows.map((row) => row['trash_operation_id']).toSet(), hasLength(1));
+  });
+
 }

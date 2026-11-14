@@ -161,6 +161,8 @@ class PortableSnapshotRowsValidator {
       optionalString('documents', field);
     }
     optionalString('folders', 'storage_uri_or_relative_path');
+    optionalString('folders', 'trash_operation_id');
+    optionalString('documents', 'trash_operation_id');
     optionalString('reminders', 'note');
     optionalString('reminders', 'recurrence_rule');
     optionalInt('reminders', 'lead_days');

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:crypto/crypto.dart';
@@ -15,11 +16,13 @@ class DocumentThumbnail extends StatefulWidget {
     required this.documentId,
     required this.storagePath,
     required this.sizeBytes,
+    this.contentSha256,
   });
 
   final String documentId;
   final String storagePath;
   final int sizeBytes;
+  final String? contentSha256;
 
   @override
   State<DocumentThumbnail> createState() => _DocumentThumbnailState();
@@ -27,6 +30,30 @@ class DocumentThumbnail extends StatefulWidget {
 
 class _DocumentThumbnailState extends State<DocumentThumbnail> {
   late Future<File?> _thumbnail;
+  static final Map<String, Future<File?>> _inFlightByDocument =
+      <String, Future<File?>>{};
+  static int _maintenanceRequests = 0;
+  static int _activeRenders = 0;
+  static const int _maxConcurrentRenders = 3;
+  static final List<Completer<void>> _renderWaiters = <Completer<void>>[];
+
+  static Future<void> _acquireRenderSlot() async {
+    if (_activeRenders < _maxConcurrentRenders) {
+      _activeRenders++;
+      return;
+    }
+    final waiter = Completer<void>();
+    _renderWaiters.add(waiter);
+    await waiter.future;
+  }
+
+  static void _releaseRenderSlot() {
+    if (_renderWaiters.isNotEmpty) {
+      _renderWaiters.removeAt(0).complete();
+    } else {
+      if (_activeRenders > 0) _activeRenders--;
+    }
+  }
 
   @override
   void initState() {
@@ -39,7 +66,8 @@ class _DocumentThumbnailState extends State<DocumentThumbnail> {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.documentId != widget.documentId ||
         oldWidget.storagePath != widget.storagePath ||
-        oldWidget.sizeBytes != widget.sizeBytes) {
+        oldWidget.sizeBytes != widget.sizeBytes ||
+        oldWidget.contentSha256 != widget.contentSha256) {
       _thumbnail = _loadThumbnail();
     }
   }
@@ -62,73 +90,6 @@ class _DocumentThumbnailState extends State<DocumentThumbnail> {
     } catch (_) {
       return false;
     }
-  }
-
-  Future<void> _removeOldCacheFiles(Directory directory, String prefix,
-      {required String keepPath}) async {
-    try {
-      await for (final entity in directory.list()) {
-        if (entity is File &&
-            p.basename(entity.path).startsWith(prefix) &&
-            entity.path != keepPath) {
-          try {
-            await entity.delete();
-          } catch (_) {
-            // A stale cache file must never prevent the current preview.
-          }
-        }
-      }
-    } catch (_) {
-      // Cache cleanup is best-effort; rendering remains independent of it.
-    }
-  }
-
-  static const int _thumbnailCacheBudgetBytes = 512 * 1024 * 1024;
-
-  Future<Map<String, String>> _portableThumbnailLocations() async {
-    if (!Platform.isAndroid) return const <String, String>{};
-    try {
-      return await StorageLocationService.instance
-          .portableDataLocationsIfAvailable();
-    } catch (_) {
-      return const <String, String>{};
-    }
-  }
-
-  Future<Directory> _thumbnailCacheDirectory() async {
-    final locations = await _portableThumbnailLocations();
-    // New thumbnails go to the dedicated cache area. The old System/Thumbnails
-    // directory remains readable as a migration source for existing previews.
-    final pagePreviewsUri = locations['pagePreviewsUri'];
-    if (pagePreviewsUri != null && pagePreviewsUri.startsWith('file://')) {
-      final directory = Directory(Uri.parse(pagePreviewsUri).toFilePath());
-      await directory.create(recursive: true);
-      return directory;
-    }
-    final legacyUri = locations['thumbnailsUri'];
-    if (legacyUri != null && legacyUri.startsWith('file://')) {
-      final directory = Directory(Uri.parse(legacyUri).toFilePath());
-      await directory.create(recursive: true);
-      return directory;
-    }
-    // SAF-only or permission-limited providers use the private regenerable cache.
-    final support = await getApplicationSupportDirectory();
-    final directory = Directory(p.join(support.path, 'docsgrid', 'thumbnails'));
-    await directory.create(recursive: true);
-    return directory;
-  }
-
-  Future<Directory?> _legacyThumbnailCacheDirectory(
-    Map<String, String> locations,
-    Directory current,
-  ) async {
-    final uri = locations['thumbnailsUri'];
-    if (uri == null || !uri.startsWith('file://')) return null;
-    final legacy = Directory(Uri.parse(uri).toFilePath());
-    if (p.equals(legacy.path, current.path) || !await legacy.exists()) {
-      return null;
-    }
-    return legacy;
   }
 
   /// Enforces a soft 512 MiB first-page preview cache using least-recently-used
@@ -173,19 +134,71 @@ class _DocumentThumbnailState extends State<DocumentThumbnail> {
     }
   }
 
-  Future<File?> _loadThumbnail() async {
+  Future<File?> _loadThumbnail() {
+    final id = '${widget.documentId}|${widget.storagePath}|${widget.sizeBytes}|${widget.contentSha256 ?? ''}';
+    final pending = _inFlightByDocument[id];
+    if (pending != null) return pending;
+    late final Future<File?> shared;
+    shared = _loadThumbnailInternal().whenComplete(() {
+      if (identical(_inFlightByDocument[id], shared)) {
+        _inFlightByDocument.remove(id);
+      }
+    });
+    _inFlightByDocument[id] = shared;
+    return shared;
+  }
+
+  Future<File?> _loadThumbnailInternal() async {
     final id = widget.documentId.replaceAll(RegExp(r'[^A-Za-z0-9_-]'), '_');
     final source = widget.storagePath;
     if (source.isEmpty) return null;
 
-    String pdfPath = source;
     File? staged;
     pdfx.PdfDocument? document;
     pdfx.PdfPage? page;
+    var renderSlotAcquired = false;
     try {
-      final locations = await _portableThumbnailLocations();
       final directory = await _thumbnailCacheDirectory();
-      if (source.startsWith('content://') || source.startsWith('file://')) {
+      final isProvider = source.startsWith('content://');
+      String? pdfPath;
+      String? digest = widget.contentSha256?.trim();
+      if (source.startsWith('file://') || source.startsWith('file:')) {
+        pdfPath = Uri.parse(source).toFilePath();
+      } else if (!isProvider) {
+        pdfPath = source;
+      }
+
+      File? localPdf;
+      if (pdfPath != null) {
+        localPdf = File(pdfPath);
+        if (!await localPdf.exists()) return null;
+      }
+
+      // A persisted SHA lets us locate the cache without first copying a
+      // content:// PDF to temporary storage. For local files, use mtime/size as
+      // a cheap invalidation hint; re-hash only on a cache miss.
+      var localFingerprint = '';
+      if (localPdf != null) {
+        final actualSize = await localPdf.length();
+        final modified = await localPdf.lastModified();
+        localFingerprint = '_${actualSize}_${modified.millisecondsSinceEpoch}';
+        if (actualSize != widget.sizeBytes) digest = null;
+      }
+      if (digest != null && digest.isNotEmpty) {
+        final cache = File(p.join(
+          directory.path,
+          '${id}_${widget.sizeBytes}_${digest}${localFingerprint}.png',
+        ));
+        if (await _isValidPng(cache)) {
+          try { await cache.setLastModified(DateTime.now()); } catch (_) {}
+          _scheduleCacheMaintenance(directory, cache.path);
+          return cache;
+        }
+      }
+
+      // Stage provider-backed PDFs only after the known-fingerprint cache lookup
+      // has missed. This keeps cache hits independent of provider latency.
+      if (isProvider) {
         final temp = await getTemporaryDirectory();
         staged = File(p.join(
           temp.path,
@@ -196,46 +209,32 @@ class _DocumentThumbnailState extends State<DocumentThumbnail> {
           destinationPath: staged.path,
         );
         pdfPath = staged.path;
-      } else if (source.startsWith('file:')) {
-        pdfPath = Uri.parse(source).toFilePath();
+        localPdf = staged;
+      }
+      if (pdfPath == null || localPdf == null || !await localPdf.exists()) {
+        return null;
       }
 
-      final pdfFile = File(pdfPath);
-      if (!await pdfFile.exists()) return null;
-
-      // Content hash invalidates the preview even when a replacement PDF has
-      // the same document ID, path and byte size as the previous file.
-      final digest = await sha256.bind(pdfFile.openRead()).first;
-      final prefix = '${id}_';
+      // Cache misses verify the current bytes. This also catches same-size
+      // replacements instead of rendering under a stale database fingerprint.
+      final actualDigest = (await sha256.bind(localPdf.openRead()).first).toString();
+      digest = actualDigest;
+      final actualSize = await localPdf.length();
       final cache = File(p.join(
         directory.path,
-        '${id}_${widget.sizeBytes}_${digest.toString()}.png',
+        '${id}_${actualSize}_${digest}${localFingerprint}.png',
       ));
-      if (!await cache.exists()) {
-        final legacy = await _legacyThumbnailCacheDirectory(locations, directory);
-        if (legacy != null) {
-          final oldCache = File(p.join(legacy.path, p.basename(cache.path)));
-          if (await _isValidPng(oldCache)) {
-            try {
-              await oldCache.copy(cache.path);
-            } catch (_) {
-              // If migration copy fails, the legacy image is still readable.
-            }
-          }
-        }
-      }
       if (await _isValidPng(cache)) {
         try { await cache.setLastModified(DateTime.now()); } catch (_) {}
-        await _removeOldCacheFiles(directory, prefix, keepPath: cache.path);
-        await _enforceThumbnailCacheBudget(directory, keepPath: cache.path);
+        _scheduleCacheMaintenance(directory, cache.path);
         return cache;
       }
       if (await cache.exists()) {
-        try {
-          await cache.delete();
-        } catch (_) {}
+        try { await cache.delete(); } catch (_) {}
       }
 
+      await _acquireRenderSlot();
+      renderSlotAcquired = true;
       document = await pdfx.PdfDocument.openFile(pdfPath);
       if (document.pagesCount < 1) return null;
       page = await document.getPage(1);
@@ -249,7 +248,6 @@ class _DocumentThumbnailState extends State<DocumentThumbnail> {
         format: pdfx.PdfPageImageFormat.png,
       );
       if (rendered == null || rendered.bytes.isEmpty) return null;
-
       final partial = File(
         '${cache.path}.${DateTime.now().microsecondsSinceEpoch}.tmp',
       );
@@ -257,8 +255,7 @@ class _DocumentThumbnailState extends State<DocumentThumbnail> {
         await partial.writeAsBytes(rendered.bytes, flush: true);
         if (!await _isValidPng(partial)) return null;
         final saved = await partial.rename(cache.path);
-        await _removeOldCacheFiles(directory, prefix, keepPath: saved.path);
-        await _enforceThumbnailCacheBudget(directory, keepPath: saved.path);
+        _scheduleCacheMaintenance(directory, saved.path);
         return saved;
       } finally {
         try {
@@ -269,20 +266,23 @@ class _DocumentThumbnailState extends State<DocumentThumbnail> {
       return null;
     } finally {
       if (page != null) {
-        try {
-          await page.close();
-        } catch (_) {}
+        try { await page.close(); } catch (_) {}
       }
       if (document != null) {
-        try {
-          await document.close();
-        } catch (_) {}
+        try { await document.close(); } catch (_) {}
       }
       if (staged != null) {
-        try {
-          if (await staged.exists()) await staged.delete();
-        } catch (_) {}
+        try { if (await staged.exists()) await staged.delete(); } catch (_) {}
       }
+      if (renderSlotAcquired) _releaseRenderSlot();
+    }
+  }
+
+  void _scheduleCacheMaintenance(Directory directory, String keepPath) {
+    _maintenanceRequests++;
+    if (_maintenanceRequests % 32 == 0) {
+      // Cache directory sweeps run rarely and off the thumbnail-hit path.
+      unawaited(_enforceThumbnailCacheBudget(directory, keepPath: keepPath));
     }
   }
 

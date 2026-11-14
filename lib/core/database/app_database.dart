@@ -10,7 +10,7 @@ class AppDatabase {
   @visibleForTesting
   AppDatabase.forTesting(Future<Database> Function() opener) : this._(opener: opener);
 
-  static const int schemaVersion = 10;
+  static const int schemaVersion = 11;
   static final AppDatabase instance = AppDatabase._();
   final Future<Database> Function()? _opener;
 
@@ -123,6 +123,7 @@ class AppDatabase {
         await _createV8SmartCollections(db);
         await _createV9SmartCollectionFilters(db);
         await _createV10PortableSnapshotState(db);
+        await _createV11TrashState(db);
         await db.insert('schema_migrations', {
           'version': 1,
           'applied_at': DateTime.now().toUtc().toIso8601String(),
@@ -161,6 +162,10 @@ class AppDatabase {
         });
         await db.insert('schema_migrations', {
           'version': 10,
+          'applied_at': DateTime.now().toUtc().toIso8601String(),
+        });
+        await db.insert('schema_migrations', {
+          'version': 11,
           'applied_at': DateTime.now().toUtc().toIso8601String(),
         });
       },
@@ -237,6 +242,11 @@ class AppDatabase {
     if (oldVersion < 10 && newVersion >= 10) {
       await _createV10PortableSnapshotState(db);
       await db.insert('schema_migrations', {'version': 10, 'applied_at': applied},
+          conflictAlgorithm: ConflictAlgorithm.ignore);
+    }
+    if (oldVersion < 11 && newVersion >= 11) {
+      await _createV11TrashState(db);
+      await db.insert('schema_migrations', {'version': 11, 'applied_at': applied},
           conflictAlgorithm: ConflictAlgorithm.ignore);
     }
   }
@@ -345,6 +355,57 @@ class AppDatabase {
 
   /// Tracks durable user-data mutations independently from UI state.
   /// SQLite triggers make this reliable even when a writer bypasses a repository.
+  Future<void> _createV11TrashState(DatabaseExecutor db) async {
+    // One id groups a deleted folder tree and only the PDFs deliberately
+    // moved with that tree. Existing independently trashed PDFs remain separate.
+    for (final table in ['folders', 'documents']) {
+      final columns = await db.rawQuery('PRAGMA table_info($table)');
+      if (!columns.any((column) => column['name'] == 'trash_operation_id')) {
+        await db.execute('ALTER TABLE $table ADD COLUMN trash_operation_id TEXT');
+      }
+    }
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_folders_trash_operation '
+      'ON folders(trash_operation_id, deleted_at, parent_id)',
+    );
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_documents_trash_operation '
+      'ON documents(trash_operation_id, deleted_at, folder_id)',
+    );
+
+    // Backfill old deleted folder trees conservatively. Descendants are grouped
+    // only when their deleted_at matches the ancestor's timestamp, as the former
+    // atomic tree-delete path stamped the whole subtree in one transaction.
+    // Old detached PDFs cannot be safely re-associated and remain separate.
+    final legacyRows = await db.query(
+      'folders',
+      columns: ['id', 'parent_id', 'deleted_at'],
+      where: 'deleted_at IS NOT NULL AND trash_operation_id IS NULL',
+    );
+    final byId = <String, Map<String, Object?>>{
+      for (final row in legacyRows) row['id'] as String: row,
+    };
+    for (final row in legacyRows) {
+      final id = row['id'] as String;
+      final deletedAt = row['deleted_at'] as String;
+      var rootId = id;
+      var parentId = row['parent_id'] as String?;
+      final visited = <String>{id};
+      while (parentId != null && visited.add(parentId)) {
+        final parent = byId[parentId];
+        if (parent == null || parent['deleted_at'] != deletedAt) break;
+        rootId = parentId;
+        parentId = parent['parent_id'] as String?;
+      }
+      await db.update(
+        'folders',
+        {'trash_operation_id': 'legacy-folder-tree:$rootId'},
+        where: 'id = ? AND deleted_at IS NOT NULL AND trash_operation_id IS NULL',
+        whereArgs: [id],
+      );
+    }
+  }
+
   Future<void> _createV10PortableSnapshotState(DatabaseExecutor db) async {
     await db.execute('''
       CREATE TABLE IF NOT EXISTS portable_snapshot_state (

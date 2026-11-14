@@ -52,6 +52,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
   Timer? _phoneRefreshDebounce;
   bool _phoneScanPending = false;
   int _trashCount = 0;
+  int _trashFolderCount = 0;
   List<Map<String, Object?>> _phoneRecent = [];
   List<DocumentRecord> _gridRecent = [];
   bool _showStarredRecent = false;
@@ -79,9 +80,12 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       },
     );
     if (!widget.phoneOnly) {
-      _load();
+      if (widget.favoritesOnly || widget.recentOnly) {
+        _load();
+      } else {
+        unawaited(_refreshDashboardSummary());
+      }
       _loadViewPreference();
-      _loadTrashSummary();
       _loadRecentDocuments();
     }
     _search.addListener(_onSearchChanged);
@@ -89,9 +93,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       if (widget.phoneOnly) {
-        // Show the Phone tab in place; do not push a second page after scanning.
-        _scanPhoneStorage(openBrowser: false);
-      } else if (!widget.favoritesOnly && !widget.recentOnly) {
+        // Phone indexing starts only when the user opens the Phone tab.
         _scanPhoneStorage(openBrowser: false);
       }
     });
@@ -138,7 +140,16 @@ class _DocumentsScreenState extends State<DocumentsScreen>
   }
 
   void _schedulePhoneStorageRefresh() {
-    if (!mounted || widget.favoritesOnly || widget.recentOnly) return;
+    if (!mounted) return;
+    if (!widget.phoneOnly) {
+      if (widget.favoritesOnly || widget.recentOnly || _search.text.trim().isNotEmpty) {
+        unawaited(_load());
+      } else {
+        unawaited(_refreshDashboardSummary());
+        unawaited(_loadRecentDocuments());
+      }
+      return;
+    }
     _phoneRefreshDebounce?.cancel();
     _phoneRefreshDebounce = Timer(const Duration(milliseconds: 450), () {
       if (mounted) unawaited(_scanPhoneStorage(openBrowser: false));
@@ -280,10 +291,16 @@ class _DocumentsScreenState extends State<DocumentsScreen>
 
   Future<void> _loadTrashSummary() async {
     try {
-      final trashed = await _repository.listTrash();
+      final values = await Future.wait<Object>([
+        _repository.trashCount(),
+        _folderRepository.listTrashFolderRoots(),
+      ]);
+      final count = values[0] as int;
+      final folders = values[1] as List<Map<String, Object?>>;
       if (!mounted) return;
       setState(() {
-        _trashCount = trashed.length;
+        _trashCount = count;
+        _trashFolderCount = folders.length;
       });
     } catch (_) {
       // Keep the dashboard usable; the Recycle Bin screen reports its own error.
@@ -756,6 +773,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
           documentId: document.id,
           storagePath: document.storagePath,
           sizeBytes: document.sizeBytes,
+          contentSha256: document.sha256,
         ),
         title: Row(children: [
           Flexible(child: Text('${document.name}.pdf',
@@ -1274,6 +1292,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
 
   Future<void> _showTrash() async {
     var trashed = await _repository.listTrash();
+    var trashedFolders = await _folderRepository.listTrashFolderRoots();
     if (!mounted) return;
     await showDialog<void>(
       context: context,
@@ -1282,64 +1301,182 @@ class _DocumentsScreenState extends State<DocumentsScreen>
           title: const Text('Recycle Bin'),
           content: SizedBox(
             width: double.maxFinite,
-            child: trashed.isEmpty
-                ? const Padding(
-                    padding: EdgeInsets.symmetric(vertical: 20),
-                    child: Text('Recycle Bin is empty.'),
-                  )
-                : SizedBox(
-                    height: 340,
-                    child: ListView.separated(
-                      shrinkWrap: true,
-                      itemCount: trashed.length,
-                      separatorBuilder: (_, _) => const Divider(height: 1),
-                      itemBuilder: (context, index) {
-                        final document = trashed[index];
-                        return ListTile(
-                          contentPadding: EdgeInsets.zero,
-                          leading: const Icon(Icons.picture_as_pdf_outlined),
-                          title: Text('${document.name}.pdf',
-                              maxLines: 1, overflow: TextOverflow.ellipsis),
-                          subtitle: const Text('PDF moved to Recycle Bin'),
-                          trailing: PopupMenuButton<String>(
-                            onSelected: (action) async {
-                              if (action == 'restore') {
-                                await _repository.restoreFromTrash(document);
-                                refreshDialog(() => trashed.removeAt(index));
-                                await _load();
-                              } else if (action == 'delete') {
-                                final confirmed = await showDialog<bool>(
+            height: 420,
+            child: trashed.isEmpty && trashedFolders.isEmpty
+                ? const Center(child: Text('Recycle Bin is empty.'))
+                : ListView(
+                    shrinkWrap: true,
+                    children: [
+                      if (trashedFolders.isNotEmpty) ...[
+                        const Padding(
+                          padding: EdgeInsets.only(top: 4, bottom: 6),
+                          child: Text('FOLDERS', style: TextStyle(fontWeight: FontWeight.w700)),
+                        ),
+                        for (final folder in trashedFolders)
+                          ListTile(
+                            contentPadding: EdgeInsets.zero,
+                            leading: const Icon(Icons.folder_outlined),
+                            title: Text(folder['name'] as String? ?? 'Folder',
+                                maxLines: 1, overflow: TextOverflow.ellipsis),
+                            subtitle: Text(
+                              '${folder['folder_count'] ?? 1} folders · ${folder['pdf_count'] ?? 0} PDFs · Deleted ${folder['deleted_at'] ?? ''}',
+                              maxLines: 2, overflow: TextOverflow.ellipsis,
+                            ),
+                            onTap: () async {
+                              try {
+                                final contents = await _folderRepository.trashFolderContents(
+                                  folder['id'] as String,
+                                );
+                                if (!dialogContext.mounted) return;
+                                final items = (contents['folders'] as List)
+                                    .cast<Map<String, Object?>>();
+                                final pdfs = (contents['documents'] as List)
+                                    .cast<Map<String, Object?>>();
+                                await showDialog<void>(
                                   context: dialogContext,
-                                  builder: (confirmContext) => AlertDialog(
-                                    title: const Text('Delete permanently?'),
-                                    content: Text('${document.name}.pdf will be erased from this device.'),
+                                  builder: (detailContext) => AlertDialog(
+                                    title: Text(contents['rootName'] as String? ?? 'Deleted folder'),
+                                    content: SizedBox(
+                                      width: double.maxFinite,
+                                      height: 360,
+                                      child: ListView(
+                                        children: [
+                                          const Text('FOLDERS', style: TextStyle(fontWeight: FontWeight.w700)),
+                                          for (final item in items)
+                                            ListTile(
+                                              dense: true,
+                                              leading: const Icon(Icons.folder_outlined),
+                                              title: Text(item['path'] as String? ?? ''),
+                                            ),
+                                          const Divider(),
+                                          const Text('PDF FILES', style: TextStyle(fontWeight: FontWeight.w700)),
+                                          for (final pdf in pdfs)
+                                            ListTile(
+                                              dense: true,
+                                              leading: const Icon(Icons.picture_as_pdf_outlined),
+                                              title: Text(pdf['name'] as String? ?? 'PDF'),
+                                              subtitle: Text('${pdf['size_bytes'] ?? 0} bytes'),
+                                            ),
+                                        ],
+                                      ),
+                                    ),
                                     actions: [
                                       TextButton(
-                                        onPressed: () => Navigator.pop(confirmContext, false),
-                                        child: const Text('Cancel'),
-                                      ),
-                                      FilledButton(
-                                        onPressed: () => Navigator.pop(confirmContext, true),
-                                        child: const Text('Delete'),
+                                        onPressed: () => Navigator.pop(detailContext),
+                                        child: const Text('Close'),
                                       ),
                                     ],
                                   ),
                                 );
-                                if (confirmed == true) {
-                                  await _repository.permanentlyDelete(document);
-                                  refreshDialog(() => trashed.removeAt(index));
-                                  await _load();
-                                }
+                              } catch (error) {
+                                if (mounted) _message('Could not inspect deleted folder: $error');
                               }
                             },
-                            itemBuilder: (_) => const [
-                              PopupMenuItem(value: 'restore', child: Text('Restore')),
-                              PopupMenuItem(value: 'delete', child: Text('Delete permanently')),
-                            ],
+                            trailing: PopupMenuButton<String>(
+                              onSelected: (action) async {
+                                final id = folder['id'] as String;
+                                try {
+                                  if (action == 'restore') {
+                                    final restored = await _folderRepository.restoreTrashFolderTree(id);
+                                    refreshDialog(() => trashedFolders.removeWhere((item) => item['id'] == id));
+                                    await _load();
+                                    await _loadRecentDocuments();
+                                    await _refreshDashboardSummary();
+                                    if (mounted) _message('Folder restored with $restored PDF(s).');
+                                  } else if (action == 'delete') {
+                                    final confirmed = await showDialog<bool>(
+                                      context: dialogContext,
+                                      builder: (confirmContext) => AlertDialog(
+                                        title: const Text('Delete folder permanently?'),
+                                        content: Text(
+                                          'The folder tree and its ${folder['pdf_count'] ?? 0} managed PDFs will be permanently deleted. Untracked items are protected.',
+                                        ),
+                                        actions: [
+                                          TextButton(
+                                            onPressed: () => Navigator.pop(confirmContext, false),
+                                            child: const Text('Cancel'),
+                                          ),
+                                          FilledButton(
+                                            onPressed: () => Navigator.pop(confirmContext, true),
+                                            child: const Text('Delete permanently'),
+                                          ),
+                                        ],
+                                      ),
+                                    );
+                                    if (confirmed == true) {
+                                      await _folderRepository.permanentlyDeleteTrashFolderTree(id);
+                                      refreshDialog(() => trashedFolders.removeWhere((item) => item['id'] == id));
+                                      await _refreshDashboardSummary();
+                                    }
+                                  }
+                                } catch (error) {
+                                  if (mounted) _message('Folder Recycle Bin action failed: $error');
+                                }
+                              },
+                              itemBuilder: (_) => const [
+                                PopupMenuItem(value: 'restore', child: Text('Restore folder')),
+                                PopupMenuItem(value: 'delete', child: Text('Delete permanently')),
+                              ],
+                            ),
                           ),
-                        );
-                      },
-                    ),
+                      ],
+                      if (trashed.isNotEmpty) ...[
+                        const Divider(),
+                        const Padding(
+                          padding: EdgeInsets.only(top: 4, bottom: 6),
+                          child: Text('PDF FILES', style: TextStyle(fontWeight: FontWeight.w700)),
+                        ),
+                        for (var index = 0; index < trashed.length; index++)
+                          ListTile(
+                            contentPadding: EdgeInsets.zero,
+                            leading: const Icon(Icons.picture_as_pdf_outlined),
+                            title: Text('${trashed[index].name}.pdf',
+                                maxLines: 1, overflow: TextOverflow.ellipsis),
+                            subtitle: const Text('PDF moved to Recycle Bin'),
+                            trailing: PopupMenuButton<String>(
+                              onSelected: (action) async {
+                                final document = trashed[index];
+                                try {
+                                  if (action == 'restore') {
+                                    await _repository.restoreFromTrash(document);
+                                    refreshDialog(() => trashed.removeAt(index));
+                                    await _load();
+                                  } else if (action == 'delete') {
+                                    final confirmed = await showDialog<bool>(
+                                      context: dialogContext,
+                                      builder: (confirmContext) => AlertDialog(
+                                        title: const Text('Delete permanently?'),
+                                        content: Text('${document.name}.pdf will be erased from this device.'),
+                                        actions: [
+                                          TextButton(
+                                            onPressed: () => Navigator.pop(confirmContext, false),
+                                            child: const Text('Cancel'),
+                                          ),
+                                          FilledButton(
+                                            onPressed: () => Navigator.pop(confirmContext, true),
+                                            child: const Text('Delete'),
+                                          ),
+                                        ],
+                                      ),
+                                    );
+                                    if (confirmed == true) {
+                                      await _repository.permanentlyDelete(document);
+                                      refreshDialog(() => trashed.removeAt(index));
+                                      await _load();
+                                    }
+                                  }
+                                } catch (error) {
+                                  if (mounted) _message('PDF Recycle Bin action failed: $error');
+                                }
+                              },
+                              itemBuilder: (_) => const [
+                                PopupMenuItem(value: 'restore', child: Text('Restore')),
+                                PopupMenuItem(value: 'delete', child: Text('Delete permanently')),
+                              ],
+                            ),
+                          ),
+                      ],
+                    ],
                   ),
           ),
           actions: [
@@ -1351,7 +1488,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         ),
       ),
     );
-    await _loadTrashSummary();
+    await _refreshDashboardSummary();
   }
 
   Future<void> _chooseCategory(DocumentRecord document) async {
@@ -2046,7 +2183,8 @@ class _DocumentsScreenState extends State<DocumentsScreen>
                         ),
                       ),
                       const SizedBox(width: 8),
-                      Text('$_trashCount PDFs', style: Theme.of(context).textTheme.titleMedium),
+                      Text('$_trashCount PDFs · $_trashFolderCount folders',
+                          style: Theme.of(context).textTheme.titleMedium),
                       const Icon(Icons.chevron_right),
                     ],
                   ),
@@ -2323,6 +2461,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
                 documentId: document.id,
                 storagePath: document.storagePath,
                 sizeBytes: document.sizeBytes,
+                contentSha256: document.sha256,
               ),
         title: Text('${document.name}.pdf', maxLines: 1, overflow: TextOverflow.ellipsis),
         subtitle: Text([
@@ -2358,6 +2497,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
                       folderId: current.folderId,
                       lastOpenedAt: current.lastOpenedAt,
                       source: current.source,
+                      sha256: current.sha256,
                     );
                   }
                 }

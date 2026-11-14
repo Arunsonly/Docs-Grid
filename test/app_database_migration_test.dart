@@ -283,7 +283,7 @@ void main() {
       await v9.close();
     });
 
-    test('v9 to v10 tracks durable data changes and revision-safe snapshot completion', () async {
+    test('v9 to v11 tracks durable data and folder-trash schema', () async {
       final fixture = await createV1Fixture('v9_to_v10_snapshot_state');
       final path = fixture.path;
       await fixture.close();
@@ -302,7 +302,21 @@ void main() {
       expect((await v10.query('schema_migrations', orderBy: 'version'))
           .map((row) => row['version']), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
 
-      final tracker = AppDatabase.forTesting(() async => v10);
+      await v10.close();
+      final v11 = await migrateTo(path, 11);
+      expect(await v11.getVersion(), 11);
+      final folderColumns = await v11.rawQuery('PRAGMA table_info(folders)');
+      final documentColumns = await v11.rawQuery('PRAGMA table_info(documents)');
+      expect(folderColumns.any((column) => column['name'] == 'trash_operation_id'), isTrue);
+      expect(documentColumns.any((column) => column['name'] == 'trash_operation_id'), isTrue);
+      final migratedDocument = (await v11.query(
+        'documents', where: 'id = ?', whereArgs: ['doc-1'],
+      )).single;
+      expect(migratedDocument['trash_operation_id'], isNull);
+      expect((await v11.query('schema_migrations', orderBy: 'version'))
+          .map((row) => row['version']), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+
+      final tracker = AppDatabase.forTesting(() async => v11);
       expect(await tracker.isPortableSnapshotDirty(), isTrue);
       final captured = await tracker.portableSnapshotRevision();
       expect(await tracker.markPortableSnapshotClean(
@@ -312,7 +326,7 @@ void main() {
       expect(await tracker.isPortableSnapshotDirty(), isFalse);
 
       final now = DateTime.now().toUtc().toIso8601String();
-      await v10.update(
+      await v11.update(
         'documents',
         {'is_favorite': 0, 'updated_at': now},
         where: 'id = ?',
@@ -325,33 +339,33 @@ void main() {
         snapshotName: 'stale-snapshot',
       ), isFalse);
 
-      await v10.update(
+      await v11.update(
         'folders', {'name': 'Policies Updated'},
         where: 'id = ?', whereArgs: ['folder-1'],
       );
-      await v10.insert('tags', {
+      await v11.insert('tags', {
         'id': 'tag-1', 'name': 'Renewal', 'created_at': now,
       });
-      await v10.insert('document_tags', {
+      await v11.insert('document_tags', {
         'document_id': 'doc-1', 'tag_id': 'tag-1',
       });
-      await v10.update(
+      await v11.update(
         'reminders', {'title': 'Renew policy updated'},
         where: 'id = ?', whereArgs: ['reminder-1'],
       );
-      await v10.insert('history', {
+      await v11.insert('history', {
         'id': 'history-v10', 'document_id': 'doc-1',
         'action': 'snapshot_test', 'created_at': now,
       });
-      await v10.insert('settings', {
+      await v11.insert('settings', {
         'key': 'snapshot-test', 'value_json': '{"enabled":true}',
         'updated_at': now,
       });
-      await v10.insert('document_text_index', {
+      await v11.insert('document_text_index', {
         'document_id': 'doc-1', 'extracted_text': 'policy renewal',
         'indexed_at': now, 'page_count': 1,
       });
-      await v10.insert('smart_collections', {
+      await v11.insert('smart_collections', {
         'id': 'collection-v10', 'name': 'Renewals', 'query_text': 'renewal',
         'favorites_only': 0, 'recent_only': 0, 'category_id': null,
         'tag_ids_json': '["tag-1"]', 'created_at': now, 'updated_at': now,
@@ -364,9 +378,9 @@ void main() {
         snapshotName: 'snapshot-v10-current',
       ), isTrue);
       expect(await tracker.isPortableSnapshotDirty(), isFalse);
-      expect(await v10.query('tags', where: 'id = ?', whereArgs: ['tag-1']), hasLength(1));
-      expect(await v10.query('document_tags', where: 'tag_id = ?', whereArgs: ['tag-1']), hasLength(1));
-      await v10.close();
+      expect(await v11.query('tags', where: 'id = ?', whereArgs: ['tag-1']), hasLength(1));
+      expect(await v11.query('document_tags', where: 'tag_id = ?', whereArgs: ['tag-1']), hasLength(1));
+      await v11.close();
     });
 
     test('refuses downgrade and leaves the v2 database and records intact', () async {

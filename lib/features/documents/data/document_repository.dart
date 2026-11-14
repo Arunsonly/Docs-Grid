@@ -30,6 +30,7 @@ class DocumentRecord {
     this.folderId,
     this.lastOpenedAt,
     this.source,
+    this.sha256,
   });
 
   final String id;
@@ -44,6 +45,7 @@ class DocumentRecord {
   final String? folderId;
   final DateTime? lastOpenedAt;
   final String? source;
+  final String? sha256;
 
   factory DocumentRecord.fromMap(Map<String, Object?> row) {
     Map<String, dynamic> metadata = <String, dynamic>{};
@@ -76,6 +78,7 @@ class DocumentRecord {
           ? DateTime.tryParse(row['last_opened_at'] as String)
           : null,
       source: row['source'] as String?,
+      sha256: row['sha256'] as String?,
     );
   }
 }
@@ -1789,7 +1792,9 @@ class DocumentRepository {
       SELECT d.*, c.name AS category_name
       FROM documents d
       LEFT JOIN categories c ON c.id = d.category_id
-      WHERE d.deleted_at IS NOT NULL AND d.name LIKE ? ESCAPE '\\'
+      WHERE d.deleted_at IS NOT NULL
+        AND COALESCE(d.trash_operation_id, '') = ''
+        AND d.name LIKE ? ESCAPE '\\'
       ORDER BY d.deleted_at DESC
       ''',
       ['%${escapeLikeWildcards(query.trim())}%'],
@@ -1797,12 +1802,42 @@ class DocumentRepository {
     return rows.map(DocumentRecord.fromMap).toList();
   }
 
+  /// Counts only individually recycled PDFs. Folder-grouped PDFs are counted
+  /// by their visible folder root and are not duplicated in the PDF section.
+  Future<int> trashCount() async {
+    final db = await _database.database;
+    return Sqflite.firstIntValue(await db.rawQuery(
+      "SELECT COUNT(*) FROM documents WHERE deleted_at IS NOT NULL AND COALESCE(trash_operation_id, '') = ''",
+    )) ?? 0;
+  }
+
   Future<void> restoreFromTrash(DocumentRecord document) async {
     await StorageMigrationGate.waitUntilReady();
     final db = await _database.database;
     await db.transaction((txn) async {
+      final rows = await txn.query(
+        'documents',
+        columns: ['folder_id', 'trash_operation_id'],
+        where: 'id = ? AND deleted_at IS NOT NULL',
+        whereArgs: [document.id],
+        limit: 1,
+      );
+      if (rows.isEmpty) throw StateError('PDF is no longer in the Recycle Bin.');
+      if ((rows.single['trash_operation_id'] as String?)?.isNotEmpty == true) {
+        throw StateError('Restore the containing folder from Recycle Bin first.');
+      }
+      final parentId = rows.single['folder_id'] as String?;
+      if (parentId != null) {
+        final parent = await txn.query(
+          'folders', columns: ['id'],
+          where: 'id = ? AND deleted_at IS NULL',
+          whereArgs: [parentId], limit: 1,
+        );
+        if (parent.isEmpty) throw StateError('Restore the original parent folder first.');
+      }
       final count = await txn.update('documents', {
         'deleted_at': null,
+        'trash_operation_id': null,
         'updated_at': DateTime.now().toUtc().toIso8601String(),
       }, where: 'id = ? AND deleted_at IS NOT NULL', whereArgs: [document.id]);
       if (count == 0) throw StateError('PDF is no longer in the Recycle Bin.');
@@ -1818,6 +1853,7 @@ class DocumentRepository {
     await db.transaction((txn) async {
       final changed = await txn.update('documents', {
         'deleted_at': DateTime.now().toUtc().toIso8601String(),
+        'trash_operation_id': null,
         'updated_at': DateTime.now().toUtc().toIso8601String(),
       }, where: 'id = ? AND deleted_at IS NULL', whereArgs: [document.id]);
       if (changed == 0) throw StateError('PDF record is already in the Recycle Bin.');
@@ -1906,13 +1942,16 @@ class DocumentRepository {
     final db = await _database.database;
     final trashed = await db.query(
       'documents',
-      columns: ['storage_uri'],
+      columns: ['storage_uri', 'trash_operation_id'],
       where: 'id = ? AND deleted_at IS NOT NULL',
       whereArgs: [document.id],
       limit: 1,
     );
     if (trashed.isEmpty) {
       throw StateError('Only documents in the Recycle Bin can be permanently deleted.');
+    }
+    if ((trashed.first['trash_operation_id'] as String?)?.isNotEmpty == true) {
+      throw StateError('This PDF belongs to a deleted folder. Empty the folder entry in Recycle Bin instead.');
     }
     final currentStoragePath = (trashed.first['storage_uri'] as String?)?.trim();
     if (currentStoragePath == null || currentStoragePath.isEmpty) {

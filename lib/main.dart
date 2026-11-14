@@ -102,6 +102,7 @@ class DocsGridHome extends StatefulWidget {
 class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver {
   int _selectedIndex = 1;
   bool _checkingIncomingShare = false;
+  bool _recoveryPromptInFlight = false;
   static const MethodChannel _storageChannel = MethodChannel('docsgrid/storage');
   StreamSubscription<void>? _snapshotChangesSubscription;
   Timer? _snapshotDebounce;
@@ -125,6 +126,10 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
       unawaited(_openReminderDocument(documentId));
     };
     WidgetsBinding.instance.addPostFrameCallback((_) async {
+      // Detect old data before any storage initializer can create the canonical
+      // root. A clean install skips recovery UI and proceeds normally.
+      await _checkRecoveryOnForeground();
+      if (!mounted) return;
       // Paint first, then migrate older library paths. New writes wait for this task.
       if (Platform.isAndroid) {
         final migration = StorageMigrationGate.start(() async {
@@ -152,10 +157,8 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
       unawaited(_refreshReminderSchedules());
       final pendingDocumentId = ReminderNotifications.takePendingDocumentId();
       if (pendingDocumentId != null) await _openReminderDocument(pendingDocumentId);
-      // Keep incoming share and first-run recovery sequential: both may show
-      // dialogs, so running them concurrently would lose or stack user prompts.
+      // Keep incoming share prompts sequential with first-launch recovery.
       await _consumeSharedPdfs();
-      await _offerRestoreOnFirstLaunch();
       unawaited(BackupAutomation.runDueForegroundBackups());
     });
   }
@@ -164,6 +167,7 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       unawaited(_refreshReminderSchedules());
+      unawaited(_checkRecoveryOnForeground());
       unawaited(_consumeSharedPdfs());
       _schedulePortableSnapshot();
       unawaited(BackupAutomation.runDueForegroundBackups());
@@ -253,6 +257,16 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
     super.dispose();
   }
 
+  Future<void> _checkRecoveryOnForeground() async {
+    if (!mounted || _recoveryPromptInFlight) return;
+    _recoveryPromptInFlight = true;
+    try {
+      await _offerRestoreOnFirstLaunch();
+    } finally {
+      _recoveryPromptInFlight = false;
+    }
+  }
+
   Future<void> _offerRestoreOnFirstLaunch() async {
     final prefs = await SharedPreferences.getInstance();
     if (prefs.getBool('docsgrid_restore_prompt_shown') == true) return;
@@ -260,17 +274,63 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
       prefs.getString('docsgrid_restore_prompt_snoozed_until') ?? '',
     );
     if (snoozedUntil != null && snoozedUntil.isAfter(DateTime.now())) return;
-    if (!mounted) return;
-    if (Platform.isAndroid) {
-      try {
-        if (await StorageLocationService.instance.hasAllFilesAccess()) {
-          await StorageLocationService.instance.portableDataLocations();
-        }
-      } catch (_) {
-        // Fresh setup remains available; recovery surfaces permission failures.
-      }
+    // Existing app preferences survive ordinary APK updates but are cleared
+    // by Android's "Clear app data" or uninstall/reinstall. This avoids showing
+    // the reinstall dialog during routine updates while still detecting old
+    // shared-storage data after app-data loss.
+    final hasSnoozeRecord =
+        prefs.getString('docsgrid_restore_prompt_snoozed_until') != null;
+    final detectionWasUnavailable =
+        prefs.getBool('docsgrid_legacy_detection_unavailable') == true;
+    final existingInstallMarker = !hasSnoozeRecord &&
+        !detectionWasUnavailable &&
+        (prefs.getKeys().any((key) =>
+          key.startsWith('docsgrid_') &&
+          key != 'docsgrid_restore_prompt_shown' &&
+          key != 'docsgrid_restore_prompt_snoozed_until' &&
+          key != 'docsgrid_legacy_detection_unavailable') ||
+         prefs.getBool('dark_mode') != null);
+    if (existingInstallMarker) {
+      await prefs.setBool('docsgrid_restore_prompt_shown', true);
+      return;
+    }
+    if (!Platform.isAndroid) {
+      // The reinstall prompt is tied to legacy Android shared-storage roots.
+      // iOS recovery remains available from Tools after selecting a Files folder.
+      await prefs.setBool('docsgrid_restore_prompt_shown', true);
+      return;
     }
 
+    Map<String, Object?> detection;
+    try {
+      detection = await StorageLocationService.instance.detectLegacyDocsGridData();
+    } catch (_) {
+      // Permission/provider errors are not proof that old data is absent.
+      // Retry on a later foreground launch; never block Home.
+      await prefs.setBool('docsgrid_legacy_detection_unavailable', true);
+      return;
+    }
+    final status = detection['status'];
+    if (status == 'detection_unavailable') {
+      await prefs.setBool('docsgrid_legacy_detection_unavailable', true);
+      return;
+    }
+    await prefs.remove('docsgrid_legacy_detection_unavailable');
+    if (StorageLocationService.isConfirmedFreshLegacyState(detection)) {
+      await prefs.setBool('docsgrid_restore_prompt_shown', true);
+      await prefs.remove('docsgrid_restore_prompt_snoozed_until');
+      return;
+    }
+    if (!StorageLocationService.hasRecoverableLegacyData(detection)) return;
+
+    final hasLegacyPdfs = detection['hasPdfs'] == true;
+    final hasRestorableData = detection['hasBackup'] == true ||
+        detection['hasSnapshot'] == true;
+    if (!hasLegacyPdfs && !hasRestorableData) {
+      await prefs.setBool('docsgrid_restore_prompt_shown', true);
+      await prefs.remove('docsgrid_restore_prompt_snoozed_until');
+      return;
+    }
     if (!mounted) return;
     final restoreChoice = await showDialog<String>(
       context: context,
@@ -285,16 +345,18 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
             onPressed: () => Navigator.pop(ctx, 'fresh'),
             child: const Text('Start fresh'),
           ),
-          TextButton.icon(
-            onPressed: () => Navigator.pop(ctx, 'pdfs'),
-            icon: const Icon(Icons.picture_as_pdf_outlined),
-            label: const Text('Recover existing PDFs'),
-          ),
-          FilledButton.icon(
-            onPressed: () => Navigator.pop(ctx, 'recover'),
-            icon: const Icon(Icons.restore),
-            label: const Text('Restore previous data'),
-          ),
+          if (hasLegacyPdfs)
+            TextButton.icon(
+              onPressed: () => Navigator.pop(ctx, 'pdfs'),
+              icon: const Icon(Icons.picture_as_pdf_outlined),
+              label: const Text('Recover existing PDFs'),
+            ),
+          if (hasRestorableData)
+            FilledButton.icon(
+              onPressed: () => Navigator.pop(ctx, 'recover'),
+              icon: const Icon(Icons.restore),
+              label: const Text('Restore previous data'),
+            ),
         ],
       ),
     );
@@ -308,6 +370,8 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
       return;
     }
     if (restoreChoice == 'fresh') {
+      // Start fresh changes only this app's new-install state. Legacy files,
+      // snapshots and backups are deliberately left untouched.
       await prefs.setBool('docsgrid_restore_prompt_shown', true);
       await prefs.remove('docsgrid_restore_prompt_snoozed_until');
       return;
@@ -326,23 +390,12 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
       return;
     }
 
-    var hasPortableBackups = false;
-    if (Platform.isAndroid) {
-      try {
-        await StorageLocationService.instance.portableDataLocationsIfAvailable();
-        hasPortableBackups =
-            (await DocumentToolsService().listPortableBackupArchives()).isNotEmpty;
-      } catch (_) {
-        // Portable metadata snapshot recovery remains available when ZIP access is limited.
-      }
-    }
-
-    if (!mounted) return;
+    final hasPortableBackups = detection['hasBackup'] == true;
     await prefs.setBool('docsgrid_restore_prompt_shown', true);
     await prefs.remove('docsgrid_restore_prompt_snoozed_until');
-    final restoreAction =
-        hasPortableBackups ? 'restore_latest_backup' : 'restore_portable';
-    // The previous Offstage route hid both recovery progress and its outcome.
+    final restoreAction = hasPortableBackups
+        ? 'restore_latest_backup'
+        : 'restore_portable';
     await Navigator.of(context).push(MaterialPageRoute(
       builder: (_) => Scaffold(
         appBar: AppBar(title: const Text('Restore DocsGrid data')),

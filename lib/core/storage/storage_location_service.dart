@@ -197,6 +197,57 @@ class StorageLocationService {
     };
   }
 
+  /// Read-only first-install probe for known DocsGrid-managed Android roots.
+  /// Permission failures remain "detection_unavailable", never "no old data".
+  @visibleForTesting
+  static bool hasRecoverableLegacyData(Map<String, Object?> detection) {
+    return detection['status'] == 'found_recoverable_data' &&
+        (detection['hasPdfs'] == true ||
+            detection['hasBackup'] == true ||
+            detection['hasSnapshot'] == true);
+  }
+
+  @visibleForTesting
+  static bool isConfirmedFreshLegacyState(Map<String, Object?> detection) {
+    return detection['status'] == 'confirmed_no_previous_data' ||
+        detection['status'] == 'found_folder_without_verified_recoverable_data';
+  }
+
+  Future<bool> isAppUpdateInstall() async {
+    if (!Platform.isAndroid) return false;
+    return await _channel.invokeMethod<bool>('isAppUpdateInstall') ?? false;
+  }
+
+  Future<Map<String, Object?>> detectLegacyDocsGridData() async {
+    if (!Platform.isAndroid) {
+      return const <String, Object?>{'status': 'confirmed_no_previous_data'};
+    }
+    final value = await _channel.invokeMapMethod<String, dynamic>(
+      'detectLegacyDocsGridData',
+    );
+    if (value == null) {
+      return const <String, Object?>{'status': 'detection_unavailable'};
+    }
+    final status = value['status'];
+    const allowed = {
+      'found_recoverable_data',
+      'confirmed_no_previous_data',
+      'detection_unavailable',
+      'found_folder_without_verified_recoverable_data',
+    };
+    return <String, Object?>{
+      'status': status is String && allowed.contains(status)
+          ? status
+          : 'detection_unavailable',
+      'hasPdfs': value['hasPdfs'] == true,
+      'hasBackup': value['hasBackup'] == true,
+      'hasSnapshot': value['hasSnapshot'] == true,
+      'legacyRoots': value['legacyRoots'] is List
+          ? List<String>.from(value['legacyRoots'] as List)
+          : const <String>[],
+    };
+  }
+
   Future<bool> hasAllFilesAccess() async {
     if (!Platform.isAndroid) return false;
     return await _channel.invokeMethod<bool>('hasAllFilesAccess') ?? false;
