@@ -1657,10 +1657,31 @@ class DocumentToolsService {
       throw StateError('Portable Database folder is not available. Enable storage access or select an existing recovery tree.');
     }
     final db = await _database.database;
-    final capturedRevision = await _database.portableSnapshotRevision();
-    // Export only durable app data. FTS virtual/shadow tables and summary
-    // cache tables are derived state and must not invalidate recovery snapshots.
+    // Read every durable table and its revision in one SQLite read transaction.
+    // This prevents a snapshot whose documents, folders and reminders came from
+    // different moments while the user is changing the library.
     final tableNames = PortableSnapshotManifest.supportedTableNames;
+    final snapshotCapture = await db.transaction((txn) async {
+      final revisionRows = await txn.query(
+        'portable_snapshot_state',
+        columns: ['revision'],
+        where: 'id = 1',
+        limit: 1,
+      );
+      if (revisionRows.isEmpty) {
+        throw StateError('Portable snapshot state is not initialized.');
+      }
+      final rowsByTable = <String, List<Map<String, Object?>>>{};
+      for (final table in tableNames) {
+        rowsByTable[table] = await txn.query(table);
+      }
+      return (
+        revision: revisionRows.single['revision'] as int,
+        rowsByTable: rowsByTable,
+      );
+    });
+    final capturedRevision = snapshotCapture.revision;
+    final capturedRows = snapshotCapture.rowsByTable;
     if (!tableNames.contains('documents') || !tableNames.contains('folders')) {
       throw StateError('The DocsGrid database is incomplete; no snapshot was written.');
     }
@@ -1677,7 +1698,7 @@ class DocumentToolsService {
 
     try {
       for (final table in tableNames) {
-        final rows = await db.query(table);
+        final rows = capturedRows[table]!;
         final contents = jsonEncode(rows);
         final bytes = utf8.encode(contents);
         final filename = '$table.json';
