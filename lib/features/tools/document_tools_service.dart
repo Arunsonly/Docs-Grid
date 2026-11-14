@@ -1096,7 +1096,15 @@ class DocumentToolsService {
     final classified = <({File file, int priority, DateTime modified})>[];
     for (final candidate in candidates) {
       try {
-        final type = await _readPortableBackupType(candidate);
+        // New archives are stored in explicit Full/Database folders, so their
+        // type is known without decompressing a large archive just to inspect
+        // its manifest. Only legacy flat archives need manifest classification.
+        final parentType = p.basename(candidate.parent.path).toLowerCase();
+        final type = parentType == 'full'
+            ? 'full'
+            : parentType == 'database'
+                ? 'database'
+                : await _readPortableBackupType(candidate);
         classified.add((
           file: candidate,
           priority: type == 'full' ? 0 : 1,
