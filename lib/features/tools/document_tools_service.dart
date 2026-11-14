@@ -109,6 +109,10 @@ class DocumentToolsService {
         (path: p.join(legacyRoot, 'Documents'), preserveFolders: false),
         (path: p.join(legacyRoot, 'Folders'), preserveFolders: true),
         (path: p.join(legacyRoot, 'Unfiled'), preserveFolders: false),
+        // The earliest Android releases stored library PDFs in a dedicated
+        // top-level PDFs directory. The install detector still recognizes it;
+        // recovery must include the same explicitly managed legacy location.
+        (path: p.join(legacyRoot, 'PDFs'), preserveFolders: false),
       ];
 
   /// Normalizes OCR text for exact-content duplicate comparison.
