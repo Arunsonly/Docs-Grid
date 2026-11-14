@@ -1931,6 +1931,16 @@ class DocumentToolsService {
     snapshots.sort((a, b) =>
         (b['name'] as String).compareTo(a['name'] as String));
 
+    // A reinstall can create a newer, valid-but-empty snapshot before the
+    // previous portable tree is selected. Timestamp-only selection would then
+    // restore built-in folders/categories from the empty install and silently
+    // ignore the older snapshot containing the user's PDFs and metadata.
+    // Validate every candidate and prefer the snapshot with the most document
+    // records, then the most total records; use timestamp only as a tie-breaker.
+    Map<String, Object?>? bestSnapshot;
+    var bestDocumentCount = -1;
+    var bestRecordCount = -1;
+
     for (final snapshot in snapshots) {
       try {
         final snapshotUri = snapshot['uri'] as String;
@@ -2035,17 +2045,29 @@ class DocumentToolsService {
           }
         }
 
-        return {
-          'name': snapshot['name'] as String,
-          'uri': snapshotUri,
-          'manifestText': manifestText,
-          'manifest': manifest,
-        };
+        final documentCount = documentRows.length;
+        final recordCount = rowsByTable.values.fold<int>(
+          0,
+          (total, rows) => total + rows.length,
+        );
+        final isBetter = documentCount > bestDocumentCount ||
+            (documentCount == bestDocumentCount &&
+                recordCount > bestRecordCount);
+        if (isBetter) {
+          bestDocumentCount = documentCount;
+          bestRecordCount = recordCount;
+          bestSnapshot = {
+            'name': snapshot['name'] as String,
+            'uri': snapshotUri,
+            'manifestText': manifestText,
+            'manifest': manifest,
+          };
+        }
       } catch (_) {
         // Try the next older snapshot. Never mutate or delete a failed copy.
       }
     }
-    return null;
+    return bestSnapshot;
   }
 
   Future<String?> verifyLatestPortableMetadataSnapshot() async {
