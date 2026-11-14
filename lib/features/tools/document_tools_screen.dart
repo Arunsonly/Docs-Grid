@@ -489,7 +489,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
 
     if (mounted) {
       setState(() => _message =
-        'Recovery complete.\\n'
+        'Recovery complete.\n'
         'Snapshot metadata: folders ${result['folders']}; document records added ${result['documentsAdded']}; '
         'PDFs linked by SHA-256 ${result['documentsLinked']}; snapshot records initially unmatched ${result['pdfsMissing']}.\n'
         'Remaining storage PDFs: ${looseRecovery['added'] ?? 0} newly registered/relinked; '
