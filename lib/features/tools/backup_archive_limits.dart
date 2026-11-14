@@ -9,11 +9,14 @@ import 'dart:typed_data';
 class BackupArchiveLimits {
   BackupArchiveLimits._();
 
-  static const maxArchiveBytes = 128 * 1024 * 1024;
-  static const maxExpandedBytes = 256 * 1024 * 1024;
-  static const maxEntryBytes = 128 * 1024 * 1024;
-  static const maxEntries = 10000;
-  static const maxCentralDirectoryBytes = 8 * 1024 * 1024;
+  // ZIP32 offsets are used by the current streaming writer, so keep every
+  // archive strictly below 4 GiB while allowing large managed PDF libraries.
+  // Payloads are streamed and stored without re-compression.
+  static const maxArchiveBytes = 2 * 1024 * 1024 * 1024;
+  static const maxExpandedBytes = 3 * 1024 * 1024 * 1024;
+  static const maxEntryBytes = 1024 * 1024 * 1024;
+  static const maxEntries = 50000;
+  static const maxCentralDirectoryBytes = 32 * 1024 * 1024;
   static const maxCompressionRatio = 1000;
 
   static Future<void> validate(File file) async {

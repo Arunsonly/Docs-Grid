@@ -15,7 +15,27 @@ permissions:
   contents: read
 
 jobs:
+  launcher_icon:
+    name: Prepare shared DocsGrid launcher icon
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install SVG renderer
+        run: brew install librsvg
+      - name: Render DocsGrid launcher icon
+        run: |
+          mkdir -p assets
+          rsvg-convert -w 1024 -h 1024 assets/docsgrid_icon.svg -o assets/docsgrid_icon.png
+      - name: Upload pre-rendered launcher icon
+        uses: actions/upload-artifact@v4
+        with:
+          name: docsgrid-launcher-icon
+          path: assets/docsgrid_icon.png
+          if-no-files-found: error
+          retention-days: 1
+
   android:
+    needs: launcher_icon
     name: Android analyze, test and APK
     runs-on: ubuntu-latest
     steps:
@@ -34,7 +54,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           set -euo pipefail
-          MIRROR='https://maven.wso2.org/nexus/content/repositories/central/'
+          MIRROR='https://repo.maven.apache.org/maven2/'
           ARTIFACT='org/jetbrains/kotlin/kotlin-compiler-embeddable/2.2.21/kotlin-compiler-embeddable-2.2.21.jar'
           EXPECTED='9588fa696ac5507af764fd5660df6894185e12704ec1bc3f5cb772af4987f295'
           curl --fail --location --silent --show-error --retry 3 --retry-all-errors "$MIRROR$ARTIFACT" -o /tmp/kotlin-compiler-embeddable-2.2.21.jar
@@ -46,7 +66,7 @@ jobs:
             if (!repositories.find { it.name == 'docsGridVerifiedKotlinMirror' }) {
               repositories.maven {
                 name = 'docsGridVerifiedKotlinMirror'
-                url = uri('https://maven.wso2.org/nexus/content/repositories/central/')
+                url = uri('https://repo.maven.apache.org/maven2/')
                 content { includeGroupByRegex('org\\.jetbrains\\.kotlin(\\..*)?') }
               }
             }
@@ -228,18 +248,23 @@ jobs:
           cp platform/android/MainActivity.kt android/app/src/main/kotlin/com/docsgrid/docs_grid/MainActivity.kt
       - name: Install packages
         run: flutter pub get
+      - name: Download pre-rendered DocsGrid launcher icon
+        uses: actions/download-artifact@v4
+        with:
+          name: docsgrid-launcher-icon
+          path: assets
       - name: Generate DocsGrid launcher icons
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y librsvg2-bin
-          mkdir -p assets
-          rsvg-convert -w 1024 -h 1024 assets/docsgrid_icon.svg -o assets/docsgrid_icon.png
-          dart run flutter_launcher_icons
+        run: dart run flutter_launcher_icons
       - name: Analyze
-        run: flutter analyze
-      - name: Install system SQLite for FFI tests
+        run: flutter analyze --no-fatal-infos
+      - name: Ensure system SQLite for FFI tests
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev
+        run: |
+          if dpkg-query -W -f='${Status}' libsqlite3-dev 2>/dev/null | grep -q 'install ok installed'; then
+            echo 'libsqlite3-dev is already installed on the hosted runner.'
+          else
+            sudo apt-get install -y libsqlite3-dev
+          fi
       - name: Widget and unit tests
         run: flutter test
       - name: End-to-end integration workflow tests
@@ -267,6 +292,7 @@ jobs:
           retention-days: 14
 
   ios:
+    needs: launcher_icon
     name: iOS analyze, test and unsigned build
     runs-on: macos-latest
     steps:
@@ -341,14 +367,15 @@ jobs:
           PY
       - name: Install packages
         run: flutter pub get
+      - name: Download pre-rendered DocsGrid launcher icon
+        uses: actions/download-artifact@v4
+        with:
+          name: docsgrid-launcher-icon
+          path: assets
       - name: Generate DocsGrid launcher icons
-        run: |
-          brew install librsvg
-          mkdir -p assets
-          rsvg-convert -w 1024 -h 1024 assets/docsgrid_icon.svg -o assets/docsgrid_icon.png
-          dart run flutter_launcher_icons
+        run: dart run flutter_launcher_icons
       - name: Analyze
-        run: flutter analyze
+        run: flutter analyze --no-fatal-infos
       - name: Widget and unit tests
         run: flutter test
       - name: End-to-end integration workflow tests

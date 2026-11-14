@@ -252,6 +252,123 @@ void main() {
       await v7.close();
     });
 
+    test('v8 to v9 adds smart collection category and tag filters without losing saved collections', () async {
+      final fixture = await createV1Fixture('v8_to_v9_smart_filters');
+      final path = fixture.path;
+      await fixture.close();
+
+      final v8 = await migrateTo(path, 8);
+      await v8.insert('smart_collections', {
+        'id': 'collection-1',
+        'name': 'Policies',
+        'query_text': 'policy',
+        'favorites_only': 1,
+        'recent_only': 0,
+        'created_at': '2026-01-01T00:00:00Z',
+        'updated_at': '2026-01-01T00:00:00Z',
+      });
+      await v8.close();
+
+      final v9 = await migrateTo(path, 9);
+      expect(await v9.getVersion(), 9);
+      final columns = await v9.rawQuery('PRAGMA table_info(smart_collections)');
+      expect(columns.any((column) => column['name'] == 'category_id'), isTrue);
+      expect(columns.any((column) => column['name'] == 'tag_ids_json'), isTrue);
+      final collection = (await v9.query('smart_collections', where: 'id = ?', whereArgs: ['collection-1'])).single;
+      expect(collection['name'], 'Policies');
+      expect(collection['query_text'], 'policy');
+      expect(collection['tag_ids_json'], '[]');
+      expect(collection['category_id'], isNull);
+      expect(await v9.rawQuery('PRAGMA foreign_key_check'), isEmpty);
+      await v9.close();
+    });
+
+    test('v9 to v10 tracks durable data changes and revision-safe snapshot completion', () async {
+      final fixture = await createV1Fixture('v9_to_v10_snapshot_state');
+      final path = fixture.path;
+      await fixture.close();
+
+      final v9 = await migrateTo(path, 9);
+      expect(await v9.getVersion(), 9);
+      final legacyDocument = (await v9.query(
+        'documents', where: 'id = ?', whereArgs: ['doc-1'],
+      )).single;
+      expect(legacyDocument['is_favorite'], 1);
+      await v9.close();
+
+      final v10 = await migrateTo(path, 10);
+      expect(await v10.getVersion(), 10);
+      expect(await v10.rawQuery('PRAGMA foreign_key_check'), isEmpty);
+      expect((await v10.query('schema_migrations', orderBy: 'version'))
+          .map((row) => row['version']), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+
+      final tracker = AppDatabase.forTesting(() async => v10);
+      expect(await tracker.isPortableSnapshotDirty(), isTrue);
+      final captured = await tracker.portableSnapshotRevision();
+      expect(await tracker.markPortableSnapshotClean(
+        capturedRevision: captured,
+        snapshotName: 'snapshot-v10-initial',
+      ), isTrue);
+      expect(await tracker.isPortableSnapshotDirty(), isFalse);
+
+      final now = DateTime.now().toUtc().toIso8601String();
+      await v10.update(
+        'documents',
+        {'is_favorite': 0, 'updated_at': now},
+        where: 'id = ?',
+        whereArgs: ['doc-1'],
+      );
+      expect(await tracker.isPortableSnapshotDirty(), isTrue);
+      // A write between capture and publish must not be marked clean.
+      expect(await tracker.markPortableSnapshotClean(
+        capturedRevision: captured,
+        snapshotName: 'stale-snapshot',
+      ), isFalse);
+
+      await v10.update(
+        'folders', {'name': 'Policies Updated'},
+        where: 'id = ?', whereArgs: ['folder-1'],
+      );
+      await v10.insert('tags', {
+        'id': 'tag-1', 'name': 'Renewal', 'created_at': now,
+      });
+      await v10.insert('document_tags', {
+        'document_id': 'doc-1', 'tag_id': 'tag-1',
+      });
+      await v10.update(
+        'reminders', {'title': 'Renew policy updated'},
+        where: 'id = ?', whereArgs: ['reminder-1'],
+      );
+      await v10.insert('history', {
+        'id': 'history-v10', 'document_id': 'doc-1',
+        'action': 'snapshot_test', 'created_at': now,
+      });
+      await v10.insert('settings', {
+        'key': 'snapshot-test', 'value_json': '{"enabled":true}',
+        'updated_at': now,
+      });
+      await v10.insert('document_text_index', {
+        'document_id': 'doc-1', 'extracted_text': 'policy renewal',
+        'indexed_at': now, 'page_count': 1,
+      });
+      await v10.insert('smart_collections', {
+        'id': 'collection-v10', 'name': 'Renewals', 'query_text': 'renewal',
+        'favorites_only': 0, 'recent_only': 0, 'category_id': null,
+        'tag_ids_json': '["tag-1"]', 'created_at': now, 'updated_at': now,
+      });
+
+      final currentRevision = await tracker.portableSnapshotRevision();
+      expect(currentRevision, greaterThan(captured + 1));
+      expect(await tracker.markPortableSnapshotClean(
+        capturedRevision: currentRevision,
+        snapshotName: 'snapshot-v10-current',
+      ), isTrue);
+      expect(await tracker.isPortableSnapshotDirty(), isFalse);
+      expect(await v10.query('tags', where: 'id = ?', whereArgs: ['tag-1']), hasLength(1));
+      expect(await v10.query('document_tags', where: 'tag_id = ?', whereArgs: ['tag-1']), hasLength(1));
+      await v10.close();
+    });
+
     test('refuses downgrade and leaves the v2 database and records intact', () async {
       final v1 = await createV1Fixture('downgrade');
       final path = v1.path;

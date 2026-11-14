@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/services.dart';
@@ -9,6 +10,8 @@ import 'package:uuid/uuid.dart';
 
 import '../../../core/database/app_database.dart';
 import '../../../core/storage/storage_location_service.dart';
+import '../../../core/storage/portable_snapshot_events.dart';
+import '../../../core/storage/storage_migration_gate.dart';
 import '../domain/folder.dart';
 
 class FolderOption {
@@ -60,11 +63,17 @@ class FolderRepository {
 
   Future<List<Folder>> childrenOf(String? parentId) async {
     final db = await _database.database;
-    final rows = await db.query(
-      'folders',
-      where: parentId == null ? 'parent_id IS NULL AND deleted_at IS NULL' : 'parent_id = ? AND deleted_at IS NULL',
-      whereArgs: parentId == null ? null : [parentId],
-      orderBy: 'sort_order ASC, name COLLATE NOCASE ASC',
+    final rows = await db.rawQuery(
+      '''
+      SELECT f.*,
+        (SELECT COUNT(*) FROM documents d
+          WHERE d.folder_id = f.id AND d.deleted_at IS NULL) AS pdf_count
+      FROM folders f
+      WHERE ${parentId == null ? 'f.parent_id IS NULL' : 'f.parent_id = ?'}
+        AND f.deleted_at IS NULL
+      ORDER BY f.sort_order ASC, f.name COLLATE NOCASE ASC
+      ''',
+      parentId == null ? const [] : [parentId],
     );
     final storage = StorageLocationService.instance;
     final visible = <Folder>[];
@@ -104,6 +113,7 @@ class FolderRepository {
           );
         }
       });
+      PortableSnapshotEvents.notifyDataChanged();
     }
     return visible;
   }
@@ -111,6 +121,7 @@ class FolderRepository {
   /// Persists the visual order of the active children of one parent.
   /// The supplied ids must be an exact permutation of that parent's folders.
   Future<void> reorderChildren(String? parentId, List<String> orderedIds) async {
+    await StorageMigrationGate.waitUntilReady();
     final db = await _database.database;
     await db.transaction((txn) async {
       final rows = await txn.query(
@@ -139,6 +150,7 @@ class FolderRepository {
       }
       await batch.commit(noResult: true);
     });
+    PortableSnapshotEvents.notifyDataChanged();
   }
 
   Future<List<FolderOption>> allFoldersWithPaths() async {
@@ -166,8 +178,14 @@ class FolderRepository {
   /// Ensures a virtual folder and its ancestors exist in the selected
   /// physical storage tree. Returns null when the library is app-private.
   Future<String?> ensurePhysicalStorageUri(String folderId) async {
+    await StorageMigrationGate.waitUntilReady();
     final db = await _database.database;
-    final selectedRoot = await StorageLocationService.instance.selectedFolder();
+    final storage = StorageLocationService.instance;
+    final selectedRoot = await storage.selectedFolder();
+    final portableLocations = Platform.isAndroid
+        ? await storage.portableDataLocationsIfAvailable()
+        : const <String, String>{};
+    final defaultLibraryRoot = portableLocations['libraryUri'];
 
     final chain = <({String id, String name, String? parentId, String? uri})>[];
     final visited = <String>{};
@@ -192,9 +210,26 @@ class FolderRepository {
       currentId = row['parent_id'] as String?;
     }
 
-    String? parentUri = selectedRoot?['uri'];
+    String? parentUri = defaultLibraryRoot ?? selectedRoot?['uri'];
     for (final folder in chain.reversed) {
       var childUri = folder.uri;
+      // Older full restores stored absolute filesystem paths in this URI column.
+      // Convert those legacy values to file:// URIs before passing them to the
+      // Android channel, which dispatches file:// and SAF content:// separately.
+      if (Platform.isAndroid &&
+          childUri != null &&
+          childUri.startsWith('/')) {
+        childUri = Uri.file(childUri).toString();
+        await db.update(
+          'folders',
+          {
+            'storage_uri_or_relative_path': childUri,
+            'updated_at': DateTime.now().toUtc().toIso8601String(),
+          },
+          where: 'id = ? AND deleted_at IS NULL',
+          whereArgs: [folder.id],
+        );
+      }
       if (childUri == null && parentUri != null) {
         try {
           childUri = await StorageLocationService.instance.findChildUri(
@@ -225,6 +260,7 @@ class FolderRepository {
   }
 
   Future<Folder> create({required String name, String? parentId}) async {
+    await StorageMigrationGate.waitUntilReady();
     final cleaned = validateFolderName(name);
     final db = await _database.database;
     final storage = StorageLocationService.instance;
@@ -246,9 +282,14 @@ class FolderRepository {
       throw StateError('A folder with this name already exists here.');
     }
     final selectedRoot = await storage.selectedFolder();
-    final String? selectedRootUri = selectedRoot == null
-        ? null
-        : selectedRoot['uri'];
+    final portableLocations = Platform.isAndroid
+        ? await storage.portableDataLocationsIfAvailable()
+        : const <String, String>{};
+    final String? selectedRootUri =
+        portableLocations['libraryUri'] ?? selectedRoot?['uri'];
+    if (Platform.isAndroid && selectedRootUri == null) {
+      throw StateError('Allow storage access or choose a folder before creating folders.');
+    }
     final String? parentStorageUri = parentId == null
         ? selectedRootUri
         : await ensurePhysicalStorageUri(parentId);
@@ -301,6 +342,7 @@ class FolderRepository {
           'updated_at': now,
         });
       });
+      PortableSnapshotEvents.notifyDataChanged();
     } catch (_) {
       if (physicalUri != null) {
         try { await storage.deletePdf(physicalUri); } catch (_) {}
@@ -311,6 +353,7 @@ class FolderRepository {
   }
 
   Future<void> rename(String id, String name) async {
+    await StorageMigrationGate.waitUntilReady();
     final cleaned = validateFolderName(name);
     final db = await _database.database;
     final rows = await db.query(
@@ -510,6 +553,7 @@ class FolderRepository {
           );
         }
       });
+      PortableSnapshotEvents.notifyDataChanged();
     } catch (_) {
       if (renamedUri != null) {
         try {
@@ -530,7 +574,176 @@ class FolderRepository {
     }
   }
 
+  /// Reparents selected folders as logical library folders. Stable storage
+  /// URIs and documents are preserved; only the Grid hierarchy changes.
+  /// If both a parent and child are selected, only the parent is reparented.
+  Future<void> moveManyToParent(List<String> folderIds, String? parentId) async {
+    await StorageMigrationGate.waitUntilReady();
+    final requested = folderIds.toSet();
+    if (requested.isEmpty) return;
+    final db = await _database.database;
+    await db.transaction((txn) async {
+      final placeholders = List.filled(requested.length, '?').join(',');
+      final rows = await txn.query(
+        'folders',
+        columns: ['id', 'name', 'parent_id'],
+        where: 'id IN ($placeholders) AND deleted_at IS NULL',
+        whereArgs: requested.toList(),
+      );
+      if (rows.length != requested.length) {
+        throw StateError('One or more selected folders no longer exist.');
+      }
+      if (parentId != null) {
+        final target = await txn.query(
+          'folders',
+          columns: ['id'],
+          where: 'id = ? AND deleted_at IS NULL',
+          whereArgs: [parentId],
+          limit: 1,
+        );
+        if (target.isEmpty) throw StateError('Destination folder no longer exists.');
+      }
+      final roots = rows.where((row) => !requested.contains(row['parent_id'] as String?)).toList();
+      final rootIds = roots.map((row) => row['id'] as String).toSet();
+      var ancestorId = parentId;
+      final visited = <String>{};
+      while (ancestorId != null) {
+        if (!visited.add(ancestorId)) throw StateError('Folder hierarchy contains a cycle.');
+        if (rootIds.contains(ancestorId)) {
+          throw StateError('A folder cannot be moved inside itself or one of its subfolders.');
+        }
+        final parentRows = await txn.query(
+          'folders',
+          columns: ['parent_id'],
+          where: 'id = ? AND deleted_at IS NULL',
+          whereArgs: [ancestorId],
+          limit: 1,
+        );
+        if (parentRows.isEmpty) throw StateError('Destination folder no longer exists.');
+        ancestorId = parentRows.first['parent_id'] as String?;
+      }
+      final movingNames = <String>{};
+      for (final row in roots) {
+        final name = (row['name'] as String).toLowerCase();
+        if (!movingNames.add(name)) {
+          throw StateError('Two selected folders have the same name and cannot share one destination.');
+        }
+        final duplicate = await txn.query(
+          'folders',
+          columns: ['id'],
+          where: 'parent_id IS ? AND name = ? COLLATE NOCASE AND deleted_at IS NULL AND id != ?',
+          whereArgs: [parentId, row['name'], row['id']],
+          limit: 1,
+        );
+        if (duplicate.isNotEmpty) {
+          throw StateError('A folder named "${row['name']}" already exists at the destination.');
+        }
+      }
+      final maxRows = await txn.rawQuery(
+        parentId == null
+            ? 'SELECT COALESCE(MAX(sort_order), -1) AS max_order FROM folders WHERE parent_id IS NULL AND deleted_at IS NULL'
+            : 'SELECT COALESCE(MAX(sort_order), -1) AS max_order FROM folders WHERE parent_id = ? AND deleted_at IS NULL',
+        parentId == null ? null : [parentId],
+      );
+      var nextOrder = ((maxRows.first['max_order'] as int?) ?? -1) + 1;
+      final batch = txn.batch();
+      for (final row in roots) {
+        batch.update(
+          'folders',
+          {
+            'parent_id': parentId,
+            'sort_order': nextOrder++,
+            'updated_at': DateTime.now().toUtc().toIso8601String(),
+          },
+          where: 'id = ? AND deleted_at IS NULL',
+          whereArgs: [row['id']],
+        );
+      }
+      await batch.commit(noResult: true);
+    });
+    PortableSnapshotEvents.notifyDataChanged();
+  }
+
+  /// Soft-deletes selected folders and all descendants. PDFs go to Recycle Bin
+  /// with their folder_id cleared, so restoring them returns them to Grid root.
+  /// Physical files are retained; this operation never permanently deletes PDFs.
+  Future<int> moveManyToRecycleBin(List<String> folderIds) async {
+    await StorageMigrationGate.waitUntilReady();
+    final requested = folderIds.toSet();
+    if (requested.isEmpty) return 0;
+    final db = await _database.database;
+    var movedPdfCount = 0;
+    await db.transaction((txn) async {
+      final placeholders = List.filled(requested.length, '?').join(',');
+      final roots = await txn.query(
+        'folders',
+        columns: ['id'],
+        where: 'id IN ($placeholders) AND deleted_at IS NULL',
+        whereArgs: requested.toList(),
+      );
+      if (roots.length != requested.length) {
+        throw StateError('One or more selected folders no longer exist.');
+      }
+      final allIds = <String>{...requested};
+      var frontier = requested.toList();
+      while (frontier.isNotEmpty) {
+        final childPlaceholders = List.filled(frontier.length, '?').join(',');
+        final children = await txn.query(
+          'folders',
+          columns: ['id'],
+          where: 'parent_id IN ($childPlaceholders) AND deleted_at IS NULL',
+          whereArgs: frontier,
+        );
+        frontier = children
+            .map((row) => row['id'] as String)
+            .where(allIds.add)
+            .toList();
+      }
+      final allPlaceholders = List.filled(allIds.length, '?').join(',');
+      final activeDocuments = await txn.query(
+        'documents',
+        columns: ['id'],
+        where: 'folder_id IN ($allPlaceholders) AND deleted_at IS NULL',
+        whereArgs: allIds.toList(),
+      );
+      movedPdfCount = activeDocuments.length;
+      final now = DateTime.now().toUtc().toIso8601String();
+      for (final document in activeDocuments) {
+        await txn.insert('history', {
+          'id': _uuid.v4(),
+          'document_id': document['id'],
+          'action': 'moved_to_recycle_bin',
+          'details_json': jsonEncode({'folderDeleted': true}),
+          'created_at': now,
+        });
+      }
+      // Move active files into trash and detach already-trashed files too;
+      // otherwise restoring an old trash entry would point into a hidden folder.
+      await txn.update(
+        'documents',
+        {'deleted_at': now, 'updated_at': now, 'folder_id': null},
+        where: 'folder_id IN ($allPlaceholders) AND deleted_at IS NULL',
+        whereArgs: allIds.toList(),
+      );
+      await txn.update(
+        'documents',
+        {'folder_id': null, 'updated_at': now},
+        where: 'folder_id IN ($allPlaceholders) AND deleted_at IS NOT NULL',
+        whereArgs: allIds.toList(),
+      );
+      await txn.update(
+        'folders',
+        {'deleted_at': now, 'updated_at': now},
+        where: 'id IN ($allPlaceholders) AND deleted_at IS NULL',
+        whereArgs: allIds.toList(),
+      );
+    });
+    PortableSnapshotEvents.notifyDataChanged();
+    return movedPdfCount;
+  }
+
   Future<void> deleteEmpty(String id) async {
+    await StorageMigrationGate.waitUntilReady();
     final db = await _database.database;
     final folder = await db.query(
       'folders',
@@ -584,6 +797,7 @@ class FolderRepository {
       );
       if (count == 0) throw StateError('Folder no longer exists.');
     });
+    PortableSnapshotEvents.notifyDataChanged();
     if (storageUri != null) {
       try {
         await StorageLocationService.instance.deletePdf(storageUri);
