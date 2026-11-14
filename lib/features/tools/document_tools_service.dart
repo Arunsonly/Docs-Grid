@@ -2126,6 +2126,28 @@ class DocumentToolsService {
       if (locations['documentsUri'] != null)
         locations['documentsUri']!,
     ];
+
+    // A reinstall may initialize a new canonical com.docsgrid root while the
+    // previous release's managed PDFs remain in Android/media/DocsGrid.
+    // Metadata snapshots are portable across that migration, so hash matching
+    // must search the explicitly whitelisted legacy library directories too.
+    // Never scan the legacy root itself: it also contains backups, snapshots,
+    // caches and unrelated recovery data.
+    final legacyRootUri = locations['legacyRootUri'];
+    if (Platform.isAndroid &&
+        legacyRootUri != null &&
+        legacyRootUri.startsWith('file://')) {
+      final legacyRoot = Directory(Uri.parse(legacyRootUri).toFilePath());
+      for (final legacy in DocumentToolsService.legacyManagedRecoveryPaths(
+        legacyRoot.path,
+      )) {
+        final directory = Directory(legacy.path);
+        if (await directory.exists()) {
+          pending.add(Uri.directory(directory.path).toString());
+        }
+      }
+    }
+
     final visited = <String>{};
     while (pending.isNotEmpty) {
       final directoryUri = pending.removeLast();
