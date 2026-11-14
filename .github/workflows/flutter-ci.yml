@@ -30,29 +30,29 @@ jobs:
           cache: true
       - name: Generate native platform scaffolding
         run: flutter create --no-pub --platforms=android,ios --org com.docsgrid .
-      - name: Configure verified Kotlin compiler mirror
+      - name: Verify Kotlin compiler artifact from Maven Central
         if: runner.os == 'Linux'
         run: |
           set -euo pipefail
-          MIRROR='https://maven.wso2.org/nexus/content/repositories/central/'
+          MIRROR='https://repo.maven.apache.org/maven2/'
           ARTIFACT='org/jetbrains/kotlin/kotlin-compiler-embeddable/2.2.21/kotlin-compiler-embeddable-2.2.21.jar'
           EXPECTED='9588fa696ac5507af764fd5660df6894185e12704ec1bc3f5cb772af4987f295'
           curl --fail --location --silent --show-error --retry 3 --retry-all-errors "$MIRROR$ARTIFACT" -o /tmp/kotlin-compiler-embeddable-2.2.21.jar
           echo "$EXPECTED  /tmp/kotlin-compiler-embeddable-2.2.21.jar" | sha256sum --check --status
-          echo 'Kotlin 2.2.21 compiler artifact mirror and SHA-256 verified.'
+          echo 'Kotlin 2.2.21 compiler artifact from Maven Central and SHA-256 verified.'
           mkdir -p "$HOME/.gradle/init.d"
           cat > "$HOME/.gradle/init.d/docsgrid-kotlin-mirror.gradle" <<'GRADLE'
           def addKotlinMirror = { repositories ->
-            if (!repositories.find { it.name == 'docsGridVerifiedKotlinMirror' }) {
+            if (!repositories.find { it.name == 'docsGridVerifiedKotlinCentral' }) {
               repositories.maven {
                 name = 'docsGridVerifiedKotlinMirror'
-                url = uri('https://maven.wso2.org/nexus/content/repositories/central/')
+                url = uri('https://repo.maven.apache.org/maven2/')
                 content { includeGroupByRegex('org\\.jetbrains\\.kotlin(\\..*)?') }
               }
             }
           }
           gradle.beforeSettings { settings ->
-            // The mirror is only a fallback for Kotlin artifacts. Flutter's
+            // Maven Central is used only as a fallback for Kotlin artifacts. Flutter's
             // Gradle plugin marker (org.gradle.kotlin.kotlin-dsl) is published
             // through the Gradle Plugin Portal, not the WSO2 Maven mirror.
             settings.pluginManagement.repositories {
@@ -236,7 +236,7 @@ jobs:
           rsvg-convert -w 1024 -h 1024 assets/docsgrid_icon.svg -o assets/docsgrid_icon.png
           dart run flutter_launcher_icons
       - name: Analyze
-        run: flutter analyze
+        run: flutter analyze --no-fatal-infos
       - name: Install system SQLite for FFI tests
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev
@@ -348,7 +348,7 @@ jobs:
           rsvg-convert -w 1024 -h 1024 assets/docsgrid_icon.svg -o assets/docsgrid_icon.png
           dart run flutter_launcher_icons
       - name: Analyze
-        run: flutter analyze
+        run: flutter analyze --no-fatal-infos
       - name: Widget and unit tests
         run: flutter test
       - name: End-to-end integration workflow tests

@@ -50,6 +50,8 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
         case 'gallery': _scan(); break;
         case 'backup': _backup(); break;
         case 'restore_portable': _restorePortableSnapshot(autoDetect: true); break;
+        case 'restore_latest_backup': _restoreNewestPortableBackup(); break;
+        case 'recover_loose_pdfs': _recoverLoosePortablePdfs(); break;
         case 'tools': break;
         case 'duplicates': _showDuplicates(); break;
       }
@@ -138,12 +140,28 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
   }
 
   Future<void> _backup() => _run(() async {
-    final archive = await _tools.createBackup();
-    // Share the on-disk ZIP directly. The platform share sheet lets the user
-    // save it to Files/Drive without loading the whole archive into RAM.
+    final archive = await _tools.createBackup(
+      onProgress: (completed, total) {
+        if (!mounted) return;
+        setState(() => _message =
+            total == 0 ? 'Preparing backup archive…' : 'Backing up PDFs: $completed of $total');
+      },
+    );
+    if (mounted) setState(() => _message = 'Verifying completed backup archive…');
+    // Share only after ZIP validation succeeds. share_plus supplies a secure
+    // content URI through Android's Sharesheet instead of exposing a raw path.
     await _tools.shareFile(archive.path, text: 'DocsGrid backup');
     if (mounted) {
-      setState(() => _message = 'Backup created. Use the share sheet to save a copy somewhere safe.');
+      setState(() => _message = 'Backup verified and created. Use the share sheet to save a copy somewhere safe.');
+    }
+  });
+
+  Future<void> _databaseBackup() => _run(() async {
+    final archive = await _tools.createBackup(includePdfs: false);
+    await _tools.shareFile(archive.path, text: 'DocsGrid database backup');
+    if (mounted) {
+      setState(() => _message =
+          'Database backup created. It contains metadata only; PDF contents are not included.');
     }
   });
 
@@ -189,8 +207,98 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
         await writeByteStreamToFile(platformFile.readAsByteStream(), file);
       }
       if (!mounted) return;
+      final restoreMode = await showDialog<BackupRestoreMode>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Choose restore mode'),
+          content: const Text(
+            'Merge keeps current records and adds backup data. Full replacement first creates a safety backup, then replaces the current DocsGrid database.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, null),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(context, BackupRestoreMode.merge),
+              child: const Text('Merge'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(context, BackupRestoreMode.selective),
+              child: const Text('Selective'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, BackupRestoreMode.fullReplacement),
+              child: const Text('Full replacement'),
+            ),
+          ],
+        ),
+      );
+      if (restoreMode == null || !mounted) return;
+      Set<BackupRestoreSection>? selection;
+      if (restoreMode == BackupRestoreMode.selective) {
+        final selected = <BackupRestoreSection>{
+          BackupRestoreSection.documents,
+          BackupRestoreSection.reminders,
+          BackupRestoreSection.history,
+          BackupRestoreSection.settings,
+        };
+        selection = await showDialog<Set<BackupRestoreSection>>(
+          context: context,
+          builder: (dialogContext) => StatefulBuilder(
+            builder: (dialogContext, refresh) => AlertDialog(
+              title: const Text('Select data to restore'),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    for (final item in BackupRestoreSection.values)
+                      CheckboxListTile(
+                        dense: true,
+                        value: selected.contains(item),
+                        title: Text(switch (item) {
+                          BackupRestoreSection.documents => 'PDFs and document records',
+                          BackupRestoreSection.folders => 'Folders',
+                          BackupRestoreSection.categories => 'Categories',
+                          BackupRestoreSection.tags => 'Tags',
+                          BackupRestoreSection.reminders => 'Reminders',
+                          BackupRestoreSection.history => 'Activity and history',
+                          BackupRestoreSection.settings => 'Settings',
+                          BackupRestoreSection.smartCollections => 'Smart Collections',
+                          BackupRestoreSection.ocrIndexes => 'OCR search indexes',
+                        }),
+                        onChanged: (checked) => refresh(() {
+                          if (checked == true) {
+                            selected.add(item);
+                          } else {
+                            selected.remove(item);
+                          }
+                        }),
+                      ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(dialogContext),
+                  child: const Text('Cancel'),
+                ),
+                FilledButton(
+                  onPressed: selected.isEmpty
+                      ? null
+                      : () => Navigator.pop(dialogContext, Set.of(selected)),
+                  child: const Text('Continue'),
+                ),
+              ],
+            ),
+          ),
+        );
+        if (selection == null || selection.isEmpty || !mounted) return;
+      }
       final restored = await _tools.restoreBackup(
         file,
+        mode: restoreMode,
+        selection: selection,
         confirm: (count) async {
           if (!mounted) return false;
           return await showDialog<bool>(
@@ -198,7 +306,11 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
                 builder: (context) => AlertDialog(
                   title: const Text('Restore backup?'),
                   content: Text(
-                    'The archive contains $count PDF file(s). Existing records will be kept; the backup will be added without overwriting your current files.',
+                    restoreMode == BackupRestoreMode.fullReplacement
+                        ? 'The archive contains $count PDF file(s). DocsGrid will first create a full safety backup, then replace the current database. Existing shared PDFs are not automatically deleted.'
+                        : restoreMode == BackupRestoreMode.selective
+                            ? 'The archive contains $count PDF file(s). Only the data groups you selected will be imported; current records are preserved.'
+                            : 'The archive contains $count PDF file(s). Existing records will be kept; the backup will be merged without overwriting your current files.',
                   ),
                   actions: [
                     TextButton(
@@ -216,15 +328,95 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
         },
       );
       if (restored != null && mounted) {
-        setState(
-          () => _message =
-              'Restore completed: $restored PDF file(s) restored and verified.',
-        );
+        setState(() => _message = restored == 0
+            ? 'Restore completed. No PDF payloads were included; recovered document records may need PDF relinking.'
+            : 'Restore completed: $restored PDF payload(s) restored and verified.');
       }
     } finally {
       if (temporaryCopy && await file.exists()) await file.delete();
     }
   });
+
+  Future<void> _recoverLoosePortablePdfs() => _run(() async {
+    final recovered = await _tools.recoverLoosePortablePdfs();
+    if (mounted) {
+      setState(() => _message =
+          'PDF recovery finished. Added: ${recovered['added']}; '
+          'duplicates: ${recovered['duplicates']}; failed: ${recovered['failed']}. '
+          'PDF files and folder names were recovered. Categories, tags, reminders, '
+          'history and settings require a valid DocsGrid backup.');
+    }
+  });
+
+  Future<void> _restoreNewestPortableBackup() => _run(_restoreNewestPortableBackupBody);
+
+  Future<void> _restoreNewestPortableBackupBody() async {
+    final candidates = await _tools.listPortableBackupArchives();
+    if (candidates.isEmpty) {
+      throw StateError('No portable DocsGrid backup ZIP was found.');
+    }
+    if (!mounted) return;
+    try {
+      final restored = await _tools.restoreNewestPortableBackup(
+        confirm: (count) async {
+          if (!mounted) return false;
+          return await showDialog<bool>(
+                context: context,
+                builder: (context) => AlertDialog(
+                  title: const Text('Restore latest backup?'),
+                  actions: [
+                    TextButton(
+                      onPressed: () => Navigator.pop(context, false),
+                      child: const Text('Cancel'),
+                    ),
+                    FilledButton(
+                      onPressed: () => Navigator.pop(context, true),
+                      child: const Text('Restore'),
+                    ),
+                  ],
+                ),
+              ) ??
+              false;
+        },
+      );
+      if (restored != null && mounted) {
+        setState(() => _message = restored == 0
+            ? 'Portable recovery completed. The archive had no PDF payloads; document records may need PDF relinking.'
+            : 'Portable recovery completed: $restored PDF(s) restored from a verified backup.');
+      }
+    } catch (error) {
+      if (!mounted) rethrow;
+      final useLoosePdfs = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('No valid backup ZIP found'),
+          content: Text(
+            'DocsGrid could not validate the available backup archives. '
+            'You can still discover surviving PDFs and rebuild the file list. '
+            'Categories, tags, reminders, history and settings cannot be recovered from PDFs alone.\n\n$error',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Find existing PDFs'),
+            ),
+          ],
+        ),
+      );
+      if (useLoosePdfs == true) {
+        final recovered = await _tools.recoverLoosePortablePdfs();
+        if (mounted) {
+          setState(() => _message =
+              'PDF discovery finished. Added: ${recovered['added']}; '
+              'duplicates: ${recovered['duplicates']}; failed: ${recovered['failed']}.');
+        }
+      }
+    }
+  }
 
   Future<void> _restorePortableSnapshot({bool autoDetect = false}) => _run(() async {
     final storage = StorageLocationService.instance;
@@ -241,13 +433,29 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
         return;
       }
       await storage.portableDataLocations();
+      final portableBackups = await _tools.listPortableBackupArchives();
+      if (portableBackups.isNotEmpty) {
+        await _restoreNewestPortableBackupBody();
+        return;
+      }
     } else {
       final selected = await storage.chooseRecoveryFolder();
       if (selected == null) return;
     }
     final snapshot = await _tools.verifyLatestPortableMetadataSnapshot();
     if (snapshot == null) {
-      throw StateError('No verified DocsGrid snapshot was found in the selected folder.');
+      if (!Platform.isAndroid) {
+        throw StateError('No verified DocsGrid snapshot was found in the selected folder.');
+      }
+      final recovered = await _tools.recoverLoosePortablePdfs();
+      if (mounted) {
+        setState(() => _message =
+            'PDF discovery finished. Added: ${recovered['added']}; '
+            'duplicates: ${recovered['duplicates']}; failed: ${recovered['failed']}. '
+            'Only PDFs and their folder names can be reconstructed this way. '
+            'Categories, tags, reminders, history and settings need a valid backup.');
+      }
+      return;
     }
     if (!mounted) return;
     final androidNote = Platform.isAndroid
@@ -579,9 +787,13 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
         ])),
       ],
       if (widget.section == 'backup' || widget.section == 'restore' || widget.section == 'backup_restore') Card(child: Column(children: [
-        ListTile(leading: const Icon(Icons.backup_outlined), title: const Text('Create backup'),
+        ListTile(leading: const Icon(Icons.backup_outlined), title: const Text('Create full backup'),
           subtitle: const Text('Save PDFs, folders, reminders, tags and settings into one ZIP file.'),
           trailing: const Icon(Icons.chevron_right), onTap: _busy ? null : _backup),
+        const Divider(height: 1),
+        ListTile(leading: const Icon(Icons.storage_outlined), title: const Text('Create database backup'),
+          subtitle: const Text('Save database and metadata only; PDF contents are excluded.'),
+          trailing: const Icon(Icons.chevron_right), onTap: _busy ? null : _databaseBackup),
         const Divider(height: 1),
         ListTile(leading: const Icon(Icons.settings_backup_restore_outlined), title: const Text('Restore backup'),
           subtitle: const Text('Choose a DocsGrid backup ZIP from this phone or another storage location.'),

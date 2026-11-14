@@ -96,6 +96,57 @@ void main() {
     expect(entries.single['sizeBytes'], 1024);
   });
 
+  test('renamePdf forwards the original URI and returns the renamed URI', () async {
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      expect(call.method, 'renamePdf');
+      expect(call.arguments, {
+        'uri': 'content://tree/original-policy',
+        'name': 'Renewed Policy.pdf',
+      });
+      return 'content://tree/renamed-policy';
+    });
+
+    expect(
+      await StorageLocationService.instance.renamePdf(
+        uri: 'content://tree/original-policy',
+        name: 'Renewed Policy.pdf',
+      ),
+      'content://tree/renamed-policy',
+    );
+  });
+
+  test('renamePdf fails closed when Android returns no renamed URI', () async {
+    messenger.setMockMethodCallHandler(channel, (_) async => null);
+    await expectLater(
+      StorageLocationService.instance.renamePdf(
+        uri: 'content://tree/original-policy',
+        name: 'Renewed Policy.pdf',
+      ),
+      throwsStateError,
+    );
+  });
+
+  test('deletePdf forwards the exact source URI and requires confirmed deletion', () async {
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      expect(call.method, 'deletePdf');
+      expect(call.arguments, {'uri': 'content://tree/policy'});
+      return true;
+    });
+
+    await expectLater(
+      StorageLocationService.instance.deletePdf('content://tree/policy'),
+      completes,
+    );
+  });
+
+  test('deletePdf fails closed when Android cannot confirm deletion', () async {
+    messenger.setMockMethodCallHandler(channel, (_) async => false);
+    await expectLater(
+      StorageLocationService.instance.deletePdf('content://tree/policy'),
+      throwsStateError,
+    );
+  });
+
   test('createDirectory forwards parent and name and returns opaque URI', () async {
     messenger.setMockMethodCallHandler(channel, (call) async {
       expect(call.method, 'createDirectory');
@@ -125,6 +176,45 @@ void main() {
     );
   });
 
+
+  test('system .Trash folders and their PDFs are excluded from storage scan', () async {
+    final tree = <String, List<Map<String, Object?>>>{
+      'content://tree/root': [
+        {'name': 'Android', 'uri': 'content://tree/android', 'isDirectory': true},
+        {'name': 'Documents', 'uri': 'content://tree/documents', 'isDirectory': true},
+      ],
+      'content://tree/android': [
+        {'name': '.Trash', 'uri': 'content://tree/trash', 'isDirectory': true},
+        {'name': 'media', 'uri': 'content://tree/media', 'isDirectory': true},
+      ],
+      'content://tree/trash': [
+        {'name': 'Deleted-policy.pdf', 'uri': 'content://doc/deleted', 'isDirectory': false},
+        {'name': 'nested', 'uri': 'content://tree/trash-nested', 'isDirectory': true},
+      ],
+      'content://tree/trash-nested': [
+        {'name': 'Another-deleted.pdf', 'uri': 'content://doc/deleted-2', 'isDirectory': false},
+      ],
+      'content://tree/media': [],
+      'content://tree/documents': [
+        {'name': 'Current-policy.pdf', 'uri': 'content://doc/current', 'isDirectory': false},
+      ],
+    };
+    final visited = <String>[];
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      visited.add(call.arguments['uri'] as String);
+      return tree[call.arguments['uri']]!;
+    });
+
+    final entries = await StorageLocationService.instance
+        .listStorageTreeRecursively('content://tree/root');
+
+    expect(visited, isNot(contains('content://tree/trash')));
+    expect(visited, isNot(contains('content://tree/trash-nested')));
+    expect(entries.where((entry) => entry['name'] == 'Deleted-policy.pdf'), isEmpty);
+    expect(entries.where((entry) => entry['name'] == 'Another-deleted.pdf'), isEmpty);
+    expect(entries.where((entry) => entry['name'] == 'Current-policy.pdf'), hasLength(1));
+    expect(entries.where((entry) => entry['path'] == 'Android/.Trash'), isEmpty);
+  });
 
   test('recursive storage browser hides empty branches and retains PDF ancestors', () async {
     final tree = <String, List<Map<String, Object?>>>{
@@ -276,4 +366,108 @@ void main() {
     );
   });
 
+  test('recursive scan reports inaccessible nested folders instead of treating them as empty', () async {
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      final uri = call.arguments['uri'] as String;
+      if (uri == 'content://root') {
+        return [
+          {'name':'Protected','uri':'content://protected','isDirectory':true,'sizeBytes':0},
+          {'name':'Readable','uri':'content://readable','isDirectory':true,'sizeBytes':0},
+        ];
+      }
+      if (uri == 'content://protected') {
+        throw PlatformException(code:'PERMISSION_DENIED', message:'Access revoked');
+      }
+      if (uri == 'content://readable') {
+        return [{'name':'Open.PDF','uri':'content://pdf','isDirectory':false,'sizeBytes':64}];
+      }
+      return <Map<String,Object?>>[];
+    });
+    final rows = await StorageLocationService.instance.listStorageTreeRecursively(
+      'content://root', rootLabel: 'Phone Storage',
+    );
+    expect(rows.any((row) => row['isInaccessible'] == true), isTrue);
+    expect(rows.any((row) => row['isInaccessibleSummary'] == true), isTrue);
+    expect(rows.where((row) => row['isDirectory'] != true).map((row) => row['uri']),
+      contains('content://pdf'));
+    expect(rows.singleWhere((row) => row['path'] == 'Phone Storage/Protected')['isInaccessible'], isTrue);
+    expect(rows.singleWhere((row) => row['path'] == 'Phone Storage')['isIncomplete'], isTrue);
+  });
+
+  test('root permission failure is propagated and is not reported as empty storage', () async {
+    messenger.setMockMethodCallHandler(channel, (_) async {
+      throw PlatformException(code:'PERMISSION_DENIED', message:'Root access revoked');
+    });
+    await expectLater(
+      StorageLocationService.instance.listStorageTreeRecursively('content://root'),
+      throwsA(isA<PlatformException>()),
+    );
+  });
+
+  test('accessibleStorageRoots normalizes native roots and removes duplicate grants', () {
+    final roots = StorageLocationService.normalizeAccessibleStorageRoots([
+      {'uri':'file:///storage/emulated/0','name':'Internal storage'},
+      {'uri':'content://tree/removable','name':'Granted folder'},
+      {'uri':'content://tree/removable','name':'Duplicate grant'},
+      {'uri':'','name':'Invalid root'},
+      'invalid entry',
+    ]);
+    expect(roots, hasLength(2));
+    expect(roots.first['name'], 'Internal storage');
+    expect(roots.last['name'], 'Granted folder');
+  });
+
+  test('recursive scan hides empty folders and aggregates nested PDFs case-insensitively', () async {
+    final tree = <String, List<Map<String, Object?>>>{
+      'content://root':[
+        {'name':'Empty','uri':'content://empty','isDirectory':true,'sizeBytes':0},
+        {'name':'Policies','uri':'content://policies','isDirectory':true,'sizeBytes':0},
+      ],
+      'content://empty':[],
+      'content://policies':[
+        {'name':'A.pdf','uri':'content://a','isDirectory':false,'sizeBytes':100},
+        {'name':'Nested','uri':'content://nested','isDirectory':true,'sizeBytes':0},
+      ],
+      'content://nested':[
+        {'name':'B.PDF','uri':'content://b','isDirectory':false,'sizeBytes':250},
+      ],
+    };
+    messenger.setMockMethodCallHandler(channel,(call) async=>tree[call.arguments['uri']]??<Map<String,Object?>>[]);
+    final rows=await StorageLocationService.instance.listStorageTreeRecursively('content://root');
+    final folders=rows.where((r)=>r['isDirectory']==true).toList();
+    expect(folders.map((r)=>r['path']),containsAll(['Policies','Policies/Nested']));
+    expect(folders.map((r)=>r['path']),isNot(contains('Empty')));
+    final parent=folders.singleWhere((r)=>r['path']=='Policies');
+    final nested=folders.singleWhere((r)=>r['path']=='Policies/Nested');
+    expect(parent['pdfCount'],2); expect(parent['sizeBytes'],350);
+    expect(nested['pdfCount'],1); expect(nested['sizeBytes'],250);
+  });
+
+  test('recursive scan flags folder and root size totals when provider sizes are unavailable', () async {
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      final uri = call.arguments['uri'] as String;
+      if (uri == 'content://root') {
+        return [{'name':'Policies','uri':'content://policies','isDirectory':true}];
+      }
+      if (uri == 'content://policies') {
+        return [
+          {'name':'Known.pdf','uri':'content://known','isDirectory':false,'sizeBytes':120,'sizeKnown':true},
+          {'name':'Unknown.pdf','uri':'content://unknown','isDirectory':false,'sizeBytes':0,'sizeKnown':false},
+        ];
+      }
+      return <Map<String,Object?>>[];
+    });
+
+    final rows = await StorageLocationService.instance.listStorageTreeRecursively(
+      'content://root', rootLabel: 'Phone Storage',
+    );
+    final folder = rows.singleWhere((row) => row['path'] == 'Phone Storage/Policies');
+    final root = rows.singleWhere((row) => row['path'] == 'Phone Storage');
+    expect(folder['pdfCount'], 2);
+    expect(folder['sizeBytes'], 120);
+    expect(folder['unknownSizeCount'], 1);
+    expect(folder['isSizeIncomplete'], isTrue);
+    expect(root['unknownSizeCount'], 1);
+    expect(root['isSizeIncomplete'], isTrue);
+  });
 }

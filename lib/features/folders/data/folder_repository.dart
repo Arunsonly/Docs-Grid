@@ -167,7 +167,12 @@ class FolderRepository {
   /// physical storage tree. Returns null when the library is app-private.
   Future<String?> ensurePhysicalStorageUri(String folderId) async {
     final db = await _database.database;
-    final selectedRoot = await StorageLocationService.instance.selectedFolder();
+    final storage = StorageLocationService.instance;
+    final selectedRoot = await storage.selectedFolder();
+    final portableLocations = Platform.isAndroid
+        ? await storage.portableDataLocationsIfAvailable()
+        : const <String, String>{};
+    final defaultLibraryRoot = portableLocations['libraryUri'];
 
     final chain = <({String id, String name, String? parentId, String? uri})>[];
     final visited = <String>{};
@@ -192,9 +197,26 @@ class FolderRepository {
       currentId = row['parent_id'] as String?;
     }
 
-    String? parentUri = selectedRoot?['uri'];
+    String? parentUri = defaultLibraryRoot ?? selectedRoot?['uri'];
     for (final folder in chain.reversed) {
       var childUri = folder.uri;
+      // Older full restores stored absolute filesystem paths in this URI column.
+      // Convert those legacy values to file:// URIs before passing them to the
+      // Android channel, which dispatches file:// and SAF content:// separately.
+      if (Platform.isAndroid &&
+          childUri != null &&
+          childUri.startsWith('/')) {
+        childUri = Uri.file(childUri).toString();
+        await db.update(
+          'folders',
+          {
+            'storage_uri_or_relative_path': childUri,
+            'updated_at': DateTime.now().toUtc().toIso8601String(),
+          },
+          where: 'id = ? AND deleted_at IS NULL',
+          whereArgs: [folder.id],
+        );
+      }
       if (childUri == null && parentUri != null) {
         try {
           childUri = await StorageLocationService.instance.findChildUri(
@@ -246,9 +268,11 @@ class FolderRepository {
       throw StateError('A folder with this name already exists here.');
     }
     final selectedRoot = await storage.selectedFolder();
-    final String? selectedRootUri = selectedRoot == null
-        ? null
-        : selectedRoot['uri'];
+    final portableLocations = Platform.isAndroid
+        ? await storage.portableDataLocationsIfAvailable()
+        : const <String, String>{};
+    final String? selectedRootUri =
+        portableLocations['libraryUri'] ?? selectedRoot?['uri'];
     final String? parentStorageUri = parentId == null
         ? selectedRootUri
         : await ensurePhysicalStorageUri(parentId);

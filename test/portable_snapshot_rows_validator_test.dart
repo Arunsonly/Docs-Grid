@@ -37,6 +37,26 @@ void main() {
       expect(() => PortableSnapshotRowsValidator.validate(validSnapshot()), returnsNormally);
     });
 
+    test('allows selective reminder, history and OCR rows to reference existing documents', () {
+      final selected = validSnapshot();
+      selected['folders'] = [];
+      selected['categories'] = [];
+      selected['tags'] = [];
+      selected['documents'] = [];
+      selected['document_tags'] = [];
+      expect(
+        () => PortableSnapshotRowsValidator.validate(
+          selected,
+          allowedExternalDocumentIds: {'document'},
+        ),
+        returnsNormally,
+      );
+      expect(
+        () => PortableSnapshotRowsValidator.validate(selected),
+        throwsA(isA<FormatException>()),
+      );
+    });
+
     test('rejects dangling folder and join-table references', () {
       final folder = validSnapshot()..['documents']![0]['folder_id'] = 'missing';
       expect(() => PortableSnapshotRowsValidator.validate(folder), throwsA(isA<FormatException>()));

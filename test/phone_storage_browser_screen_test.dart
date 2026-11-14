@@ -3,20 +3,33 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  testWidgets('phone browser navigates only PDF-bearing folders and opens PDFs',
+  void setTestViewport(WidgetTester tester) {
+    tester.view.physicalSize = const Size(800, 600);
+    tester.view.devicePixelRatio = 1;
+    tester.view.padding = FakeViewPadding.zero;
+    tester.view.viewPadding = FakeViewPadding.zero;
+    tester.view.viewInsets = FakeViewPadding.zero;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+  }
+  
+    testWidgets('lists only folders with direct PDFs and opens that folder PDFs',
       (tester) async {
+    setTestViewport(tester);
     String? openedUri;
     String? openedName;
     final entries = <Map<String, Object?>>[
-      {'name': 'Insurance', 'uri': '', 'folderPath': '', 'path': 'Insurance', 'isDirectory': true},
-      {'name': 'Archive', 'uri': '', 'folderPath': 'Insurance', 'path': 'Insurance/Archive', 'isDirectory': true},
-      {'name': 'Policy.pdf', 'uri': 'content://policy', 'folderPath': 'Insurance/Archive', 'isDirectory': false},
-      {'name': 'Root.pdf', 'uri': 'content://root', 'folderPath': '', 'isDirectory': false},
+      {'name': 'Work Files', 'uri': '', 'folderPath': '', 'path': 'Work Files', 'isDirectory': true},
+      {'name': 'Archived Files', 'uri': '', 'folderPath': 'Work Files', 'path': 'Work Files/Archived Files', 'isDirectory': true},
+      {'name': 'Empty Folder', 'uri': '', 'folderPath': '', 'path': 'Empty Folder', 'isDirectory': true},
+      {'name': 'Policy.pdf', 'uri': 'content://policy', 'folderPath': '', 'path': 'Work Files', 'isDirectory': false, 'sizeBytes': 128},
+      {'name': 'Archived Filesd.pdf', 'uri': 'content://archive', 'folderPath': '', 'path': 'Work Files/Archived Files', 'isDirectory': false, 'sizeBytes': 256},
+      {'name': 'Root.pdf', 'uri': 'content://root', 'folderPath': '', 'path': '', 'isDirectory': false},
     ];
 
     await tester.pumpWidget(MaterialApp(
       home: PhoneStorageBrowserScreen(
-        rootName: 'Documents',
+        rootName: 'Internal Storage',
         entries: entries,
         onOpenPdf: (uri, name) async {
           openedUri = uri;
@@ -25,33 +38,139 @@ void main() {
       ),
     ));
 
-    expect(find.text('Insurance'), findsOneWidget);
-    expect(find.text('Root.pdf'), findsOneWidget);
-    expect(find.text('Archive'), findsNothing);
-
-    await tester.tap(find.text('Insurance'));
-    await tester.pumpAndSettle();
-    expect(find.text('Archive'), findsOneWidget);
+    expect(find.text('Work Files'), findsOneWidget);
+    expect(find.text('Archived Files'), findsOneWidget);
+    expect(find.text('Empty Folder'), findsNothing);
     expect(find.text('Policy.pdf'), findsNothing);
+    expect(find.text('Root.pdf'), findsNothing);
 
-    await tester.tap(find.text('Archive'));
+    await tester.tap(find.byKey(const ValueKey('phone-folder-Work Files')));
     await tester.pumpAndSettle();
     expect(find.text('Policy.pdf'), findsOneWidget);
+    expect(find.text('Archived Filesd.pdf'), findsNothing);
+
     await tester.tap(find.text('Policy.pdf'));
     await tester.pumpAndSettle();
-
     expect(openedUri, 'content://policy');
     expect(openedName, 'Policy.pdf');
+  });
 
-    // System Back first navigates to the parent folder, then to the root.
-    await tester.binding.handlePopRoute();
-    await tester.pumpAndSettle();
-    expect(find.text('Archive'), findsOneWidget);
-    expect(find.text('Policy.pdf'), findsNothing);
+  testWidgets('folder menu shows folder name and full path above its action',
+      (tester) async {
+    setTestViewport(tester);
+    await tester.pumpWidget(MaterialApp(
+      home: PhoneStorageBrowserScreen(
+        rootName: 'Internal Storage',
+        entries: const [
+          {'name': 'Policy.pdf', 'uri': 'content://policy', 'folderPath': '', 'path': 'Documents/Work Files', 'isDirectory': false},
+        ],
+        onOpenPdf: (_, __) async {},
+      ),
+    ));
 
-    await tester.binding.handlePopRoute();
+    await tester.tap(find.byTooltip('Folder details and actions'));
     await tester.pumpAndSettle();
-    expect(find.text('Insurance'), findsOneWidget);
-    expect(find.text('Root.pdf'), findsOneWidget);
+    expect(find.text('Work Files'), findsNWidgets(2));
+    expect(find.text('Internal Storage/Documents/Work Files'), findsOneWidget);
+    expect(find.text('Open folder'), findsOneWidget);
+  });
+
+  const actionEntries = <Map<String, Object?>>[
+    {
+      'name': 'Policy.pdf',
+      'uri': 'content://document/policy',
+      'folderPath': '',
+      'path': 'Personal Documents',
+      'isDirectory': false,
+      'sizeBytes': 128,
+    },
+  ];
+
+  Future<void> openActionBrowser(
+    WidgetTester tester, {
+    Future<bool> Function(String, String)? onMove,
+    Future<bool> Function(String, String)? onRename,
+    Future<bool> Function(String, String)? onTrash,
+    Future<void> Function(String, String)? onShare,
+  }) async {
+    setTestViewport(tester);
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: Builder(
+          builder: (context) => TextButton(
+            onPressed: () => Navigator.of(context).push<void>(
+              MaterialPageRoute(
+                builder: (_) => PhoneStorageBrowserScreen(
+                  rootName: 'Phone Storage',
+                  entries: actionEntries,
+                  onOpenPdf: (_, __) async {},
+                  onMovePdf: onMove,
+                  onRenamePdf: onRename,
+                  onSharePdf: onShare,
+                  onTrashPdf: onTrash,
+                ),
+              ),
+            ),
+            child: const Text('Open browser'),
+          ),
+        ),
+      ),
+    ));
+    await tester.tap(find.text('Open browser'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Personal Documents'), findsOneWidget);
+    await tester.tap(find.text('Personal Documents'));
+    await tester.pumpAndSettle();
+    expect(find.text('Policy.pdf'), findsOneWidget);
+  }
+
+  Future<void> selectAction(WidgetTester tester, String action) async {
+    await tester.tap(find.byType(PopupMenuButton<String>));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text(action).last);
+    await tester.pumpAndSettle();
+  }
+
+  testWidgets('successful Move closes the stale Phone Storage snapshot', (tester) async {
+    await openActionBrowser(tester, onMove: (_, __) async => true);
+    await selectAction(tester, 'Move to Grid');
+    expect(find.text('Open browser'), findsOneWidget);
+    expect(find.text('Phone Storage'), findsNothing);
+  });
+
+  testWidgets('duplicate Move keeps the selected folder browser open', (tester) async {
+    await openActionBrowser(tester, onMove: (_, __) async => false);
+    await selectAction(tester, 'Move to Grid');
+    expect(find.text('Personal Documents'), findsOneWidget);
+    expect(find.text('Policy.pdf'), findsOneWidget);
+  });
+
+  testWidgets('successful Rename closes the stale Phone Storage snapshot', (tester) async {
+    await openActionBrowser(tester, onRename: (_, __) async => true);
+    await selectAction(tester, 'Rename');
+    expect(find.text('Open browser'), findsOneWidget);
+    expect(find.text('Phone Storage'), findsNothing);
+  });
+
+  testWidgets('failed Rename keeps the selected folder browser open', (tester) async {
+    await openActionBrowser(tester, onRename: (_, __) async => false);
+    await selectAction(tester, 'Rename');
+    expect(find.text('Personal Documents'), findsOneWidget);
+    expect(find.text('Policy.pdf'), findsOneWidget);
+  });
+
+  testWidgets('successful Recycle Bin move closes the stale browser', (tester) async {
+    await openActionBrowser(tester, onTrash: (_, __) async => true);
+    await selectAction(tester, 'Move to Recycle Bin');
+    expect(find.text('Open browser'), findsOneWidget);
+    expect(find.text('Phone Storage'), findsNothing);
+  });
+
+  testWidgets('Share does not close the selected folder browser', (tester) async {
+    await openActionBrowser(tester, onShare: (_, __) async {});
+    await selectAction(tester, 'Share');
+    expect(find.text('Personal Documents'), findsOneWidget);
+    expect(find.text('Policy.pdf'), findsOneWidget);
   });
 }

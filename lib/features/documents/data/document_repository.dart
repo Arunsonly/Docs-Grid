@@ -27,6 +27,7 @@ class DocumentRecord {
     this.tagNames = const [],
     this.folderId,
     this.lastOpenedAt,
+    this.source,
   });
 
   final String id;
@@ -40,6 +41,7 @@ class DocumentRecord {
   final List<String> tagNames;
   final String? folderId;
   final DateTime? lastOpenedAt;
+  final String? source;
 
   factory DocumentRecord.fromMap(Map<String, Object?> row) {
     Map<String, dynamic> metadata = <String, dynamic>{};
@@ -71,6 +73,7 @@ class DocumentRecord {
       lastOpenedAt: row['last_opened_at'] is String
           ? DateTime.tryParse(row['last_opened_at'] as String)
           : null,
+      source: row['source'] as String?,
     );
   }
 }
@@ -112,11 +115,12 @@ class DocumentPage {
 }
 
 class ImportSummary {
-  const ImportSummary({required this.added, required this.duplicates, required this.failed, this.skipped = 0});
+  const ImportSummary({required this.added, required this.duplicates, required this.failed, this.skipped = 0, this.errors = const []});
   final int added;
   final int duplicates;
   final int failed;
   final int skipped;
+  final List<String> errors;
 }
 
 class ImportDecision {
@@ -141,6 +145,32 @@ String escapeLikeWildcards(String value) {
       .replaceAll('_', r'\_');
 }
 
+class PdfImportDestination {
+  const PdfImportDestination(this.uri);
+
+  final String? uri;
+
+  bool get usesPrivateStorage => uri == null;
+}
+
+/// Resolves the physical destination for a PDF import.
+///
+/// Android's portable DocsGrid Documents folder takes precedence when it is
+/// available. If it is unavailable, an explicitly selected storage folder
+/// remains a valid destination. App-private storage is used only when neither
+/// shared destination exists.
+PdfImportDestination resolvePdfImportDestination({
+  required bool isAndroid,
+  String? portableDocumentsUri,
+  String? selectedFolderUri,
+  String? targetFolderUri,
+}) {
+  final rootUri = isAndroid
+      ? (portableDocumentsUri ?? selectedFolderUri)
+      : selectedFolderUri;
+  return PdfImportDestination(targetFolderUri ?? rootUri);
+}
+
 class DocumentRepository {
   DocumentRepository({AppDatabase? database})
       : _database = database ?? AppDatabase.instance;
@@ -149,7 +179,6 @@ class DocumentRepository {
   static const _uuid = Uuid();
   DocumentLibrarySummary? _summaryCache;
   int? _summaryCacheRevision;
-  bool? _nameFtsAvailable;
 
   /// Returns compact dashboard metrics without materializing document rows.
   Future<DocumentLibrarySummary> dashboardSummary() async {
@@ -182,6 +211,27 @@ class DocumentRepository {
     return summary;
   }
 
+  /// Returns the latest document activity: opened PDFs use last_opened_at;
+  /// never-opened PDFs use created_at so recently added files also appear.
+  Future<List<DocumentRecord>> recentActivity({int limit = 20}) async {
+    if (limit < 1 || limit > 100) {
+      throw ArgumentError.value(limit, 'limit', 'Must be between 1 and 100.');
+    }
+    final db = await _database.database;
+    final rows = await db.rawQuery('''
+      SELECT d.*, c.name AS category_name,
+        (SELECT GROUP_CONCAT(t.name, ', ') FROM document_tags dt
+          INNER JOIN tags t ON t.id = dt.tag_id WHERE dt.document_id = d.id) AS tag_names
+      FROM documents d
+      LEFT JOIN categories c ON c.id = d.category_id
+      WHERE d.deleted_at IS NULL
+      ORDER BY COALESCE(d.last_opened_at, d.created_at) DESC,
+               d.name COLLATE NOCASE ASC, d.id ASC
+      LIMIT ?
+    ''', [limit]);
+    return rows.map(DocumentRecord.fromMap).toList(growable: false);
+  }
+
   /// Fetches a bounded keyset page in the same order as the library screen.
   /// The cursor includes a unique id tie-breaker so equal names/timestamps
   /// cannot cause a row to repeat or disappear between pages.
@@ -202,19 +252,22 @@ class DocumentRepository {
     if (favoritesOnly) where.add('d.is_favorite = 1');
     final normalizedQuery = query.trim();
     if (normalizedQuery.isNotEmpty) {
-      _nameFtsAvailable ??= (await db.rawQuery(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
-        ['documents_name_fts'],
-      )).isNotEmpty;
-      if (_nameFtsAvailable == true && normalizedQuery.runes.length >= 3) {
-        final phrase = normalizedQuery.replaceAll('"', '""');
-        where.add('d.rowid IN (SELECT rowid FROM documents_name_fts WHERE documents_name_fts MATCH ?)');
-        args.add('"$phrase"');
-      }
-      // Keep LIKE as the final predicate to preserve exact legacy substring
-      // matching and wildcard escaping on SQLite builds without FTS5.
-      where.add("d.name LIKE ? ESCAPE '\\'");
-      args.add('%${escapeLikeWildcards(normalizedQuery)}%');
+      // Search metadata and folder labels alongside filenames. The tag EXISTS
+      // predicate avoids duplicate document rows when a PDF has many tags.
+      final pattern = '%${escapeLikeWildcards(normalizedQuery)}%';
+      where.add("""
+        (
+          d.name LIKE ? ESCAPE '\\'
+          OR c.name LIKE ? ESCAPE '\\'
+          OR f.name LIKE ? ESCAPE '\\'
+          OR EXISTS (
+            SELECT 1 FROM document_tags dt
+            INNER JOIN tags t ON t.id = dt.tag_id
+            WHERE dt.document_id = d.id AND t.name LIKE ? ESCAPE '\\'
+          )
+        )
+      """);
+      args.addAll([pattern, pattern, pattern, pattern]);
     }
     if (cursor != null) {
       where.add('''
@@ -243,6 +296,7 @@ class DocumentRepository {
           INNER JOIN tags t ON t.id = dt.tag_id WHERE dt.document_id = d.id) AS tag_names
       FROM documents d
       LEFT JOIN categories c ON c.id = d.category_id
+      LEFT JOIN folders f ON f.id = d.folder_id
       WHERE ${where.join(' AND ')}
       ORDER BY COALESCE(d.last_opened_at, '') DESC,
                d.name COLLATE NOCASE ASC, d.id ASC
@@ -267,6 +321,28 @@ class DocumentRepository {
 
   Future<List<DocumentRecord>> list({String query = '', bool favoritesOnly = false, bool recentOnly = false}) async {
     final db = await _database.database;
+    final normalizedQuery = query.trim();
+    final where = <String>[
+      'd.deleted_at IS NULL',
+      if (recentOnly) 'd.last_opened_at IS NOT NULL',
+    ];
+    final args = <Object?>[];
+    if (normalizedQuery.isNotEmpty) {
+      final pattern = '%${escapeLikeWildcards(normalizedQuery)}%';
+      where.add("""
+        (
+          d.name LIKE ? ESCAPE '\\'
+          OR c.name LIKE ? ESCAPE '\\'
+          OR f.name LIKE ? ESCAPE '\\'
+          OR EXISTS (
+            SELECT 1 FROM document_tags dt
+            INNER JOIN tags t ON t.id = dt.tag_id
+            WHERE dt.document_id = d.id AND t.name LIKE ? ESCAPE '\\'
+          )
+        )
+      """);
+      args.addAll([pattern, pattern, pattern, pattern]);
+    }
     final rows = await db.rawQuery(
       '''
       SELECT d.*, c.name AS category_name,
@@ -274,12 +350,11 @@ class DocumentRepository {
           INNER JOIN tags t ON t.id = dt.tag_id WHERE dt.document_id = d.id) AS tag_names
       FROM documents d
       LEFT JOIN categories c ON c.id = d.category_id
-      WHERE d.deleted_at IS NULL
-        AND (? = 0 OR d.last_opened_at IS NOT NULL)
-        AND d.name LIKE ? ESCAPE '\\'
+      LEFT JOIN folders f ON f.id = d.folder_id
+      WHERE ${where.join(' AND ')}
       ORDER BY d.last_opened_at DESC, d.name COLLATE NOCASE ASC
       ''',
-      [recentOnly ? 1 : 0, '%${escapeLikeWildcards(query.trim())}%'],
+      args,
     );
     // Avoid SQLite JSON1 dependency: several Android SQLite builds do not
     // expose json_extract(). Favorite metadata is decoded in Dart instead.
@@ -339,15 +414,18 @@ class DocumentRepository {
     return directory;
   }
 
-  Future<void> moveToFolder(DocumentRecord document, String? folderId) async {
-    if (document.folderId == folderId) return;
+  Future<void> moveToFolder(DocumentRecord document, String? folderId, {String? destinationUri}) async {
+    if (document.folderId == folderId && destinationUri == null) return;
     final db = await _database.database;
     final storage = StorageLocationService.instance;
+    final portableLocations = Platform.isAndroid
+        ? await storage.portableDataLocationsIfAvailable()
+        : const <String, String>{};
+    final selectedRoot = await storage.selectedFolder();
 
-    String? destinationUri;
-    if (folderId == null) {
-      destinationUri = (await storage.selectedFolder())?['uri'];
-    } else {
+    if (destinationUri == null && folderId == null) {
+      destinationUri = portableLocations['documentsUri'] ?? selectedRoot?['uri'];
+    } else if (destinationUri == null) {
       final rows = await db.query(
         'folders',
         columns: ['storage_uri_or_relative_path'],
@@ -356,8 +434,12 @@ class DocumentRepository {
         limit: 1,
       );
       if (rows.isEmpty) throw StateError('Destination folder no longer exists.');
+      final targetFolderId = folderId;
+      if (targetFolderId == null) {
+        throw StateError('A destination folder is required.');
+      }
       destinationUri = rows.first['storage_uri_or_relative_path'] as String?;
-      destinationUri ??= await FolderRepository().ensurePhysicalStorageUri(folderId);
+      destinationUri ??= await FolderRepository().ensurePhysicalStorageUri(targetFolderId);
     }
 
     final sourceUri = document.storagePath;
@@ -507,13 +589,17 @@ class DocumentRepository {
   }) async {
     final storage = StorageLocationService.instance;
     final selected = await storage.selectedFolder();
-    if (selected == null) {
+    final portableLocations = Platform.isAndroid
+        ? await storage.portableDataLocationsIfAvailable()
+        : const <String, String>{};
+    final rootUri = portableLocations['documentsUri'] ?? selected?['uri'];
+    final folderRootUri = portableLocations['libraryUri'] ?? selected?['uri'];
+    if (rootUri == null || folderRootUri == null) {
       throw StateError('Choose a storage folder before starting migration.');
     }
-    final rootUri = selected['uri']!;
     final db = await _database.database;
     final folderUris = <String, String>{};
-    final pendingFolders = <(String?, String)>[(null, rootUri)];
+    final pendingFolders = <(String?, String)>[(null, folderRootUri)];
     final visitedFolderIds = <String>{};
 
     // Walk the hierarchy iteratively so deeply nested user folders cannot
@@ -726,10 +812,14 @@ class DocumentRepository {
       }
 
       final storage = StorageLocationService.instance;
+      final portableLocations = Platform.isAndroid
+          ? await storage.portableDataLocationsIfAvailable()
+          : const <String, String>{};
+      final selectedRoot = await storage.selectedFolder();
       final folderId = rows.first['folder_id'] as String?;
       String? destinationUri;
       if (folderId == null) {
-        destinationUri = (await storage.selectedFolder())?['uri'];
+        destinationUri = portableLocations['documentsUri'] ?? selectedRoot?['uri'];
       } else {
         final folderRows = await db.query(
           'folders',
@@ -824,6 +914,80 @@ class DocumentRepository {
     }
   }
 
+  /// Registers an already-portable PDF in the database without copying it.
+  /// Used after reinstall when shared media survived but the private DB did not.
+  Future<bool> importExistingSharedPdf({
+    required String storageUri,
+    required String displayName,
+    String? targetFolderId,
+  }) async {
+    if (!storageUri.startsWith('file://') && !storageUri.startsWith('content://')) {
+      throw ArgumentError('Recovery requires a shared-storage file URI.');
+    }
+    final storage = StorageLocationService.instance;
+    final temp = await getTemporaryDirectory();
+    final staged = File(p.join(temp.path, 'recover_${_uuid.v4()}.pdf'));
+    try {
+      await storage.copyPdfToPath(
+        sourceUri: storageUri,
+        destinationPath: staged.path,
+      );
+      final header = await staged.openRead(0, 5)
+          .fold<List<int>>(<int>[], (bytes, chunk) => bytes..addAll(chunk));
+      if (header.length < 5 || String.fromCharCodes(header) != '%PDF-') {
+        throw StateError('Recovered item is not a valid PDF.');
+      }
+      final digest = (await sha256.bind(staged.openRead()).first).toString();
+      final size = await staged.length();
+      final db = await _database.database;
+      final duplicates = await db.query(
+        'documents',
+        columns: ['id'],
+        where: 'sha256 = ? AND deleted_at IS NULL',
+        whereArgs: [digest],
+        limit: 1,
+      );
+      if (duplicates.isNotEmpty) return false;
+      if (targetFolderId != null) {
+        final folders = await db.query(
+          'folders',
+          columns: ['id'],
+          where: 'id = ? AND deleted_at IS NULL',
+          whereArgs: [targetFolderId],
+          limit: 1,
+        );
+        if (folders.isEmpty) throw StateError('Recovery folder could not be created.');
+      }
+      final id = _uuid.v4();
+      final now = DateTime.now().toUtc().toIso8601String();
+      await db.transaction((txn) async {
+        await txn.insert('documents', {
+          'id': id,
+          'name': p.basenameWithoutExtension(displayName),
+          'original_name': displayName,
+          'storage_uri': storageUri,
+          'relative_path': null,
+          'mime_type': 'application/pdf',
+          'size_bytes': size,
+          'sha256': digest,
+          'folder_id': targetFolderId,
+          'extracted_text_status': 'pending',
+          'created_at': now,
+          'updated_at': now,
+          'metadata_json': '{}',
+          'source': 'reinstall_recovery',
+        });
+        await _recordHistory(txn, id, 'recovered_after_reinstall', {
+          'storage_uri': storageUri,
+          'folder_id': targetFolderId,
+        });
+      });
+      return true;
+    } finally {
+      if (await staged.exists()) await staged.delete();
+    }
+  }
+
   Future<ImportSummary> importScannedPdf(File source, {String? displayName, String? targetFolderUri, String? targetFolderId, String sourceType = 'scanner'}) async {
     if (!await source.exists()) throw StateError('Scanned PDF is not available.');
     final header = await source.openRead(0, 5).fold<List<int>>(<int>[], (a, b) => a..addAll(b));
@@ -839,6 +1003,9 @@ class DocumentRepository {
 
     final storage = StorageLocationService.instance;
     final selected = await storage.selectedFolder();
+    final portableLocations = Platform.isAndroid
+        ? await storage.portableDataLocationsIfAvailable()
+        : const <String, String>{};
     final requestedName = displayName?.trim();
     final safeName = _safePdfName(requestedName == null || requestedName.isEmpty
         ? p.basename(source.path)
@@ -849,7 +1016,9 @@ class DocumentRepository {
     final folderUri = targetFolderId == null
         ? null
         : await FolderRepository().ensurePhysicalStorageUri(targetFolderId);
-    final destinationUri = targetFolderUri ?? folderUri ?? selected?['uri'];
+    final destinationUri = targetFolderUri ?? folderUri ??
+        (Platform.isAndroid ? portableLocations['documentsUri'] : selected?['uri']) ??
+        selected?['uri'];
     if (destinationUri != null) {
       uri = await storage.copyPdf(
         sourceUri: Uri.file(source.path).toString(),
@@ -930,6 +1099,91 @@ class DocumentRepository {
     return const ImportSummary(added: 1, duplicates: 0, failed: 0);
   }
 
+  /// Moves a PDF discovered in shared storage into the managed Grid library.
+  /// The source is deleted only after the copied PDF has been verified and its
+  /// database record has committed successfully.
+  Future<ImportSummary> moveExternalPdfToGrid({
+    required String sourceUri,
+    required String displayName,
+    String? targetFolderId,
+  }) async {
+    final storage = StorageLocationService.instance;
+    final tempDirectory = await getTemporaryDirectory();
+    final staged = File(p.join(
+      tempDirectory.path,
+      'docsgrid_move_${DateTime.now().microsecondsSinceEpoch}.pdf',
+    ));
+    try {
+      await storage.copyPdfToPath(
+        sourceUri: sourceUri,
+        destinationPath: staged.path,
+      );
+      final imported = await importScannedPdf(
+        staged,
+        displayName: displayName,
+        targetFolderId: targetFolderId,
+        sourceType: 'phone_storage_move',
+      );
+      if (imported.added == 0) {
+        // A duplicate already exists in Grid. Keep the Phone original intact.
+        return imported;
+      }
+      // importScannedPdf verifies SHA-256 and commits the Grid record before
+      // this destructive step. If deletion fails, both copies remain safe.
+      await storage.deletePdf(sourceUri);
+      return imported;
+    } finally {
+      try {
+        if (await staged.exists()) await staged.delete();
+      } catch (_) {}
+    }
+  }
+
+  /// Archives an external PDF in the app's Recycle Bin before deleting its
+  /// original. Existing Grid duplicates are deliberately left untouched.
+  Future<bool> moveExternalPdfToTrash({
+    required String sourceUri,
+    required String displayName,
+  }) async {
+    final storage = StorageLocationService.instance;
+    final temp = await getTemporaryDirectory();
+    final staged = File(p.join(
+      temp.path,
+      'docsgrid_trash_${DateTime.now().microsecondsSinceEpoch}.pdf',
+    ));
+    try {
+      await storage.copyPdfToPath(
+        sourceUri: sourceUri,
+        destinationPath: staged.path,
+      );
+      final imported = await importScannedPdf(
+        staged,
+        displayName: displayName,
+        sourceType: 'phone_storage_recycle_bin',
+      );
+      if (imported.added != 1) return false;
+      final digest = (await sha256.bind(staged.openRead()).first).toString();
+      final db = await _database.database;
+      final rows = await db.query(
+        'documents',
+        where: 'sha256 = ? AND deleted_at IS NULL',
+        whereArgs: [digest],
+        limit: 1,
+      );
+      if (rows.isEmpty) {
+        throw StateError('The archived PDF record could not be found; original kept.');
+      }
+      await moveToTrash(DocumentRecord.fromMap(rows.first));
+      // Delete only after a verified Grid copy is safely present in Recycle Bin.
+      await storage.deletePdf(sourceUri);
+      return true;
+    } finally {
+      try {
+        if (await staged.exists()) await staged.delete();
+      } catch (_) {}
+    }
+  }
+
   Future<ImportSummary> importPdfs({
     Future<ImportDecision?> Function(String suggestedName, String? suggestedCategoryId, List<ImportCategoryOption> categories)? review,
     String? targetFolderId,
@@ -944,11 +1198,15 @@ class DocumentRepository {
 
     final storage = StorageLocationService.instance;
     final selectedFolder = await storage.selectedFolder();
+    final portableLocations = Platform.isAndroid
+        ? await storage.portableDataLocationsIfAvailable()
+        : const <String, String>{};
     final db = await _database.database;
     var added = 0;
     var duplicates = 0;
     var failed = 0;
     var skipped = 0;
+    final errors = <String>[];
     final categoryRows = await db.query('categories', columns: ['id', 'name'], orderBy: 'name COLLATE NOCASE');
     final categoryOptions = categoryRows.map((row) => ImportCategoryOption(
       id: row['id'] as String,
@@ -1008,12 +1266,21 @@ class DocumentRepository {
         final effectiveTargetFolderId = review != null && pickedFiles.length == 1
             ? decision.targetFolderId
             : targetFolderId;
-        final destinationFolderUri = selectedFolder == null
+        final targetFolderUri = effectiveTargetFolderId == null
             ? null
-            : effectiveTargetFolderId == null
-                ? selectedFolder['uri']
-                : await FolderRepository().ensurePhysicalStorageUri(effectiveTargetFolderId);
-        final library = selectedFolder == null
+            : await FolderRepository().ensurePhysicalStorageUri(effectiveTargetFolderId);
+        final destination = resolvePdfImportDestination(
+          isAndroid: Platform.isAndroid,
+          portableDocumentsUri: portableLocations['documentsUri'],
+          selectedFolderUri: selectedFolder?['uri'],
+          targetFolderUri: targetFolderUri,
+        );
+        final destinationFolderUri = destination.uri;
+        // Base the private-storage fallback on the resolved destination, not
+        // merely on whether a folder preference exists. A selected SAF folder
+        // can be the only available Android destination when portable storage
+        // is unavailable (for example, without MANAGE_EXTERNAL_STORAGE).
+        final library = destination.usesPrivateStorage
             ? await _privateFolderFor(effectiveTargetFolderId)
             : null;
         final safeName = _safePdfName(decision.name);
@@ -1098,6 +1365,7 @@ class DocumentRepository {
           duplicates++;
         } else {
           failed++;
+          errors.add('${picked.name}: $error');
         }
       } finally {
         if (stagedSource != null) {
@@ -1109,7 +1377,7 @@ class DocumentRepository {
         }
       }
     }
-    return ImportSummary(added: added, duplicates: duplicates, failed: failed, skipped: skipped);
+    return ImportSummary(added: added, duplicates: duplicates, failed: failed, skipped: skipped, errors: errors);
   }
 
   String? _suggestCategoryId(String fileName, List<ImportCategoryOption> categories) {
@@ -1257,6 +1525,113 @@ class DocumentRepository {
     ''', [id]);
     if (rows.isEmpty) return null;
     return DocumentRecord.fromMap(rows.first);
+  }
+
+  Future<List<DocumentRecord>> listAllStarred() async {
+    final db = await _database.database;
+    final rows = await db.rawQuery('''
+      SELECT d.*, c.name AS category_name,
+        (SELECT GROUP_CONCAT(t.name, ', ') FROM document_tags dt
+          INNER JOIN tags t ON t.id = dt.tag_id WHERE dt.document_id = d.id) AS tag_names
+      FROM documents d
+      LEFT JOIN categories c ON c.id = d.category_id
+      WHERE d.deleted_at IS NULL AND d.is_favorite = 1
+      ORDER BY COALESCE(d.last_opened_at, d.created_at) DESC,
+               d.name COLLATE NOCASE ASC, d.id ASC
+    ''');
+    return rows.map(DocumentRecord.fromMap).toList(growable: false);
+  }
+
+  Future<void> clearOpenedHistory() async {
+    final db = await _database.database;
+    await db.transaction((txn) async {
+      final rows = await txn.query(
+        'documents',
+        columns: ['id'],
+        where: 'deleted_at IS NULL AND last_opened_at IS NOT NULL',
+      );
+      await txn.update(
+        'documents',
+        {'last_opened_at': null},
+        where: 'deleted_at IS NULL',
+      );
+      for (final row in rows) {
+        await _recordHistory(txn, row['id'] as String, 'recent_cleared', {});
+      }
+    });
+  }
+
+  Future<DocumentRecord> copyDocument(
+    DocumentRecord document, {String? targetFolderId}
+  ) async {
+    final sourceUri = document.storagePath;
+    final storage = StorageLocationService.instance;
+    final baseName = document.name;
+    final db = await _database.database;
+    final newId = _uuid.v4();
+    final newName = '$baseName copy';
+    String newUri;
+    if (sourceUri.startsWith('content://') || sourceUri.startsWith('file://')) {
+      final parent = targetFolderId == null
+          ? (Platform.isAndroid
+              ? (await storage.portableDataLocationsIfAvailable())['documentsUri']
+              : (await storage.selectedFolder())?['uri'])
+          : await FolderRepository().ensurePhysicalStorageUri(targetFolderId);
+      if (parent == null) throw StateError('No writable destination is available for this PDF.');
+      newUri = await storage.copyPdf(
+        sourceUri: sourceUri,
+        parentUri: parent,
+        name: '$newName.pdf',
+      );
+    } else {
+      final source = File(sourceUri);
+      if (!await source.exists()) throw StateError('Original PDF is missing.');
+      final folder = await _privateFolderFor(targetFolderId);
+      final target = await _uniqueFile(folder, '$newName.pdf');
+      await source.copy(target.path);
+      newUri = target.path;
+    }
+    final digest = newUri.startsWith('content://') || newUri.startsWith('file://')
+        ? await storage.sha256Pdf(newUri)
+        : (await sha256.bind(File(newUri).openRead()).first).toString();
+    final now = DateTime.now().toUtc().toIso8601String();
+    try {
+      await db.insert('documents', {
+        'id': newId,
+        'name': newName,
+        'original_name': '$newName.pdf',
+        'storage_uri': newUri,
+        'relative_path': null,
+        'mime_type': 'application/pdf',
+        'size_bytes': document.sizeBytes,
+        'sha256': digest,
+        'folder_id': targetFolderId,
+        'category_id': document.categoryId,
+        'extracted_text_status': 'pending',
+        'created_at': now,
+        'updated_at': now,
+        'last_opened_at': null,
+        'deleted_at': null,
+        'source': 'copy',
+        'metadata_json': jsonEncode({'favorite': false}),
+        'is_favorite': 0,
+      });
+    } catch (_) {
+      try {
+        if (newUri.startsWith('content://') || newUri.startsWith('file://')) {
+          await storage.deletePdf(newUri);
+        } else {
+          await File(newUri).delete();
+        }
+      } catch (_) {}
+      rethrow;
+    }
+    final created = await getById(newId);
+    if (created == null) throw StateError('Copied PDF was not saved in the library.');
+    await db.transaction((txn) async {
+      await _recordHistory(txn, newId, 'copied', {'from': document.id});
+    });
+    return created;
   }
 
   Future<void> markOpened(DocumentRecord document) async {

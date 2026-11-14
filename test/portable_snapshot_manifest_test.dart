@@ -8,7 +8,7 @@ void main() {
     'format': 'DocsGridPortableData',
     'formatVersion': 1,
     'snapshotId': 'snapshot-test-1',
-    'databaseSchemaVersion': 3,
+    'databaseSchemaVersion': 7,
     'tables': {'documents': 1, 'folders': 0, 'tags': 2},
     'files': [
       {'path': 'documents.json', 'sizeBytes': 2, 'sha256': List.filled(64, 'a').join(), 'recordCount': 1},
@@ -21,7 +21,7 @@ void main() {
     final manifest = PortableSnapshotManifest.parse(jsonEncode(validManifest()));
 
     expect(manifest.snapshotId, 'snapshot-test-1');
-    expect(manifest.databaseSchemaVersion, 3);
+    expect(manifest.databaseSchemaVersion, 7);
     expect(manifest.tables['tags'], 2);
     expect(manifest.files.map((file) => file.path),
       ['documents.json', 'folders.json', 'tags.json']);
@@ -73,6 +73,23 @@ void main() {
       throwsFormatException);
   });
 
+  test('accepts the current database schema version', () {
+    final value = validManifest()..['databaseSchemaVersion'] = 9;
+    final manifest = PortableSnapshotManifest.parse(jsonEncode(value));
+    expect(manifest.databaseSchemaVersion, 9);
+  });
+
+  test('rejects a schema version newer than the app supports', () {
+    final value = validManifest()..['databaseSchemaVersion'] = 10;
+    expect(() => PortableSnapshotManifest.parse(jsonEncode(value)), throwsFormatException);
+  });
+
+  test('durable snapshot tables exclude derived indexes and caches', () {
+    expect(PortableSnapshotManifest.supportedTableNames,
+      containsAll(['folders', 'documents', 'document_text_index', 'smart_collections', 'schema_migrations']));
+    expect(PortableSnapshotManifest.supportedTableNames, isNot(contains('documents_name_fts')));
+    expect(PortableSnapshotManifest.supportedTableNames, isNot(contains('document_summary_state')));
+  });
 
   group('PortableSnapshotManifest.validateFolderRows', () {
     List<Map<String, Object?>> safeFolders() => [

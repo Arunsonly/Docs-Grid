@@ -8,6 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'features/documents/presentation/documents_screen.dart';
 import 'features/documents/data/document_repository.dart';
+import 'features/documents/presentation/smart_collections_screen.dart';
 import 'features/categories/presentation/categories_screen.dart';
 import 'features/history/presentation/history_screen.dart';
 import 'features/reminders/presentation/reminders_screen.dart';
@@ -17,7 +18,6 @@ import 'features/folders/presentation/folders_screen.dart';
 import 'features/folders/data/folder_repository.dart';
 import 'core/storage/storage_location_service.dart';
 import 'features/tools/document_tools_screen.dart' show DocumentToolsScreen;
-import 'features/tools/document_scanner_screen.dart';
 
 final GlobalKey<NavigatorState> docsGridNavigatorKey = GlobalKey<NavigatorState>();
 
@@ -95,7 +95,7 @@ class DocsGridHome extends StatefulWidget {
 }
 
 class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver {
-  int _selectedIndex = 0;
+  int _selectedIndex = 1;
   bool _checkingIncomingShare = false;
   static const MethodChannel _storageChannel = MethodChannel('docsgrid/storage');
 
@@ -107,9 +107,13 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
       unawaited(_openReminderDocument(documentId));
     };
     WidgetsBinding.instance.addPostFrameCallback((_) async {
-      await _refreshReminderSchedules();
+      // Notification reconciliation is independent of the first frame. Keep
+      // it off the critical startup path while preserving pending tap handling.
+      unawaited(_refreshReminderSchedules());
       final pendingDocumentId = ReminderNotifications.takePendingDocumentId();
       if (pendingDocumentId != null) await _openReminderDocument(pendingDocumentId);
+      // Keep incoming share and first-run recovery sequential: both may show
+      // dialogs, so running them concurrently would lose or stack user prompts.
       await _consumeSharedPdfs();
       await _offerRestoreOnFirstLaunch();
     });
@@ -180,22 +184,89 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
     if (prefs.getBool('docsgrid_restore_prompt_shown') == true) return;
     await prefs.setBool('docsgrid_restore_prompt_shown', true);
     if (!mounted) return;
-    final restore = await showDialog<bool>(
+    if (Platform.isAndroid) {
+      try {
+        if (await StorageLocationService.instance.hasAllFilesAccess()) {
+          await StorageLocationService.instance.portableDataLocations();
+        }
+      } catch (_) {
+        // Fresh setup remains available; recovery surfaces permission failures.
+      }
+    }
+
+    if (!mounted) return;
+    final restoreChoice = await showDialog<String>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Recover your DocsGrid data?'),
-        content: const Text('DocsGrid will first look for your existing Android/media/DocsGrid recovery folder and restore PDFs, folders, categories, tags, reminders, activity and settings. You will not need to select the folder manually.'),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Later')),
-          FilledButton.icon(onPressed: () => Navigator.pop(ctx, true), icon: const Icon(Icons.restore), label: const Text('Find and Recover')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, 'later'),
+            child: const Text('Later'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, 'fresh'),
+            child: const Text('Start fresh'),
+          ),
+          TextButton.icon(
+            onPressed: () => Navigator.pop(ctx, 'pdfs'),
+            icon: const Icon(Icons.picture_as_pdf_outlined),
+            label: const Text('Recover existing PDFs'),
+          ),
+          FilledButton.icon(
+            onPressed: () => Navigator.pop(ctx, 'recover'),
+            icon: const Icon(Icons.restore),
+            label: const Text('Restore previous data'),
+          ),
         ],
       ),
     );
-    if (restore != true || !mounted) return;
-    await Navigator.of(context).push(MaterialPageRoute(builder: (_) => Scaffold(
-      appBar: AppBar(title: const Text('Recover DocsGrid')),
-      body: const DocumentToolsScreen(quickAction: 'restore_portable'),
-    )));
+    if (!mounted || (restoreChoice != 'recover' && restoreChoice != 'pdfs')) return;
+    if (restoreChoice == 'pdfs') {
+      await Navigator.of(context).push(MaterialPageRoute(builder: (_) => Scaffold(
+        appBar: AppBar(title: const Text('Recover existing PDFs')),
+        body: const DocumentToolsScreen(quickAction: 'recover_loose_pdfs'),
+      )));
+      return;
+    }
+
+    var hasPortableBackups = false;
+    if (Platform.isAndroid) {
+      try {
+        if (await StorageLocationService.instance.hasAllFilesAccess()) {
+          final locations = await StorageLocationService.instance.portableDataLocations();
+          final backupUri = locations['backupsUri'];
+          if (backupUri != null && backupUri.startsWith('file://')) {
+            final directory = Directory(Uri.parse(backupUri).toFilePath());
+            hasPortableBackups = await directory.exists() &&
+                await directory.list(followLinks: false).any(
+                  (item) => item is File && item.path.toLowerCase().endsWith('.zip'),
+                );
+          }
+        }
+      } catch (_) {
+        // The recovery route will show the actionable permission/storage error.
+      }
+    }
+
+    if (!mounted) return;
+    await Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => Stack(
+        fit: StackFit.expand,
+        children: [
+          DocsGridHome(
+            darkMode: widget.darkMode,
+            onDarkModeChanged: widget.onDarkModeChanged,
+          ),
+          Offstage(
+            offstage: true,
+            child: DocumentToolsScreen(
+              quickAction: hasPortableBackups ? 'restore_latest_backup' : 'restore_portable',
+            ),
+          ),
+        ],
+      ),
+    ));
   }
 
   Future<void> _consumeSharedPdfs() async {
@@ -298,73 +369,49 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
     }
   }
 
-  Future<void> _showQuickActions() async {
-    final action = await showModalBottomSheet<String>(
-      context: context,
-      showDragHandle: true,
-      builder: (sheetContext) => SafeArea(
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          const ListTile(title: Text('Quick actions'), subtitle: Text('Scan, create PDFs, search document text and set reminders.')),
-          ListTile(leading: const Icon(Icons.document_scanner_outlined), title: const Text('Scan using camera'), onTap: () => Navigator.pop(sheetContext, 'camera')),
-          ListTile(leading: const Icon(Icons.photo_library_outlined), title: const Text('Create PDF from gallery'), onTap: () => Navigator.pop(sheetContext, 'gallery')),
-          ListTile(leading: const Icon(Icons.manage_search_outlined), title: const Text('OCR Search Inside PDF'), onTap: () => Navigator.pop(sheetContext, 'tools')),
-          ListTile(leading: const Icon(Icons.notifications_active_outlined), title: const Text('Set a reminder'), onTap: () => Navigator.pop(sheetContext, 'reminder')),
-        ]),
-      ),
-    );
-    if (!mounted || action == null) return;
-    if (action == 'reminder') {
-      await Navigator.of(context).push(MaterialPageRoute(builder: (_) => const RemindersScreen()));
-      return;
-    }
-    final pageTitle = switch (action) {
-      'camera' => 'Scan document',
-      'gallery' => 'Create PDF from gallery',
-      'tools' => 'OCR Search',
-      _ => 'Document tools',
-    };
-    if (action == 'camera' || action == 'gallery') {
-      await Navigator.of(context).push(MaterialPageRoute(
-        builder: (_) => DocumentScannerScreen(useCamera: action == 'camera'),
-        fullscreenDialog: true,
-      ));
-      return;
-    }
-    await Navigator.of(context).push(MaterialPageRoute(builder: (_) => Scaffold(
-      appBar: AppBar(title: Text(pageTitle)),
-      body: DocumentToolsScreen(quickAction: action),
-    )));
-  }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         title: const Text('DocsGrid', style: TextStyle(fontWeight: FontWeight.w700)),
+        actions: _selectedIndex == 1
+            ? [
+                IconButton(
+                  tooltip: widget.darkMode ? 'Switch to light theme' : 'Switch to dark theme',
+                  onPressed: () => widget.onDarkModeChanged(!widget.darkMode),
+                  icon: Icon(widget.darkMode ? Icons.light_mode_outlined : Icons.dark_mode_outlined),
+                ),
+                IconButton(
+                  tooltip: 'Settings',
+                  onPressed: () => Navigator.of(context).push(MaterialPageRoute(
+                    builder: (_) => Scaffold(
+                      appBar: AppBar(title: const Text('Settings')),
+                      body: _SettingsScreen(
+                        darkMode: widget.darkMode,
+                        onDarkModeChanged: widget.onDarkModeChanged,
+                      ),
+                    ),
+                  )),
+                  icon: const Icon(Icons.settings_outlined),
+                ),
+                const SizedBox(width: 6),
+              ]
+            : const [],
       ),
       body: SafeArea(
         child: switch (_selectedIndex) {
-          0 => const DocumentsScreen(),
-          1 => const FoldersScreen(),
-          2 => const DocumentsScreen(favoritesOnly: true),
-          _ => _SettingsScreen(darkMode: widget.darkMode, onDarkModeChanged: widget.onDarkModeChanged),
+          0 => const DocumentsScreen(phoneOnly: true),
+          1 => const DocumentsScreen(),
+          _ => const FoldersScreen(),
         },
       ),
-      floatingActionButton: _selectedIndex == 0
-          ? FloatingActionButton.small(
-              tooltip: 'Quick document actions',
-              onPressed: _showQuickActions,
-              child: const Icon(Icons.document_scanner_outlined),
-            )
-          : null,
       bottomNavigationBar: NavigationBar(
         selectedIndex: _selectedIndex,
         onDestinationSelected: (index) => setState(() => _selectedIndex = index),
         destinations: const [
-          NavigationDestination(icon: Icon(Icons.description_outlined), label: 'Files'),
-          NavigationDestination(icon: Icon(Icons.folder_outlined), label: 'Folders'),
-          NavigationDestination(icon: Icon(Icons.star_border), label: 'Star'),
-          NavigationDestination(icon: Icon(Icons.settings_outlined), label: 'Settings'),
+          NavigationDestination(icon: Icon(Icons.phone_android_outlined), label: 'Phone'),
+          NavigationDestination(icon: Icon(Icons.dashboard_outlined), label: 'Home'),
+          NavigationDestination(icon: Icon(Icons.folder_outlined), label: 'Grid'),
         ],
       ),
     );
@@ -508,119 +555,187 @@ class _SettingsScreenState extends State<_SettingsScreen> {
     }
   }
 
+  Widget _sectionTitle(String title) => Padding(
+        padding: const EdgeInsets.fromLTRB(4, 20, 4, 10),
+        child: Text(
+          title,
+          style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+                fontWeight: FontWeight.w700,
+                letterSpacing: 0.7,
+              ),
+        ),
+      );
+
+  Widget _settingsCard(List<Widget> children) => Container(
+        decoration: BoxDecoration(
+          color: Theme.of(context).colorScheme.surfaceContainerLow,
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(
+            color: Theme.of(context).dividerColor.withOpacity(0.35),
+          ),
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: Column(mainAxisSize: MainAxisSize.min, children: children),
+      );
+
   @override
   Widget build(BuildContext context) {
     final status = _storageStatus?['status'];
+    final mutedDivider = Divider(
+      height: 1,
+      indent: 64,
+      color: Theme.of(context).dividerColor.withOpacity(0.35),
+    );
+
     return ListView(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 28),
       children: [
         if (Platform.isAndroid)
-          FutureBuilder<bool>(
-            future: StorageLocationService.instance.hasAllFilesAccess(),
-            builder: (context, snapshot) {
-              final granted = snapshot.data == true;
-              return ListTile(
-                leading: Icon(
-                  granted ? Icons.folder_special : Icons.folder_off_outlined,
-                  color: granted ? Theme.of(context).colorScheme.primary : null,
-                ),
-                title: const Text('Full internal storage access'),
-                subtitle: Text(granted
-                    ? 'Allowed. DocsGrid can access shared internal storage.'
-                    : 'Required for personal-use full storage browsing and automatic recovery discovery.'),
-                trailing: granted
-                    ? const Icon(Icons.check_circle_outline)
-                    : const Icon(Icons.chevron_right),
-                onTap: () async {
-                  try {
-                    await StorageLocationService.instance.requestAllFilesAccess();
-                  } catch (error) {
-                    if (context.mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(content: Text('Could not open storage permission settings: $error')),
-                      );
-                    }
-                  }
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: _settingsCard([
+              FutureBuilder<bool>(
+                future: StorageLocationService.instance.hasAllFilesAccess(),
+                builder: (context, snapshot) {
+                  final granted = snapshot.data == true;
+                  return ListTile(
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    leading: Container(
+                      width: 42,
+                      height: 42,
+                      decoration: BoxDecoration(
+                        color: (granted ? Colors.green : Theme.of(context).colorScheme.primary)
+                            .withOpacity(0.12),
+                        borderRadius: BorderRadius.circular(13),
+                      ),
+                      child: Icon(
+                        granted ? Icons.folder_special_outlined : Icons.folder_off_outlined,
+                        color: granted ? Colors.green : Theme.of(context).colorScheme.primary,
+                      ),
+                    ),
+                    title: const Text(
+                      'Full internal storage access',
+                      style: TextStyle(fontWeight: FontWeight.w700),
+                    ),
+                    subtitle: Padding(
+                      padding: const EdgeInsets.only(top: 4),
+                      child: Text(
+                        granted
+                            ? 'Allowed. DocsGrid can access shared internal storage.'
+                            : 'Required for full storage browsing and recovery discovery.',
+                      ),
+                    ),
+                    onTap: () async {
+                      try {
+                        await StorageLocationService.instance.requestAllFilesAccess();
+                        await _refreshStorageStatus();
+                      } catch (error) {
+                        if (context.mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(content: Text('Could not open storage permission settings: $error')),
+                          );
+                        }
+                      }
+                    },
+                  );
                 },
-              );
-            },
+              ),
+            ]),
           ),
-        SwitchListTile(
-          secondary: const Icon(Icons.dark_mode_outlined),
-          title: const Text('Dark appearance'),
-          value: widget.darkMode,
-          onChanged: widget.onDarkModeChanged,
-        ),
-        const Divider(height: 1),
-        ListTile(
-          leading: const Icon(Icons.health_and_safety_outlined),
-          title: const Text('Storage access health'),
-          trailing: Row(mainAxisSize: MainAxisSize.min, children: [
-            if (_checkingStorage) const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
-            if (!_checkingStorage) Text(status == 'available' ? 'OK' : status == 'revoked' ? 'Repair' : 'Check',
-              style: TextStyle(color: status == 'available' ? Colors.green : null)),
-            IconButton(tooltip: 'Refresh', onPressed: _checkingStorage ? null : _refreshStorageStatus,
-              icon: const Icon(Icons.refresh)),
-          ]),
-          onTap: _refreshStorageStatus,
-        ),
-        const Divider(height: 1),
-        ListTile(
-          leading: const Icon(Icons.sd_storage_outlined),
-          title: const Text('Choose storage location'),
-          trailing: const Icon(Icons.chevron_right),
-          onTap: () => _chooseStorage(context),
-        ),
-        const Divider(height: 1),
-        ListTile(
-          leading: const Icon(Icons.backup_outlined),
-          title: const Text('Backup & Restore'),
-          subtitle: const Text('Create backup · Restore backup'),
-          trailing: const Icon(Icons.chevron_right),
-          onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => Scaffold(
-            appBar: AppBar(title: const Text('Backup & Restore')),
-            body: const DocumentToolsScreen(section: 'backup_restore'),
-          ))),
-        ),
-        const Divider(height: 1),
-        ListTile(
-          leading: const Icon(Icons.build_outlined),
-          title: const Text('Document tools'),
-          trailing: const Icon(Icons.chevron_right),
-          onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => Scaffold(
-            appBar: AppBar(title: const Text('Document tools')),
-            body: const DocumentToolsScreen(section: 'tools'),
-          ))),
-        ),
-        const Divider(height: 1),
-        ListTile(
-          leading: const Icon(Icons.history),
-          title: const Text('Activity'),
-          trailing: const Icon(Icons.chevron_right),
-          onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const HistoryScreen())),
-        ),
-        const Divider(height: 1),
-        ListTile(
-          leading: const Icon(Icons.notifications_active_outlined),
-          title: const Text('Reminder'),
-          trailing: const Icon(Icons.chevron_right),
-          onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const RemindersScreen())),
-        ),
-        const Divider(height: 1),
-        ListTile(
-          leading: const Icon(Icons.sell_outlined),
-          title: const Text('Category & Tag'),
-          trailing: const Icon(Icons.chevron_right),
-          onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => Scaffold(
-            appBar: AppBar(title: const Text('Category & Tag')),
-            body: const CategoriesScreen(),
-          ))),
-        ),
-        const Divider(height: 1),
-        const ListTile(
-          leading: Icon(Icons.info_outline),
-          title: Text('About'),
-        ),
+
+        _sectionTitle('PREFERENCES'),
+        _settingsCard([
+          SwitchListTile(
+            secondary: const Icon(Icons.dark_mode_outlined),
+            title: const Text('Dark appearance', style: TextStyle(fontWeight: FontWeight.w600)),
+            value: widget.darkMode,
+            onChanged: widget.onDarkModeChanged,
+          ),
+          mutedDivider,
+          const ListTile(
+            leading: Icon(Icons.view_agenda_outlined),
+            title: Text('Default view', style: TextStyle(fontWeight: FontWeight.w600)),
+            subtitle: Text('List'),
+            trailing: Icon(Icons.chevron_right),
+          ),
+          mutedDivider,
+          ListTile(
+            leading: const Icon(Icons.sd_storage_outlined),
+            title: const Text('Choose storage location', style: TextStyle(fontWeight: FontWeight.w600)),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => _chooseStorage(context),
+          ),
+        ]),
+
+        _sectionTitle('SECURITY & HEALTH'),
+        _settingsCard([
+          ListTile(
+            leading: const Icon(Icons.health_and_safety_outlined),
+            title: const Text('Storage access health', style: TextStyle(fontWeight: FontWeight.w600)),
+            subtitle: Text(_checkingStorage
+                ? 'Checking storage access…'
+                : status == 'available'
+                    ? 'Last checked today'
+                    : status == 'revoked'
+                        ? 'Access needs attention'
+                        : 'Check storage permissions'),
+            trailing: TextButton(
+              onPressed: _checkingStorage ? null : _refreshStorageStatus,
+              child: const Text('Check'),
+            ),
+            onTap: _checkingStorage ? null : _refreshStorageStatus,
+          ),
+        ]),
+
+        _sectionTitle('DATA'),
+        _settingsCard([
+          ListTile(
+            leading: const Icon(Icons.backup_outlined),
+            title: const Text('Backup & Restore', style: TextStyle(fontWeight: FontWeight.w600)),
+            subtitle: const Text('Create backup · Restore backup'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => Scaffold(
+              appBar: AppBar(title: const Text('Backup & Restore')),
+              body: const DocumentToolsScreen(section: 'backup_restore'),
+            ))),
+          ),
+          mutedDivider,
+          ListTile(
+            leading: const Icon(Icons.history),
+            title: const Text('Activity', style: TextStyle(fontWeight: FontWeight.w600)),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const HistoryScreen())),
+          ),
+          mutedDivider,
+          ListTile(
+            leading: const Icon(Icons.notifications_active_outlined),
+            title: const Text('Reminder', style: TextStyle(fontWeight: FontWeight.w600)),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const RemindersScreen())),
+          ),
+          mutedDivider,
+          ListTile(
+            leading: const Icon(Icons.auto_awesome_outlined),
+            title: const Text('Smart Collections', style: TextStyle(fontWeight: FontWeight.w600)),
+            subtitle: const Text('Saved filters for categories, tags, starred and recent PDFs'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.of(context).push(MaterialPageRoute(
+              builder: (_) => const SmartCollectionsScreen(),
+            )),
+          ),
+          mutedDivider,
+          ListTile(
+            leading: const Icon(Icons.sell_outlined),
+            title: const Text('Category & Tag', style: TextStyle(fontWeight: FontWeight.w600)),
+            subtitle: const Text('Labels to organise your PDFs'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => Scaffold(
+              appBar: AppBar(title: const Text('Category & Tag')),
+              body: const CategoriesScreen(),
+            ))),
+          ),
+        ]),
       ],
     );
   }

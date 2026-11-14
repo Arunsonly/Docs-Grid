@@ -117,49 +117,100 @@ class MainActivity : FlutterActivity() {
                                 }
                             }
                             "getPortableDataLocations" -> {
-                                val prefs = getSharedPreferences("docsgrid_storage", MODE_PRIVATE)
-                                var database = prefs.getString("database_uri", null)
-                                var recovery = prefs.getString("recovery_uri", null)
-                                var library = prefs.getString("folders_uri", null)
-                                    ?: prefs.getString("my_files_uri", null)
-                                var documents = prefs.getString("documents_uri", null)
-                                if (database == null || recovery == null || library == null || documents == null) {
-                                    if (android.os.Build.VERSION.SDK_INT >= 30 &&
-                                        !android.os.Environment.isExternalStorageManager()) {
-                                        throw IllegalStateException("Allow Full internal storage access in DocsGrid Settings, then retry recovery.")
-                                    }
-                                    val root = java.io.File(
-                                        android.os.Environment.getExternalStorageDirectory(),
-                                        "Android/media/DocsGrid"
+                                // A user-selected SAF recovery tree remains usable without
+                                // MANAGE_EXTERNAL_STORAGE. Return its persisted opaque URIs
+                                // before attempting the automatic Android/media layout.
+                                val saved = getSharedPreferences("docsgrid_storage", MODE_PRIVATE)
+                                val savedRoot = saved.getString("docsgrid_uri", null)
+                                val savedDatabase = saved.getString("database_uri", null)
+                                val savedRecovery = saved.getString("recovery_uri", null)
+                                val savedLibrary = saved.getString("folders_uri", null)
+                                    ?: saved.getString("my_files_uri", null)
+                                val savedDocuments = saved.getString("documents_uri", null)
+                                if (savedRoot?.startsWith("content://") == true &&
+                                    savedDatabase?.startsWith("content://") == true &&
+                                    savedRecovery?.startsWith("content://") == true &&
+                                    savedLibrary?.startsWith("content://") == true) {
+                                    val selectedLocations = mutableMapOf<String, String>(
+                                        "rootUri" to savedRoot,
+                                        "databaseUri" to savedDatabase,
+                                        "recoveryUri" to savedRecovery,
+                                        "libraryUri" to savedLibrary
                                     )
-                                    val docs = java.io.File(root, "Documents")
-                                    val folders = java.io.File(root, "Folders")
-                                    val dbFolder = java.io.File(root, "Database")
-                                    val recoveryFolder = java.io.File(root, "Recovery")
-                                    if (!root.isDirectory || !docs.isDirectory || !folders.isDirectory ||
-                                        !dbFolder.isDirectory || !recoveryFolder.isDirectory) {
-                                        throw IllegalStateException("No existing Android/media/DocsGrid recovery tree was found.")
+                                    if (savedDocuments?.startsWith("content://") == true) {
+                                        selectedLocations["documentsUri"] = savedDocuments
                                     }
-                                    val snapshots = dbFolder.listFiles()?.filter {
-                                        it.isDirectory && it.name.startsWith("snapshot_")
-                                    }.orEmpty()
-                                    if (snapshots.isEmpty()) {
-                                        throw IllegalStateException("Android/media/DocsGrid exists, but no recovery snapshot was found in Database.")
-                                    }
-                                    database = Uri.fromFile(dbFolder).toString()
-                                    recovery = Uri.fromFile(recoveryFolder).toString()
-                                    library = Uri.fromFile(folders).toString()
-                                    documents = Uri.fromFile(docs).toString()
-                                    prefs.edit()
-                                        .putString("docsgrid_uri", Uri.fromFile(root).toString())
-                                        .putString("database_uri", database)
-                                        .putString("recovery_uri", recovery)
-                                        .putString("folders_uri", library)
-                                        .putString("my_files_uri", library)
-                                        .putString("documents_uri", documents)
-                                        .apply()
+                                    result.success(selectedLocations)
+                                    return
                                 }
-                                result.success(mapOf("databaseUri" to database, "recoveryUri" to recovery, "libraryUri" to library, "documentsUri" to documents))
+                                // Initialize the automatic portable tree independently of backup discovery.
+                                // A fresh install must never require an old snapshot to create storage.
+                                if (android.os.Build.VERSION.SDK_INT >= 30 &&
+                                    !android.os.Environment.isExternalStorageManager()) {
+                                    throw IllegalStateException("Allow Full internal storage access in DocsGrid Settings, then retry portable storage setup.")
+                                }
+                                val mediaRoot = java.io.File(
+                                    android.os.Environment.getExternalStorageDirectory(),
+                                    "Android/media"
+                                )
+                                val legacyRoot = java.io.File(mediaRoot, "DocsGrid")
+                                val root = java.io.File(mediaRoot, "com.docsgrid")
+                                val myFiles = java.io.File(root, "My Files")
+                                val unfiled = java.io.File(myFiles, "Unfiled")
+                                val folders = java.io.File(myFiles, "Folders")
+                                val shared = java.io.File(myFiles, "Shared")
+                                val system = java.io.File(root, "System")
+                                val databaseFolder = java.io.File(system, "Database")
+                                val recoveryFolder = java.io.File(system, "Recovery")
+                                val backupsFolder = java.io.File(system, "Backups")
+                                val tempFolder = java.io.File(system, "Temp")
+                                val logsFolder = java.io.File(system, "Logs")
+                                val exportsFolder = java.io.File(system, "Exports")
+                                val thumbnailsFolder = java.io.File(system, "Thumbnails")
+                                val required = listOf(root, myFiles, unfiled, folders, shared, system,
+                                    databaseFolder, recoveryFolder, backupsFolder, tempFolder,
+                                    logsFolder, exportsFolder, thumbnailsFolder)
+                                required.forEach { directory ->
+                                    if (!directory.exists() && !directory.mkdirs() && !directory.isDirectory) {
+                                        throw IllegalStateException("Could not create DocsGrid storage folder: ${directory.name}")
+                                    }
+                                    if (!directory.isDirectory) {
+                                        throw IllegalStateException("DocsGrid storage path is not a directory: ${directory.name}")
+                                    }
+                                }
+                                val database = Uri.fromFile(databaseFolder).toString()
+                                val recovery = Uri.fromFile(recoveryFolder).toString()
+                                val library = Uri.fromFile(folders).toString()
+                                val documents = Uri.fromFile(unfiled).toString()
+                                val prefs = getSharedPreferences("docsgrid_storage", MODE_PRIVATE)
+                                prefs.edit()
+                                    .putString("docsgrid_uri", Uri.fromFile(root).toString())
+                                    .putString("database_uri", database)
+                                    .putString("recovery_uri", recovery)
+                                    .putString("folders_uri", library)
+                                    .putString("my_files_uri", library)
+                                    .putString("documents_uri", documents)
+                                    .putString("shared_uri", Uri.fromFile(shared).toString())
+                                    .putString("backups_uri", Uri.fromFile(backupsFolder).toString())
+                                    .putString("temp_uri", Uri.fromFile(tempFolder).toString())
+                                    .putString("logs_uri", Uri.fromFile(logsFolder).toString())
+                                    .putString("exports_uri", Uri.fromFile(exportsFolder).toString())
+                                    .putString("thumbnails_uri", Uri.fromFile(thumbnailsFolder).toString())
+                                    .apply()
+                                result.success(mapOf(
+                                    "rootUri" to Uri.fromFile(root).toString(),
+                                    "legacyRootUri" to Uri.fromFile(legacyRoot).toString(),
+                                    "databaseUri" to database,
+                                    "recoveryUri" to recovery,
+                                    "libraryUri" to library,
+                                    "documentsUri" to documents,
+                                    "sharedUri" to Uri.fromFile(shared).toString(),
+                                    "backupsUri" to Uri.fromFile(backupsFolder).toString(),
+                                    "tempUri" to Uri.fromFile(tempFolder).toString(),
+                                    "logsUri" to Uri.fromFile(logsFolder).toString(),
+                                    "exportsUri" to Uri.fromFile(exportsFolder).toString(),
+                                    "thumbnailsUri" to Uri.fromFile(thumbnailsFolder).toString()
+                                ))
                             }
                             "getSelectedFolder" -> {
                                 val prefs = getSharedPreferences("docsgrid_storage", MODE_PRIVATE)
@@ -172,6 +223,55 @@ class MainActivity : FlutterActivity() {
                                 result.success(selected?.let {
                                     mapOf("uri" to it, "name" to if (hasAllFiles) "Internal storage" else "DocsGrid/Folders")
                                 })
+                            }
+                            "getAccessibleScanRoots" -> {
+                                val roots = linkedMapOf<String, Map<String, String>>()
+                                val hasAllFiles = android.os.Build.VERSION.SDK_INT < 30 ||
+                                    android.os.Environment.isExternalStorageManager()
+                                if (hasAllFiles) {
+                                    // getExternalFilesDirs exposes the app-specific directory on
+                                    // each mounted shared-storage volume. Walk back to each volume
+                                    // root so removable SD cards are included when Android grants
+                                    // MANAGE_EXTERNAL_STORAGE.
+                                    getExternalFilesDirs(null).filterNotNull().forEachIndexed { index, appDirectory ->
+                                        val appPath = appDirectory.canonicalPath
+                                        val marker = "/Android/data/$packageName"
+                                        val markerIndex = appPath.indexOf(marker)
+                                        if (markerIndex >= 0) {
+                                            val volumeRoot = java.io.File(appPath.substring(0, markerIndex))
+                                            if (volumeRoot.isDirectory && volumeRoot.canRead()) {
+                                                val label = if (index == 0) "Internal storage" else "External storage $index"
+                                                roots[volumeRoot.canonicalPath] = mapOf(
+                                                    "uri" to Uri.fromFile(volumeRoot).toString(),
+                                                    "name" to label
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                                val prefs = getSharedPreferences("docsgrid_storage", MODE_PRIVATE)
+                                val docsGridRoots = listOfNotNull(
+                                    prefs.getString("docsgrid_uri", null),
+                                    prefs.getString("folders_uri", null),
+                                    prefs.getString("my_files_uri", null),
+                                    prefs.getString("documents_uri", null),
+                                    prefs.getString("database_uri", null),
+                                    prefs.getString("recovery_uri", null)
+                                ).toSet()
+                                contentResolver.persistedUriPermissions.filter { it.isReadPermission }
+                                    .forEachIndexed { index, permission ->
+                                        val uri = permission.uri
+                                        if (uri.toString() in docsGridRoots) return@forEachIndexed
+                                        // When full shared-storage access is already available, the
+                                        // primary: SAF subtree is covered by the file root. Keep
+                                        // non-primary/removable SAF roots as independent locations.
+                                        if (hasAllFiles) {
+                                            val treeId = try { DocumentsContract.getTreeDocumentId(uri) } catch (_: Exception) { "" }
+                                            if (treeId.startsWith("primary:")) return@forEachIndexed
+                                        }
+                                        roots.putIfAbsent(uri.toString(), mapOf("uri" to uri.toString(), "name" to "Granted folder ${index + 1}"))
+                                    }
+                                result.success(roots.values.toList())
                             }
                             "consumeSharedPdfs" -> result.success(consumeSharedPdfs(incomingShareIntent))
                             "checkStorageAccess" -> result.success(checkStorageAccess())
@@ -436,6 +536,20 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    private fun sharedStorageVolumeRoots(): List<java.io.File> {
+        val marker = "/Android/data/$packageName"
+        return getExternalFilesDirs(null).filterNotNull().mapNotNull { appDirectory ->
+            try {
+                val path = appDirectory.canonicalPath
+                val markerIndex = path.indexOf(marker)
+                if (markerIndex < 0) null
+                else java.io.File(path.substring(0, markerIndex)).canonicalFile
+            } catch (_: Exception) {
+                null
+            }
+        }.distinctBy { it.path }
+    }
+
     private fun fileForUri(uri: Uri): java.io.File {
         if (uri.scheme != "file") throw IllegalArgumentException("Expected a local file URI.")
         if (android.os.Build.VERSION.SDK_INT >= 30 &&
@@ -443,10 +557,13 @@ class MainActivity : FlutterActivity() {
             throw SecurityException("Allow Full internal storage access in DocsGrid Settings.")
         }
         val file = java.io.File(uri.path ?: throw IllegalArgumentException("Invalid file URI."))
-        val root = android.os.Environment.getExternalStorageDirectory().canonicalFile
         val canonical = file.canonicalFile
-        if (canonical.path != root.path && !canonical.path.startsWith(root.path + java.io.File.separator)) {
-            throw SecurityException("DocsGrid file access is limited to shared internal storage.")
+        val separator = java.io.File.separator
+        val allowed = sharedStorageVolumeRoots().any { root ->
+            canonical.path == root.path || canonical.path.startsWith(root.path + separator)
+        }
+        if (!allowed) {
+            throw SecurityException("DocsGrid file access is limited to Android shared-storage volumes.")
         }
         return canonical
     }
@@ -455,17 +572,16 @@ class MainActivity : FlutterActivity() {
         val directory = fileForUri(uri)
         if (!directory.exists()) throw java.io.FileNotFoundException("Missing directory: ${directory.path}")
         if (!directory.isDirectory) throw IllegalStateException("The selected storage item is not a folder.")
-        // Android intentionally blocks some protected subtrees (notably
-        // Android/data and Android/obb) even with all-files access. Skip those
-        // inaccessible branches without aborting the scan of the rest of storage.
-        val children = try { directory.listFiles() } catch (_: SecurityException) { null }
-            ?: return emptyList()
+        // Do not disguise inaccessible directories as empty.
+        val children = directory.listFiles()
+            ?: throw SecurityException("Android could not enumerate this directory: ${directory.name}")
         return children.sortedBy { it.name.lowercase() }.map { child ->
             mapOf(
                 "name" to child.name,
                 "uri" to Uri.fromFile(child).toString(),
                 "isDirectory" to child.isDirectory,
-                "size" to if (child.isFile) child.length() else 0L
+                "size" to if (child.isFile) child.length() else 0L,
+                "sizeKnown" to (!child.isFile || child.length() >= 0L)
             )
         }
     }
@@ -643,7 +759,8 @@ class MainActivity : FlutterActivity() {
                     "name" to cursor.getString(nameIndex),
                     "uri" to DocumentsContract.buildDocumentUriUsingTree(directoryUri, id).toString(),
                     "isDirectory" to (mime == DocumentsContract.Document.MIME_TYPE_DIR),
-                    "size" to if (sizeIndex >= 0 && !cursor.isNull(sizeIndex)) cursor.getLong(sizeIndex) else 0L
+                    "size" to if (sizeIndex >= 0 && !cursor.isNull(sizeIndex) && cursor.getLong(sizeIndex) >= 0L) cursor.getLong(sizeIndex) else 0L,
+                    "sizeKnown" to (sizeIndex >= 0 && !cursor.isNull(sizeIndex) && cursor.getLong(sizeIndex) >= 0L)
                 ))
             }
         } ?: throw IllegalStateException("The storage provider could not list this folder.")
@@ -840,22 +957,64 @@ class MainActivity : FlutterActivity() {
                         if (index >= 0) cursor.getString(index) else null
                     } else null
                 } ?: throw IllegalStateException("Could not read the selected folder name.")
-                val docsGrid = if (selectedName.equals("DocsGrid", ignoreCase = true)) {
+                // Accept both the current Android/media/com.docsgrid layout and
+                // older user-selected DocsGrid trees. When the parent is selected,
+                // prefer the current canonical root and fall back to the legacy name.
+                val docsGrid = if (
+                    selectedName.equals("DocsGrid", ignoreCase = true) ||
+                    selectedName.equals("com.docsgrid", ignoreCase = true)
+                ) {
                     selectedRoot
                 } else {
-                    findChildUri(uri, "DocsGrid")
+                    try {
+                        findChildUri(uri, "com.docsgrid")
+                    } catch (_: MissingStorageChildException) {
+                        findChildUri(uri, "DocsGrid")
+                    }
                 }
-                // Recovery selection is read/validate-only: never create a new
-                // DocsGrid tree that could masquerade as a recoverable backup.
-                val documents = findChildUri(docsGrid, "Documents")
-                val folders = findChildUri(docsGrid, "Folders")
-                val database = findChildUri(docsGrid, "Database")
-                val recovery = findChildUri(docsGrid, "Recovery")
+
+                // Recovery selection is read/validate-only: never create folders
+                // that could make an empty tree look like a recoverable backup.
+                val canonicalMyFiles = try {
+                    findChildUri(docsGrid, "My Files")
+                } catch (_: MissingStorageChildException) {
+                    null
+                }
+                val canonicalSystem = try {
+                    findChildUri(docsGrid, "System")
+                } catch (_: MissingStorageChildException) {
+                    null
+                }
+                if ((canonicalMyFiles == null) != (canonicalSystem == null)) {
+                    throw IllegalStateException("The selected DocsGrid folder has an incomplete My Files/System layout.")
+                }
+                val isCanonicalLayout = canonicalMyFiles != null && canonicalSystem != null
+                val documents = if (isCanonicalLayout) {
+                    findChildUri(canonicalMyFiles!!, "Unfiled")
+                } else {
+                    findChildUri(docsGrid, "Documents")
+                }
+                val folders = if (isCanonicalLayout) {
+                    findChildUri(canonicalMyFiles!!, "Folders")
+                } else {
+                    findChildUri(docsGrid, "Folders")
+                }
+                val database = if (isCanonicalLayout) {
+                    findChildUri(canonicalSystem!!, "Database")
+                } else {
+                    findChildUri(docsGrid, "Database")
+                }
+                val recovery = if (isCanonicalLayout) {
+                    findChildUri(canonicalSystem!!, "Recovery")
+                } else {
+                    findChildUri(docsGrid, "Recovery")
+                }
                 val snapshots = listDirectory(database).filter {
-                    it["isDirectory"] == true && (it["name"] as? String)?.startsWith("snapshot_") == true
+                    it["isDirectory"] == true &&
+                        (it["name"] as? String)?.startsWith("snapshot_") == true
                 }
                 if (snapshots.isEmpty()) {
-                    throw IllegalStateException("The existing DocsGrid/Database folder contains no recovery snapshots.")
+                    throw IllegalStateException("The selected DocsGrid/System/Database (or legacy DocsGrid/Database) folder contains no recovery snapshots.")
                 }
                 getSharedPreferences("docsgrid_storage", MODE_PRIVATE).edit()
                     .putString("tree_uri", uri.toString())

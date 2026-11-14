@@ -10,6 +10,7 @@ class AppDatabase {
   @visibleForTesting
   AppDatabase.forTesting(Future<Database> Function() opener) : this._(opener: opener);
 
+  static const int schemaVersion = 9;
   static final AppDatabase instance = AppDatabase._();
   final Future<Database> Function()? _opener;
 
@@ -42,7 +43,7 @@ class AppDatabase {
     final dbPath = p.join(directory.path, 'docs_grid.db');
     return openDatabase(
       dbPath,
-      version: 7,
+      version: schemaVersion,
       onConfigure: (db) async => db.execute('PRAGMA foreign_keys = ON'),
       onCreate: (db, version) async {
         await db.execute('''
@@ -119,6 +120,8 @@ class AppDatabase {
         await _createV5SummaryInvalidation(db);
         await _createV6NameSearchIndex(db);
         await _createV7FolderOrder(db);
+        await _createV8SmartCollections(db);
+        await _createV9SmartCollectionFilters(db);
         await db.insert('schema_migrations', {
           'version': 1,
           'applied_at': DateTime.now().toUtc().toIso8601String(),
@@ -147,6 +150,14 @@ class AppDatabase {
           'version': 7,
           'applied_at': DateTime.now().toUtc().toIso8601String(),
         });
+        await db.insert('schema_migrations', {
+          'version': 8,
+          'applied_at': DateTime.now().toUtc().toIso8601String(),
+        });
+        await db.insert('schema_migrations', {
+          'version': 9,
+          'applied_at': DateTime.now().toUtc().toIso8601String(),
+        });
       },
       onUpgrade: upgradeForTesting,
       onDowngrade: (db, oldVersion, newVersion) async {
@@ -160,7 +171,7 @@ class AppDatabase {
   @visibleForTesting
   Future<void> upgradeForTesting(Database db, int oldVersion, int newVersion) async {
     if (newVersion <= oldVersion) return;
-    if (oldVersion < 1 || newVersion > 7) {
+    if (oldVersion < 1 || newVersion > schemaVersion) {
       throw StateError('Unsupported database migration: $oldVersion -> $newVersion');
     }
 
@@ -206,6 +217,16 @@ class AppDatabase {
     if (oldVersion < 7 && newVersion >= 7) {
       await _createV7FolderOrder(db);
       await db.insert('schema_migrations', {'version': 7, 'applied_at': applied},
+          conflictAlgorithm: ConflictAlgorithm.ignore);
+    }
+    if (oldVersion < 8 && newVersion >= 8) {
+      await _createV8SmartCollections(db);
+      await db.insert('schema_migrations', {'version': 8, 'applied_at': applied},
+          conflictAlgorithm: ConflictAlgorithm.ignore);
+    }
+    if (oldVersion < 9 && newVersion >= 9) {
+      await _createV9SmartCollectionFilters(db);
+      await db.insert('schema_migrations', {'version': 9, 'applied_at': applied},
           conflictAlgorithm: ConflictAlgorithm.ignore);
     }
   }
@@ -293,6 +314,44 @@ class AppDatabase {
         UPDATE document_summary_state SET revision = revision + 1 WHERE id = 1;
       END
     ''');
+  }
+
+  Future<void> _createV8SmartCollections(DatabaseExecutor db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS smart_collections (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+        query_text TEXT NOT NULL DEFAULT '',
+        favorites_only INTEGER NOT NULL DEFAULT 0,
+        recent_only INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )
+    ''');
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_smart_collections_name ON smart_collections(name COLLATE NOCASE)',
+    );
+  }
+
+  Future<void> _createV9SmartCollectionFilters(DatabaseExecutor db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS smart_collections (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+        query_text TEXT NOT NULL DEFAULT '',
+        favorites_only INTEGER NOT NULL DEFAULT 0,
+        recent_only INTEGER NOT NULL DEFAULT 0,
+        category_id TEXT,
+        tag_ids_json TEXT NOT NULL DEFAULT '[]',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )
+    ''');
+    final columns = await db.rawQuery('PRAGMA table_info(smart_collections)');
+    final names = columns.map((row) => row['name']).toSet();
+    if (!names.contains('category_id')) await db.execute('ALTER TABLE smart_collections ADD COLUMN category_id TEXT');
+    if (!names.contains('tag_ids_json')) await db.execute("ALTER TABLE smart_collections ADD COLUMN tag_ids_json TEXT NOT NULL DEFAULT '[]'");
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_smart_collections_category ON smart_collections(category_id)');
   }
 
   Future<void> _createV7FolderOrder(DatabaseExecutor db) async {

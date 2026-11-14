@@ -252,6 +252,37 @@ void main() {
       await v7.close();
     });
 
+    test('v8 to v9 adds smart collection category and tag filters without losing saved collections', () async {
+      final fixture = await createV1Fixture('v8_to_v9_smart_filters');
+      final path = fixture.path;
+      await fixture.close();
+
+      final v8 = await migrateTo(path, 8);
+      await v8.insert('smart_collections', {
+        'id': 'collection-1',
+        'name': 'Policies',
+        'query_text': 'policy',
+        'favorites_only': 1,
+        'recent_only': 0,
+        'created_at': '2026-01-01T00:00:00Z',
+        'updated_at': '2026-01-01T00:00:00Z',
+      });
+      await v8.close();
+
+      final v9 = await migrateTo(path, 9);
+      expect(await v9.getVersion(), 9);
+      final columns = await v9.rawQuery('PRAGMA table_info(smart_collections)');
+      expect(columns.any((column) => column['name'] == 'category_id'), isTrue);
+      expect(columns.any((column) => column['name'] == 'tag_ids_json'), isTrue);
+      final collection = (await v9.query('smart_collections', where: 'id = ?', whereArgs: ['collection-1'])).single;
+      expect(collection['name'], 'Policies');
+      expect(collection['query_text'], 'policy');
+      expect(collection['tag_ids_json'], '[]');
+      expect(collection['category_id'], isNull);
+      expect(await v9.rawQuery('PRAGMA foreign_key_check'), isEmpty);
+      await v9.close();
+    });
+
     test('refuses downgrade and leaves the v2 database and records intact', () async {
       final v1 = await createV1Fixture('downgrade');
       final path = v1.path;
