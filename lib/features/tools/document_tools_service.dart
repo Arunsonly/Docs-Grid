@@ -929,32 +929,10 @@ class DocumentToolsService {
     }
     final folderRepository = FolderRepository();
     final documentRepository = DocumentRepository();
-    final folderIdsByPath = <String, String>{};
     var added = 0;
     var duplicates = 0;
     var failed = 0;
     final failures = <Map<String, String>>[];
-
-    Future<String?> ensureFolderPath(String path) async {
-      if (path.isEmpty) return null;
-      var parentId = null as String?;
-      var currentPath = '';
-      for (final segment in path.split('/')) {
-        currentPath = currentPath.isEmpty ? segment : '$currentPath/$segment';
-        final cached = folderIdsByPath[currentPath];
-        if (cached != null) {
-          parentId = cached;
-          continue;
-        }
-        final created = await folderRepository.create(
-          name: FolderRepository.validateFolderName(segment),
-          parentId: parentId,
-        );
-        folderIdsByPath[currentPath] = created.id;
-        parentId = created.id;
-      }
-      return parentId;
-    }
 
     final roots = <({String uri, bool preserveFolders})>[
       (uri: unfiledRoot, preserveFolders: false),
@@ -990,7 +968,7 @@ class DocumentToolsService {
           final folderPath = root.preserveFolders
               ? item['folderPath'] as String
               : '';
-          final folderId = await ensureFolderPath(folderPath);
+          final folderId = await folderRepository.ensureRecoveredFolderPath(folderPath);
           final imported = await documentRepository.importExistingSharedPdf(
             storageUri: item['uri'] as String,
             displayName: name,
