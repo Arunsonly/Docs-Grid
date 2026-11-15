@@ -8,7 +8,7 @@ class PortableSnapshotScheduler {
 
   Future<void> Function()? _writer;
   Timer? _timer;
-  Future<void>? _inFlight;
+  Future<bool>? _inFlight;
   bool _dirty = false;
 
   void configure(Future<void> Function() writer) {
@@ -29,8 +29,12 @@ class PortableSnapshotScheduler {
 
     final running = _inFlight;
     if (running != null) {
-      await running;
-      if (_dirty) await flushNow();
+      final succeeded = await running;
+      // A mutation may have arrived while the writer was active and its timer
+      // may have been cancelled by this flush (for example during app pause).
+      if (succeeded && _dirty && _timer == null) {
+        await flushNow();
+      }
       return;
     }
 
@@ -39,14 +43,15 @@ class PortableSnapshotScheduler {
     if (writer == null) return;
 
     _dirty = false;
-    final operation = _runWriter(writer);
+    late final Future<bool> operation;
+    operation = _runWriter(writer).whenComplete(() {
+      if (identical(_inFlight, operation)) _inFlight = null;
+    });
     _inFlight = operation;
     final succeeded = await operation;
-    if (identical(_inFlight, operation)) _inFlight = null;
 
-    // Retry only when a new mutation arrived while the snapshot was writing.
-    // A storage/permission failure stays dirty for the next write or app pause;
-    // it must not create an endless three-second retry loop.
+    // Do not retry a failed permission/storage write in a tight loop. A later
+    // mutation, lifecycle pause, or manual backup can retry the dirty state.
     if (succeeded && _dirty && _timer == null) {
       _timer = Timer(const Duration(seconds: 3), () {
         unawaited(flushNow());
