@@ -59,6 +59,7 @@ class _FoldersScreenState extends State<FoldersScreen> {
   }
 
   Future<void> _refresh() async {
+    if (!mounted) return;
     setState(() {
       _isReorderingFolders = false;
       _draftFolderOrder = <Folder>[];
@@ -443,6 +444,7 @@ class _FoldersScreenState extends State<FoldersScreen> {
         targetFolderId: _currentFolderId,
         review: _reviewSinglePdf,
       );
+      if (!mounted) return;
       await _refresh();
       if (!mounted) return;
       final details = result.errors.isEmpty ? '' : '\n${result.errors.first}';
