@@ -17,6 +17,8 @@ import 'features/reminders/data/reminder_notifications.dart';
 import 'features/folders/presentation/folders_screen.dart';
 import 'features/folders/data/folder_repository.dart';
 import 'core/storage/storage_location_service.dart';
+import 'core/storage/storage_access_notifier.dart';
+import 'core/storage/portable_snapshot_scheduler.dart';
 import 'features/tools/document_tools_screen.dart' show DocumentToolsScreen;
 
 final GlobalKey<NavigatorState> docsGridNavigatorKey = GlobalKey<NavigatorState>();
@@ -103,10 +105,14 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    PortableSnapshotScheduler.instance.configure(() async {
+      await DocumentToolsService().createPortableMetadataSnapshot();
+    });
     ReminderNotifications.onDocumentNotificationTap = (documentId) {
       unawaited(_openReminderDocument(documentId));
     };
     WidgetsBinding.instance.addPostFrameCallback((_) async {
+      unawaited(StorageAccessNotifier.instance.refresh());
       // Notification reconciliation is independent of the first frame. Keep
       // it off the critical startup path while preserving pending tap handling.
       unawaited(_refreshReminderSchedules());
@@ -122,8 +128,11 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
+      unawaited(StorageAccessNotifier.instance.refresh(attempts: 10));
       unawaited(_refreshReminderSchedules());
       unawaited(_consumeSharedPdfs());
+    } else if (state == AppLifecycleState.paused) {
+      unawaited(PortableSnapshotScheduler.instance.flushNow());
     }
   }
 
@@ -595,10 +604,11 @@ class _SettingsScreenState extends State<_SettingsScreen> {
           Padding(
             padding: const EdgeInsets.only(bottom: 8),
             child: _settingsCard([
-              FutureBuilder<bool>(
-                future: StorageLocationService.instance.hasAllFilesAccess(),
-                builder: (context, snapshot) {
-                  final granted = snapshot.data == true;
+              ValueListenableBuilder<bool?>(
+                valueListenable: StorageAccessNotifier.instance.granted,
+                builder: (context, accessGranted, _) {
+                  final granted = accessGranted == true;
+                  final checking = accessGranted == null;
                   return ListTile(
                     contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                     leading: Container(
@@ -623,12 +633,15 @@ class _SettingsScreenState extends State<_SettingsScreen> {
                       child: Text(
                         granted
                             ? 'Allowed. DocsGrid can access shared internal storage.'
-                            : 'Required for full storage browsing and recovery discovery.',
+                            : checking
+                                ? 'Checking storage permission…'
+                                : 'Required for full storage browsing and recovery discovery.',
                       ),
                     ),
                     onTap: () async {
                       try {
                         await StorageLocationService.instance.requestAllFilesAccess();
+                        await StorageAccessNotifier.instance.refresh(attempts: 10);
                         await _refreshStorageStatus();
                       } catch (error) {
                         if (context.mounted) {
