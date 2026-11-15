@@ -118,7 +118,7 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
     // foreground poll also covers mutations performed by legacy/background code
     // that does not emit an in-process change signal.
     _snapshotPoll = Timer.periodic(
-      const Duration(seconds: 15),
+      const Duration(minutes: 15),
       (_) => _schedulePortableSnapshot(),
     );
     ReminderNotifications.onDocumentNotificationTap = (documentId) {
@@ -228,6 +228,16 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
     _snapshotWriteInFlight = true;
     try {
       if (!await AppDatabase.instance.isPortableSnapshotDirty()) return;
+      if (!await AppDatabase.instance.hasPortableUserData()) return;
+      // Coalesce bursts of writes into one recovery point. Dirty state remains
+      // set until the next eligible pass; the 15-minute poll is a fallback.
+      final lastSnapshotAt =
+          await AppDatabase.instance.portableSnapshotLastAt();
+      if (lastSnapshotAt != null &&
+          DateTime.now().toUtc().difference(lastSnapshotAt) <
+              const Duration(minutes: 5)) {
+        return;
+      }
       final locations = await StorageLocationService.instance
           .portableDataLocationsIfAvailable();
       if (locations['databaseUri'] == null) return;
