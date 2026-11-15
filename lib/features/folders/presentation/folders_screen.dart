@@ -179,6 +179,7 @@ class _FoldersScreenState extends State<FoldersScreen> {
                       const SizedBox(height: 16),
                       Flexible(
                         child: SingleChildScrollView(
+                          shrinkWrap: true,
                           child: Column(
                             mainAxisSize: MainAxisSize.min,
                             children: [
