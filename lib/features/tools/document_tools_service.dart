@@ -2225,10 +2225,26 @@ class DocumentToolsService {
         final digest = row['sha256'] as String?;
         final linkedUri = digest == null ? null : pdfUris[digest];
         if (alreadyPresent) {
+          final existingValues = <String, Object?>{};
           if (linkedUri != null) {
-            await txn.update('documents', {'storage_uri': linkedUri},
-              where: 'id = ?', whereArgs: [newId]);
+            existingValues['storage_uri'] = linkedUri;
             linkedDocuments++;
+          }
+          // A snapshot that records a PDF in Recycle Bin must restore that
+          // state even when the same PDF row already exists in this database.
+          // Never clear a local deleted_at marker from an older active snapshot.
+          if (row['deleted_at'] != null) {
+            existingValues['deleted_at'] = row['deleted_at'];
+            existingValues['updated_at'] = row['updated_at'] ??
+                DateTime.now().toUtc().toIso8601String();
+          }
+          if (existingValues.isNotEmpty) {
+            await txn.update(
+              'documents',
+              existingValues,
+              where: 'id = ?',
+              whereArgs: [newId],
+            );
           }
           continue;
         }
