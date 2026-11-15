@@ -10,6 +10,7 @@ import 'package:path_provider/path_provider.dart';
 import '../../core/database/app_database.dart';
 import '../../core/storage/byte_stream_file.dart';
 import '../../core/storage/storage_location_service.dart';
+import '../../core/storage/storage_access_notifier.dart';
 import '../documents/data/document_repository.dart';
 import '../folders/data/folder_repository.dart';
 import 'document_tools_service.dart';
@@ -337,12 +338,35 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
     }
   });
 
+  Future<Map<String, Object?>> _recoverLoosePdfsWithAccess() async {
+    if (Platform.isAndroid &&
+        !await StorageAccessNotifier.instance.refresh(attempts: 10)) {
+      throw StateError(
+        'PDF recovery stopped. Grant Full internal storage access to DocsGrid, then retry.',
+      );
+    }
+    return _tools.recoverLoosePortablePdfs();
+  }
+
+  String _formatRecoveryFailures(Object? value, {String key = 'failures'}) {
+    final raw = value is Map ? value[key] : null;
+    if (raw is! List || raw.isEmpty) return '';
+    return raw.take(3).map((item) {
+      if (item is! Map) return item.toString();
+      final name = item['name']?.toString() ?? 'PDF';
+      final error = item['error']?.toString() ?? 'Unknown storage error';
+      return '$name: $error';
+    }).join('\\n');
+  }
+
   Future<void> _recoverLoosePortablePdfs() => _run(() async {
-    final recovered = await _tools.recoverLoosePortablePdfs();
+    final recovered = await _recoverLoosePdfsWithAccess();
     if (mounted) {
+      final failures = _formatRecoveryFailures(recovered);
       setState(() => _message =
           'PDF recovery finished. Added: ${recovered['added']}; '
-          'duplicates: ${recovered['duplicates']}; failed: ${recovered['failed']}. '
+          'duplicates: ${recovered['duplicates']}; failed: ${recovered['failed']}.'
+          '${failures.isEmpty ? '' : '\\n$failures'} '
           'PDF files and folder names were recovered. Categories, tags, reminders, '
           'history and settings require a valid DocsGrid backup.');
     }
@@ -420,18 +444,22 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
 
   Future<void> _restorePortableSnapshot({bool autoDetect = false}) => _run(() async {
     final storage = StorageLocationService.instance;
-    if (autoDetect) {
-      // Find the existing Android/media/DocsGrid tree automatically. Android
-      // requires its special all-files access switch for this personal-use build.
-      if (Platform.isAndroid && !await storage.hasAllFilesAccess()) {
+    if (Platform.isAndroid &&
+        !await StorageAccessNotifier.instance.refresh(attempts: 10)) {
+      if (autoDetect) {
         _awaitingAllFilesPermission = true;
         await storage.requestAllFilesAccess();
         if (mounted) {
           setState(() => _message =
-              'Allow Full internal storage access for DocsGrid. Recovery will scan automatically when you return.');
+              'Allow Full internal storage access for DocsGrid. Recovery will resume when you return.');
         }
         return;
       }
+      throw StateError(
+        'Restore stopped. Grant Full internal storage access to DocsGrid before recovering portable data.',
+      );
+    }
+    if (autoDetect) {
       await storage.portableDataLocations();
       final portableBackups = await _tools.listPortableBackupArchives();
       if (portableBackups.isNotEmpty) {
@@ -447,11 +475,13 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
       if (!Platform.isAndroid) {
         throw StateError('No verified DocsGrid snapshot was found in the selected folder.');
       }
-      final recovered = await _tools.recoverLoosePortablePdfs();
+      final recovered = await _recoverLoosePdfsWithAccess();
       if (mounted) {
+        final failures = _formatRecoveryFailures(recovered);
         setState(() => _message =
             'PDF discovery finished. Added: ${recovered['added']}; '
-            'duplicates: ${recovered['duplicates']}; failed: ${recovered['failed']}. '
+            'duplicates: ${recovered['duplicates']}; failed: ${recovered['failed']}.'
+            '${failures.isEmpty ? '' : '\\n$failures'} '
             'Only PDFs and their folder names can be reconstructed this way. '
             'Categories, tags, reminders, history and settings need a valid backup.');
       }
@@ -482,17 +512,22 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
     if (confirmed != true) return;
     final result = await _tools.restoreLatestPortableMetadataSnapshot();
     if (mounted) {
+      final failures = _formatRecoveryFailures(result, key: 'hashFailures');
+      final hashFailureCount = (result['hashFailures'] as List?)?.length ?? 0;
       setState(() => _message =
         'Recovery complete. '
         'Folders: ${result['folders']}; PDFs added: ${result['documentsAdded']}; '
-        'PDFs linked: ${result['documentsLinked']}; missing PDFs: ${result['pdfsMissing']}.\n'
+        'PDFs linked: ${result['documentsLinked']}; missing PDFs: ${result['pdfsMissing']}.\\n'
+        'PDF hash failures: $hashFailureCount'
+        '${failures.isEmpty ? '' : '\\n$failures'}\\n'
         'Categories: ${result['categories']}; tags: ${result['tags']}; '
         'PDF-tag links: ${result['documentTags']}; reminders: ${result['reminders']}; '
         'activity/history: ${result['activity']}; OCR indexes: ${result['ocrIndexes']}; '
-        'settings: ${result['settings']}.\n'
-        'Existing data was retained. Reminder records are restored to the app database; '
+        'settings: ${result['settings']}.\\n'
+        'Existing data, including Recycle Bin state, was retained. Reminder records are restored to the app database; '
         'Android notification delivery is rescheduled separately.');
     }
+
   });
 
   Future<void> _openSearchResult(Map<String, Object?> result) async {
@@ -699,15 +734,25 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state != AppLifecycleState.resumed || !_awaitingAllFilesPermission) return;
-    _awaitingAllFilesPermission = false;
+    if (state != AppLifecycleState.resumed) return;
     unawaited(() async {
       try {
-        if (await StorageLocationService.instance.hasAllFilesAccess() && mounted) {
-          await _restorePortableSnapshot(autoDetect: true);
+        final granted =
+            await StorageAccessNotifier.instance.refresh(attempts: 10);
+        if (!mounted) return;
+        if (_awaitingAllFilesPermission) {
+          _awaitingAllFilesPermission = false;
+          if (granted) {
+            await _restorePortableSnapshot(autoDetect: true);
+          } else {
+            setState(() => _message =
+                'Storage permission is still off. Enable Full internal storage access and return to DocsGrid.');
+          }
         }
       } catch (error) {
-        if (mounted) setState(() => _message = 'Could not verify storage permission: $error');
+        if (mounted) {
+          setState(() => _message = 'Could not verify storage permission: $error');
+        }
       }
     }());
   }
