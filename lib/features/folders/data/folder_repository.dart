@@ -87,7 +87,7 @@ class FolderRepository {
         continue;
       }
       try {
-        final child = await create(name: name, parentId: parentId);
+        final child = await create(name: name, parentId: parentId, reuseExistingPhysical: true);
         parentId = child.id;
       } on StateError {
         // Another operation could create the sibling after the read.
@@ -288,7 +288,7 @@ class FolderRepository {
     return parentUri;
   }
 
-  Future<Folder> create({required String name, String? parentId}) async {
+  Future<Folder> create({required String name, String? parentId, bool reuseExistingPhysical = false}) async {
     final cleaned = validateFolderName(name);
     final db = await _database.database;
     final storage = StorageLocationService.instance;
@@ -319,8 +319,28 @@ class FolderRepository {
         ? selectedRootUri
         : await ensurePhysicalStorageUri(parentId);
     String? physicalUri;
+    var createdPhysicalDirectory = false;
     if (parentStorageUri != null) {
-      physicalUri = await storage.createDirectory(parentUri: parentStorageUri, name: cleaned);
+      if (reuseExistingPhysical) {
+        try {
+          final existingUri = await storage.findChildUri(
+            parentUri: parentStorageUri,
+            name: cleaned,
+          );
+          // An existing file is NOT a folder. Never replace it or delete it.
+          await storage.listDirectory(existingUri);
+          physicalUri = existingUri;
+        } catch (error) {
+          if (!StorageLocationService.isNotFoundError(error)) rethrow;
+        }
+      }
+      if (physicalUri == null) {
+        physicalUri = await storage.createDirectory(
+          parentUri: parentStorageUri,
+          name: cleaned,
+        );
+        createdPhysicalDirectory = true;
+      }
     }
     final now = DateTime.now().toUtc().toIso8601String();
     final folder = Folder(
@@ -368,7 +388,8 @@ class FolderRepository {
         });
       });
     } catch (_) {
-      if (physicalUri != null) {
+      // Never remove a pre-existing directory reused by recovery on rollback.
+      if (createdPhysicalDirectory && physicalUri != null) {
         try { await storage.deletePdf(physicalUri); } catch (_) {}
       }
       rethrow;
