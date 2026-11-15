@@ -244,7 +244,24 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
           Expanded(
             child: selectedPath == null
           ? folders.isEmpty
-              ? _scanning
+              ? widget.scanCache?.permissionRequired == true
+                  ? Center(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Text('Phone storage permission required'),
+                          const SizedBox(height: 12),
+                          FilledButton.icon(
+                            onPressed: widget.onRequestPermission == null
+                                ? null
+                                : () => widget.onRequestPermission!(),
+                            icon: const Icon(Icons.folder_open_outlined),
+                            label: const Text('Allow Phone storage'),
+                          ),
+                        ],
+                      ),
+                    )
+                  : _scanning
                   ? const Center(
                       child: Column(
                         mainAxisSize: MainAxisSize.min,
@@ -262,9 +279,17 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
                           mainAxisSize: MainAxisSize.min,
                           children: [
                             const Text('No PDF folders found.'),
-                            if (_scanError != null) ...[
+                            if ((_scanError ?? widget.scanCache?.scanError) != null) ...[
                               const SizedBox(height: 8),
-                              Text(_scanError!, textAlign: TextAlign.center),
+                              Text((_scanError ?? widget.scanCache?.scanError)!, textAlign: TextAlign.center),
+                            ],
+                            if (widget.onRefresh != null) ...[
+                              const SizedBox(height: 12),
+                              TextButton.icon(
+                                onPressed: () => widget.onRefresh!(),
+                                icon: const Icon(Icons.refresh),
+                                label: const Text('Retry scan'),
+                              ),
                             ],
                           ],
                         ),
