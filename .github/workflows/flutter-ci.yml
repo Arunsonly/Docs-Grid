@@ -357,3 +357,31 @@ jobs:
         run: flutter test test/performance --reporter expanded
       - name: Build iOS without code signing
         run: flutter build ios --no-codesign
+
+  publish_android_apk:
+    name: Publish directly downloadable debug APK
+    needs: android
+    if: github.event_name == 'push' && github.ref == 'refs/heads/fix/grid-material-and-recovery' && contains(github.event.head_commit.message, '[apk-release]')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download the tested Android APK
+        uses: actions/download-artifact@v4
+        with:
+          name: docsgrid-android-debug-apk
+          path: dist
+      - name: Publish direct .apk asset to a prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test -s dist/app-debug.apk
+          mv dist/app-debug.apk dist/DocsGrid-Purple-PDF-Icon-Debug.apk
+          gh release create "docsgrid-purple-icon-${GITHUB_SHA::12}" \
+            "dist/DocsGrid-Purple-PDF-Icon-Debug.apk#DocsGrid-Purple-PDF-Icon-Debug.apk" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --prerelease \
+            --title "DocsGrid - Purple PDF Icon (Debug)" \
+            --notes "Android debug APK built and tested by CI from commit $GITHUB_SHA. Purple PDF document launcher icon. Debug build, not a production release."
