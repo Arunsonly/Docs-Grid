@@ -814,12 +814,15 @@ class DocumentToolsService {
   /// Rebuilds the library index from surviving shared PDFs after reinstall.
   /// PDFs are copied into the active library and SHA-256 verified. Source files
   /// remain untouched; folder names are rebuilt from their paths.
+  /// Rebuilds the library index only from PDFs already inside DocsGrid's
+  /// managed portable roots. Never scan the whole phone, Downloads, WhatsApp,
+  /// SD-card roots or arbitrary SAF grants during DocsGrid restore.
   Future<Map<String, int>> recoverLoosePortablePdfs({
     void Function(int completed, int total)? onProgress,
   }) async {
     await StorageMigrationGate.waitUntilReady();
     if (!Platform.isAndroid) {
-      throw UnsupportedError('Automatic shared-media recovery is currently Android-only.');
+      throw UnsupportedError('Portable DocsGrid PDF recovery is currently Android-only.');
     }
     final storage = StorageLocationService.instance;
     final locations = await storage.portableDataLocations();
@@ -828,7 +831,6 @@ class DocumentToolsService {
     final candidates = <Map<String, Object?>>[];
     final seenUris = <String>{};
     var failed = 0;
-    var mediaStoreComplete = false;
 
     void addCandidate(
       Map<String, Object?> item, {
@@ -848,58 +850,9 @@ class DocumentToolsService {
       });
     }
 
-    // Phone tab's MediaStore index sees shared folders such as Download and
-    // WhatsApp. The old recovery only walked DocsGrid/My Files, so it missed
-    // the files displayed in Phone storage after reinstall.
-    try {
-      if (await storage.hasAllFilesAccess()) {
-        final index = await storage.queryPhonePdfIndex();
-        mediaStoreComplete = index['complete'] == true;
-        final indexedEntries =
-            index['entries'] as List<Map<String, Object?>>;
-        for (final item in indexedEntries) {
-          addCandidate(
-            item,
-            folderPath: StorageLocationService.normalizePhoneFolderPath(
-              item['folderPath'] as String?,
-            ),
-          );
-        }
-      }
-    } catch (_) {
-      // Continue with explicitly granted SAF roots if MediaStore is unavailable.
-    }
-
-    // Include user-granted SAF/cloud roots. If MediaStore has a complete
-    // local-volume index, skip its file:// roots to avoid scanning them twice.
-    final scanRoots = await storage.accessibleStorageRoots();
-    for (var index = 0; index < scanRoots.length; index++) {
-      final root = scanRoots[index];
-      final uri = root['uri']!;
-      if (mediaStoreComplete && uri.startsWith('file://')) continue;
-      final label = index == 0 ? 'Internal' : root['name']!;
-      try {
-        final found = await storage.listStorageTreeRecursively(
-          uri,
-          rootLabel: label,
-          includeEmptyFolders: false,
-        );
-        for (final item in found) {
-          if (item['isDirectory'] == true) continue;
-          addCandidate(
-            item,
-            folderPath: StorageLocationService.normalizePhoneFolderPath(
-              item['folderPath'] as String?,
-            ),
-          );
-        }
-      } catch (_) {
-        failed++;
-      }
-    }
-
-    // Phone's MediaStore deliberately excludes DocsGrid-managed files. Keep
-    // them in recovery too, including the pre-com.docsgrid legacy tree.
+    // The active portable roots point to:
+    // Android/media/com.docsgrid/My Files/Unfiled and /Folders.
+    // Recursing these two roots restores only files that belonged to DocsGrid.
     Future<void> addPortableRoot(
       String uri, {
       required bool preserveFolders,
@@ -929,6 +882,9 @@ class DocumentToolsService {
     if (foldersRoot != null) {
       await addPortableRoot(foldersRoot, preserveFolders: true);
     }
+
+    // Backward compatibility: also check the previous DocsGrid-owned layout.
+    // This is a single known app folder, not a scan of all internal storage.
     final legacyUri = locations['legacyRootUri'];
     if (legacyUri != null && legacyUri.startsWith('file://')) {
       final legacyRoot = Uri.parse(legacyUri).toFilePath();
