@@ -116,13 +116,13 @@ class _FoldersScreenState extends State<FoldersScreen> {
   }
 
   Future<String?> _askName({String title = 'New folder', String initial = ''}) async {
-    final controller = TextEditingController(text: initial);
+    var enteredName = initial;
     final result = await showDialog<String>(
       context: context,
-      builder: (context) => AlertDialog(
+      builder: (dialogContext) => AlertDialog(
         title: Text(title),
-        content: TextField(
-          controller: controller,
+        content: TextFormField(
+          initialValue: initial,
           autofocus: true,
           textCapitalization: TextCapitalization.sentences,
           decoration: const InputDecoration(
@@ -130,18 +130,21 @@ class _FoldersScreenState extends State<FoldersScreen> {
             hintText: 'e.g. Insurance',
             border: OutlineInputBorder(),
           ),
-          onSubmitted: (value) => Navigator.pop(context, value),
+          onChanged: (value) => enteredName = value,
+          onFieldSubmitted: (value) => Navigator.pop(dialogContext, value),
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
-          FilledButton(onPressed: () => Navigator.pop(context, controller.text), child: const Text('Save')),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, enteredName),
+            child: const Text('Save'),
+          ),
         ],
       ),
     );
-    // showDialog completes as soon as the route is popped; wait for the
-    // reverse transition's frame before disposing the TextField controller.
-    await WidgetsBinding.instance.endOfFrame;
-    controller.dispose();
     return result?.trim();
   }
 
@@ -152,7 +155,7 @@ class _FoldersScreenState extends State<FoldersScreen> {
   ) async {
     final allFolders = await _repository.allFoldersWithPaths();
     if (!mounted) return null;
-    final nameController = TextEditingController(text: suggestedName);
+    var pdfName = suggestedName;
     String? destinationId = _currentFolderId;
     final result = await showDialog<ImportDecision>(
       context: context,
@@ -161,9 +164,15 @@ class _FoldersScreenState extends State<FoldersScreen> {
           insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
           child: LayoutBuilder(
             builder: (dialogContext, constraints) {
+              final media = MediaQuery.of(dialogContext);
+              final screenAvailableHeight =
+                  (media.size.height - media.viewInsets.bottom - 48)
+                      .clamp(180.0, media.size.height);
               final availableHeight = constraints.maxHeight.isFinite
-                  ? constraints.maxHeight
-                  : MediaQuery.sizeOf(dialogContext).height * 0.8;
+                  ? (constraints.maxHeight < screenAvailableHeight
+                      ? constraints.maxHeight
+                      : screenAvailableHeight)
+                  : screenAvailableHeight;
               return ConstrainedBox(
                 constraints: BoxConstraints(maxHeight: availableHeight),
                 child: Padding(
@@ -182,9 +191,10 @@ class _FoldersScreenState extends State<FoldersScreen> {
                           child: Column(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              TextField(
-                                controller: nameController,
+                              TextFormField(
+                                initialValue: suggestedName,
                                 autofocus: true,
+                                onChanged: (value) => pdfName = value,
                                 decoration: const InputDecoration(
                                   labelText: 'PDF name',
                                   suffixText: '.pdf',
@@ -269,7 +279,7 @@ class _FoldersScreenState extends State<FoldersScreen> {
                           const SizedBox(width: 8),
                           FilledButton(
                             onPressed: () {
-                              final name = nameController.text.trim();
+                              final name = pdfName.trim();
                               if (name.isEmpty) return;
                               Navigator.pop(
                                 dialogContext,
@@ -292,8 +302,6 @@ class _FoldersScreenState extends State<FoldersScreen> {
         ),
       ),
     );
-    await WidgetsBinding.instance.endOfFrame;
-    nameController.dispose();
     if (result == null) return null;
     // The destination is captured by the dialog state and applied by the
     // repository's import transaction through this one-file review result.
@@ -780,7 +788,9 @@ class _FoldersScreenState extends State<FoldersScreen> {
   @override
   Widget build(BuildContext context) {
     final keyboardVisible = MediaQuery.viewInsetsOf(context).bottom > 0;
-    return PopScope(
+    return Material(
+      color: Theme.of(context).scaffoldBackgroundColor,
+      child: PopScope(
       canPop: _ancestors.isEmpty,
       onPopInvokedWithResult: (didPop, result) {
         if (!didPop && _ancestors.isNotEmpty) {
@@ -790,7 +800,10 @@ class _FoldersScreenState extends State<FoldersScreen> {
       child: Stack(
         fit: StackFit.expand,
         children: [
-          Column(
+          if (keyboardVisible)
+            const SizedBox.expand()
+          else
+            Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         if (_selectedDocumentIds.isNotEmpty && !_isSelectingFolders)
@@ -1280,7 +1293,9 @@ class _FoldersScreenState extends State<FoldersScreen> {
           ),
       ],
           ),
-          if (!_isReorderingFolders && !_isSelectingFolders)
+          if (!keyboardVisible &&
+              !_isReorderingFolders &&
+              !_isSelectingFolders)
             Positioned(
               right: 18,
               bottom: 18,
@@ -1291,6 +1306,7 @@ class _FoldersScreenState extends State<FoldersScreen> {
               ),
             ),
         ],
+      ),
       ),
     );
   }
