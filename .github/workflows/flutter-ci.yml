@@ -6,7 +6,7 @@ concurrency:
 
 on:
   push:
-    branches: [main, feature/complete-ten-features, fix/crop-ocr-performance, feature/docsgrid-document-engine-upgrade, feature/docsgrid-completion-pr19, fix/grid-material-and-recovery]
+    branches: [main, feature/complete-ten-features, fix/crop-ocr-performance, feature/docsgrid-document-engine-upgrade, feature/docsgrid-completion-pr19, fix/grid-material-and-recovery, fix/recovery-phone-browser-regression-20261115]
   pull_request:
     branches: [main, feat/android-hybrid-storage-backup-restore]
   workflow_dispatch:
@@ -360,8 +360,8 @@ jobs:
 
   publish_android_apk:
     name: Publish directly downloadable debug APK
-    needs: android
-    if: github.event_name == 'push' && github.ref == 'refs/heads/fix/grid-material-and-recovery' && contains(github.event.head_commit.message, '[apk-release]')
+    needs: [android, ios]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/fix/recovery-phone-browser-regression-20261115' && contains(github.event.head_commit.message, '[apk-release]')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -377,11 +377,11 @@ jobs:
         run: |
           set -euo pipefail
           test -s dist/app-debug.apk
-          mv dist/app-debug.apk dist/DocsGrid-Purple-PDF-Icon-Debug.apk
-          gh release create "docsgrid-purple-icon-${GITHUB_SHA::12}" \
-            "dist/DocsGrid-Purple-PDF-Icon-Debug.apk#DocsGrid-Purple-PDF-Icon-Debug.apk" \
+          mv dist/app-debug.apk dist/DocsGrid-Recovery-Phone-Fix-Debug.apk
+          gh release create "docsgrid-recovery-phone-${GITHUB_SHA::12}" \
+            "dist/DocsGrid-Recovery-Phone-Fix-Debug.apk#DocsGrid-Purple-PDF-Icon-Debug.apk" \
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
             --prerelease \
-            --title "DocsGrid - Purple PDF Icon (Debug)" \
-            --notes "Android debug APK built and tested by CI from commit $GITHUB_SHA. Purple PDF document launcher icon. Debug build, not a production release."
+            --title "DocsGrid - Recovery & Phone Browser Fix (Debug)" \
+            --notes "Android debug APK built and tested by CI from commit $GITHUB_SHA. Recovery folder reuse, shared cached Phone PDF browser and regression tests. Existing purple icon preserved. Debug build, not a production release."
