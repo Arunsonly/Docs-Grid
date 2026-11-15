@@ -239,27 +239,12 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
         ? const <Map<String, Object?>>[]
         : folders[selectedPath] ?? const [];
 
-    return Scaffold(
-      appBar: AppBar(
-        leading: selectedPath == null
-            ? null
-            : IconButton(
-                tooltip: 'Back to folders',
-                onPressed: () => setState(() => _selectedFolderPath = null),
-                icon: const Icon(Icons.arrow_back),
-              ),
-        title: Text(
-          selectedPath == null ? widget.rootName : _folderName(selectedPath),
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-        ),
-      ),
-      body: Column(
+    final browserBody = Column(
         children: [
           Expanded(
             child: selectedPath == null
           ? folders.isEmpty
-              ? _isScanning
+              ? _scanning
                   ? const Center(
                       child: Column(
                         mainAxisSize: MainAxisSize.min,
@@ -395,14 +380,62 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
               alignment: Alignment.centerLeft,
               child: Text(
                 selectedPath == null
-                    ? '${folders.length} folders${_isScanning ? ' · Scanning…' : ''}'
-                    : '${selectedFiles.length} PDFs${_isScanning ? ' · Scanning…' : ''}',
+                    ? '${folders.length} folders${_scanning ? ' · Scanning…' : ''}'
+                    : '${selectedFiles.length} PDFs${_scanning ? ' · Scanning…' : ''}',
                 style: Theme.of(context).textTheme.bodySmall,
               ),
             ),
           ),
         ],
+      );
+    if (widget.embedded) {
+      return Column(
+        children: [
+          Row(children: [
+            if (selectedPath != null)
+              IconButton(
+                tooltip: 'Back to folders',
+                onPressed: () => setState(() => _selectedFolderPath = null),
+                icon: const Icon(Icons.arrow_back),
+              ),
+            Expanded(
+              child: Padding(
+                padding: const EdgeInsets.only(left: 16),
+                child: Text(
+                  selectedPath == null ? 'Phone PDF folders' : _folderName(selectedPath),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+              ),
+            ),
+            if (widget.onRefresh != null)
+              IconButton(
+                tooltip: 'Refresh Phone storage',
+                onPressed: () => widget.onRefresh!(),
+                icon: const Icon(Icons.refresh),
+              ),
+          ]),
+          Expanded(child: browserBody),
+        ],
+      );
+    }
+    return Scaffold(
+      appBar: AppBar(
+        leading: selectedPath == null
+            ? null
+            : IconButton(
+                tooltip: 'Back to folders',
+                onPressed: () => setState(() => _selectedFolderPath = null),
+                icon: const Icon(Icons.arrow_back),
+              ),
+        title: Text(
+          selectedPath == null ? widget.rootName : _folderName(selectedPath),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
       ),
+      body: browserBody,
     );
   }
 }
