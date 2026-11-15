@@ -288,74 +288,131 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     await _scanPhoneStorage(openBrowser: true);
   }
 
+  Stream<Map<String, Object?>> _streamPhoneStorageEntries(
+    List<Map<String, String>> roots,
+  ) async* {
+    final storage = StorageLocationService.instance;
+    final seenUris = <String>{};
+    for (final root in roots) {
+      try {
+        await for (final item in storage.streamPdfFiles(root['uri']!)) {
+          final uri = item['uri'] as String? ?? '';
+          if (uri.isEmpty || !seenUris.add(uri)) continue;
+          yield item;
+        }
+      } catch (error) {
+        yield <String, Object?>{
+          'name': root['name'] ?? 'Storage',
+          'uri': root['uri']!,
+          'folderPath': '',
+          'isDirectory': true,
+          'isInaccessible': true,
+          'accessError': error.toString(),
+        };
+      }
+    }
+  }
+
+  void _applyPhoneScanResults(List<Map<String, Object?>> entries) {
+    final inaccessible = entries.where((e) => e['isInaccessible'] == true).length;
+    final pdfs = entries.where((e) => e['isDirectory'] != true).toList();
+    final bytes = pdfs.fold<int>(0, (sum, entry) {
+      final size = (entry['sizeBytes'] as num?)?.toInt() ?? 0;
+      return sum + (size < 0 ? 0 : size);
+    });
+    final unknownSizes =
+        pdfs.where((entry) => entry['sizeKnown'] == false).length;
+    if (!mounted) return;
+    setState(() {
+      _phoneStorageBytes = inaccessible > 0 && inaccessible == entries.length
+          ? null
+          : bytes;
+      _phoneInaccessibleCount = inaccessible;
+      _phoneUnknownSizeCount = unknownSizes;
+      _phoneScanIncomplete = inaccessible > 0;
+      _phoneEntries = List<Map<String, Object?>>.from(entries);
+      _phoneScanCompleted = true;
+      _phoneScanLoading = false;
+    });
+  }
+
   Future<void> _scanPhoneStorage({required bool openBrowser}) async {
     final storage = StorageLocationService.instance;
-    if (mounted) setState(() { _phoneScanLoading = true; _phoneScanCompleted = false; });
+    if (mounted) {
+      setState(() {
+        _phoneScanLoading = true;
+        _phoneScanCompleted = false;
+      });
+    }
     try {
       if (Platform.isAndroid && !await storage.hasAllFilesAccess()) {
         final granted = await storage.accessibleStorageRoots();
         if (granted.isEmpty) {
-          if (mounted) setState(() {
-            _phoneStorageBytes = null;
-            _phoneInaccessibleCount = 0;
-            _phoneScanIncomplete = false;
-            _phoneEntries = [];
-            _phoneScanCompleted = false;
-          });
+          if (mounted) {
+            setState(() {
+              _phoneStorageBytes = null;
+              _phoneInaccessibleCount = 0;
+              _phoneScanIncomplete = false;
+              _phoneEntries = [];
+              _phoneScanCompleted = false;
+            });
+          }
           if (openBrowser && mounted) {
             await storage.requestAllFilesAccess();
-            _message('Grant Android storage access or a SAF location. No folder picker was opened.');
+            unawaited(StorageAccessNotifier.instance.refresh(attempts: 10));
+            _message('Grant Full internal storage access or select an accessible SAF folder.');
           }
           return;
         }
       }
+
       final roots = await storage.accessibleStorageRoots();
       if (roots.isEmpty) {
-        if (mounted) setState(() {
-              _phoneStorageBytes = null;
+        if (mounted) {
+          setState(() {
+            _phoneStorageBytes = null;
             _phoneInaccessibleCount = 0;
             _phoneScanIncomplete = false;
             _phoneUnknownSizeCount = 0;
-              _phoneEntries = [];
+            _phoneEntries = [];
             _phoneScanCompleted = true;
           });
+        }
         return;
       }
-      final entries = <Map<String,Object?>>[], seen = <String>{};
-      var inaccessibleRoots=0;
-      for(final root in roots) {
-        try {
-          final found=await storage.listStorageTreeRecursively(root['uri']!,
-            rootLabel:root['name']!, includeEmptyFolders:false);
-          for(final item in found) {
-            final uri=item['uri'] as String? ?? '';
-            if(item['isDirectory']!=true && uri.isNotEmpty && !seen.add(uri)) continue;
-            entries.add(item);
+
+      final stream = _streamPhoneStorageEntries(roots);
+      if (openBrowser) {
+        // Push the browser immediately. It displays each PDF folder as soon as
+        // the BFS stream discovers it instead of waiting for the whole device.
+        await _showRecursiveStoragePdfs(
+          'Internal Storage',
+          const <Map<String, Object?>>[],
+          pdfStream: stream,
+        );
+      } else {
+        final entries = <Map<String, Object?>>[];
+        await for (final item in stream) {
+          entries.add(item);
+          if (entries.length % 24 == 0 && mounted) {
+            // Update Home's storage metric progressively; the first screen
+            // does not wait for a complete tree walk.
+            _applyPhoneScanResults(entries);
+            if (mounted) {
+              setState(() {
+                _phoneScanCompleted = false;
+                _phoneScanLoading = true;
+              });
+            }
           }
-        } catch(error) {
-          inaccessibleRoots++;
-          entries.add({'name':root['name']!,'uri':root['uri']!,'folderPath':'',
-            'isDirectory':true,'isInaccessible':true,'accessError':error.toString()});
         }
+        _applyPhoneScanResults(entries);
       }
-      final pdfs=entries.where((e)=>e['isDirectory']!=true).toList();
-      final bytes=pdfs.fold<int>(0,(sum,e) {
-        final size = (e['sizeBytes'] as num?)?.toInt() ?? 0;
-        return sum + (size < 0 ? 0 : size);
-      });
-      final unknownSizes = pdfs.where((entry) => entry['sizeKnown'] == false).length;
-      if(!mounted)return;
-      setState(() {
-        _phoneStorageBytes = inaccessibleRoots == roots.length ? null : bytes;
-        _phoneInaccessibleCount = entries.where((entry) => entry['isInaccessible'] == true).length;
-        _phoneUnknownSizeCount = unknownSizes;
-        _phoneScanIncomplete = _phoneInaccessibleCount > 0;
-        _phoneEntries=entries;
-        _phoneScanCompleted = true;
-      });
-      if(openBrowser) await _showRecursiveStoragePdfs('Internal Storage',entries);
-      if(inaccessibleRoots>0 && mounted) _message('$inaccessibleRoots granted location(s) could not be read; they were not marked empty.');
-    } catch(error) {
+
+      if (_phoneInaccessibleCount > 0 && mounted) {
+        _message('Some granted storage folders could not be read; they were not marked empty.');
+      }
+    } catch (error) {
       if (mounted) {
         setState(() {
           _phoneStorageBytes = null;
@@ -372,11 +429,20 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     }
   }
 
-  Future<void> _showRecursiveStoragePdfs(String rootName, List<Map<String, Object?>> entries, {String initialPath = ''}) async {
+  Future<void> _showRecursiveStoragePdfs(
+    String rootName,
+    List<Map<String, Object?>> entries, {
+    String initialPath = '',
+    Stream<Map<String, Object?>>? pdfStream,
+  }) async {
     if (!mounted) return;
     await Navigator.of(context).push<void>(MaterialPageRoute(
       builder: (_) => PhoneStorageBrowserScreen(
-        rootName: rootName, entries: entries, onOpenPdf: _openExternalStoragePdf,
+        rootName: rootName,
+        entries: entries,
+        pdfStream: pdfStream,
+        onScanComplete: _applyPhoneScanResults,
+        onOpenPdf: _openExternalStoragePdf,
         onMovePdf: _movePhonePdfToGrid,
         onRenamePdf: _renamePhonePdf,
         onSharePdf: _sharePhonePdf,
