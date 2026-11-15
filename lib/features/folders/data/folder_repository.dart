@@ -58,6 +58,48 @@ class FolderRepository {
     return cleaned;
   }
 
+  /// Reconstructs a Grid folder path without recreating existing siblings.
+  /// Recovery must reuse the active folder ID, preserving document references,
+  /// order and physical storage handles. Normal user-created duplicates remain
+  /// forbidden by [create].
+  Future<String?> ensureRecoveredFolderPath(String path) async {
+    if (path.isEmpty) return null;
+    // Validate the entire input before any insert to avoid partial folders.
+    final segments = path.split('/').map(validateFolderName).toList();
+    final db = await _database.database;
+    String? parentId;
+
+    Future<String?> existingChild(String name, String? parent) async {
+      final matches = await db.query(
+        'folders',
+        columns: ['id'],
+        where: 'parent_id IS ? AND name = ? COLLATE NOCASE AND deleted_at IS NULL',
+        whereArgs: [parent, name],
+        limit: 1,
+      );
+      return matches.isEmpty ? null : matches.first['id'] as String;
+    }
+
+    for (final name in segments) {
+      final existing = await existingChild(name, parentId);
+      if (existing != null) {
+        parentId = existing;
+        continue;
+      }
+      try {
+        final child = await create(name: name, parentId: parentId);
+        parentId = child.id;
+      } on StateError {
+        // Another operation could create the sibling after the read.
+        // Only recover from a verified name match; propagate any other error.
+        final concurrentChild = await existingChild(name, parentId);
+        if (concurrentChild == null) rethrow;
+        parentId = concurrentChild;
+      }
+    }
+    return parentId;
+  }
+
   Future<List<Folder>> childrenOf(String? parentId) async {
     final db = await _database.database;
     final rows = await db.query(
