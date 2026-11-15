@@ -10,6 +10,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../data/document_repository.dart';
 import '../../../core/storage/storage_location_service.dart';
+import '../../../core/storage/storage_access_notifier.dart';
 import '../../categories/data/category_repository.dart';
 import '../../folders/data/folder_repository.dart';
 import '../../tools/document_tools_service.dart';
@@ -1630,14 +1631,26 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                   )),
                   const SizedBox(height: 14),
                   Row(children: [
-                    Expanded(child: _dashboardStorageMetric(
-                      icon: Icons.phone_android_outlined,
-                      title: 'Phone storage',
-                      value: _phoneStorageBytes == null
-                          ? 'Permission needed'
-                          : '${_phoneScanIncomplete || _phoneUnknownSizeCount > 0 ? 'At least ' : ''}${_size(_phoneStorageBytes!)} used',
-                      onTap: _browsePhoneStorage,
-                    )),
+                    Expanded(
+                      child: ValueListenableBuilder<bool?>(
+                        valueListenable: StorageAccessNotifier.instance.granted,
+                        builder: (context, accessGranted, _) {
+                          final value = accessGranted == false
+                              ? 'Permission needed'
+                              : accessGranted == null
+                                  ? 'Checking permission…'
+                                  : _phoneStorageBytes == null
+                                      ? (_phoneScanLoading ? 'Scanning…' : 'Access granted')
+                                      : '${_phoneScanIncomplete || _phoneUnknownSizeCount > 0 ? 'At least ' : ''}${_size(_phoneStorageBytes!)} used';
+                          return _dashboardStorageMetric(
+                            icon: Icons.phone_android_outlined,
+                            title: 'Phone storage',
+                            value: value,
+                            onTap: _browsePhoneStorage,
+                          );
+                        },
+                      ),
+                    ),
                     const SizedBox(width: 10),
                     Expanded(child: _dashboardStorageMetric(
                       icon: Icons.folder_outlined,
