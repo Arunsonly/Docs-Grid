@@ -281,7 +281,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
       if (recover == true && mounted) {
         final result = await _tools.recoverLoosePortablePdfs(
           onProgress: (completed, total) {
-            if (mounted) setState(() => _message = 'Recovering PDFs: $completed of $total');
+            if (mounted) setState(() => _message = 'Recovering DocsGrid PDFs: $completed of $total');
           },
         );
         if (mounted) {
@@ -302,7 +302,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
     final recovered = await _tools.recoverLoosePortablePdfs(
       onProgress: (completed, total) {
         if (mounted) {
-          setState(() => _message = 'Recovering PDFs: $completed of $total');
+          setState(() => _message = 'Recovering DocsGrid PDFs: $completed of $total');
         }
       },
     );
@@ -359,7 +359,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
           content: Text(
             'No backup archive with user data was found. A ZIP may be readable but '
             'contain only default categories and no PDFs or folders. You can rebuild '
-            'the Grid library from surviving Phone PDFs; categories, tags, reminders, '
+            'the DocsGrid library from PDFs inside its managed folders; categories, tags, reminders, '
             'history and settings require a non-empty DocsGrid backup.\n\n$error',
           ),
           actions: [
@@ -377,7 +377,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
       if (useLoosePdfs == true) {
         final recovered = await _tools.recoverLoosePortablePdfs(
           onProgress: (completed, total) {
-            if (mounted) setState(() => _message = 'Recovering PDFs: $completed of $total');
+            if (mounted) setState(() => _message = 'Recovering DocsGrid PDFs: $completed of $total');
           },
         );
         if (mounted) {
@@ -421,7 +421,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
       }
       final recovered = await _tools.recoverLoosePortablePdfs(
         onProgress: (completed, total) {
-          if (mounted) setState(() => _message = 'Recovering PDFs: $completed of $total');
+          if (mounted) setState(() => _message = 'Recovering DocsGrid PDFs: $completed of $total');
         },
       );
       if (mounted) {
@@ -457,7 +457,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
     if (confirmed != true) return;
     final result = await _tools.restoreLatestPortableMetadataSnapshot(
       onProgress: (completed, total) {
-        if (mounted) setState(() => _message = 'Recovering PDFs: $completed of $total');
+        if (mounted) setState(() => _message = 'Recovering DocsGrid PDFs: $completed of $total');
       },
     );
     if (mounted) {
