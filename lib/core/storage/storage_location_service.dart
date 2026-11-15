@@ -319,13 +319,32 @@ class StorageLocationService {
 
     while (nextIndex < queue.length) {
       final current = queue[nextIndex++];
-      if (current.depth > maxDepth || !visited.add(current.uri)) continue;
+      if (!visited.add(current.uri)) continue;
+      if (current.depth > maxDepth) {
+        yield <String, Object?>{
+          'name': current.path.isEmpty ? 'Storage root' : current.path.split('/').last,
+          'uri': current.uri,
+          'folderPath': current.path,
+          'isDirectory': true,
+          'isInaccessible': true,
+          'accessError': 'Folder exceeded the safe scan depth.',
+        };
+        continue;
+      }
 
       List<Map<String, Object?>> children;
       try {
         children = await listDirectory(current.uri);
-      } catch (_) {
-        // A protected or revoked child folder must not block readable siblings.
+      } catch (error) {
+        // Preserve readable siblings, but never report partial scans as complete.
+        yield <String, Object?>{
+          'name': current.path.isEmpty ? 'Storage root' : current.path.split('/').last,
+          'uri': current.uri,
+          'folderPath': current.path,
+          'isDirectory': true,
+          'isInaccessible': true,
+          'accessError': error.toString(),
+        };
         continue;
       }
 
