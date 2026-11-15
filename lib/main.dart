@@ -20,6 +20,7 @@ import 'core/storage/storage_location_service.dart';
 import 'core/storage/storage_access_notifier.dart';
 import 'core/storage/portable_snapshot_scheduler.dart';
 import 'features/tools/document_tools_screen.dart' show DocumentToolsScreen;
+import 'features/tools/document_tools_service.dart';
 
 final GlobalKey<NavigatorState> docsGridNavigatorKey = GlobalKey<NavigatorState>();
 
