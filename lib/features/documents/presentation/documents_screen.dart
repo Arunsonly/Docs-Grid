@@ -47,11 +47,9 @@ class _DocumentsScreenState extends State<DocumentsScreen> with WidgetsBindingOb
   int _totalDocumentCount = 0;
   int _starredCount = 0;
   int? _phoneStorageBytes;
-  int _phoneInaccessibleCount = 0;
   bool _phoneScanIncomplete = false;
   int _phoneUnknownSizeCount = 0;
   bool _phoneScanLoading = false;
-  bool _phoneScanCompleted = false;
   int _trashCount = 0;
   List<Map<String, Object?>> _phoneRecent = [];
   List<DocumentRecord> _gridRecent = [];
@@ -290,10 +288,8 @@ class _DocumentsScreenState extends State<DocumentsScreen> with WidgetsBindingOb
     _phoneStorageBytes = cache.isComplete || cache.entries.isNotEmpty
         ? cache.pdfBytes
         : null;
-    _phoneInaccessibleCount = cache.inaccessibleCount;
     _phoneUnknownSizeCount = cache.unknownSizeCount;
     _phoneScanIncomplete = cache.inaccessibleCount > 0 || !cache.isComplete;
-    _phoneScanCompleted = cache.isComplete;
     _phoneScanLoading = cache.isScanning;
   }
 
@@ -1604,13 +1600,16 @@ class _DocumentsScreenState extends State<DocumentsScreen> with WidgetsBindingOb
                       child: ValueListenableBuilder<bool?>(
                         valueListenable: StorageAccessNotifier.instance.granted,
                         builder: (context, accessGranted, _) {
-                          final value = accessGranted == false
+                          final cache = PhoneStorageScanCache.instance;
+                          final value = cache.permissionRequired
                               ? 'Permission needed'
-                              : accessGranted == null
-                                  ? 'Checking permission…'
-                                  : _phoneStorageBytes == null
-                                      ? (_phoneScanLoading ? 'Scanning…' : 'Access granted')
-                                      : '${_phoneScanIncomplete || _phoneUnknownSizeCount > 0 ? 'At least ' : ''}${_size(_phoneStorageBytes!)} used';
+                              : cache.scanError != null && _phoneStorageBytes == null
+                                  ? 'PDF scan error'
+                                  : accessGranted == null && _phoneStorageBytes == null && !_phoneScanLoading
+                                      ? 'Checking storage…'
+                                      : _phoneStorageBytes == null
+                                          ? (_phoneScanLoading ? 'Scanning PDFs…' : 'No PDF size yet')
+                                          : '${_size(_phoneStorageBytes!)} PDFs${_phoneScanLoading ? ' · Scanning…' : (_phoneScanIncomplete || _phoneUnknownSizeCount > 0 ? ' · Partial' : '')}';
                           return _dashboardStorageMetric(
                             icon: Icons.phone_android_outlined,
                             title: 'Phone storage',
