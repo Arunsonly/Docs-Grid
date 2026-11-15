@@ -46,6 +46,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
   int _totalDocumentCount = 0;
   int _starredCount = 0;
   int? _phoneStorageBytes;
+  bool? _phoneHasAllFilesAccess;
   bool _phoneScanLoading = false;
   bool _phoneScanCompleted = false;
   StreamSubscription<void>? _storageChangesSubscription;
@@ -426,15 +427,28 @@ class _DocumentsScreenState extends State<DocumentsScreen>
     }
     if (mounted) setState(() { _phoneScanLoading = true; _phoneScanCompleted = false; });
     try {
+      var hasAllFilesAccess = false;
       if (Platform.isAndroid) {
         try {
-          final usage = await storage.phoneStorageUsage();
-          if (mounted) setState(() => _phoneStorageBytes = usage['usedBytes']);
+          // The OS permission is the source of truth. StatFs may fail
+          // independently and must never be interpreted as permission denial.
+          hasAllFilesAccess = await storage.hasAllFilesAccess();
+          if (mounted) {
+            setState(() => _phoneHasAllFilesAccess = hasAllFilesAccess);
+          }
         } catch (_) {
-          // StatFs is supplementary; PDF browsing remains available.
+          if (mounted) setState(() => _phoneHasAllFilesAccess = null);
+        }
+        if (hasAllFilesAccess) {
+          try {
+            final usage = await storage.phoneStorageUsage();
+            if (mounted) setState(() => _phoneStorageBytes = usage['usedBytes']);
+          } catch (_) {
+            // Storage size is supplementary; granted access remains granted.
+          }
         }
       }
-      if (Platform.isAndroid && !await storage.hasAllFilesAccess()) {
+      if (Platform.isAndroid && !hasAllFilesAccess) {
         final granted = await storage.accessibleStorageRoots();
         if (granted.isEmpty) {
           if (mounted) setState(() {
@@ -465,7 +479,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       final entries = <Map<String, Object?>>[];
       final seen = <String>{};
 
-      if (Platform.isAndroid && await storage.hasAllFilesAccess()) {
+      if (Platform.isAndroid && hasAllFilesAccess) {
         try {
           final index = await storage.queryPhonePdfIndex();
           final indexed = index['entries'] as List<Map<String, Object?>>;
@@ -534,7 +548,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         // when MediaStore could not produce a complete index.
         if (mediaStoreComplete && uri.startsWith('file://')) continue;
         if (!mediaStoreComplete && uri.startsWith('file://') &&
-            Platform.isAndroid && await storage.hasAllFilesAccess()) {
+            Platform.isAndroid && hasAllFilesAccess) {
           // Native file-tree recursion is the safe fallback for failed volumes.
         }
         final label = index == 0 ? 'Internal' : root['name']!;
@@ -1917,9 +1931,17 @@ class _DocumentsScreenState extends State<DocumentsScreen>
                     Expanded(child: _dashboardStorageMetric(
                       icon: Icons.phone_android_outlined,
                       title: 'Phone storage',
-                      value: _phoneStorageBytes == null
-                          ? 'Permission needed'
-                          : _size(_phoneStorageBytes!),
+                      value: Platform.isAndroid
+                          ? _phoneHasAllFilesAccess == null
+                              ? (_phoneScanLoading ? 'Checking…' : 'Tap to check')
+                              : !_phoneHasAllFilesAccess!
+                                  ? 'Permission needed'
+                                  : _phoneStorageBytes == null
+                                      ? 'Access granted'
+                                      : _size(_phoneStorageBytes!)
+                          : _phoneStorageBytes == null
+                              ? 'Unavailable'
+                              : _size(_phoneStorageBytes!),
                       onTap: _browsePhoneStorage,
                     )),
                     const SizedBox(width: 10),
