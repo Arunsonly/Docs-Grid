@@ -964,11 +964,23 @@ class DocumentToolsService {
       }
       for (final item in files) {
         final name = item['name']?.toString() ?? 'Unknown PDF';
+        final folderPath = root.preserveFolders
+            ? item['folderPath'] as String
+            : '';
+        String? folderId;
         try {
-          final folderPath = root.preserveFolders
-              ? item['folderPath'] as String
-              : '';
-          final folderId = await folderRepository.ensureRecoveredFolderPath(folderPath);
+          // The PDF basename is never a folder segment. Folder failures and
+          // actual PDF duplicate decisions must be reported separately.
+          folderId = await folderRepository.ensureRecoveredFolderPath(folderPath);
+        } catch (error) {
+          failed++;
+          failures.add({
+            'name': name,
+            'error': 'Could not resolve Grid folder path '                '"${folderPath.isEmpty ? '(root)' : folderPath}": $error',
+          });
+          continue;
+        }
+        try {
           final imported = await documentRepository.importExistingSharedPdf(
             storageUri: item['uri'] as String,
             displayName: name,
@@ -977,11 +989,15 @@ class DocumentToolsService {
           if (imported) {
             added++;
           } else {
+            // Only a verified SHA-256 match in the active Grid DB reaches here.
             duplicates++;
           }
         } catch (error) {
           failed++;
-          failures.add({'name': name, 'error': error.toString()});
+          failures.add({
+            'name': name,
+            'error': 'Grid PDF registration failed after folder resolution: $error',
+          });
         }
       }
     }
