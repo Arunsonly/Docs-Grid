@@ -545,7 +545,9 @@ class _FoldersScreenState extends State<FoldersScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return PopScope(
+    return Material(
+      type: MaterialType.transparency,
+      child: PopScope(
       canPop: _ancestors.isEmpty,
       onPopInvokedWithResult: (didPop, result) {
         if (!didPop && _ancestors.isNotEmpty) {
@@ -937,6 +939,7 @@ class _FoldersScreenState extends State<FoldersScreen> {
             ),
           ),
       ],
+      ),
       ),
     );
   }
