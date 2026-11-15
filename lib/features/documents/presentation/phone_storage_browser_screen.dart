@@ -2,6 +2,8 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../../../core/storage/phone_storage_scan_cache.dart';
+
 class PhoneStorageBrowserScreen extends StatefulWidget {
   const PhoneStorageBrowserScreen({
     super.key,
@@ -9,6 +11,10 @@ class PhoneStorageBrowserScreen extends StatefulWidget {
     required this.entries,
     this.pdfStream,
     this.onScanComplete,
+    this.scanCache,
+    this.embedded = false,
+    this.onRequestPermission,
+    this.onRefresh,
     required this.onOpenPdf,
     this.onMovePdf,
     this.onRenamePdf,
@@ -20,6 +26,10 @@ class PhoneStorageBrowserScreen extends StatefulWidget {
   final String rootName;
   final List<Map<String, Object?>> entries;
   final Stream<Map<String, Object?>>? pdfStream;
+  final PhoneStorageScanCache? scanCache;
+  final bool embedded;
+  final Future<void> Function()? onRequestPermission;
+  final Future<void> Function()? onRefresh;
   final ValueChanged<List<Map<String, Object?>>>? onScanComplete;
   final Future<void> Function(String uri, String name) onOpenPdf;
   final Future<bool> Function(String uri, String name)? onMovePdf;
@@ -42,10 +52,11 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
   bool _isScanning = false;
   String? _scanError;
 
-  List<Map<String, Object?>> get _entries => [
+  List<Map<String, Object?>> get _entries => widget.scanCache?.entries ?? [
         ...widget.entries,
         ..._streamedEntries,
       ];
+  bool get _scanning => widget.scanCache?.isScanning ?? _isScanning;
 
   @override
   void initState() {
@@ -200,11 +211,28 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
     } else if (action == 'trash') {
       sourceChanged = await widget.onTrashPdf?.call(uri, name) ?? false;
     }
-    if (sourceChanged && mounted) Navigator.of(context).pop();
+    if (sourceChanged && mounted) {
+      if (widget.embedded) {
+        setState(() => _selectedFolderPath = null);
+      } else {
+        Navigator.of(context).pop();
+      }
+    }
   }
 
   @override
   Widget build(BuildContext context) {
+    final cache = widget.scanCache;
+    if (cache != null) {
+      return AnimatedBuilder(
+        animation: cache,
+        builder: (context, _) => _buildBrowser(context),
+      );
+    }
+    return _buildBrowser(context);
+  }
+
+  Widget _buildBrowser(BuildContext context) {
     final folders = _directPdfFolders;
     final selectedPath = _selectedFolderPath;
     final selectedFiles = selectedPath == null
