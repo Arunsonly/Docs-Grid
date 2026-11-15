@@ -29,6 +29,7 @@ class PhoneStorageScanCache extends ChangeNotifier {
   int inaccessibleCount = 0;
   bool isScanning = false;
   bool isComplete = false;
+  bool hasSettledScan = false;
   bool permissionRequired = false;
   String? scanError;
   Future<void>? _inFlight;
@@ -36,7 +37,7 @@ class PhoneStorageScanCache extends ChangeNotifier {
   Future<void> scan({bool force = false}) async {
     final running = _inFlight;
     if (running != null) return running;
-    if (isComplete && !force) return;
+    if ((isComplete || hasSettledScan) && !force) return;
     final scanFuture = _performScan();
     _inFlight = scanFuture;
     try {
@@ -50,6 +51,7 @@ class PhoneStorageScanCache extends ChangeNotifier {
     isScanning = true;
     scanError = null;
     permissionRequired = false;
+    hasSettledScan = false;
     notifyListeners();
 
     final found = <Map<String, Object?>>[];
@@ -66,6 +68,7 @@ class PhoneStorageScanCache extends ChangeNotifier {
       unknownSizeCount = unknown;
       inaccessibleCount = inaccessible;
       isComplete = completed && !failedRoots;
+      if (completed) hasSettledScan = true;
       notifyListeners();
       flushWatch.reset();
     }
