@@ -98,7 +98,7 @@ class PhoneStorageScanCache extends ChangeNotifier {
               totalBytes += size < 0 ? 0 : size;
               if (entry['sizeKnown'] == false) unknown++;
             }
-            if (found.length % 64 == 0 ||
+            if (found.length == 1 || found.length % 64 == 0 ||
                 flushWatch.elapsedMilliseconds >= 350) {
               publish(completed: false);
             }
