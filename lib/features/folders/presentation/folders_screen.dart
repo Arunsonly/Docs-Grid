@@ -800,13 +800,12 @@ class _FoldersScreenState extends State<FoldersScreen> {
       child: Stack(
         fit: StackFit.expand,
         children: [
-          if (keyboardVisible)
-            const SizedBox.expand()
-          else
-            Column(
+          Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        if (_selectedDocumentIds.isNotEmpty && !_isSelectingFolders)
+        if (_selectedDocumentIds.isNotEmpty &&
+            !_isSelectingFolders &&
+            !keyboardVisible)
           FutureBuilder<List<DocumentRecord>>(
             future: _documentsFuture,
             builder: (context, snapshot) {
@@ -835,8 +834,9 @@ class _FoldersScreenState extends State<FoldersScreen> {
               );
             },
           ),
-        Padding(
-          padding: EdgeInsets.fromLTRB(16, keyboardVisible ? 4 : 12, 16, keyboardVisible ? 0 : 4),
+        if (!keyboardVisible)
+          Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
           child: Row(
             children: [
               Expanded(
@@ -924,7 +924,7 @@ class _FoldersScreenState extends State<FoldersScreen> {
             ),
           ),
         ),
-        if (_isSelectingFolders) _buildFolderSelectionToolbar(),
+        if (_isSelectingFolders && !keyboardVisible) _buildFolderSelectionToolbar(),
         if (_ancestors.isNotEmpty && !keyboardVisible)
           SizedBox(
             height: 44,
@@ -1262,7 +1262,7 @@ class _FoldersScreenState extends State<FoldersScreen> {
             },
           ),
         ),
-        if (_isReorderingFolders)
+        if (_isReorderingFolders && !keyboardVisible)
           SafeArea(
             top: false,
             child: Padding(
