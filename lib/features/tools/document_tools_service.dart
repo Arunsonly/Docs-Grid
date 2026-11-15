@@ -1691,12 +1691,80 @@ class DocumentToolsService {
         name: 'manifest.json',
         contents: jsonEncode(manifest),
       );
+      // Keep the established JSON snapshot format for backward-compatible
+      // recovery, but retain only the newest three complete snapshots.
+      await _prunePortableSnapshots(locations['databaseUri']!, keep: 3);
       return snapshotName;
     } catch (_) {
       // Keep the incomplete directory for diagnostics; without manifest it
       // cannot be selected as a valid recovery snapshot.
       rethrow;
     }
+  }
+
+  Future<void> _prunePortableSnapshots(
+    String databaseUri, {
+    required int keep,
+  }) async {
+    final storage = StorageLocationService.instance;
+    final entries = await storage.listDirectory(databaseUri);
+    final complete = <Map<String, Object?>>[];
+
+    for (final entry in entries) {
+      if (entry['isDirectory'] != true ||
+          !(entry['name'] as String).startsWith('snapshot_')) {
+        continue;
+      }
+      try {
+        final children = await storage.listDirectory(entry['uri'] as String);
+        final manifestEntry = children.where((item) =>
+            item['name'] == 'manifest.json' && item['isDirectory'] != true);
+        if (manifestEntry.isEmpty) continue;
+        final manifest = jsonDecode(await storage.readTextFile(
+          manifestEntry.first['uri'] as String,
+        ));
+        if (manifest is Map &&
+            manifest['format'] == 'DocsGridPortableData' &&
+            manifest['formatVersion'] == 1 &&
+            manifest['files'] is List &&
+            (manifest['files'] as List).isNotEmpty) {
+          complete.add(entry);
+        }
+      } catch (_) {
+        // Incomplete/unreadable snapshots are left untouched for diagnostics.
+      }
+    }
+
+    complete.sort((a, b) =>
+        (b['name'] as String).compareTo(a['name'] as String));
+    for (final stale in complete.skip(keep)) {
+      try {
+        await _deletePortableSnapshotTree(stale['uri'] as String);
+      } catch (_) {
+        // Cleanup is best-effort and must never invalidate the new snapshot.
+      }
+    }
+  }
+
+  Future<void> _deletePortableSnapshotTree(
+    String directoryUri, {
+    int depth = 0,
+  }) async {
+    if (depth > 8) {
+      throw StateError('Snapshot folder nesting exceeds the cleanup safety limit.');
+    }
+    final storage = StorageLocationService.instance;
+    final children = await storage.listDirectory(directoryUri);
+    for (final child in children) {
+      final uri = child['uri'] as String;
+      if (child['isDirectory'] == true) {
+        await _deletePortableSnapshotTree(uri, depth: depth + 1);
+      } else {
+        await storage.deletePdf(uri);
+      }
+    }
+    // Android's storage provider deletes directories only when empty.
+    await storage.deletePdf(directoryUri);
   }
 
   /// Returns the newest fully verified snapshot, skipping incomplete or
