@@ -6,9 +6,9 @@ concurrency:
 
 on:
   push:
-    branches: [main, feature/complete-ten-features, fix/crop-ocr-performance, feature/docsgrid-document-engine-upgrade, feature/docsgrid-completion-pr19]
+    branches: [main, feature/complete-ten-features, fix/crop-ocr-performance, feature/docsgrid-document-engine-upgrade, feature/docsgrid-completion-pr19, fix/grid-material-and-recovery]
   pull_request:
-    branches: [main]
+    branches: [main, feat/android-hybrid-storage-backup-restore]
   workflow_dispatch:
 
 permissions:
