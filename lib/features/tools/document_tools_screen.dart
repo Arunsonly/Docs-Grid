@@ -356,7 +356,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
       final name = item['name']?.toString() ?? 'PDF';
       final error = item['error']?.toString() ?? 'Unknown storage error';
       return '$name: $error';
-    }).join('\\n');
+    }).join('\n');
   }
 
   Future<void> _recoverLoosePortablePdfs() => _run(() async {
@@ -366,7 +366,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
       setState(() => _message =
           'PDF recovery finished. Added: ${recovered['added']}; '
           'duplicates: ${recovered['duplicates']}; failed: ${recovered['failed']}.'
-          '${failures.isEmpty ? '' : '\\n$failures'} '
+          '${failures.isEmpty ? '' : '\n$failures'} '
           'PDF files and folder names were recovered. Categories, tags, reminders, '
           'history and settings require a valid DocsGrid backup.');
     }
@@ -481,7 +481,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
         setState(() => _message =
             'PDF discovery finished. Added: ${recovered['added']}; '
             'duplicates: ${recovered['duplicates']}; failed: ${recovered['failed']}.'
-            '${failures.isEmpty ? '' : '\\n$failures'} '
+            '${failures.isEmpty ? '' : '\n$failures'} '
             'Only PDFs and their folder names can be reconstructed this way. '
             'Categories, tags, reminders, history and settings need a valid backup.');
       }
@@ -517,13 +517,13 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
       setState(() => _message =
         'Recovery complete. '
         'Folders: ${result['folders']}; PDFs added: ${result['documentsAdded']}; '
-        'PDFs linked: ${result['documentsLinked']}; missing PDFs: ${result['pdfsMissing']}.\\n'
+        'PDFs linked: ${result['documentsLinked']}; missing PDFs: ${result['pdfsMissing']}.\n'
         'PDF hash failures: $hashFailureCount'
-        '${failures.isEmpty ? '' : '\\n$failures'}\\n'
+        '${failures.isEmpty ? '' : '\n$failures'}\n'
         'Categories: ${result['categories']}; tags: ${result['tags']}; '
         'PDF-tag links: ${result['documentTags']}; reminders: ${result['reminders']}; '
         'activity/history: ${result['activity']}; OCR indexes: ${result['ocrIndexes']}; '
-        'settings: ${result['settings']}.\\n'
+        'settings: ${result['settings']}.\n'
         'Existing data, including Recycle Bin state, was retained. Reminder records are restored to the app database; '
         'Android notification delivery is rescheduled separately.');
     }
