@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 class PhoneStorageBrowserScreen extends StatefulWidget {
@@ -5,6 +7,8 @@ class PhoneStorageBrowserScreen extends StatefulWidget {
     super.key,
     required this.rootName,
     required this.entries,
+    this.pdfStream,
+    this.onScanComplete,
     required this.onOpenPdf,
     this.onMovePdf,
     this.onRenamePdf,
@@ -15,6 +19,8 @@ class PhoneStorageBrowserScreen extends StatefulWidget {
 
   final String rootName;
   final List<Map<String, Object?>> entries;
+  final Stream<Map<String, Object?>>? pdfStream;
+  final ValueChanged<List<Map<String, Object?>>>? onScanComplete;
   final Future<void> Function(String uri, String name) onOpenPdf;
   final Future<bool> Function(String uri, String name)? onMovePdf;
   final Future<bool> Function(String uri, String name)? onRenamePdf;
@@ -29,6 +35,75 @@ class PhoneStorageBrowserScreen extends StatefulWidget {
 
 class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
   String? _selectedFolderPath;
+  late final List<Map<String, Object?>> _streamedEntries;
+  final List<Map<String, Object?>> _pendingStreamEntries = [];
+  StreamSubscription<Map<String, Object?>>? _pdfSubscription;
+  Timer? _streamFlushTimer;
+  bool _isScanning = false;
+  String? _scanError;
+
+  List<Map<String, Object?>> get _entries => [
+        ...widget.entries,
+        ..._streamedEntries,
+      ];
+
+  @override
+  void initState() {
+    super.initState();
+    _streamedEntries = <Map<String, Object?>>[];
+    _isScanning = widget.pdfStream != null;
+    final stream = widget.pdfStream;
+    if (stream != null) {
+      _pdfSubscription = stream.listen(
+        (entry) {
+          _pendingStreamEntries.add(entry);
+          if (_pendingStreamEntries.length >= 8) {
+            _flushStreamEntries();
+          } else {
+            _streamFlushTimer ??= Timer(
+              const Duration(milliseconds: 100),
+              _flushStreamEntries,
+            );
+          }
+        },
+        onError: (Object error) {
+          _flushStreamEntries();
+          if (!mounted) return;
+          setState(() {
+            _scanError = error.toString();
+            _isScanning = false;
+          });
+          widget.onScanComplete?.call(_entries);
+        },
+        onDone: () {
+          _flushStreamEntries();
+          if (!mounted) return;
+          setState(() => _isScanning = false);
+          widget.onScanComplete?.call(_entries);
+        },
+        cancelOnError: false,
+      );
+    } else {
+      widget.onScanComplete?.call(_entries);
+    }
+  }
+
+  @override
+  void dispose() {
+    _streamFlushTimer?.cancel();
+    _pdfSubscription?.cancel();
+    super.dispose();
+  }
+
+  void _flushStreamEntries() {
+    _streamFlushTimer?.cancel();
+    _streamFlushTimer = null;
+    if (_pendingStreamEntries.isEmpty) return;
+    final batch = List<Map<String, Object?>>.from(_pendingStreamEntries);
+    _pendingStreamEntries.clear();
+    _streamedEntries.addAll(batch);
+    if (mounted) setState(() {});
+  }
 
   String _normalizePath(String value) {
     final separator = String.fromCharCode(92);
@@ -74,7 +149,7 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
   }
 
   List<Map<String, Object?>> get _pdfs =>
-      widget.entries.where(_isPdfFile).toList(growable: false);
+      _entries.where(_isPdfFile).toList(growable: false);
 
   Map<String, List<Map<String, Object?>>> get _directPdfFolders {
     final grouped = <String, List<Map<String, Object?>>>{};
@@ -156,7 +231,32 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
           Expanded(
             child: selectedPath == null
           ? folders.isEmpty
-              ? const Center(child: Text('No folders with direct PDF files.'))
+              ? _isScanning
+                  ? const Center(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          CircularProgressIndicator(),
+                          SizedBox(height: 12),
+                          Text('Scanning… Finding PDF folders'),
+                        ],
+                      ),
+                    )
+                  : Center(
+                      child: Padding(
+                        padding: const EdgeInsets.all(24),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Text('No PDF folders found.'),
+                            if (_scanError != null) ...[
+                              const SizedBox(height: 8),
+                              Text(_scanError!, textAlign: TextAlign.center),
+                            ],
+                          ],
+                        ),
+                      ),
+                    )
               : ListView.builder(
                   itemCount: folders.length,
                   itemBuilder: (context, index) {
@@ -223,7 +323,11 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
                   },
                 )
           : selectedFiles.isEmpty
-              ? const Center(child: Text('No PDF files in this folder.'))
+              ? Center(
+                  child: Text(
+                    _isScanning ? 'Scanning…' : 'No PDF files in this folder.',
+                  ),
+                )
               : ListView.builder(
                   itemCount: selectedFiles.length,
                   itemBuilder: (context, index) {
@@ -263,8 +367,8 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
               alignment: Alignment.centerLeft,
               child: Text(
                 selectedPath == null
-                    ? '${folders.length} folders'
-                    : '${selectedFiles.length} PDFs',
+                    ? '${folders.length} folders${_isScanning ? ' · Scanning…' : ''}'
+                    : '${selectedFiles.length} PDFs${_isScanning ? ' · Scanning…' : ''}',
                 style: Theme.of(context).textTheme.bodySmall,
               ),
             ),
