@@ -89,6 +89,33 @@ void main() {
     cache.dispose();
   });
 
+  test('partially inaccessible scan remains cached across tab switches', () async {
+    var walks = 0;
+    final cache = PhoneStorageScanCache(
+      loadRoots: () async => _root,
+      scanRoot: (_) async* {
+        walks++;
+        yield _pdf('readable.pdf', 300);
+        yield {
+          'name': 'Protected',
+          'uri': 'content://storage/protected',
+          'isDirectory': true,
+          'isInaccessible': true,
+        };
+      },
+    );
+    await cache.scan();
+    expect(cache.isComplete, isFalse);
+    expect(cache.inaccessibleCount, 1);
+    expect(cache.hasSettledScan, isTrue);
+
+    await cache.scan();
+    expect(walks, 1);
+    await cache.scan(force: true);
+    expect(walks, 2);
+    cache.dispose();
+  });
+
   test('forced refresh preserves the last successful snapshot until the new scan completes', () async {
     var runs = 0;
     final pending = StreamController<Map<String, Object?>>();
