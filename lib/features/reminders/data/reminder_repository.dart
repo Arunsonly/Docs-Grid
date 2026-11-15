@@ -1,7 +1,7 @@
 import 'package:uuid/uuid.dart';
 
 import '../../../core/database/app_database.dart';
-import '../../tools/document_tools_service.dart';
+import '../../../core/storage/portable_snapshot_scheduler.dart';
 import 'reminder_notifications.dart';
 
 class ReminderRecord {
@@ -49,12 +49,9 @@ class ReminderRepository {
   /// SQLite remains the live source of truth; each snapshot contains the full
   /// reminders table together with folders, PDFs, tags, categories and history.
   Future<void> _refreshPortableSnapshot() async {
-    try {
-      await DocumentToolsService().createPortableMetadataSnapshot();
-    } catch (_) {
-      // Portable storage may not be configured yet. The reminder is already
-      // committed to docs_grid.db and will be included in the next backup.
-    }
+    // Coalesce reminder edits with document/folder mutations into one
+    // complete portable recovery point after the current burst of writes.
+    PortableSnapshotScheduler.instance.touch();
   }
 
   static String validateTitle(String title) {
