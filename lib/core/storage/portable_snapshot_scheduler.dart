@@ -41,24 +41,28 @@ class PortableSnapshotScheduler {
     _dirty = false;
     final operation = _runWriter(writer);
     _inFlight = operation;
-    await operation;
+    final succeeded = await operation;
     if (identical(_inFlight, operation)) _inFlight = null;
 
-    // A new mutation during the write gets its own debounced follow-up.
-    if (_dirty && _timer == null) {
+    // Retry only when a new mutation arrived while the snapshot was writing.
+    // A storage/permission failure stays dirty for the next write or app pause;
+    // it must not create an endless three-second retry loop.
+    if (succeeded && _dirty && _timer == null) {
       _timer = Timer(const Duration(seconds: 3), () {
         unawaited(flushNow());
       });
     }
   }
 
-  Future<void> _runWriter(Future<void> Function() writer) async {
+  Future<bool> _runWriter(Future<void> Function() writer) async {
     try {
       await writer();
+      return true;
     } catch (_) {
       // SQLite remains the source of truth. Keep the dirty bit so the next
       // mutation or app pause can retry once storage access is available.
       _dirty = true;
+      return false;
     }
   }
 }
