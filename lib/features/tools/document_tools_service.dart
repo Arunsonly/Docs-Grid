@@ -916,7 +916,7 @@ class DocumentToolsService {
   /// Rebuilds the library index from surviving shared PDFs after reinstall.
   /// PDFs are registered in place; they are not duplicated or deleted. Folder
   /// names are reconstructed, but categories/tags/reminders require a DB backup.
-  Future<Map<String, int>> recoverLoosePortablePdfs() async {
+  Future<Map<String, Object?>> recoverLoosePortablePdfs() async {
     if (!Platform.isAndroid) {
       throw UnsupportedError('Automatic shared-media recovery is currently Android-only.');
     }
@@ -933,6 +933,7 @@ class DocumentToolsService {
     var added = 0;
     var duplicates = 0;
     var failed = 0;
+    final failures = <Map<String, String>>[];
 
     Future<String?> ensureFolderPath(String path) async {
       if (path.isEmpty) return null;
@@ -972,8 +973,19 @@ class DocumentToolsService {
       }
     }
     for (final root in roots) {
-      final files = await storage.listPdfFilesRecursively(root.uri);
+      List<Map<String, Object?>> files;
+      try {
+        files = await storage.listPdfFilesRecursively(root.uri);
+      } catch (error) {
+        failed++;
+        failures.add({
+          'name': root.uri,
+          'error': error.toString(),
+        });
+        continue;
+      }
       for (final item in files) {
+        final name = item['name']?.toString() ?? 'Unknown PDF';
         try {
           final folderPath = root.preserveFolders
               ? item['folderPath'] as String
@@ -981,7 +993,7 @@ class DocumentToolsService {
           final folderId = await ensureFolderPath(folderPath);
           final imported = await documentRepository.importExistingSharedPdf(
             storageUri: item['uri'] as String,
-            displayName: item['name'] as String,
+            displayName: name,
             targetFolderId: folderId,
           );
           if (imported) {
@@ -989,12 +1001,18 @@ class DocumentToolsService {
           } else {
             duplicates++;
           }
-        } catch (_) {
+        } catch (error) {
           failed++;
+          failures.add({'name': name, 'error': error.toString()});
         }
       }
     }
-    return {'added': added, 'duplicates': duplicates, 'failed': failed};
+    return <String, Object?>{
+      'added': added,
+      'duplicates': duplicates,
+      'failed': failed,
+      'failures': failures,
+    };
   }
 
   /// Reads only the archive manifest to distinguish a full backup from a
@@ -1927,7 +1945,7 @@ class DocumentToolsService {
   /// Restores the newest portable snapshot additively. Existing records are
   /// retained; imported IDs are remapped where needed. PDFs are relinked by
   /// SHA-256 from the currently selected library and are never overwritten.
-  Future<Map<String, int>> restoreLatestPortableMetadataSnapshot() async {
+  Future<Map<String, Object?>> restoreLatestPortableMetadataSnapshot() async {
     final storage = StorageLocationService.instance;
     final locations = await storage.portableDataLocations();
     final snapshot = await _findLatestVerifiedPortableSnapshot();
@@ -1985,6 +2003,7 @@ class DocumentToolsService {
     }
 
     final pdfUris = <String, String>{};
+    final hashFailures = <Map<String, String>>[];
     // Portable snapshots keep folder metadata under Folders/ but the actual
     // PDF payloads are stored under Documents/. Search both trees so a
     // recovery import can relink the original PDFs instead of restoring only
@@ -2008,8 +2027,13 @@ class DocumentToolsService {
           try {
             final digest = await storage.sha256Pdf(uri);
             pdfUris.putIfAbsent(digest, () => uri);
-          } catch (_) {
-            // Non-PDF provider entries and unreadable files are not candidates.
+          } catch (error) {
+            // Preserve the filename and provider error so Restore can explain
+            // exactly why a PDF could not be hashed or relinked.
+            hashFailures.add({
+              'name': name,
+              'error': error.toString(),
+            });
           }
         }
       }
@@ -2301,10 +2325,11 @@ class DocumentToolsService {
         // The reminder record is restored even if the OS blocks notifications.
       }
     }
-    return {
+    return <String, Object?>{
       'documentsAdded': addedDocuments,
       'documentsLinked': linkedDocuments,
       'pdfsMissing': missingPdfs,
+      'hashFailures': hashFailures,
       ...recoveredCounts,
     };
   }
