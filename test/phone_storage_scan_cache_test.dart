@@ -67,6 +67,28 @@ void main() {
     cache.dispose();
   });
 
+  test('first discovered PDF appears before deeper folders finish scanning', () async {
+    final incoming = StreamController<Map<String, Object?>>();
+    final cache = PhoneStorageScanCache(
+      loadRoots: () async => _root,
+      scanRoot: (_) => incoming.stream,
+    );
+    final running = cache.scan();
+    await Future<void>.delayed(Duration.zero);
+
+    incoming.add(_pdf('early.pdf', 125));
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+
+    expect(cache.entries, hasLength(1));
+    expect(cache.pdfBytes, 125);
+    expect(cache.isScanning, isTrue);
+    expect(cache.isComplete, isFalse);
+
+    await incoming.close();
+    await running;
+    cache.dispose();
+  });
+
   test('forced refresh preserves the last successful snapshot until the new scan completes', () async {
     var runs = 0;
     final pending = StreamController<Map<String, Object?>>();
