@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#899BD8"/>
+      <stop offset="0.49" stop-color="#8194D4"/>
+      <stop offset="1" stop-color="#6A7DC8"/>
+    </linearGradient>
+  </defs>
+  <!-- Screenshot-matched lavender tile and PDF document, using path-only glyphs for consistent rendering. -->
+  <rect x="0" y="0" width="1024" height="1024" rx="224" fill="url(#bg)"/>
+  <path d="M320 222 H608 L745 362 V810 H320 Z"
+        fill="none" stroke="#F6F6F2" stroke-width="34" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M608 222 V362 H745"
+        fill="none" stroke="#F6F6F2" stroke-width="34" stroke-linejoin="round" stroke-linecap="round"/>
+  <rect x="383" y="484" width="265" height="142" rx="19" fill="#F7F7F3"/>
+  <g fill="#6E80BD">
+    <path d="M188 1493H827Q1112 1493 1264.5 1366.5Q1417 1240 1417 1006Q1417 771 1264.5 644.5Q1112 518 827 518H573V0H188ZM573 1214V797H786Q898 797 959.0 851.5Q1020 906 1020 1006Q1020 1106 959.0 1160.0Q898 1214 786 1214Z" transform="translate(407.695 588) scale(0.04882812 -0.04882812)"/>
+    <path d="M573 1202V291H711Q947 291 1071.5 408.0Q1196 525 1196 748Q1196 970 1072.0 1086.0Q948 1202 711 1202ZM188 1493H594Q934 1493 1100.5 1444.5Q1267 1396 1386 1280Q1491 1179 1542.0 1047.0Q1593 915 1593 748Q1593 579 1542.0 446.5Q1491 314 1386 213Q1266 97 1098.0 48.5Q930 0 594 0H188Z" transform="translate(475.986 588) scale(0.04882812 -0.04882812)"/>
+    <path d="M188 1493H1227V1202H573V924H1188V633H573V0H188Z" transform="translate(553.994 588) scale(0.04882812 -0.04882812)"/>
+  </g>
+</svg>

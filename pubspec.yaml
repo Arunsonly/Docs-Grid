@@ -48,5 +48,5 @@ hooks:
 flutter_launcher_icons:
   android: true
   ios: true
-  image_path: "assets/docsgrid_icon.png"
+  image_path: "assets/docsgrid_launcher.png"
   remove_alpha_ios: true
