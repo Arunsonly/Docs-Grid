@@ -11,6 +11,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../data/document_repository.dart';
 import '../../../core/storage/storage_location_service.dart';
 import '../../../core/storage/storage_access_notifier.dart';
+import '../../../core/storage/phone_storage_scan_cache.dart';
 import '../../categories/data/category_repository.dart';
 import '../../folders/data/folder_repository.dart';
 import '../../tools/document_tools_service.dart';
@@ -30,7 +31,7 @@ class DocumentsScreen extends StatefulWidget {
   State<DocumentsScreen> createState() => _DocumentsScreenState();
 }
 
-class _DocumentsScreenState extends State<DocumentsScreen> {
+class _DocumentsScreenState extends State<DocumentsScreen> with WidgetsBindingObserver {
   final _repository = DocumentRepository();
   final _categoryRepository = CategoryRepository();
   final _folderRepository = FolderRepository();
@@ -70,18 +71,21 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   @override
   void initState() {
     super.initState();
-    _load();
-    _loadViewPreference();
-    _loadTrashSummary();
-    _loadRecentDocuments();
+    WidgetsBinding.instance.addObserver(this);
+    PhoneStorageScanCache.instance.addListener(_onPhoneScanChanged);
+    _copyPhoneScanState();
+    if (!widget.phoneOnly) {
+      _load();
+      _loadViewPreference();
+      _loadTrashSummary();
+      _loadRecentDocuments();
+    }
     _search.addListener(_onSearchChanged);
     _scrollController.addListener(_onScroll);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
-      if (widget.phoneOnly) {
-        _scanPhoneStorage(openBrowser: true);
-      } else if (!widget.favoritesOnly && !widget.recentOnly) {
-        _scanPhoneStorage(openBrowser: false);
+      if (widget.phoneOnly || (!widget.favoritesOnly && !widget.recentOnly)) {
+        unawaited(_scanPhoneStorage(openBrowser: false));
       }
     });
   }
@@ -121,6 +125,8 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
 
   @override
   void dispose() {
+    PhoneStorageScanCache.instance.removeListener(_onPhoneScanChanged);
+    WidgetsBinding.instance.removeObserver(this);
     _loadGeneration++;
     _searchDebounce?.cancel();
     _search.removeListener(_onSearchChanged);
@@ -278,176 +284,73 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
   }
 
+  void _copyPhoneScanState() {
+    final cache = PhoneStorageScanCache.instance;
+    _phoneEntries = cache.entries;
+    _phoneStorageBytes = cache.isComplete || cache.entries.isNotEmpty
+        ? cache.pdfBytes
+        : null;
+    _phoneInaccessibleCount = cache.inaccessibleCount;
+    _phoneUnknownSizeCount = cache.unknownSizeCount;
+    _phoneScanIncomplete = cache.inaccessibleCount > 0 || !cache.isComplete;
+    _phoneScanCompleted = cache.isComplete;
+    _phoneScanLoading = cache.isScanning;
+  }
+
+  void _onPhoneScanChanged() {
+    if (mounted) setState(_copyPhoneScanState);
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    final cache = PhoneStorageScanCache.instance;
+    if (state == AppLifecycleState.resumed &&
+        (cache.permissionRequired || cache.scanError != null)) {
+      unawaited(_scanPhoneStorage(openBrowser: false, force: true));
+    }
+  }
+
+  Future<void> _requestPhoneStoragePermission() async {
+    try {
+      await StorageLocationService.instance.requestAllFilesAccess();
+      if (!mounted) return;
+      unawaited(StorageAccessNotifier.instance.refresh(attempts: 10));
+      unawaited(_scanPhoneStorage(openBrowser: false, force: true));
+    } catch (error) {
+      if (mounted) _message('Could not request Phone storage access: $error');
+    }
+  }
+
   Future<void> _browsePhoneStorage() async {
-    // Reuse the dashboard's completed scan. Opening this page must not walk
-    // the whole storage tree a second time.
-    if (_phoneScanCompleted) {
-      await _showRecursiveStoragePdfs('Internal Storage', _phoneEntries);
+    unawaited(_scanPhoneStorage(openBrowser: false));
+    await _showRecursiveStoragePdfs('Internal Storage');
+  }
+
+  Future<void> _scanPhoneStorage({
+    required bool openBrowser,
+    bool force = false,
+  }) async {
+    if (openBrowser) {
+      await _browsePhoneStorage();
       return;
     }
-    await _scanPhoneStorage(openBrowser: true);
+    await PhoneStorageScanCache.instance.scan(force: force);
   }
 
-  Stream<Map<String, Object?>> _streamPhoneStorageEntries(
-    List<Map<String, String>> roots,
-  ) async* {
-    final storage = StorageLocationService.instance;
-    final seenUris = <String>{};
-    for (final root in roots) {
-      try {
-        await for (final item in storage.streamPdfFiles(root['uri']!)) {
-          final uri = item['uri'] as String? ?? '';
-          if (uri.isEmpty || !seenUris.add(uri)) continue;
-          yield item;
-        }
-      } catch (error) {
-        yield <String, Object?>{
-          'name': root['name'] ?? 'Storage',
-          'uri': root['uri']!,
-          'folderPath': '',
-          'isDirectory': true,
-          'isInaccessible': true,
-          'accessError': error.toString(),
-        };
-      }
-    }
-  }
-
-  void _applyPhoneScanResults(List<Map<String, Object?>> entries) {
-    final inaccessible = entries.where((e) => e['isInaccessible'] == true).length;
-    final pdfs = entries.where((e) => e['isDirectory'] != true).toList();
-    final bytes = pdfs.fold<int>(0, (sum, entry) {
-      final size = (entry['sizeBytes'] as num?)?.toInt() ?? 0;
-      return sum + (size < 0 ? 0 : size);
-    });
-    final unknownSizes =
-        pdfs.where((entry) => entry['sizeKnown'] == false).length;
-    if (!mounted) return;
-    setState(() {
-      _phoneStorageBytes = inaccessible > 0 && inaccessible == entries.length
-          ? null
-          : bytes;
-      _phoneInaccessibleCount = inaccessible;
-      _phoneUnknownSizeCount = unknownSizes;
-      _phoneScanIncomplete = inaccessible > 0;
-      _phoneEntries = List<Map<String, Object?>>.from(entries);
-      _phoneScanCompleted = true;
-      _phoneScanLoading = false;
-    });
-  }
-
-  Future<void> _scanPhoneStorage({required bool openBrowser}) async {
-    final storage = StorageLocationService.instance;
-    if (mounted) {
-      setState(() {
-        _phoneScanLoading = true;
-        _phoneScanCompleted = false;
-      });
-    }
-    try {
-      if (Platform.isAndroid && !await storage.hasAllFilesAccess()) {
-        final granted = await storage.accessibleStorageRoots();
-        if (granted.isEmpty) {
-          if (mounted) {
-            setState(() {
-              _phoneStorageBytes = null;
-              _phoneInaccessibleCount = 0;
-              _phoneScanIncomplete = false;
-              _phoneEntries = [];
-              _phoneScanCompleted = false;
-            });
-          }
-          if (openBrowser && mounted) {
-            await storage.requestAllFilesAccess();
-            unawaited(StorageAccessNotifier.instance.refresh(attempts: 10));
-            _message('Grant Full internal storage access or select an accessible SAF folder.');
-          }
-          return;
-        }
-      }
-
-      final roots = await storage.accessibleStorageRoots();
-      if (roots.isEmpty) {
-        if (mounted) {
-          setState(() {
-            _phoneStorageBytes = null;
-            _phoneInaccessibleCount = 0;
-            _phoneScanIncomplete = false;
-            _phoneUnknownSizeCount = 0;
-            _phoneEntries = [];
-            _phoneScanCompleted = true;
-          });
-        }
-        return;
-      }
-
-      final stream = _streamPhoneStorageEntries(roots);
-      if (openBrowser) {
-        // Push the browser immediately. It displays each PDF folder as soon as
-        // the BFS stream discovers it instead of waiting for the whole device.
-        await _showRecursiveStoragePdfs(
-          'Internal Storage',
-          const <Map<String, Object?>>[],
-          pdfStream: stream,
-        );
-      } else {
-        final entries = <Map<String, Object?>>[];
-        await for (final item in stream) {
-          entries.add(item);
-          if (entries.length % 24 == 0 && mounted) {
-            // Update Home's storage metric progressively; the first screen
-            // does not wait for a complete tree walk.
-            _applyPhoneScanResults(entries);
-            if (mounted) {
-              setState(() {
-                _phoneScanCompleted = false;
-                _phoneScanLoading = true;
-              });
-            }
-          }
-        }
-        _applyPhoneScanResults(entries);
-      }
-
-      if (_phoneInaccessibleCount > 0 && mounted) {
-        _message('Some granted storage folders could not be read; they were not marked empty.');
-      }
-    } catch (error) {
-      if (mounted) {
-        setState(() {
-          _phoneStorageBytes = null;
-          _phoneInaccessibleCount = 0;
-          _phoneUnknownSizeCount = 0;
-          _phoneScanIncomplete = true;
-          _phoneEntries = [];
-          _phoneScanCompleted = false;
-        });
-        _message('Phone Storage scan failed; inaccessible locations were not marked empty: $error');
-      }
-    } finally {
-      if (mounted) setState(() => _phoneScanLoading = false);
-    }
-  }
-
-  Future<void> _showRecursiveStoragePdfs(
-    String rootName,
-    List<Map<String, Object?>> entries, {
-    String initialPath = '',
-    Stream<Map<String, Object?>>? pdfStream,
-  }) async {
+  Future<void> _showRecursiveStoragePdfs(String rootName) async {
     if (!mounted) return;
     await Navigator.of(context).push<void>(MaterialPageRoute(
       builder: (_) => PhoneStorageBrowserScreen(
         rootName: rootName,
-        entries: entries,
-        pdfStream: pdfStream,
-        onScanComplete: _applyPhoneScanResults,
+        entries: const <Map<String, Object?>>[],
+        scanCache: PhoneStorageScanCache.instance,
+        onRequestPermission: _requestPhoneStoragePermission,
+        onRefresh: () => _scanPhoneStorage(openBrowser: false, force: true),
         onOpenPdf: _openExternalStoragePdf,
         onMovePdf: _movePhonePdfToGrid,
         onRenamePdf: _renamePhonePdf,
         onSharePdf: _sharePhonePdf,
         onTrashPdf: _trashPhonePdf,
-        initialPath: initialPath,
       ),
     ));
   }
@@ -1271,7 +1174,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
       } else {
         _message('A matching PDF already exists in Grid. The Phone original was kept.');
       }
-      await _scanPhoneStorage(openBrowser: false);
+      await _scanPhoneStorage(openBrowser: false, force: true);
       await _loadTrashSummary();
       await _refreshDashboardSummary();
       return moved;
@@ -1322,7 +1225,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
       );
       if (!mounted) return false;
       _message('PDF renamed.');
-      await _scanPhoneStorage(openBrowser: false);
+      await _scanPhoneStorage(openBrowser: false, force: true);
       await _refreshDashboardSummary();
       return true;
     } catch (error) {
@@ -1435,7 +1338,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
       } else if (result.duplicates > 0) {
         _message('This PDF already exists in Grid. The Phone original was kept.');
       }
-      await _scanPhoneStorage(openBrowser: false);
+      await _scanPhoneStorage(openBrowser: false, force: true);
       await _load();
       await _refreshDashboardSummary();
       return result.added == 1;
@@ -1591,18 +1494,18 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   @override
   Widget build(BuildContext context) {
     if (widget.phoneOnly) {
-      return Center(
-        child: _phoneScanLoading
-            ? const Column(mainAxisSize: MainAxisSize.min, children: [
-                CircularProgressIndicator(),
-                SizedBox(height: 12),
-                Text('Loading Phone storage…'),
-              ])
-            : FilledButton.icon(
-                onPressed: _browsePhoneStorage,
-                icon: const Icon(Icons.folder_open_outlined),
-                label: const Text('Open Phone storage'),
-              ),
+      return PhoneStorageBrowserScreen(
+        rootName: 'Internal Storage',
+        entries: const <Map<String, Object?>>[],
+        scanCache: PhoneStorageScanCache.instance,
+        embedded: true,
+        onRequestPermission: _requestPhoneStoragePermission,
+        onRefresh: () => _scanPhoneStorage(openBrowser: false, force: true),
+        onOpenPdf: _openExternalStoragePdf,
+        onMovePdf: _movePhonePdfToGrid,
+        onRenamePdf: _renamePhonePdf,
+        onSharePdf: _sharePhonePdf,
+        onTrashPdf: _trashPhonePdf,
       );
     }
     return PopScope<void>(
