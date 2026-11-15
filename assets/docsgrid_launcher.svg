@@ -1,12 +1,19 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
-<defs>
-  <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#123B91"/><stop offset=".55" stop-color="#087FC7"/><stop offset="1" stop-color="#08AFC0"/></linearGradient>
-  <linearGradient id="paper" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#FFFFFF"/><stop offset="1" stop-color="#DDEBFF"/></linearGradient>
-</defs>
-<rect width="1024" height="1024" rx="210" fill="url(#bg)"/>
-<path d="M260 190h360l150 150v470H260z" fill="url(#paper)" opacity=".16" stroke="#FFFFFF" stroke-width="24" stroke-linejoin="round"/>
-<path d="M620 190v150h150" fill="none" stroke="#FFFFFF" stroke-width="24" stroke-linejoin="round"/>
-<text x="512" y="605" text-anchor="middle" font-family="DejaVu Sans, Arial, sans-serif" font-size="300" font-weight="900" letter-spacing="-22" fill="#FFFFFF">D&amp;G</text>
-<path d="M300 710h424" stroke="#FFFFFF" stroke-width="22" stroke-linecap="round" opacity=".9"/>
-<text x="512" y="790" text-anchor="middle" font-family="DejaVu Sans, Arial, sans-serif" font-size="72" font-weight="700" letter-spacing="14" fill="#FFFFFF">DOCSGRID</text>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#8B9CD9"/>
+      <stop offset="0.5" stop-color="#7386C9"/>
+      <stop offset="1" stop-color="#6376B9"/>
+    </linearGradient>
+  </defs>
+  <!-- Single launcher design: the purple DocsGrid PDF document in the user's home-screen reference. -->
+  <rect width="1024" height="1024" rx="218" fill="url(#background)"/>
+  <path d="M339 210H598L727 339V771H339Z"
+        fill="none" stroke="#F7FAFF" stroke-width="33" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M598 210V339H727"
+        fill="none" stroke="#F7FAFF" stroke-width="33" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="414" y="549" width="278" height="133" rx="5"
+        fill="#F8FAFF" stroke="#F7FAFF" stroke-width="10"/>
+  <text x="553" y="646" text-anchor="middle" font-family="Arial, DejaVu Sans, sans-serif"
+        font-size="88" font-weight="800" letter-spacing="-2" fill="#6478BD">PDF</text>
 </svg>
