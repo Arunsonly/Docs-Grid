@@ -167,7 +167,8 @@ class _FoldersScreenState extends State<FoldersScreen> {
               final media = MediaQuery.of(dialogContext);
               final screenAvailableHeight =
                   (media.size.height - media.viewInsets.bottom - 48)
-                      .clamp(180.0, media.size.height);
+                      .clamp(180.0, media.size.height)
+                      .toDouble();
               final availableHeight = constraints.maxHeight.isFinite
                   ? (constraints.maxHeight < screenAvailableHeight
                       ? constraints.maxHeight
