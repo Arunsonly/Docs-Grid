@@ -11,6 +11,7 @@ import 'package:uuid/uuid.dart';
 import '../../../core/database/app_database.dart';
 import '../../../core/storage/byte_stream_file.dart';
 import '../../../core/storage/storage_location_service.dart';
+import '../../../core/storage/portable_snapshot_scheduler.dart';
 import '../../folders/data/folder_repository.dart';
 import '../../reminders/data/reminder_notifications.dart';
 
@@ -1838,5 +1839,7 @@ class DocumentRepository {
       'details_json': jsonEncode(details),
       'created_at': DateTime.now().toUtc().toIso8601String(),
     });
+    // The debounced writer runs after the surrounding transaction commits.
+    PortableSnapshotScheduler.instance.touch();
   }
 }
