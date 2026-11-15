@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -302,6 +303,59 @@ class StorageLocationService {
   /// Recursively discovers PDFs only inside the root the user explicitly
   /// granted through SAF / Files. URIs stay opaque; no guessed filesystem path
   /// or unrestricted device-wide storage scan is attempted.
+  /// Streams PDFs as soon as each folder is visited. This keeps the Phone
+  /// browser useful while deeper folders are still being scanned.
+  Stream<Map<String, Object?>> streamPdfFiles(
+    String rootUri, {
+    int maxDepth = 12,
+    int maxEntries = 50000,
+  }) async* {
+    final queue = <({String uri, String path, int depth})>[
+      (uri: rootUri, path: '', depth: 0),
+    ];
+    final visited = <String>{};
+    var nextIndex = 0;
+    var visitedEntries = 0;
+
+    while (nextIndex < queue.length) {
+      final current = queue[nextIndex++];
+      if (current.depth > maxDepth || !visited.add(current.uri)) continue;
+
+      List<Map<String, Object?>> children;
+      try {
+        children = await listDirectory(current.uri);
+      } catch (_) {
+        // A protected or revoked child folder must not block readable siblings.
+        continue;
+      }
+
+      for (final child in children) {
+        if (++visitedEntries > maxEntries) {
+          throw StateError('Phone storage scan reached the $maxEntries-entry safety limit.');
+        }
+        final name = child['name'] as String;
+        if (name.startsWith('.') || name == 'Android') continue;
+        final path = current.path.isEmpty ? name : '${current.path}/$name';
+
+        if (child['isDirectory'] == true) {
+          final uri = child['uri'] as String;
+          queue.add((uri: uri, path: path, depth: current.depth + 1));
+        } else if (name.toLowerCase().endsWith('.pdf')) {
+          yield <String, Object?>{
+            'name': name,
+            'uri': child['uri'],
+            'folderPath': current.path,
+            'sizeBytes': (child['sizeBytes'] as num?)?.toInt() ??
+                (child['size'] as num?)?.toInt() ??
+                0,
+            'sizeKnown': child['sizeKnown'] as bool? ?? true,
+            'isDirectory': false,
+          };
+        }
+      }
+    }
+  }
+
   Future<List<Map<String, Object?>>> listPdfFilesRecursively(
     String rootUri, {
     int maxEntries = 50000,
