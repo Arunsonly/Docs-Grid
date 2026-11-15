@@ -414,13 +414,11 @@ class MainActivity : FlutterActivity() {
                                 val savedRootIsLegacyDocsGrid =
                                     savedRootDocumentId.contains("android/media/docsgrid")
                                 if (savedRoot?.startsWith("content://") == true &&
-                                    savedDatabase?.startsWith("content://") == true &&
                                     savedRecovery?.startsWith("content://") == true &&
                                     savedLibrary?.startsWith("content://") == true &&
                                     !(hasAllFilesAccess && savedRootIsLegacyDocsGrid)) {
                                     val selectedLocations = mutableMapOf<String, String>(
                                         "rootUri" to savedRoot,
-                                        "databaseUri" to savedDatabase,
                                         "recoveryUri" to savedRecovery,
                                         "libraryUri" to savedLibrary
                                     )
@@ -432,6 +430,11 @@ class MainActivity : FlutterActivity() {
                                     try {
                                         val rootUri = Uri.parse(savedRoot)
                                         val systemUri = ensureDirectory(rootUri, "System")
+                                        // Database snapshots and ZIP backups must share this
+                                        // same selected DocsGrid root. Do not reuse a stale
+                                        // database_uri that may point at Android/media/com.docsgrid.
+                                        val databaseUri = ensureDirectory(systemUri, "Database")
+                                        selectedLocations["databaseUri"] = databaseUri.toString()
                                         val cacheUri = ensureDirectory(systemUri, "Cache")
                                         val pagePreviewsUri = ensureDirectory(cacheUri, "PagePreviews")
                                         val searchIndexUri = ensureDirectory(cacheUri, "SearchIndex")
@@ -452,6 +455,7 @@ class MainActivity : FlutterActivity() {
                                         selectedLocations["restoreReportsUri"] = restoreReportsUri.toString()
                                         selectedLocations["restoreCheckpointsUri"] = restoreCheckpointsUri.toString()
                                         saved.edit()
+                                            .putString("database_uri", databaseUri.toString())
                                             .putString("cache_uri", cacheUri.toString())
                                             .putString("page_previews_uri", pagePreviewsUri.toString())
                                             .putString("search_index_uri", searchIndexUri.toString())
