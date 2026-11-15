@@ -1711,7 +1711,11 @@ class DocumentToolsService {
       );
       // Keep the established JSON snapshot format for backward-compatible
       // recovery, but retain only the newest three complete snapshots.
-      await _prunePortableSnapshots(locations['databaseUri']!, keep: 3);
+      try {
+        await _prunePortableSnapshots(locations['databaseUri']!, keep: 3);
+      } catch (_) {
+        // Snapshot publication has succeeded; retention cleanup is best-effort.
+      }
       return snapshotName;
     } catch (_) {
       // Keep the incomplete directory for diagnostics; without manifest it
