@@ -906,14 +906,21 @@ class MainActivity : FlutterActivity() {
                                 }
                                 val temporary = java.io.File(parent, ".docsgrid-copy-${java.util.UUID.randomUUID()}.tmp")
                                 try {
-                                    val sourceDigest = digest(source)
-                                    contentResolver.openInputStream(source)?.use { input ->
+                                    // Source can be SAF, shared storage, or a DocsGrid-private file.
+                                    // Use the same validated reader for hashing and copying.
+                                    val sourceDigest = digest(source, allowAppPrivateFile = true)
+                                    openPdfSource(source, allowAppPrivateFile = true)?.use { input ->
                                         temporary.outputStream().buffered().use { output ->
                                             input.copyTo(output, 64 * 1024)
                                             output.flush()
                                         }
                                     } ?: throw IllegalStateException("Could not read the source PDF.")
-                                    if (!sourceDigest.contentEquals(digest(Uri.fromFile(temporary)))) {
+                                    // The temporary verification file lives in app-private cache.
+                                    // Without this flag fileForUri rejects it, breaking all new
+                                    // content:// thumbnails even though the initial read succeeds.
+                                    if (!sourceDigest.contentEquals(
+                                            digest(Uri.fromFile(temporary), allowAppPrivateFile = true)
+                                        )) {
                                         throw IllegalStateException("The temporary PDF copy failed SHA-256 verification.")
                                     }
                                     if (destination.exists() || !temporary.renameTo(destination)) {
