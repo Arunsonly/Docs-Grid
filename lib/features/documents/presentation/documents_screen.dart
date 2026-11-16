@@ -2190,11 +2190,16 @@ class _DocumentsScreenState extends State<DocumentsScreen>
                           mainAxisSize: MainAxisSize.min,
                           children: [
                             const Text('Recycle Bin', style: TextStyle(fontWeight: FontWeight.w700)),
+                            Text(
+                              '$_trashCount PDFs · $_trashFolderCount folders',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: Theme.of(context).textTheme.bodySmall,
+                            ),
                           ],
                         ),
                       ),
                       const SizedBox(width: 8),
-                      Text('$_trashCount PDFs · $_trashFolderCount folders', style: Theme.of(context).textTheme.titleMedium),
                       const Icon(Icons.chevron_right),
                     ],
                   ),
