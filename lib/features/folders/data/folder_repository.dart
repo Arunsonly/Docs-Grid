@@ -246,7 +246,7 @@ class FolderRepository {
     return parentUri;
   }
 
-  Future<Folder> create({required String name, String? parentId}) async {
+  Future<Folder> create({required String name, String? parentId, bool reuseExistingPhysical = false}) async {
     await StorageMigrationGate.waitUntilReady();
     final cleaned = validateFolderName(name);
     final db = await _database.database;
@@ -287,8 +287,28 @@ class FolderRepository {
         ? selectedRootUri
         : await ensurePhysicalStorageUri(parentId);
     String? physicalUri;
+    var createdPhysicalDirectory = false;
     if (parentStorageUri != null) {
-      physicalUri = await storage.createDirectory(parentUri: parentStorageUri, name: cleaned);
+      if (reuseExistingPhysical) {
+        try {
+          final existingUri = await storage.findChildUri(
+            parentUri: parentStorageUri,
+            name: cleaned,
+          );
+          // Reuse only a real readable directory, never an arbitrary file.
+          await storage.listDirectory(existingUri);
+          physicalUri = existingUri;
+        } catch (error) {
+          if (!StorageLocationService.isNotFoundError(error)) rethrow;
+        }
+      }
+      if (physicalUri == null) {
+        physicalUri = await storage.createDirectory(
+          parentUri: parentStorageUri,
+          name: cleaned,
+        );
+        createdPhysicalDirectory = true;
+      }
     }
     final now = DateTime.now().toUtc().toIso8601String();
     final folder = Folder(
@@ -337,7 +357,8 @@ class FolderRepository {
       });
       PortableSnapshotEvents.notifyDataChanged();
     } catch (_) {
-      if (physicalUri != null) {
+      // A pre-existing folder reused by recovery must NEVER be deleted.
+      if (createdPhysicalDirectory && physicalUri != null) {
         try { await storage.deletePdf(physicalUri); } catch (_) {}
       }
       rethrow;

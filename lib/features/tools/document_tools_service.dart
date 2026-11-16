@@ -1035,13 +1035,27 @@ class DocumentToolsService {
           parentId = cached;
           continue;
         }
-        final created = await folderRepository.create(
-          name: segment,
-          parentId: parentId,
-        );
-        folderIdsByPath[currentPath] = created.id;
-        parentId = created.id;
-        createdFolders++;
+        try {
+          final created = await folderRepository.create(
+            name: segment,
+            parentId: parentId,
+            reuseExistingPhysical: true,
+          );
+          folderIdsByPath[currentPath] = created.id;
+          parentId = created.id;
+          createdFolders++;
+        } on StateError {
+          // Another recovery/import may have created this Grid folder.
+          // Reuse only a verified active folder; do not mistake failures
+          // to access physical storage for successful folder creation.
+          final matches = await folderRepository.allFoldersWithPaths();
+          final current = matches.where((item) =>
+              normalizeRecoveryFolderPath(item.path).toLowerCase() ==
+              currentPath.toLowerCase()).toList();
+          if (current.length != 1) rethrow;
+          parentId = current.single.folder.id;
+          folderIdsByPath[currentPath] = parentId!;
+        }
       }
       return parentId;
     }
