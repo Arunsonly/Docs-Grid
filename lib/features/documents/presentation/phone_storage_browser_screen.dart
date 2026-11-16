@@ -317,7 +317,7 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
         documentId: 'phone_$uri',
         storagePath: uri,
         sizeBytes: sizeBytes,
-        sourceLastModifiedMillis: (entry['lastModified'] as num?)?.toInt(),
+        sourceLastModifiedMillis: thumbnailModifiedMillis(entry['lastModified']),
       ),
       title: Text(
         entry['name'] as String,
