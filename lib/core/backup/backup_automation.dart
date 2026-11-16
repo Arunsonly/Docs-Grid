@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:workmanager/workmanager.dart';
 
 import '../storage/storage_location_service.dart';
+import '../database/app_database.dart';
 import '../../features/tools/document_tools_service.dart';
 
 const String docsGridDailyDatabaseBackupTask =
@@ -156,6 +157,9 @@ class BackupAutomation {
   /// This is also the safe fallback for SAF-backed PDFs skipped by a headless worker.
   static Future<void> runDueForegroundBackups() async {
     if (!Platform.isAndroid) return;
+    // Do not create a meaningless 3–4 KB database ZIP on a fresh install.
+    // The first scheduled backup begins after the user has stored real data.
+    if (!await AppDatabase.instance.hasPortableUserData()) return;
     final storage = StorageLocationService.instance;
     try {
       final locations = await storage.portableDataLocationsIfAvailable();

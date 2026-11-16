@@ -638,6 +638,9 @@ class MainActivity : FlutterActivity() {
                                     try {
                                         val rootUri = Uri.parse(savedRoot)
                                         val systemUri = ensureDirectory(rootUri, "System")
+                                        // Retain the later fix: the selected tree owns its database snapshots.
+                                        val databaseUri = ensureDirectory(systemUri, "Database")
+                                        selectedLocations["databaseUri"] = databaseUri.toString()
                                         val cacheUri = ensureDirectory(systemUri, "Cache")
                                         val pagePreviewsUri = ensureDirectory(cacheUri, "PagePreviews")
                                         val searchIndexUri = ensureDirectory(cacheUri, "SearchIndex")
@@ -658,6 +661,7 @@ class MainActivity : FlutterActivity() {
                                         selectedLocations["restoreReportsUri"] = restoreReportsUri.toString()
                                         selectedLocations["restoreCheckpointsUri"] = restoreCheckpointsUri.toString()
                                         saved.edit()
+                                            .putString("database_uri", databaseUri.toString())
                                             .putString("cache_uri", cacheUri.toString())
                                             .putString("page_previews_uri", pagePreviewsUri.toString())
                                             .putString("search_index_uri", searchIndexUri.toString())

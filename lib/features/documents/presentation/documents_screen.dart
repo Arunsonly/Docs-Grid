@@ -46,6 +46,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
   int _totalDocumentCount = 0;
   int _starredCount = 0;
   int? _phoneStorageBytes;
+  bool? _phoneHasAllFilesAccess;
   bool _phoneScanLoading = false;
   bool _phoneScanCompleted = false;
   StreamSubscription<void>? _storageChangesSubscription;
@@ -80,12 +81,9 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       },
     );
     if (!widget.phoneOnly) {
-      if (widget.favoritesOnly || widget.recentOnly) {
-        _load();
-      } else {
-        unawaited(_refreshDashboardSummary());
-      }
+      _load();
       _loadViewPreference();
+      _loadTrashSummary();
       _loadRecentDocuments();
     }
     _search.addListener(_onSearchChanged);
@@ -93,7 +91,9 @@ class _DocumentsScreenState extends State<DocumentsScreen>
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       if (widget.phoneOnly) {
-        // Phone indexing starts only when the user opens the Phone tab.
+        // Show the Phone tab in place; do not push a second page after scanning.
+        _scanPhoneStorage(openBrowser: false);
+      } else if (!widget.favoritesOnly && !widget.recentOnly) {
         _scanPhoneStorage(openBrowser: false);
       }
     });
@@ -140,16 +140,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
   }
 
   void _schedulePhoneStorageRefresh() {
-    if (!mounted) return;
-    if (!widget.phoneOnly) {
-      if (widget.favoritesOnly || widget.recentOnly || _search.text.trim().isNotEmpty) {
-        unawaited(_load());
-      } else {
-        unawaited(_refreshDashboardSummary());
-        unawaited(_loadRecentDocuments());
-      }
-      return;
-    }
+    if (!mounted || widget.favoritesOnly || widget.recentOnly) return;
     _phoneRefreshDebounce?.cancel();
     _phoneRefreshDebounce = Timer(const Duration(milliseconds: 450), () {
       if (mounted) unawaited(_scanPhoneStorage(openBrowser: false));
@@ -443,15 +434,28 @@ class _DocumentsScreenState extends State<DocumentsScreen>
     }
     if (mounted) setState(() { _phoneScanLoading = true; _phoneScanCompleted = false; });
     try {
+      var hasAllFilesAccess = false;
       if (Platform.isAndroid) {
         try {
-          final usage = await storage.phoneStorageUsage();
-          if (mounted) setState(() => _phoneStorageBytes = usage['usedBytes']);
+          // The OS permission is the source of truth. StatFs may fail
+          // independently and must never be interpreted as permission denial.
+          hasAllFilesAccess = await storage.hasAllFilesAccess();
+          if (mounted) {
+            setState(() => _phoneHasAllFilesAccess = hasAllFilesAccess);
+          }
         } catch (_) {
-          // StatFs is supplementary; PDF browsing remains available.
+          if (mounted) setState(() => _phoneHasAllFilesAccess = null);
+        }
+        if (hasAllFilesAccess) {
+          try {
+            final usage = await storage.phoneStorageUsage();
+            if (mounted) setState(() => _phoneStorageBytes = usage['usedBytes']);
+          } catch (_) {
+            // Storage size is supplementary; granted access remains granted.
+          }
         }
       }
-      if (Platform.isAndroid && !await storage.hasAllFilesAccess()) {
+      if (Platform.isAndroid && !hasAllFilesAccess) {
         final granted = await storage.accessibleStorageRoots();
         if (granted.isEmpty) {
           if (mounted) setState(() {
@@ -482,7 +486,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       final entries = <Map<String, Object?>>[];
       final seen = <String>{};
 
-      if (Platform.isAndroid && await storage.hasAllFilesAccess()) {
+      if (Platform.isAndroid && hasAllFilesAccess) {
         try {
           final index = await storage.queryPhonePdfIndex();
           final indexed = index['entries'] as List<Map<String, Object?>>;
@@ -551,7 +555,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         // when MediaStore could not produce a complete index.
         if (mediaStoreComplete && uri.startsWith('file://')) continue;
         if (!mediaStoreComplete && uri.startsWith('file://') &&
-            Platform.isAndroid && await storage.hasAllFilesAccess()) {
+            Platform.isAndroid && hasAllFilesAccess) {
           // Native file-tree recursion is the safe fallback for failed volumes.
         }
         final label = index == 0 ? 'Internal' : root['name']!;
@@ -773,7 +777,6 @@ class _DocumentsScreenState extends State<DocumentsScreen>
           documentId: document.id,
           storagePath: document.storagePath,
           sizeBytes: document.sizeBytes,
-          contentSha256: document.sha256,
         ),
         title: Row(children: [
           Flexible(child: Text('${document.name}.pdf',
@@ -921,7 +924,6 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         documentId: 'phone_recent_$uri',
         storagePath: uri,
         sizeBytes: (item['sizeBytes'] as num?)?.toInt() ?? 0,
-        sourceLastModifiedMillis: thumbnailModifiedMillis(item['lastModified']),
       ),
       title: Row(children: [
         Flexible(child: Text(name, maxLines: 1, overflow: TextOverflow.ellipsis)),
@@ -988,9 +990,6 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         'uri': uri,
         'name': name,
         'sizeBytes': bytes,
-        'lastModified': matchingEntries.isEmpty
-            ? 0
-            : thumbnailModifiedMillis(matchingEntries.first['lastModified']) ?? 0,
         'openedAt': DateTime.now().toUtc().toIso8601String(),
       });
       final limited = recent.take(20).toList(growable: false);
@@ -2058,9 +2057,17 @@ class _DocumentsScreenState extends State<DocumentsScreen>
                     Expanded(child: _dashboardStorageMetric(
                       icon: Icons.phone_android_outlined,
                       title: 'Phone storage',
-                      value: _phoneStorageBytes == null
-                          ? 'Permission needed'
-                          : _size(_phoneStorageBytes!),
+                      value: Platform.isAndroid
+                          ? _phoneHasAllFilesAccess == null
+                              ? (_phoneScanLoading ? 'Checking…' : 'Tap to check')
+                              : !_phoneHasAllFilesAccess!
+                                  ? 'Permission needed'
+                                  : _phoneStorageBytes == null
+                                      ? 'Access granted'
+                                      : _size(_phoneStorageBytes!)
+                          : _phoneStorageBytes == null
+                              ? 'Unavailable'
+                              : _size(_phoneStorageBytes!),
                       onTap: _browsePhoneStorage,
                     )),
                     const SizedBox(width: 10),
@@ -2183,15 +2190,11 @@ class _DocumentsScreenState extends State<DocumentsScreen>
                           mainAxisSize: MainAxisSize.min,
                           children: [
                             const Text('Recycle Bin', style: TextStyle(fontWeight: FontWeight.w700)),
-                            const SizedBox(height: 2),
-                            Text(
-                              '$_trashCount PDFs · $_trashFolderCount folders',
-                              style: Theme.of(context).textTheme.bodySmall,
-                            ),
                           ],
                         ),
                       ),
                       const SizedBox(width: 8),
+                      Text('$_trashCount PDFs · $_trashFolderCount folders', style: Theme.of(context).textTheme.titleMedium),
                       const Icon(Icons.chevron_right),
                     ],
                   ),
@@ -2244,13 +2247,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
                             final bytes = (item['sizeBytes'] as num?)?.toInt() ?? 0;
                             return ListTile(
                               dense: true,
-                              leading: DocumentThumbnail(
-                                documentId: 'phone_search_$uri',
-                                storagePath: uri,
-                                sizeBytes: bytes,
-                                sourceLastModifiedMillis:
-                                    thumbnailModifiedMillis(item['lastModified']),
-                              ),
+                              leading: const Icon(Icons.picture_as_pdf_outlined),
                               title: Text(name, maxLines: 1, overflow: TextOverflow.ellipsis),
                               subtitle: Text(
                                 'Phone Storage · ${folder.isEmpty ? 'Root' : folder} · ${_size(bytes)}',
@@ -2474,7 +2471,6 @@ class _DocumentsScreenState extends State<DocumentsScreen>
                 documentId: document.id,
                 storagePath: document.storagePath,
                 sizeBytes: document.sizeBytes,
-                contentSha256: document.sha256,
               ),
         title: Text('${document.name}.pdf', maxLines: 1, overflow: TextOverflow.ellipsis),
         subtitle: Text([
@@ -2510,7 +2506,6 @@ class _DocumentsScreenState extends State<DocumentsScreen>
                       folderId: current.folderId,
                       lastOpenedAt: current.lastOpenedAt,
                       source: current.source,
-                      sha256: current.sha256,
                     );
                   }
                 }
@@ -2757,7 +2752,6 @@ class _RecentSelectionScreenState extends State<_RecentSelectionScreen> {
                     documentId: item.id,
                     storagePath: item.storagePath,
                     sizeBytes: item.sizeBytes,
-                    contentSha256: item.sha256,
                   ),
                   title: Text('${item.name}.pdf',
                     maxLines: 1, overflow: TextOverflow.ellipsis),
@@ -2931,7 +2925,6 @@ class _PhoneRecentSelectionScreenState extends State<_PhoneRecentSelectionScreen
               documentId: 'phone_recent_$uri',
               storagePath: uri,
               sizeBytes: (item['sizeBytes'] as num?)?.toInt() ?? 0,
-              sourceLastModifiedMillis: thumbnailModifiedMillis(item['lastModified']),
             ),
             title: Text(item['name'] as String? ?? 'PDF'),
             subtitle: Text('Phone · ${item['openedAt'] ?? ''}'),

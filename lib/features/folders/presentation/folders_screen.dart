@@ -59,6 +59,7 @@ class _FoldersScreenState extends State<FoldersScreen> {
   }
 
   Future<void> _refresh() async {
+    if (!mounted) return;
     setState(() {
       _isReorderingFolders = false;
       _draftFolderOrder = <Folder>[];
@@ -116,13 +117,13 @@ class _FoldersScreenState extends State<FoldersScreen> {
   }
 
   Future<String?> _askName({String title = 'New folder', String initial = ''}) async {
-    final controller = TextEditingController(text: initial);
+    var enteredName = initial;
     final result = await showDialog<String>(
       context: context,
-      builder: (context) => AlertDialog(
+      builder: (dialogContext) => AlertDialog(
         title: Text(title),
-        content: TextField(
-          controller: controller,
+        content: TextFormField(
+          initialValue: initial,
           autofocus: true,
           textCapitalization: TextCapitalization.sentences,
           decoration: const InputDecoration(
@@ -130,18 +131,21 @@ class _FoldersScreenState extends State<FoldersScreen> {
             hintText: 'e.g. Insurance',
             border: OutlineInputBorder(),
           ),
-          onSubmitted: (value) => Navigator.pop(context, value),
+          onChanged: (value) => enteredName = value,
+          onFieldSubmitted: (value) => Navigator.pop(dialogContext, value),
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
-          FilledButton(onPressed: () => Navigator.pop(context, controller.text), child: const Text('Save')),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, enteredName),
+            child: const Text('Save'),
+          ),
         ],
       ),
     );
-    // showDialog completes as soon as the route is popped; wait for the
-    // reverse transition's frame before disposing the TextField controller.
-    await WidgetsBinding.instance.endOfFrame;
-    controller.dispose();
     return result?.trim();
   }
 
@@ -152,98 +156,154 @@ class _FoldersScreenState extends State<FoldersScreen> {
   ) async {
     final allFolders = await _repository.allFoldersWithPaths();
     if (!mounted) return null;
-    final nameController = TextEditingController(text: suggestedName);
+    var pdfName = suggestedName;
     String? destinationId = _currentFolderId;
     final result = await showDialog<ImportDecision>(
       context: context,
       builder: (dialogContext) => StatefulBuilder(
-        builder: (dialogContext, refresh) => AlertDialog(
-          scrollable: true,
-          title: const Text('Add PDF to DocsGrid'),
-          content: Column(mainAxisSize: MainAxisSize.min, children: [
-            TextField(
-              controller: nameController,
-              autofocus: true,
-              decoration: const InputDecoration(
-                labelText: 'PDF name',
-                suffixText: '.pdf',
-                border: OutlineInputBorder(),
-              ),
-            ),
-            const SizedBox(height: 14),
-            DropdownButtonFormField<String?>(
-              initialValue: destinationId,
-              isExpanded: true,
-              decoration: const InputDecoration(
-                labelText: 'Destination folder',
-                border: OutlineInputBorder(),
-              ),
-              items: [
-                const DropdownMenuItem<String?>(
-                  value: null,
-                  child: Text('My Documents (root)'),
-                ),
-                for (final option in allFolders)
-                  DropdownMenuItem<String?>(
-                    value: option.folder.id,
-                    child: Text(option.path, overflow: TextOverflow.ellipsis),
+        builder: (dialogContext, refresh) => Dialog(
+          insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+          child: LayoutBuilder(
+            builder: (dialogContext, constraints) {
+              final media = MediaQuery.of(dialogContext);
+              final screenAvailableHeight =
+                  (media.size.height - media.viewInsets.bottom - 48)
+                      .clamp(180.0, media.size.height)
+                      .toDouble();
+              final availableHeight = constraints.maxHeight.isFinite
+                  ? (constraints.maxHeight < screenAvailableHeight
+                      ? constraints.maxHeight
+                      : screenAvailableHeight)
+                  : screenAvailableHeight;
+              return ConstrainedBox(
+                constraints: BoxConstraints(maxHeight: availableHeight),
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(24, 20, 24, 16),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Text(
+                        'Add PDF to DocsGrid',
+                        style: Theme.of(dialogContext).textTheme.headlineSmall,
+                      ),
+                      const SizedBox(height: 16),
+                      Flexible(
+                        child: SingleChildScrollView(
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              TextFormField(
+                                initialValue: suggestedName,
+                                autofocus: true,
+                                onChanged: (value) => pdfName = value,
+                                decoration: const InputDecoration(
+                                  labelText: 'PDF name',
+                                  suffixText: '.pdf',
+                                  border: OutlineInputBorder(),
+                                ),
+                              ),
+                              const SizedBox(height: 14),
+                              DropdownButtonFormField<String?>(
+                                initialValue: destinationId,
+                                isExpanded: true,
+                                decoration: const InputDecoration(
+                                  labelText: 'Destination folder',
+                                  border: OutlineInputBorder(),
+                                ),
+                                items: [
+                                  const DropdownMenuItem<String?>(
+                                    value: null,
+                                    child: Text('My Documents (root)'),
+                                  ),
+                                  for (final option in allFolders)
+                                    DropdownMenuItem<String?>(
+                                      value: option.folder.id,
+                                      child: Text(
+                                        option.path,
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                    ),
+                                ],
+                                onChanged: (value) =>
+                                    refresh(() => destinationId = value),
+                              ),
+                              Align(
+                                alignment: Alignment.centerRight,
+                                child: TextButton.icon(
+                                  icon: const Icon(Icons.create_new_folder_outlined),
+                                  label: const Text('New folder'),
+                                  onPressed: () async {
+                                    final newName = await _askName();
+                                    if (newName == null ||
+                                        newName.isEmpty ||
+                                        !dialogContext.mounted) {
+                                      return;
+                                    }
+                                    try {
+                                      final created = await _repository.create(
+                                        name: newName,
+                                        parentId: destinationId,
+                                      );
+                                      final updated =
+                                          await _repository.allFoldersWithPaths();
+                                      refresh(() {
+                                        destinationId = created.id;
+                                        allFolders
+                                          ..clear()
+                                          ..addAll(updated);
+                                      });
+                                    } catch (error) {
+                                      if (dialogContext.mounted) {
+                                        ScaffoldMessenger.of(dialogContext)
+                                            .showSnackBar(
+                                          SnackBar(
+                                            content: Text(error.toString()),
+                                          ),
+                                        );
+                                      }
+                                    }
+                                  },
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.end,
+                        children: [
+                          TextButton(
+                            onPressed: () => Navigator.pop(dialogContext),
+                            child: const Text('Cancel'),
+                          ),
+                          const SizedBox(width: 8),
+                          FilledButton(
+                            onPressed: () {
+                              final name = pdfName.trim();
+                              if (name.isEmpty) return;
+                              Navigator.pop(
+                                dialogContext,
+                                ImportDecision(
+                                  name: name,
+                                  categoryId: suggestedCategoryId,
+                                ),
+                              );
+                            },
+                            child: const Text('Save PDF'),
+                          ),
+                        ],
+                      ),
+                    ],
                   ),
-              ],
-              onChanged: (value) => refresh(() => destinationId = value),
-            ),
-            Align(
-              alignment: Alignment.centerRight,
-              child: TextButton.icon(
-                icon: const Icon(Icons.create_new_folder_outlined),
-                label: const Text('New folder'),
-                onPressed: () async {
-                  final newName = await _askName();
-                  if (newName == null || newName.isEmpty || !dialogContext.mounted) return;
-                  try {
-                    final created = await _repository.create(
-                      name: newName,
-                      parentId: destinationId,
-                    );
-                    final updated = await _repository.allFoldersWithPaths();
-                    refresh(() {
-                      destinationId = created.id;
-                      allFolders
-                        ..clear()
-                        ..addAll(updated);
-                    });
-                  } catch (error) {
-                    if (dialogContext.mounted) {
-                      ScaffoldMessenger.of(dialogContext).showSnackBar(
-                        SnackBar(content: Text(error.toString())),
-                      );
-                    }
-                  }
-                },
-              ),
-            ),
-          ]),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dialogContext),
-              child: const Text('Cancel'),
-            ),
-            FilledButton(
-              onPressed: () {
-                final name = nameController.text.trim();
-                if (name.isEmpty) return;
-                Navigator.pop(dialogContext, ImportDecision(
-                  name: name,
-                  categoryId: suggestedCategoryId,
-                ));
-              },
-              child: const Text('Save PDF'),
-            ),
-          ],
+                ),
+              );
+            },
+          ),
         ),
       ),
     );
-    await WidgetsBinding.instance.endOfFrame;
-    nameController.dispose();
     if (result == null) return null;
     // The destination is captured by the dialog state and applied by the
     // repository's import transaction through this one-file review result.
@@ -384,6 +444,7 @@ class _FoldersScreenState extends State<FoldersScreen> {
         targetFolderId: _currentFolderId,
         review: _reviewSinglePdf,
       );
+      if (!mounted) return;
       await _refresh();
       if (!mounted) return;
       final details = result.errors.isEmpty ? '' : '\n${result.errors.first}';
@@ -729,8 +790,7 @@ class _FoldersScreenState extends State<FoldersScreen> {
 
   @override
   Widget build(BuildContext context) {
-    // Grid uses InkWell and other ink effects outside Card surfaces.
-    // Match the known-good Grid surface while preserving Material ink effects.
+    final keyboardVisible = MediaQuery.viewInsetsOf(context).bottom > 0;
     return Material(
       color: Theme.of(context).scaffoldBackgroundColor,
       child: PopScope(
@@ -746,7 +806,9 @@ class _FoldersScreenState extends State<FoldersScreen> {
           Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        if (_selectedDocumentIds.isNotEmpty && !_isSelectingFolders)
+        if (_selectedDocumentIds.isNotEmpty &&
+            !_isSelectingFolders &&
+            !keyboardVisible)
           FutureBuilder<List<DocumentRecord>>(
             future: _documentsFuture,
             builder: (context, snapshot) {
@@ -775,7 +837,8 @@ class _FoldersScreenState extends State<FoldersScreen> {
               );
             },
           ),
-        Padding(
+        if (!keyboardVisible)
+          Padding(
           padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
           child: Row(
             children: [
@@ -834,7 +897,7 @@ class _FoldersScreenState extends State<FoldersScreen> {
           ),
         ),
         Padding(
-          padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+          padding: EdgeInsets.fromLTRB(16, keyboardVisible ? 2 : 8, 16, keyboardVisible ? 2 : 4),
           child: TextField(
             controller: _searchController,
             onChanged: (value) => setState(() {
@@ -864,8 +927,8 @@ class _FoldersScreenState extends State<FoldersScreen> {
             ),
           ),
         ),
-        if (_isSelectingFolders) _buildFolderSelectionToolbar(),
-        if (_ancestors.isNotEmpty)
+        if (_isSelectingFolders && !keyboardVisible) _buildFolderSelectionToolbar(),
+        if (_ancestors.isNotEmpty && !keyboardVisible)
           SizedBox(
             height: 44,
             child: ListView(
@@ -1137,7 +1200,6 @@ class _FoldersScreenState extends State<FoldersScreen> {
                                         documentId: document.id,
                                         storagePath: document.storagePath,
                                         sizeBytes: document.sizeBytes,
-                                        contentSha256: document.sha256,
                                       ),
                                 title: Text('${document.name}.pdf', maxLines: 1, overflow: TextOverflow.ellipsis),
                                 subtitle: Text(_size(document.sizeBytes)),
@@ -1203,7 +1265,7 @@ class _FoldersScreenState extends State<FoldersScreen> {
             },
           ),
         ),
-        if (_isReorderingFolders)
+        if (_isReorderingFolders && !keyboardVisible)
           SafeArea(
             top: false,
             child: Padding(
@@ -1234,7 +1296,9 @@ class _FoldersScreenState extends State<FoldersScreen> {
           ),
       ],
           ),
-          if (!_isReorderingFolders && !_isSelectingFolders)
+          if (!keyboardVisible &&
+              !_isReorderingFolders &&
+              !_isSelectingFolders)
             Positioned(
               right: 18,
               bottom: 18,

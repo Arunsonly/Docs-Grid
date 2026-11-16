@@ -436,6 +436,35 @@ class AppDatabase {
         (rows.single['last_snapshot_revision'] as int);
   }
 
+  /// Returns the timestamp of the last successfully published snapshot.
+  Future<DateTime?> portableSnapshotLastAt() async {
+    final db = await database;
+    final rows = await db.query(
+      'portable_snapshot_state',
+      columns: ['last_snapshot_at'],
+      where: 'id = 1',
+      limit: 1,
+    );
+    if (rows.isEmpty) return null;
+    return DateTime.tryParse(rows.single['last_snapshot_at'] as String? ?? '');
+  }
+
+  /// A brand-new install with only built-in categories has nothing useful to
+  /// recover. Do not publish empty recovery points until the user creates data.
+  Future<bool> hasPortableUserData() async {
+    final db = await database;
+    for (final table in ['documents', 'folders', 'reminders', 'history']) {
+      final count = Sqflite.firstIntValue(
+        await db.rawQuery('SELECT COUNT(*) FROM $table'),
+      ) ?? 0;
+      if (count > 0) return true;
+    }
+    final customCategories = Sqflite.firstIntValue(
+      await db.rawQuery('SELECT COUNT(*) FROM categories WHERE is_builtin = 0'),
+    ) ?? 0;
+    return customCategories > 0;
+  }
+
   Future<int> portableSnapshotRevision() async {
     final db = await database;
     final rows = await db.query(
