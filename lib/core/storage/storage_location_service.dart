@@ -197,8 +197,6 @@ class StorageLocationService {
     };
   }
 
-  /// Read-only first-install probe for known DocsGrid-managed Android roots.
-  /// Permission failures remain "detection_unavailable", never "no old data".
   Future<bool> hasAllFilesAccess() async {
     if (!Platform.isAndroid) return false;
     return await _channel.invokeMethod<bool>('hasAllFilesAccess') ?? false;

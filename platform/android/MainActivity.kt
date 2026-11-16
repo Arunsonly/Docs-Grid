@@ -414,13 +414,11 @@ class MainActivity : FlutterActivity() {
                                 val savedRootIsLegacyDocsGrid =
                                     savedRootDocumentId.contains("android/media/docsgrid")
                                 if (savedRoot?.startsWith("content://") == true &&
-                                    savedDatabase?.startsWith("content://") == true &&
                                     savedRecovery?.startsWith("content://") == true &&
                                     savedLibrary?.startsWith("content://") == true &&
                                     !(hasAllFilesAccess && savedRootIsLegacyDocsGrid)) {
                                     val selectedLocations = mutableMapOf<String, String>(
                                         "rootUri" to savedRoot,
-                                        "databaseUri" to savedDatabase,
                                         "recoveryUri" to savedRecovery,
                                         "libraryUri" to savedLibrary
                                     )
@@ -432,7 +430,9 @@ class MainActivity : FlutterActivity() {
                                     try {
                                         val rootUri = Uri.parse(savedRoot)
                                         val systemUri = ensureDirectory(rootUri, "System")
-                                        // Retain the later fix: the selected tree owns its database snapshots.
+                                        // Database snapshots and ZIP backups must share this
+                                        // same selected DocsGrid root. Do not reuse a stale
+                                        // database_uri that may point at Android/media/com.docsgrid.
                                         val databaseUri = ensureDirectory(systemUri, "Database")
                                         selectedLocations["databaseUri"] = databaseUri.toString()
                                         val cacheUri = ensureDirectory(systemUri, "Cache")
@@ -704,8 +704,9 @@ class MainActivity : FlutterActivity() {
                                 }
                                 val temporary = java.io.File(parent, ".docsgrid-copy-${java.util.UUID.randomUUID()}.tmp")
                                 try {
-                                    // Source can be SAF, shared storage, or a DocsGrid-private file.
-                                    // Use the same validated reader for hashing and copying.
+                                    // Source may be a granted content URI, a shared file URI,
+                                    // or a DocsGrid-owned private file. The same validated
+                                    // reader must be used for hashing and copying.
                                     val sourceDigest = digest(source, allowAppPrivateFile = true)
                                     openPdfSource(source, allowAppPrivateFile = true)?.use { input ->
                                         temporary.outputStream().buffered().use { output ->
@@ -713,9 +714,8 @@ class MainActivity : FlutterActivity() {
                                             output.flush()
                                         }
                                     } ?: throw IllegalStateException("Could not read the source PDF.")
-                                    // The temporary verification file lives in app-private cache.
-                                    // Without this flag fileForUri rejects it, breaking all new
-                                    // content:// thumbnails even though the initial read succeeds.
+                                    // The temporary copy is in app-private cache; the
+                                    // permission flag is essential for SHA-256 verification.
                                     if (!sourceDigest.contentEquals(
                                             digest(Uri.fromFile(temporary), allowAppPrivateFile = true)
                                         )) {
