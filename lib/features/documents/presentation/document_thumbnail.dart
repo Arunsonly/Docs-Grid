@@ -148,6 +148,49 @@ class _DocumentThumbnailState extends State<DocumentThumbnail> {
 
   /// Enforces a soft 512 MiB first-page preview cache using least-recently-used
   /// file timestamps. The preview currently being rendered is never evicted.
+  // The 15-Nov version used a portable PagePreviews directory (or the old
+  // app-support thumbnails directory). Its valid previews must stay available
+  // after an app upgrade; thumbnails are disposable, original PDFs are not.
+  Future<File?> _reusePreviousPreview(
+    File newCache,
+    String digest,
+  ) async {
+    final oldId = widget.documentId.replaceAll(RegExp(r'[^A-Za-z0-9_-]'), '_');
+    // Very long Phone URIs never worked as filenames in the earlier layout.
+    if (oldId.length > 160) return null;
+    final filename = '${oldId}_${widget.sizeBytes}_$digest.png';
+    final support = await getApplicationSupportDirectory();
+    final previousDirs = <Directory>[
+      Directory(p.join(support.path, 'docsgrid', 'thumbnails')),
+    ];
+    if (Platform.isAndroid) {
+      try {
+        final locations = await StorageLocationService.instance
+            .portableDataLocationsIfAvailable();
+        for (final key in const ['pagePreviewsUri', 'thumbnailsUri']) {
+          final uri = locations[key];
+          if (uri != null && uri.startsWith('file://')) {
+            previousDirs.add(Directory(Uri.parse(uri).toFilePath()));
+          }
+        }
+      } catch (_) {
+        // Permission-limited devices can still create previews from PDFs.
+      }
+    }
+    for (final dir in previousDirs) {
+      final oldCache = File(p.join(dir.path, filename));
+      if (!await _isValidPng(oldCache)) continue;
+      try {
+        await oldCache.copy(newCache.path);
+        if (await _isValidPng(newCache)) return newCache;
+      } catch (_) {
+        // The legacy image remains usable without copying it.
+      }
+      return oldCache;
+    }
+    return null;
+  }
+
   Future<void> _enforceThumbnailCacheBudget(
     Directory directory, {
     required String keepPath,
@@ -214,15 +257,19 @@ class _DocumentThumbnailState extends State<DocumentThumbnail> {
     try {
       final directory = await _thumbnailCacheDirectory();
       final isProvider = source.startsWith('content://');
+      final isFileUri = source.startsWith('file://');
       String? pdfPath;
       final declaredSha = widget.contentSha256?.trim().toLowerCase();
       String? trustedSha = declaredSha != null &&
               RegExp(r'^[0-9a-f]{64}$').hasMatch(declaredSha)
           ? declaredSha
           : null;
-      if (source.startsWith('file://') || source.startsWith('file:')) {
+      // Match the previously working native staging path for file:// URIs.
+      // Direct Dart File access can be denied by scoped-storage permissions.
+      // Files with a regular absolute filesystem path remain direct.
+      if (source.startsWith('file:') && !isFileUri) {
         pdfPath = Uri.parse(source).toFilePath();
-      } else if (!isProvider) {
+      } else if (!isProvider && !isFileUri) {
         pdfPath = source;
       }
 
@@ -275,9 +322,10 @@ class _DocumentThumbnailState extends State<DocumentThumbnail> {
       await _acquireRenderSlot();
       renderSlotAcquired = true;
 
-      // Stage provider-backed PDFs only after the known-fingerprint cache lookup
-      // has missed. This keeps cache hits independent of provider latency.
-      if (isProvider) {
+      // Stage SAF/MediaStore AND file:// PDFs through the verified Android
+      // reader. This keeps rendering independent of Android scoped-storage
+      // filesystem permissions; cache hits still bypass the copy completely.
+      if (isProvider || isFileUri) {
         final temp = await getTemporaryDirectory();
         staged = File(p.join(
           temp.path,
@@ -312,6 +360,12 @@ class _DocumentThumbnailState extends State<DocumentThumbnail> {
         try { await cache.delete(); } catch (_) {}
       }
 
+      final reused = await _reusePreviousPreview(cache, actualDigest);
+      if (reused != null) {
+        _scheduleCacheMaintenance(directory, cache.path);
+        return reused;
+      }
+
       document = await pdfx.PdfDocument.openFile(pdfPath);
       if (document.pagesCount < 1) return null;
       page = await document.getPage(1);
@@ -339,8 +393,11 @@ class _DocumentThumbnailState extends State<DocumentThumbnail> {
           if (await partial.exists()) await partial.delete();
         } catch (_) {}
       }
-    } catch (error) {
-      debugPrint('DocsGrid PDF preview failed: ${error.runtimeType}');
+    } catch (error, trace) {
+      // Include the exception message in debug logs; the old runtimeType-only
+      // log obscured the Android storage permission/verification root cause.
+      debugPrint('DocsGrid PDF preview failed: $error');
+      debugPrintStack(stackTrace: trace);
       return null;
     } finally {
       if (page != null) {
