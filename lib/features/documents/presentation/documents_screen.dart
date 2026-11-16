@@ -921,7 +921,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         documentId: 'phone_recent_$uri',
         storagePath: uri,
         sizeBytes: (item['sizeBytes'] as num?)?.toInt() ?? 0,
-        sourceLastModifiedMillis: (item['lastModified'] as num?)?.toInt(),
+        sourceLastModifiedMillis: thumbnailModifiedMillis(item['lastModified']),
       ),
       title: Row(children: [
         Flexible(child: Text(name, maxLines: 1, overflow: TextOverflow.ellipsis)),
@@ -990,7 +990,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         'sizeBytes': bytes,
         'lastModified': matchingEntries.isEmpty
             ? 0
-            : (matchingEntries.first['lastModified'] as num?)?.toInt() ?? 0,
+            : thumbnailModifiedMillis(matchingEntries.first['lastModified']) ?? 0,
         'openedAt': DateTime.now().toUtc().toIso8601String(),
       });
       final limited = recent.take(20).toList(growable: false);
@@ -2249,7 +2249,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
                                 storagePath: uri,
                                 sizeBytes: bytes,
                                 sourceLastModifiedMillis:
-                                    (item['lastModified'] as num?)?.toInt(),
+                                    thumbnailModifiedMillis(item['lastModified']),
                               ),
                               title: Text(name, maxLines: 1, overflow: TextOverflow.ellipsis),
                               subtitle: Text(
@@ -2930,7 +2930,7 @@ class _PhoneRecentSelectionScreenState extends State<_PhoneRecentSelectionScreen
               documentId: 'phone_recent_$uri',
               storagePath: uri,
               sizeBytes: (item['sizeBytes'] as num?)?.toInt() ?? 0,
-              sourceLastModifiedMillis: (item['lastModified'] as num?)?.toInt(),
+              sourceLastModifiedMillis: thumbnailModifiedMillis(item['lastModified']),
             ),
             title: Text(item['name'] as String? ?? 'PDF'),
             subtitle: Text('Phone · ${item['openedAt'] ?? ''}'),
