@@ -27,6 +27,19 @@ String thumbnailCacheFileName({
   return '${identity}_${sizeBytes}_${revision}.png';
 }
 
+// Phone and SAF providers may report times as numbers, strings, or dates.
+@visibleForTesting
+int? thumbnailModifiedMillis(Object? raw) {
+  if (raw is num) return raw > 0 ? raw.toInt() : null;
+  if (raw is DateTime) return raw.millisecondsSinceEpoch;
+  if (raw is String) {
+    final millis = int.tryParse(raw.trim());
+    if (millis != null) return millis > 0 ? millis : null;
+    return DateTime.tryParse(raw)?.millisecondsSinceEpoch;
+  }
+  return null;
+}
+
 /// Lazily renders and persistently caches the first page of a library PDF.
 class DocumentThumbnail extends StatefulWidget {
   const DocumentThumbnail({
@@ -97,19 +110,27 @@ class _DocumentThumbnailState extends State<DocumentThumbnail> {
 
   Future<bool> _isValidPng(File file) async {
     try {
-      if (!await file.exists() || await file.length() < 8) return false;
-      final header = await file.open(mode: FileMode.read).then((handle) async {
-        try {
-          return await handle.read(8);
-        } finally {
-          await handle.close();
+      if (!await file.exists()) return false;
+      final length = await file.length();
+      if (length < 45) return false;
+      final handle = await file.open(mode: FileMode.read);
+      try {
+        final header = await handle.read(8);
+        await handle.setPosition(length - 12);
+        final trailer = await handle.read(12);
+        const pngSignature = <int>[137, 80, 78, 71, 13, 10, 26, 10];
+        const pngEnd = <int>[0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130];
+        if (header.length != 8 || trailer.length != 12) return false;
+        for (var i = 0; i < pngSignature.length; i++) {
+          if (header[i] != pngSignature[i]) return false;
         }
-      });
-      const pngSignature = <int>[137, 80, 78, 71, 13, 10, 26, 10];
-      for (var i = 0; i < pngSignature.length; i++) {
-        if (header[i] != pngSignature[i]) return false;
+        for (var i = 0; i < pngEnd.length; i++) {
+          if (trailer[i] != pngEnd[i]) return false;
+        }
+        return true;
+      } finally {
+        await handle.close();
       }
-      return true;
     } catch (_) {
       return false;
     }
