@@ -28,7 +28,6 @@ String thumbnailCacheFileName({
 }
 
 // Phone and SAF providers may report times as numbers, strings, or dates.
-@visibleForTesting
 int? thumbnailModifiedMillis(Object? raw) {
   if (raw is num) return raw > 0 ? raw.toInt() : null;
   if (raw is DateTime) return raw.millisecondsSinceEpoch;
