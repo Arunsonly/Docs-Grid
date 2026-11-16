@@ -730,9 +730,9 @@ class _FoldersScreenState extends State<FoldersScreen> {
   @override
   Widget build(BuildContext context) {
     // Grid uses InkWell and other ink effects outside Card surfaces.
-    // Supply a Material ancestor just as the preceding stable APK did.
+    // Match the known-good Grid surface while preserving Material ink effects.
     return Material(
-      type: MaterialType.transparency,
+      color: Theme.of(context).scaffoldBackgroundColor,
       child: PopScope(
       canPop: _ancestors.isEmpty,
       onPopInvokedWithResult: (didPop, result) {
