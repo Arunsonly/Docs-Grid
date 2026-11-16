@@ -10,7 +10,7 @@ import 'package:pdfx/pdfx.dart' as pdfx;
 
 import '../../../core/storage/storage_location_service.dart';
 
-// Keep cache filenames bounded even when Phone URIs contain very long paths.
+// Bound on-disk cache names even for very long Phone content URIs.
 String _thumbnailIdentity(String documentId, String storagePath) =>
     sha256.convert(utf8.encode(jsonEncode([documentId, storagePath])))
         .toString().substring(0, 32);
@@ -42,7 +42,7 @@ class DocumentThumbnail extends StatefulWidget {
   final String storagePath;
   final int sizeBytes;
   final String? contentSha256;
-  // An optional Phone/SAF file revision. Zero or missing dates are not trusted.
+  // Phone index modification time, used only when known and positive.
   final int? sourceLastModifiedMillis;
 
   @override
@@ -197,7 +197,57 @@ class _DocumentThumbnailState extends State<DocumentThumbnail> {
       String? pdfPath;
       final declaredSha = widget.contentSha256?.trim().toLowerCase();
       String? trustedSha = declaredSha != null &&
-              RegExp(r'^[0-9a-f]{64}
+              RegExp(r'^[0-9a-f]{64}$').hasMatch(declaredSha)
+          ? declaredSha
+          : null;
+      if (source.startsWith('file://') || source.startsWith('file:')) {
+        pdfPath = Uri.parse(source).toFilePath();
+      } else if (!isProvider) {
+        pdfPath = source;
+      }
+
+      File? localPdf;
+      if (pdfPath != null) {
+        localPdf = File(pdfPath);
+        if (!await localPdf.exists()) return null;
+      }
+
+      // A stable size/mtime revision avoids rehashing local PDFs. Phone's
+      // indexed modified time skips full content-provider copies on cache hits.
+      var localFingerprint = '';
+      if (localPdf != null) {
+        final actualSize = await localPdf.length();
+        final modified = await localPdf.lastModified();
+        localFingerprint = 'file:${actualSize}:${modified.microsecondsSinceEpoch}';
+        if (actualSize != widget.sizeBytes) trustedSha = null;
+      }
+      final modifiedAt = widget.sourceLastModifiedMillis;
+      final providerFingerprint = modifiedAt != null &&
+              modifiedAt > 0 && widget.sizeBytes > 0
+          ? 'provider:${widget.sizeBytes}:$modifiedAt'
+          : null;
+      final earlyFingerprint = trustedSha != null
+          ? 'sha:$trustedSha:$localFingerprint'
+          : localFingerprint.isNotEmpty
+              ? localFingerprint
+              : providerFingerprint;
+      File cacheFor(String fingerprint) => File(p.join(
+            directory.path,
+            thumbnailCacheFileName(
+              documentId: widget.documentId,
+              storagePath: source,
+              sizeBytes: widget.sizeBytes,
+              fingerprint: fingerprint,
+            ),
+          ));
+      if (earlyFingerprint != null) {
+        final cached = cacheFor(earlyFingerprint);
+        if (await _isValidPng(cached)) {
+          try { await cached.setLastModified(DateTime.now()); } catch (_) {}
+          _scheduleCacheMaintenance(directory, cached.path);
+          return cached;
+        }
+      }
 
       // Stage provider-backed PDFs only after the known-fingerprint cache lookup
       // has missed. This keeps cache hits independent of provider latency.
@@ -221,8 +271,7 @@ class _DocumentThumbnailState extends State<DocumentThumbnail> {
       // Cache misses verify the current bytes. This also catches same-size
       // replacements instead of rendering under a stale database fingerprint.
       final actualDigest = (await sha256.bind(localPdf.openRead()).first).toString();
-      // Never cache under a stale caller-provided SHA. The provider revision is
-      // only a cache hint; content is still verified on every cache miss.
+      // Do not persist a thumbnail under an incorrect supplied SHA.
       final renderFingerprint = earlyFingerprint != null &&
               (trustedSha == null || trustedSha == actualDigest)
           ? earlyFingerprint
@@ -340,200 +389,12 @@ class _DocumentThumbnailState extends State<DocumentThumbnail> {
                   size: 38, color: Color(0xFFD32F2F)),
               if (failed)
                 const Positioned(
-                  right: 0,
-                  bottom: 0,
+                  right: 0, bottom: 0,
                   child: Icon(Icons.error_outline, size: 17,
                       color: Color(0xFFB71C1C)),
                 ),
             ],
           ),
-        ),
-      );
-}
-).hasMatch(declaredSha)
-          ? declaredSha
-          : null;
-      if (source.startsWith('file://') || source.startsWith('file:')) {
-        pdfPath = Uri.parse(source).toFilePath();
-      } else if (!isProvider) {
-        pdfPath = source;
-      }
-
-      File? localPdf;
-      if (pdfPath != null) {
-        localPdf = File(pdfPath);
-        if (!await localPdf.exists()) return null;
-      }
-
-      // Use a cheap file revision (size and mtime) when available. For
-      // content:// documents Phone's indexed modified time avoids copying and
-      // hashing the entire PDF again on every cached thumbnail display.
-      var localFingerprint = '';
-      if (localPdf != null) {
-        final actualSize = await localPdf.length();
-        final modified = await localPdf.lastModified();
-        localFingerprint = 'file:${actualSize}:${modified.microsecondsSinceEpoch}';
-        if (actualSize != widget.sizeBytes) trustedSha = null;
-      }
-      final modifiedAt = widget.sourceLastModifiedMillis;
-      final providerFingerprint = modifiedAt != null &&
-              modifiedAt > 0 &&
-              widget.sizeBytes > 0
-          ? 'provider:${widget.sizeBytes}:$modifiedAt'
-          : null;
-      final earlyFingerprint = trustedSha != null
-          ? 'sha:$trustedSha:$localFingerprint'
-          : localFingerprint.isNotEmpty
-              ? localFingerprint
-              : providerFingerprint;
-      File cacheFor(String fingerprint) => File(p.join(
-            directory.path,
-            thumbnailCacheFileName(
-              documentId: widget.documentId,
-              storagePath: source,
-              sizeBytes: widget.sizeBytes,
-              fingerprint: fingerprint,
-            ),
-          ));
-      if (earlyFingerprint != null) {
-        final cached = cacheFor(earlyFingerprint);
-        if (await _isValidPng(cached)) {
-          try { await cached.setLastModified(DateTime.now()); } catch (_) {}
-          _scheduleCacheMaintenance(directory, cached.path);
-          return cached;
-        }
-      }
-
-      // Stage provider-backed PDFs only after the known-fingerprint cache lookup
-      // has missed. This keeps cache hits independent of provider latency.
-      if (isProvider) {
-        final temp = await getTemporaryDirectory();
-        staged = File(p.join(
-          temp.path,
-          'thumb_${id}_${DateTime.now().microsecondsSinceEpoch}.pdf',
-        ));
-        await StorageLocationService.instance.copyPdfToPath(
-          sourceUri: source,
-          destinationPath: staged.path,
-        );
-        pdfPath = staged.path;
-        localPdf = staged;
-      }
-      if (pdfPath == null || localPdf == null || !await localPdf.exists()) {
-        return null;
-      }
-
-      // Cache misses verify the current bytes. This also catches same-size
-      // replacements instead of rendering under a stale database fingerprint.
-      final actualDigest = (await sha256.bind(localPdf.openRead()).first).toString();
-      digest = actualDigest;
-      final actualSize = await localPdf.length();
-      final cache = File(p.join(
-        directory.path,
-        '${id}_${actualSize}_${digest}${localFingerprint}.png',
-      ));
-      if (await _isValidPng(cache)) {
-        try { await cache.setLastModified(DateTime.now()); } catch (_) {}
-        _scheduleCacheMaintenance(directory, cache.path);
-        return cache;
-      }
-      if (await cache.exists()) {
-        try { await cache.delete(); } catch (_) {}
-      }
-
-      await _acquireRenderSlot();
-      renderSlotAcquired = true;
-      document = await pdfx.PdfDocument.openFile(pdfPath);
-      if (document.pagesCount < 1) return null;
-      page = await document.getPage(1);
-      const width = 240.0;
-      final height = (width * page.height / page.width)
-          .clamp(160.0, 360.0)
-          .toDouble();
-      final rendered = await page.render(
-        width: width,
-        height: height,
-        format: pdfx.PdfPageImageFormat.png,
-      );
-      if (rendered == null || rendered.bytes.isEmpty) return null;
-      final partial = File(
-        '${cache.path}.${DateTime.now().microsecondsSinceEpoch}.tmp',
-      );
-      try {
-        await partial.writeAsBytes(rendered.bytes, flush: true);
-        if (!await _isValidPng(partial)) return null;
-        final saved = await partial.rename(cache.path);
-        _scheduleCacheMaintenance(directory, saved.path);
-        return saved;
-      } finally {
-        try {
-          if (await partial.exists()) await partial.delete();
-        } catch (_) {}
-      }
-    } catch (_) {
-      return null;
-    } finally {
-      if (page != null) {
-        try { await page.close(); } catch (_) {}
-      }
-      if (document != null) {
-        try { await document.close(); } catch (_) {}
-      }
-      if (staged != null) {
-        try { if (await staged.exists()) await staged.delete(); } catch (_) {}
-      }
-      if (renderSlotAcquired) _releaseRenderSlot();
-    }
-  }
-
-  void _scheduleCacheMaintenance(Directory directory, String keepPath) {
-    _maintenanceRequests++;
-    if (_maintenanceRequests % 32 == 0) {
-      // Cache directory sweeps run rarely and off the thumbnail-hit path.
-      unawaited(_enforceThumbnailCacheBudget(directory, keepPath: keepPath));
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return FutureBuilder<File?>(
-      future: _thumbnail,
-      builder: (context, snapshot) {
-        final file = snapshot.data;
-        if (snapshot.connectionState == ConnectionState.done &&
-            file != null && file.existsSync()) {
-          return ClipRRect(
-            borderRadius: BorderRadius.circular(8),
-            child: Image.file(
-              file,
-              width: 48,
-              height: 64,
-              fit: BoxFit.cover,
-              errorBuilder: (_, _, _) => _placeholder(context),
-            ),
-          );
-        }
-        // Keep a stable red PDF glyph while the first-page preview loads.
-        // A spinner here prevents scrollable widget tests from settling and
-        // makes large Phone folders visually noisy during thumbnail warm-up.
-        return _placeholder(context);
-      },
-    );
-  }
-
-  Widget _placeholder(BuildContext context) =>
-      Container(
-        width: 48,
-        height: 64,
-        alignment: Alignment.center,
-        decoration: BoxDecoration(
-          color: Theme.of(context).colorScheme.surfaceContainerHighest,
-          borderRadius: BorderRadius.circular(8),
-        ),
-        child: const Icon(
-          Icons.picture_as_pdf_rounded,
-          size: 38,
-          color: Color(0xFFD32F2F),
         ),
       );
 }
