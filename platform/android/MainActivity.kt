@@ -704,14 +704,21 @@ class MainActivity : FlutterActivity() {
                                 }
                                 val temporary = java.io.File(parent, ".docsgrid-copy-${java.util.UUID.randomUUID()}.tmp")
                                 try {
-                                    val sourceDigest = digest(source)
-                                    contentResolver.openInputStream(source)?.use { input ->
+                                    // Source may be a granted content URI, a shared file URI,
+                                    // or a DocsGrid-owned private file. The same validated
+                                    // reader must be used for hashing and copying.
+                                    val sourceDigest = digest(source, allowAppPrivateFile = true)
+                                    openPdfSource(source, allowAppPrivateFile = true)?.use { input ->
                                         temporary.outputStream().buffered().use { output ->
                                             input.copyTo(output, 64 * 1024)
                                             output.flush()
                                         }
                                     } ?: throw IllegalStateException("Could not read the source PDF.")
-                                    if (!sourceDigest.contentEquals(digest(Uri.fromFile(temporary)))) {
+                                    // The temporary copy is in app-private cache; the
+                                    // permission flag is essential for SHA-256 verification.
+                                    if (!sourceDigest.contentEquals(
+                                            digest(Uri.fromFile(temporary), allowAppPrivateFile = true)
+                                        )) {
                                         throw IllegalStateException("The temporary PDF copy failed SHA-256 verification.")
                                     }
                                     if (destination.exists() || !temporary.renameTo(destination)) {
