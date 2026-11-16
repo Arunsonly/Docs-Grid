@@ -93,6 +93,38 @@ class DocumentToolsService {
   }
   static final Set<String> _indexingDocumentIds = <String>{};
 
+  /// Whitelisted legacy library locations. Recovery must never broaden this
+  /// list to the Phone tab's general shared-storage roots.
+  @visibleForTesting
+  static List<({String path, bool preserveFolders})>
+      legacyManagedRecoveryPaths(String legacyRoot) => [
+        (
+          path: p.join(legacyRoot, 'My Files', 'Unfiled'),
+          preserveFolders: false,
+        ),
+        (
+          path: p.join(legacyRoot, 'My Files', 'Folders'),
+          preserveFolders: true,
+        ),
+        (path: p.join(legacyRoot, 'Documents'), preserveFolders: false),
+        (path: p.join(legacyRoot, 'Folders'), preserveFolders: true),
+        (path: p.join(legacyRoot, 'Unfiled'), preserveFolders: false),
+        // The earliest Android releases stored library PDFs in a dedicated
+        // top-level PDFs directory. The install detector still recognizes it;
+        // recovery must include the same explicitly managed legacy location.
+        (path: p.join(legacyRoot, 'PDFs'), preserveFolders: false),
+      ];
+
+  /// Converts the UI breadcrumb separator ("Parent / Child") into the
+  /// portable relative-path form ("Parent/Child") used by storage traversal.
+  /// Folder names themselves cannot contain slashes, so this is unambiguous.
+  @visibleForTesting
+  static String normalizeRecoveryFolderPath(String value) => value
+      .split('/')
+      .map((segment) => segment.trim())
+      .where((segment) => segment.isNotEmpty)
+      .join('/');
+
   /// Normalizes OCR text for exact-content duplicate comparison.
   /// Keeps letters and numbers from all scripts, including Devanagari.
   @visibleForTesting
@@ -742,117 +774,204 @@ class DocumentToolsService {
   /// Lists portable ZIP archives without trusting their filenames as proof
   /// of validity. The restore decoder performs the full manifest/checksum scan.
   Future<List<File>> listPortableBackupArchives() async {
+    final storage = StorageLocationService.instance;
     final locations = Platform.isAndroid
-        ? await StorageLocationService.instance.portableDataLocationsIfAvailable()
+        ? await storage.portableDataLocationsIfAvailable()
         : const <String, String>{};
-    final directories = <Directory>[];
-    final uri = locations['backupsUri'];
-    final fullBackupsUri = locations['fullBackupsUri'];
-    final databaseBackupsUri = locations['databaseBackupsUri'];
-    for (final backupUri in [uri, fullBackupsUri, databaseBackupsUri]) {
-      if (backupUri != null && backupUri.startsWith('file://')) {
-        directories.add(Directory(Uri.parse(backupUri).toFilePath()));
+    final directories = <String, Directory>{};
+
+    void addDirectory(Directory directory) {
+      directories[directory.path] = directory;
+    }
+
+    // Current installations write Full and Database archives to separate
+    // directories. Inspect those exact directories and the parent for legacy
+    // archives created before the split.
+    for (final key in ['fullBackupsUri', 'databaseBackupsUri', 'backupsUri']) {
+      final uri = locations[key];
+      if (uri != null && uri.startsWith('file://')) {
+        addDirectory(Directory(Uri.parse(uri).toFilePath()));
       }
     }
-    if (directories.isEmpty) {
-      directories.add(Directory(
-        p.join((await getApplicationDocumentsDirectory()).path, 'DocsGrid', 'Backups'),
-      ));
-    }
+
     final legacyUri = locations['legacyRootUri'];
     if (legacyUri != null && legacyUri.startsWith('file://')) {
       final legacyRoot = Uri.parse(legacyUri).toFilePath();
-      directories
-        ..add(Directory(p.join(legacyRoot, 'Backups')))
-        ..add(Directory(p.join(legacyRoot, 'System', 'Backups')));
-    }
-    final files = <File>[];
-    final storage = StorageLocationService.instance;
-    for (final backupUri in [uri, fullBackupsUri, databaseBackupsUri]) {
-      if (backupUri == null || !backupUri.startsWith('content://')) continue;
-      final entries = await storage.listDirectory(backupUri);
-      final stagingRoot = Directory(p.join(
-        (await getTemporaryDirectory()).path,
-        'docsgrid_portable_backup_staging',
-      ));
-      await stagingRoot.create(recursive: true);
-      for (final entry in entries) {
-        final name = entry['name'] as String? ?? '';
-        final sourceUri = entry['uri'] as String? ?? '';
-        if (entry['isDirectory'] == true ||
-            p.extension(name).toLowerCase() != '.zip' ||
-            !sourceUri.startsWith('content://')) continue;
-        final safeName = sha256.convert(utf8.encode(sourceUri)).toString();
-        final staged = File(p.join(stagingRoot.path, '$safeName.zip'));
-        try {
-          if (await staged.exists()) await staged.delete();
-          await storage.copyStorageFileToPath(
-            sourceUri: sourceUri,
-            destinationPath: staged.path,
-          );
-          files.add(staged);
-        } catch (_) {
-          // An unreadable provider entry is skipped, not considered a backup.
-        }
+      for (final path in [
+        p.join(legacyRoot, 'Backups'),
+        p.join(legacyRoot, 'Backups', 'Full'),
+        p.join(legacyRoot, 'Backups', 'Database'),
+        p.join(legacyRoot, 'System', 'Backups'),
+        p.join(legacyRoot, 'System', 'Backups', 'Full'),
+        p.join(legacyRoot, 'System', 'Backups', 'Database'),
+      ]) {
+        addDirectory(Directory(path));
       }
     }
-    for (final directory in directories) {
+
+    // iOS and private fallback archives are also separated into Full/Database.
+    if (!Platform.isAndroid || directories.isEmpty) {
+      final backupRoot = p.join(
+        (await getApplicationDocumentsDirectory()).path,
+        'DocsGrid',
+        'Backups',
+      );
+      addDirectory(Directory(backupRoot));
+      addDirectory(Directory(p.join(backupRoot, 'Full')));
+      addDirectory(Directory(p.join(backupRoot, 'Database')));
+    }
+
+    final files = <String, File>{};
+    for (final directory in directories.values) {
       if (!await directory.exists()) continue;
-      files.addAll(await directory
+      final entries = await directory
           .list(followLinks: false)
-          .where((entity) => entity is File &&
+          .where((entity) =>
+              entity is File &&
+              p.basename(entity.path).startsWith('DocsGrid_') &&
               p.extension(entity.path).toLowerCase() == '.zip')
           .cast<File>()
-          .toList());
+          .toList();
+      for (final file in entries) {
+        files[file.path] = file;
+      }
     }
-    final unique = <String, File>{for (final file in files) file.path: file};
-    final result = unique.values.toList()
+
+    // SAF trees expose opaque content:// URIs. Stage only DocsGrid-owned ZIP
+    // files via the native streaming copy bridge; never read archives into RAM.
+    final stagedRoot = Directory(p.join(
+      (await getTemporaryDirectory()).path,
+      'docsgrid_portable_backup_staging',
+    ));
+    if (await stagedRoot.exists()) {
+      await stagedRoot.delete(recursive: true);
+    }
+    await stagedRoot.create(recursive: true);
+
+    Future<void> stageContentDirectory(
+      String uri, {
+      required String folderName,
+    }) async {
+      try {
+        final entries = await storage.listDirectory(uri);
+        final targetDirectory = Directory(p.join(stagedRoot.path, folderName));
+        await targetDirectory.create(recursive: true);
+        for (final entry in entries) {
+          if (entry['isDirectory'] == true) continue;
+          final name = entry['name'] as String? ?? '';
+          final sourceUri = entry['uri'] as String? ?? '';
+          if (!name.startsWith('DocsGrid_') ||
+              !name.toLowerCase().endsWith('.zip') ||
+              sourceUri.isEmpty) {
+            continue;
+          }
+          final staged = File(p.join(targetDirectory.path, '${_uuid.v4()}_$name'));
+          try {
+            await storage.copyStorageFileToPath(
+              sourceUri: sourceUri,
+              destinationPath: staged.path,
+            );
+            files[staged.path] = staged;
+          } catch (_) {
+            // Skip only this unreadable item; other backups remain eligible.
+          }
+        }
+      } catch (_) {
+        // One inaccessible SAF/cloud folder must not hide other backup sources.
+      }
+    }
+
+    final contentUris = <String, String>{};
+    for (final key in ['fullBackupsUri', 'databaseBackupsUri', 'backupsUri']) {
+      final uri = locations[key];
+      if (uri != null && uri.startsWith('content://')) {
+        contentUris[uri] = key;
+      }
+    }
+    for (final entry in contentUris.entries) {
+      final uri = entry.key;
+      final key = entry.value;
+      if (key == 'backupsUri') {
+        await stageContentDirectory(uri, folderName: 'Legacy');
+        // The parent contains the known Full and Database children. Do not
+        // recurse into arbitrary provider folders.
+        try {
+          final children = await storage.listDirectory(uri);
+          for (final child in children) {
+            if (child['isDirectory'] != true) continue;
+            final name = child['name'] as String? ?? '';
+            if (name != 'Full' && name != 'Database') continue;
+            final childUri = child['uri'] as String? ?? '';
+            if (childUri.startsWith('content://')) {
+              await stageContentDirectory(childUri, folderName: name);
+            }
+          }
+        } catch (_) {}
+      } else {
+        await stageContentDirectory(
+          uri,
+          folderName: key == 'fullBackupsUri' ? 'Full' : 'Database',
+        );
+      }
+    }
+
+    return files.values.toList()
       ..sort((a, b) => b.lastModifiedSync().compareTo(a.lastModifiedSync()));
-    return result;
   }
 
-  /// Rebuilds the library index from surviving shared PDFs after reinstall.
-  /// PDFs are copied into the active library and SHA-256 verified. Source files
-  /// remain untouched; folder names are rebuilt from their paths.
-  /// Rebuilds the library index only from PDFs already inside DocsGrid's
-  /// managed portable roots. Never scan the whole phone, Downloads, WhatsApp,
-  /// SD-card roots or arbitrary SAF grants during DocsGrid restore.
   Future<Map<String, int>> recoverLoosePortablePdfs({
     void Function(int completed, int total)? onProgress,
   }) async {
     await StorageMigrationGate.waitUntilReady();
     if (!Platform.isAndroid) {
-      throw UnsupportedError('Portable DocsGrid PDF recovery is currently Android-only.');
+      throw UnsupportedError(
+        'Automatic shared-media recovery is currently Android-only.',
+      );
     }
+
     final storage = StorageLocationService.instance;
-    final locations = await storage.portableDataLocations();
-    final folderRepository = FolderRepository();
-    final documentRepository = DocumentRepository();
+    final locations = await storage.portableDataLocationsIfAvailable();
+    final documentsRoot = locations['documentsUri'];
+    final foldersRoot = locations['libraryUri'];
+    if (documentsRoot == null && foldersRoot == null) {
+      throw StateError(
+        'No accessible DocsGrid recovery folders were found. '
+        'Restore the existing DocsGrid storage location first.',
+      );
+    }
+
+    final roots = <({String uri, bool preserveFolders})>[];
+    if (documentsRoot != null) {
+      roots.add((uri: documentsRoot, preserveFolders: false));
+    }
+    if (foldersRoot != null) {
+      roots.add((uri: foldersRoot, preserveFolders: true));
+    }
+
+    // Older releases stored the same managed library below Android/media/DocsGrid.
+    // Support both the original direct layout and the later "My Files" layout,
+    // but never recurse through the legacy root itself (which also contains
+    // backups, snapshots, caches and other non-library content).
+    final legacyUri = locations['legacyRootUri'];
+    if (legacyUri != null && legacyUri.startsWith('file://')) {
+      final legacyRoot = Directory(Uri.parse(legacyUri).toFilePath());
+      final legacyLayouts =
+          DocumentToolsService.legacyManagedRecoveryPaths(legacyRoot.path);
+      for (final legacy in legacyLayouts) {
+        final directory = Directory(legacy.path);
+        if (await directory.exists()) {
+          roots.add((
+            uri: Uri.directory(directory.path).toString(),
+            preserveFolders: legacy.preserveFolders,
+          ));
+        }
+      }
+    }
+
     final candidates = <Map<String, Object?>>[];
     final seenUris = <String>{};
     var failed = 0;
 
-    void addCandidate(
-      Map<String, Object?> item, {
-      required String folderPath,
-    }) {
-      final name = item['name']?.toString() ?? '';
-      final uri = item['uri']?.toString() ?? '';
-      if (!name.toLowerCase().endsWith('.pdf') ||
-          uri.isEmpty ||
-          !seenUris.add(uri)) {
-        return;
-      }
-      candidates.add({
-        'name': name,
-        'uri': uri,
-        'folderPath': folderPath,
-      });
-    }
-
-    // The active portable roots point to:
-    // Android/media/com.docsgrid/My Files/Unfiled and /Folders.
-    // Recursing these two roots restores only files that belonged to DocsGrid.
     Future<void> addPortableRoot(
       String uri, {
       required bool preserveFolders,
@@ -860,75 +979,83 @@ class DocumentToolsService {
       try {
         final files = await storage.listPdfFilesRecursively(uri);
         for (final item in files) {
-          addCandidate(
-            item,
-            folderPath: preserveFolders
-                ? StorageLocationService.normalizePhoneFolderPath(
-                    item['folderPath'] as String?,
-                  )
+          final name = item['name'] as String? ?? '';
+          final fileUri = item['uri'] as String? ?? '';
+          if (!name.toLowerCase().endsWith('.pdf') ||
+              fileUri.isEmpty ||
+              !seenUris.add(fileUri)) {
+            continue;
+          }
+          candidates.add({
+            'name': name,
+            'uri': fileUri,
+            // "Unfiled" PDFs are library root documents. Only PDFs already
+            // stored under the managed Folders tree retain a folder hierarchy.
+            'folderPath': preserveFolders
+                ? (item['folderPath'] as String? ?? '')
                 : '',
-          );
+          });
         }
       } catch (_) {
+        // Preserve partial recovery from other valid DocsGrid roots.
         failed++;
       }
     }
 
-    final unfiledRoot = locations['documentsUri'];
-    final foldersRoot = locations['libraryUri'];
-    if (unfiledRoot != null) {
-      await addPortableRoot(unfiledRoot, preserveFolders: false);
-    }
-    if (foldersRoot != null) {
-      await addPortableRoot(foldersRoot, preserveFolders: true);
+    for (final root in roots) {
+      await addPortableRoot(
+        root.uri,
+        preserveFolders: root.preserveFolders,
+      );
     }
 
-    // Backward compatibility: also check the previous DocsGrid-owned layout.
-    // This is a single known app folder, not a scan of all internal storage.
-    final legacyUri = locations['legacyRootUri'];
-    if (legacyUri != null && legacyUri.startsWith('file://')) {
-      final legacyRoot = Uri.parse(legacyUri).toFilePath();
-      final legacyDocuments = Directory(p.join(legacyRoot, 'Documents'));
-      final legacyFolders = Directory(p.join(legacyRoot, 'Folders'));
-      if (await legacyDocuments.exists()) {
-        await addPortableRoot(
-          Uri.directory(legacyDocuments.path).toString(),
-          preserveFolders: false,
-        );
-      }
-      if (await legacyFolders.exists()) {
-        await addPortableRoot(
-          Uri.directory(legacyFolders.path).toString(),
-          preserveFolders: true,
-        );
-      }
-    }
+    final folderRepository = FolderRepository();
+    final documentRepository = DocumentRepository();
 
-    // Reuse folders already restored from a snapshot, matching full relative
-    // paths so repeated recovery does not create duplicate folder records.
+    // Reuse paths already restored from a metadata snapshot. This makes
+    // repeated recovery idempotent and prevents duplicate nested folders.
     final folderIdsByPath = <String, String>{};
     for (final existing in await folderRepository.allFoldersWithPaths()) {
-      folderIdsByPath[existing.path] = existing.folder.id;
+      folderIdsByPath[normalizeRecoveryFolderPath(existing.path)] =
+          existing.folder.id;
     }
     var createdFolders = 0;
+
     Future<String?> ensureFolderPath(String path) async {
       if (path.isEmpty) return null;
       String? parentId;
       var currentPath = '';
-      for (final segment in path.split('/').where((value) => value.isNotEmpty)) {
+      for (final rawSegment in normalizeRecoveryFolderPath(path)
+          .split('/')
+          .where((value) => value.isNotEmpty)) {
+        final segment = FolderRepository.validateFolderName(rawSegment);
         currentPath = currentPath.isEmpty ? segment : '$currentPath/$segment';
         final cached = folderIdsByPath[currentPath];
         if (cached != null) {
           parentId = cached;
           continue;
         }
-        final created = await folderRepository.create(
-          name: FolderRepository.validateFolderName(segment),
-          parentId: parentId,
-        );
-        folderIdsByPath[currentPath] = created.id;
-        parentId = created.id;
-        createdFolders++;
+        try {
+          final created = await folderRepository.create(
+            name: segment,
+            parentId: parentId,
+            reuseExistingPhysical: true,
+          );
+          folderIdsByPath[currentPath] = created.id;
+          parentId = created.id;
+          createdFolders++;
+        } on StateError {
+          // Another recovery/import may have created this Grid folder.
+          // Reuse only a verified active folder; do not mistake failures
+          // to access physical storage for successful folder creation.
+          final matches = await folderRepository.allFoldersWithPaths();
+          final current = matches.where((item) =>
+              normalizeRecoveryFolderPath(item.path).toLowerCase() ==
+              currentPath.toLowerCase()).toList();
+          if (current.length != 1) rethrow;
+          parentId = current.single.folder.id;
+          folderIdsByPath[currentPath] = parentId;
+        }
       }
       return parentId;
     }
@@ -958,6 +1085,7 @@ class DocumentToolsService {
         onProgress?.call(processed, total);
       }
     }
+
     return {
       'added': added,
       'duplicates': duplicates,
@@ -966,8 +1094,36 @@ class DocumentToolsService {
     };
   }
 
-  /// Tries portable archives newest-first. A filename or timestamp is never
-  /// accepted as proof: every candidate is decoded and checksum-validated.
+  /// Reads only the declared backup type after ZIP bounds and path checks.
+  /// v1 archives without backupType are treated as Full for compatibility with
+  /// the original format, which had no database-only mode.
+  Future<String> _readPortableBackupType(File zipFile) async {
+    await BackupArchiveLimits.validate(zipFile);
+    final input = InputFileStream(zipFile.path);
+    try {
+      final archive = ZipDecoder().decodeStream(input);
+      final entry = archive.findFile('manifest.json');
+      if (entry == null || !entry.isFile || entry.isSymbolicLink) {
+        throw StateError('This is not a DocsGrid backup.');
+      }
+      final value = jsonDecode(utf8.decode(entry.content as List<int>));
+      if (value is! Map<String, dynamic> ||
+          value['format'] != 'DocsGridBackup' ||
+          value['version'] != 1) {
+        throw StateError('Unsupported backup format or version.');
+      }
+      final type = value['backupType'];
+      if (type == null || type == 'full') return 'full';
+      if (type == 'database') return 'database';
+      throw StateError('Backup type is not supported.');
+    } finally {
+      try { input.closeSync(); } catch (_) {}
+    }
+  }
+
+  /// Full archives always take priority over database-only archives, regardless
+  /// of modification time. A broken archive is skipped and the next candidate
+  /// is tried; Database archives are used only after every Full archive fails.
   Future<int?> restoreNewestPortableBackup({
     Future<bool> Function(int pdfCount)? confirm,
   }) async {
@@ -976,18 +1132,59 @@ class DocumentToolsService {
     if (candidates.isEmpty) {
       throw StateError('No portable DocsGrid backup ZIP was found.');
     }
-    Object? lastError;
+
+    final stagedRoot = Directory(p.join(
+      (await getTemporaryDirectory()).path,
+      'docsgrid_portable_backup_staging',
+    ));
+    final classified = <({File file, int priority, DateTime modified})>[];
     for (final candidate in candidates) {
       try {
-        return await restoreBackup(candidate, confirm: confirm);
-      } catch (error) {
-        lastError = error;
+        // New archives are stored in explicit Full/Database folders, so their
+        // type is known without decompressing a large archive just to inspect
+        // its manifest. Only legacy flat archives need manifest classification.
+        final parentType = p.basename(candidate.parent.path).toLowerCase();
+        final type = parentType == 'full'
+            ? 'full'
+            : parentType == 'database'
+                ? 'database'
+                : await _readPortableBackupType(candidate);
+        classified.add((
+          file: candidate,
+          priority: type == 'full' ? 0 : 1,
+          modified: await candidate.lastModified(),
+        ));
+      } catch (_) {
+        classified.add((
+          file: candidate,
+          priority: 2,
+          modified: await candidate.lastModified(),
+        ));
       }
     }
-    throw StateError(
-      'No valid portable backup could be restored. '
-      'The newest candidates may be incomplete or damaged. Last error: $lastError',
-    );
+    classified.sort((a, b) {
+      final byType = a.priority.compareTo(b.priority);
+      return byType != 0 ? byType : b.modified.compareTo(a.modified);
+    });
+
+    Object? lastError;
+    try {
+      for (final item in classified) {
+        try {
+          return await restoreBackup(item.file, confirm: confirm);
+        } catch (error) {
+          lastError = error;
+        }
+      }
+      throw StateError(
+        'No valid portable backup could be restored. '
+        'Full archives were checked before Database archives. Last error: $lastError',
+      );
+    } finally {
+      if (await stagedRoot.exists()) {
+        try { await stagedRoot.delete(recursive: true); } catch (_) {}
+      }
+    }
   }
 
   /// Creates a verified Full archive and portable pointer record before
@@ -1637,10 +1834,31 @@ class DocumentToolsService {
       throw StateError('Portable Database folder is not available. Enable storage access or select an existing recovery tree.');
     }
     final db = await _database.database;
-    final capturedRevision = await _database.portableSnapshotRevision();
-    // Export only durable app data. FTS virtual/shadow tables and summary
-    // cache tables are derived state and must not invalidate recovery snapshots.
+    // Read every durable table and its revision in one SQLite read transaction.
+    // This prevents a snapshot whose documents, folders and reminders came from
+    // different moments while the user is changing the library.
     final tableNames = PortableSnapshotManifest.supportedTableNames;
+    final snapshotCapture = await db.transaction((txn) async {
+      final revisionRows = await txn.query(
+        'portable_snapshot_state',
+        columns: ['revision'],
+        where: 'id = 1',
+        limit: 1,
+      );
+      if (revisionRows.isEmpty) {
+        throw StateError('Portable snapshot state is not initialized.');
+      }
+      final rowsByTable = <String, List<Map<String, Object?>>>{};
+      for (final table in tableNames) {
+        rowsByTable[table] = await txn.query(table);
+      }
+      return (
+        revision: revisionRows.single['revision'] as int,
+        rowsByTable: rowsByTable,
+      );
+    });
+    final capturedRevision = snapshotCapture.revision;
+    final capturedRows = snapshotCapture.rowsByTable;
     if (!tableNames.contains('documents') || !tableNames.contains('folders')) {
       throw StateError('The DocsGrid database is incomplete; no snapshot was written.');
     }
@@ -1657,7 +1875,7 @@ class DocumentToolsService {
 
     try {
       for (final table in tableNames) {
-        final rows = await db.query(table);
+        final rows = capturedRows[table]!;
         final contents = jsonEncode(rows);
         final bytes = utf8.encode(contents);
         final filename = '$table.json';
@@ -1743,6 +1961,16 @@ class DocumentToolsService {
     }
     snapshots.sort((a, b) =>
         (b['name'] as String).compareTo(a['name'] as String));
+
+    // A reinstall can create a newer, valid-but-empty snapshot before the
+    // previous portable tree is selected. Timestamp-only selection would then
+    // restore built-in folders/categories from the empty install and silently
+    // ignore the older snapshot containing the user's PDFs and metadata.
+    // Validate every candidate and prefer the snapshot with the most document
+    // records, then the most total records; use timestamp only as a tie-breaker.
+    Map<String, Object?>? bestSnapshot;
+    var bestDocumentCount = -1;
+    var bestRecordCount = -1;
 
     for (final snapshot in snapshots) {
       try {
@@ -1848,17 +2076,29 @@ class DocumentToolsService {
           }
         }
 
-        return {
-          'name': snapshot['name'] as String,
-          'uri': snapshotUri,
-          'manifestText': manifestText,
-          'manifest': manifest,
-        };
+        final documentCount = documentRows.length;
+        final recordCount = rowsByTable.values.fold<int>(
+          0,
+          (total, rows) => total + rows.length,
+        );
+        final isBetter = documentCount > bestDocumentCount ||
+            (documentCount == bestDocumentCount &&
+                recordCount > bestRecordCount);
+        if (isBetter) {
+          bestDocumentCount = documentCount;
+          bestRecordCount = recordCount;
+          bestSnapshot = {
+            'name': snapshot['name'] as String,
+            'uri': snapshotUri,
+            'manifestText': manifestText,
+            'manifest': manifest,
+          };
+        }
       } catch (_) {
         // Try the next older snapshot. Never mutate or delete a failed copy.
       }
     }
-    return null;
+    return bestSnapshot;
   }
 
   Future<String?> verifyLatestPortableMetadataSnapshot() async {
@@ -1939,6 +2179,28 @@ class DocumentToolsService {
       if (locations['documentsUri'] != null)
         locations['documentsUri']!,
     ];
+
+    // A reinstall may initialize a new canonical com.docsgrid root while the
+    // previous release's managed PDFs remain in Android/media/DocsGrid.
+    // Metadata snapshots are portable across that migration, so hash matching
+    // must search the explicitly whitelisted legacy library directories too.
+    // Never scan the legacy root itself: it also contains backups, snapshots,
+    // caches and unrelated recovery data.
+    final legacyRootUri = locations['legacyRootUri'];
+    if (Platform.isAndroid &&
+        legacyRootUri != null &&
+        legacyRootUri.startsWith('file://')) {
+      final legacyRoot = Directory(Uri.parse(legacyRootUri).toFilePath());
+      for (final legacy in DocumentToolsService.legacyManagedRecoveryPaths(
+        legacyRoot.path,
+      )) {
+        final directory = Directory(legacy.path);
+        if (await directory.exists()) {
+          pending.add(Uri.directory(directory.path).toString());
+        }
+      }
+    }
+
     final visited = <String>{};
     while (pending.isNotEmpty) {
       final directoryUri = pending.removeLast();
@@ -2040,6 +2302,35 @@ class DocumentToolsService {
         }
       }
     }
+
+    // Some Android/OEM backup flows may restore the app-private SQLite DB on
+    // reinstall while leaving its former PDF storage paths unavailable. Track
+    // those rows before the import transaction so a stale existing ID is never
+    // reported as a successful link merely because the DB row already exists.
+    final usableExistingDocumentIds = <String>{};
+    for (final row in rowsByTable['documents']!) {
+      final oldId = row['id'] as String;
+      final mappedId = documentIdMap[oldId]!;
+      if (!existingDocuments.any((value) => value['id'] == mappedId)) continue;
+      final digest = row['sha256'] as String?;
+      if (digest != null && pdfUris.containsKey(digest)) continue;
+      final existing = existingDocuments.firstWhere(
+        (value) => value['id'] == mappedId,
+      );
+      final uri = existing['storage_uri'] as String?;
+      if (uri == null || uri.isEmpty || uri.startsWith('missing://')) continue;
+      try {
+        final actualDigest = uri.startsWith('content://') || uri.startsWith('file://')
+            ? await storage.sha256Pdf(uri)
+            : (await sha256.bind(File(uri).openRead()).first).toString();
+        if (digest == null || digest == actualDigest) {
+          usableExistingDocumentIds.add(mappedId);
+        }
+      } catch (_) {
+        // Missing, revoked or unreadable old paths remain explicitly relinkable.
+      }
+    }
+
     try {
       for (final row in folderRows) {
         await ensureFolder(row['id'] as String, <String>{});
@@ -2146,10 +2437,48 @@ class DocumentToolsService {
         final digest = row['sha256'] as String?;
         final linkedUri = digest == null ? null : pdfUris[digest];
         if (alreadyPresent) {
-          if (linkedUri != null) {
-            await txn.update('documents', {'storage_uri': linkedUri},
-              where: 'id = ?', whereArgs: [newId]);
+          final existing = existingDocuments.firstWhere(
+            (value) => value['id'] == newId,
+          );
+          if (linkedUri != null ||
+              usableExistingDocumentIds.contains(newId)) {
+            // Clear an old relink-required marker when the existing source is
+            // verified or a SHA-256-matching replacement has been discovered.
+            final metadata = <String, dynamic>{};
+            final oldMetadata = existing['metadata_json'];
+            if (oldMetadata is String && oldMetadata.isNotEmpty) {
+              try {
+                final decoded = jsonDecode(oldMetadata);
+                if (decoded is Map) {
+                  metadata.addAll(Map<String, dynamic>.from(decoded));
+                }
+              } catch (_) {}
+            }
+            metadata.remove('docsGridRecoveryStatus');
+            await txn.update('documents', {
+              if (linkedUri != null) 'storage_uri': linkedUri,
+              if (linkedUri != null) 'relative_path': null,
+              'metadata_json': jsonEncode(metadata),
+              'updated_at': DateTime.now().toUtc().toIso8601String(),
+            }, where: 'id = ?', whereArgs: [newId]);
             linkedDocuments++;
+          } else {
+            missingPdfs++;
+            final metadata = <String, dynamic>{};
+            final oldMetadata = existing['metadata_json'];
+            if (oldMetadata is String && oldMetadata.isNotEmpty) {
+              try {
+                final decoded = jsonDecode(oldMetadata);
+                if (decoded is Map) {
+                  metadata.addAll(Map<String, dynamic>.from(decoded));
+                }
+              } catch (_) {}
+            }
+            metadata['docsGridRecoveryStatus'] = 'pdf_missing_relink_required';
+            await txn.update('documents', {
+              'metadata_json': jsonEncode(metadata),
+              'updated_at': DateTime.now().toUtc().toIso8601String(),
+            }, where: 'id = ?', whereArgs: [newId]);
           }
           continue;
         }

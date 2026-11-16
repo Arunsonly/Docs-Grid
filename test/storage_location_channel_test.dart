@@ -344,6 +344,14 @@ void main() {
     expect(entries.where((entry) => entry['name'] == 'Another-deleted.pdf'), isEmpty);
     expect(entries.where((entry) => entry['name'] == 'Current-policy.pdf'), hasLength(1));
     expect(entries.where((entry) => entry['path'] == 'Android/.Trash'), isEmpty);
+
+    // The reinstall recovery scanner uses this narrower PDF-only traversal.
+    // It must apply the same trash exclusion as the Phone storage browser.
+    final recoverablePdfs = await StorageLocationService.instance
+        .listPdfFilesRecursively('content://tree/root');
+    expect(recoverablePdfs.map((entry) => entry['name']), ['Current-policy.pdf']);
+    expect(visited, isNot(contains('content://tree/trash')));
+    expect(visited, isNot(contains('content://tree/trash-nested')));
   });
 
   test('recursive storage browser lists only folders with direct PDFs', () async {

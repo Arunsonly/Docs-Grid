@@ -264,7 +264,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
           title: const Text('This backup has no Grid data'),
           content: Text(
             '${error.toString()}\n\nYou can rebuild the PDF library from files '
-            'still present in Phone storage. Existing source PDFs will not be deleted.',
+            'still present in the DocsGrid storage folders. Original source PDFs will not be deleted.',
           ),
           actions: [
             TextButton(
@@ -281,7 +281,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
       if (recover == true && mounted) {
         final result = await _tools.recoverLoosePortablePdfs(
           onProgress: (completed, total) {
-            if (mounted) setState(() => _message = 'Recovering DocsGrid PDFs: $completed of $total');
+            if (mounted) setState(() => _message = 'Recovering PDFs: $completed of $total');
           },
         );
         if (mounted) {
@@ -302,7 +302,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
     final recovered = await _tools.recoverLoosePortablePdfs(
       onProgress: (completed, total) {
         if (mounted) {
-          setState(() => _message = 'Recovering DocsGrid PDFs: $completed of $total');
+          setState(() => _message = 'Recovering PDFs: $completed of $total');
         }
       },
     );
@@ -359,7 +359,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
           content: Text(
             'No backup archive with user data was found. A ZIP may be readable but '
             'contain only default categories and no PDFs or folders. You can rebuild '
-            'the DocsGrid library from PDFs inside its managed folders; categories, tags, reminders, '
+            'the Grid library from PDFs retained in the existing DocsGrid storage folders; categories, tags, reminders, '
             'history and settings require a non-empty DocsGrid backup.\n\n$error',
           ),
           actions: [
@@ -369,7 +369,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
             ),
             FilledButton(
               onPressed: () => Navigator.pop(context, true),
-              child: const Text('Find existing PDFs'),
+              child: const Text('Find DocsGrid PDFs'),
             ),
           ],
         ),
@@ -377,7 +377,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
       if (useLoosePdfs == true) {
         final recovered = await _tools.recoverLoosePortablePdfs(
           onProgress: (completed, total) {
-            if (mounted) setState(() => _message = 'Recovering DocsGrid PDFs: $completed of $total');
+            if (mounted) setState(() => _message = 'Recovering PDFs: $completed of $total');
           },
         );
         if (mounted) {
@@ -421,7 +421,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
       }
       final recovered = await _tools.recoverLoosePortablePdfs(
         onProgress: (completed, total) {
-          if (mounted) setState(() => _message = 'Recovering DocsGrid PDFs: $completed of $total');
+          if (mounted) setState(() => _message = 'Recovering PDFs: $completed of $total');
         },
       );
       if (mounted) {
@@ -457,20 +457,51 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
     if (confirmed != true) return;
     final result = await _tools.restoreLatestPortableMetadataSnapshot(
       onProgress: (completed, total) {
-        if (mounted) setState(() => _message = 'Recovering DocsGrid PDFs: $completed of $total');
+        if (mounted) {
+          setState(() => _message = 'Matching snapshot PDFs: $completed of $total');
+        }
       },
     );
+
+    // A portable metadata snapshot can be older than the surviving PDF library
+    // (for example, snapshots created by releases which refreshed only after
+    // reminder changes). Restore metadata first, then register PDFs which still
+    // exist in DocsGrid-managed folders. SHA-256 duplicate checks make this
+    // pass safe to repeat; source files are never deleted or overwritten.
+    Map<String, int> looseRecovery = const <String, int>{
+      'added': 0, 'duplicates': 0, 'failed': 0, 'folders': 0,
+    };
+    String? looseRecoveryWarning;
+    try {
+      looseRecovery = await _tools.recoverLoosePortablePdfs(
+        onProgress: (completed, total) {
+          if (mounted) {
+            setState(() => _message =
+                'Recovering remaining DocsGrid PDFs: $completed of $total');
+          }
+        },
+      );
+    } catch (error) {
+      // Keep the completed metadata restore visible if the extra file scan is
+      // blocked by storage permission or a provider failure.
+      looseRecoveryWarning = error.toString();
+    }
+
     if (mounted) {
       setState(() => _message =
-        'Recovery complete. '
-        'Folders: ${result['folders']}; PDFs added: ${result['documentsAdded']}; '
-        'PDFs linked: ${result['documentsLinked']}; missing PDFs: ${result['pdfsMissing']}.\n'
+        'Recovery complete.\n'
+        'Snapshot metadata: folders ${result['folders']}; document records added ${result['documentsAdded']}; '
+        'PDFs linked by SHA-256 ${result['documentsLinked']}; snapshot records initially unmatched ${result['pdfsMissing']}.\n'
+        'Remaining storage PDFs: ${looseRecovery['added'] ?? 0} newly registered/relinked; '
+        '${looseRecovery['duplicates'] ?? 0} already registered; '
+        '${looseRecovery['failed'] ?? 0} unreadable/failed; '
+        '${looseRecovery['folders'] ?? 0} additional folders created.\n'
         'Categories: ${result['categories']}; tags: ${result['tags']}; '
         'PDF-tag links: ${result['documentTags']}; reminders: ${result['reminders']}; '
         'activity/history: ${result['activity']}; OCR indexes: ${result['ocrIndexes']}; '
         'settings: ${result['settings']}.\n'
-        'Existing data was retained. Reminder records are restored to the app database; '
-        'Android notification delivery is rescheduled separately.');
+        '${looseRecoveryWarning == null ? 'Existing source PDFs were retained. No source PDF was deleted or overwritten.' : 'Metadata restore completed, but the additional PDF scan could not finish: $looseRecoveryWarning'} '
+        'Reminder records are restored to the app database; Android notification delivery is rescheduled separately.');
     }
   });
 

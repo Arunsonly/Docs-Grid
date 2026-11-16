@@ -92,8 +92,9 @@ import CryptoKit
                 guard let selected = try selectedFolder(), let root = URL(string: selected["uri"] ?? "") else {
                     throw storageError("Choose a DocsGrid storage folder first.")
                 }
-                // Match Android's portable root and preserve any legacy folders.
-                let docsGrid = try ensureDirectory(parent: root, name: "DocsGrid")
+                // Match Android's root detection. Selecting an existing DocsGrid
+                // folder must reuse it rather than create DocsGrid/DocsGrid.
+                let docsGrid = try docsGridRoot(for: root)
                 let documents = try ensureDirectory(parent: docsGrid, name: "Documents")
                 let folders = try ensureDirectory(parent: docsGrid, name: "Folders")
                 let database = try ensureDirectory(parent: docsGrid, name: "Database")
@@ -122,7 +123,7 @@ import CryptoKit
                     result(nil)
                     return
                 }
-                let docsGrid = try ensureDirectory(parent: root, name: "DocsGrid")
+                let docsGrid = try docsGridRoot(for: root)
                 let folders = try ensureDirectory(parent: docsGrid, name: "Folders")
                 result(["uri": folders.absoluteString, "name": "DocsGrid/Folders"])
             case "checkStorageAccess":
@@ -327,10 +328,25 @@ import CryptoKit
         return values
     }
 
+    /// Reuses an already-selected DocsGrid root. When the user selects its
+    /// parent directory, the canonical DocsGrid child is created idempotently.
+    private func docsGridRoot(for selectedRoot: URL) throws -> URL {
+        let selectedName = selectedRoot.lastPathComponent.lowercased()
+        if selectedName == "docsgrid" || selectedName == "com.docsgrid" {
+            return selectedRoot
+        }
+        return try ensureDirectory(parent: selectedRoot, name: "DocsGrid")
+    }
+
     private func withAllBookmarkAccess<T>(_ work: () throws -> T) throws -> T {
         let stored = bookmarkDataList()
         var started: [URL] = []
         var refreshedBookmarks: [Data] = []
+        var everyBookmarkResolved = true
+        // Install cleanup before resolving any bookmark so an error half-way
+        // through the list cannot leak already-started security scopes.
+        defer { started.forEach { $0.stopAccessingSecurityScopedResource() } }
+
         for data in stored {
             var stale = false
             let root: URL
@@ -342,23 +358,37 @@ import CryptoKit
                     bookmarkDataIsStale: &stale
                 )
             } catch {
-                throw storageError("A saved Files bookmark is invalid. Re-select the affected folder; existing files are preserved.")
+                // One obsolete bookmark must not block operations in another
+                // still-authorized Files folder. A request targeting this
+                // revoked location will fail at its actual provider operation.
+                everyBookmarkResolved = false
+                continue
             }
+
             let accessed = root.startAccessingSecurityScopedResource()
             guard accessed || isInsideAppContainer(root) else {
-                throw storageError("A saved Files permission has been revoked. Re-select the folder before accessing its files.")
+                everyBookmarkResolved = false
+                continue
             }
             if accessed { started.append(root) }
             if stale {
-                refreshedBookmarks.append(
-                    try root.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
-                )
+                do {
+                    refreshedBookmarks.append(
+                        try root.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
+                    )
+                } catch {
+                    everyBookmarkResolved = false
+                    continue
+                }
             } else {
                 refreshedBookmarks.append(data)
             }
         }
-        defer { started.forEach { $0.stopAccessingSecurityScopedResource() } }
-        if refreshedBookmarks != stored {
+
+        // Keep the original bookmark list intact if any entry could not be
+        // resolved. This avoids shifting bookmark indexes or discarding a
+        // permission that may become available again after reconnecting a provider.
+        if everyBookmarkResolved && refreshedBookmarks != stored {
             UserDefaults.standard.set(refreshedBookmarks, forKey: bookmarkListKey)
             if let current = UserDefaults.standard.data(forKey: currentBookmarkKey),
                let index = stored.firstIndex(of: current) {

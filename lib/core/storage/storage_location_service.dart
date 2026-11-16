@@ -382,16 +382,6 @@ class StorageLocationService {
     return result;
   }
 
-  Future<String?> findChildUriIfExists({
-    required String parentUri,
-    required String name,
-  }) {
-    return _channel.invokeMethod<String>('findChildUriIfExists', {
-      'parentUri': parentUri,
-      'name': name,
-    });
-  }
-
   Future<String> renamePdf({required String uri, required String name}) async {
     final result = await _channel.invokeMethod<String>('renamePdf', {'uri': uri, 'name': name});
     if (result == null) throw StateError('The platform did not return the renamed PDF location.');
@@ -506,9 +496,11 @@ class StorageLocationService {
         final name = child['name'] as String;
         final uri = child['uri'] as String;
         if (child['isDirectory'] == true) {
+          final path = current.path.isEmpty ? name : '${current.path}/$name';
+          if (isExcludedStorageDirectoryPath(path)) continue;
           pending.add((
             uri: uri,
-            path: current.path.isEmpty ? name : '${current.path}/$name',
+            path: path,
             depth: current.depth + 1,
           ));
         } else if (name.toLowerCase().endsWith('.pdf')) {
@@ -536,7 +528,7 @@ class StorageLocationService {
   /// ".Trash" directories; never recurse into them or surface their PDFs.
   @visibleForTesting
   static bool isExcludedStorageDirectoryPath(String path) =>
-      path.split('/').any((segment) => segment.trim().toLowerCase() == '.trash');
+      isAndroidTrashPath(path);
 
   /// Lists PDFs and only folders that contain PDFs somewhere below them,
   /// within the explicitly granted SAF root. Empty folder branches are omitted.
