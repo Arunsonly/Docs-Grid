@@ -729,7 +729,11 @@ class _FoldersScreenState extends State<FoldersScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return PopScope(
+    // Grid uses InkWell and other ink effects outside Card surfaces.
+    // Supply a Material ancestor just as the preceding stable APK did.
+    return Material(
+      type: MaterialType.transparency,
+      child: PopScope(
       canPop: _ancestors.isEmpty,
       onPopInvokedWithResult: (didPop, result) {
         if (!didPop && _ancestors.isNotEmpty) {
@@ -1241,6 +1245,7 @@ class _FoldersScreenState extends State<FoldersScreen> {
               ),
             ),
         ],
+      ),
       ),
     );
   }
