@@ -39,6 +39,19 @@ void main() {
     // Reproduces the reported red-screen failure when Grid lacks Material.
     expect(() => Material.of(tester.element(folderInkWells.first)),
         returnsNormally);
+    // A transparent Material resolves ink widgets but recreates the black
+    // background/black text shown on the affected device. Check the actual
+    // filled Grid surface, not merely the existence of a Material ancestor.
+    final expectedSurface = Theme.of(
+      tester.element(find.byType(FoldersScreen)),
+    ).scaffoldBackgroundColor;
+    final gridMaterials = tester.widgetList<Material>(find.descendant(
+      of: find.byType(FoldersScreen),
+      matching: find.byType(Material),
+    ));
+    expect(gridMaterials.any((material) =>
+        material.type == MaterialType.canvas &&
+        material.color == expectedSurface), isTrue);
     expect(tester.takeException(), isNull);
   });
 
