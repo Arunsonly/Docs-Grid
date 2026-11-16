@@ -921,6 +921,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         documentId: 'phone_recent_$uri',
         storagePath: uri,
         sizeBytes: (item['sizeBytes'] as num?)?.toInt() ?? 0,
+        sourceLastModifiedMillis: (item['lastModified'] as num?)?.toInt(),
       ),
       title: Row(children: [
         Flexible(child: Text(name, maxLines: 1, overflow: TextOverflow.ellipsis)),
@@ -987,6 +988,9 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         'uri': uri,
         'name': name,
         'sizeBytes': bytes,
+        'lastModified': matchingEntries.isEmpty
+            ? 0
+            : (matchingEntries.first['lastModified'] as num?)?.toInt() ?? 0,
         'openedAt': DateTime.now().toUtc().toIso8601String(),
       });
       final limited = recent.take(20).toList(growable: false);
@@ -2240,7 +2244,13 @@ class _DocumentsScreenState extends State<DocumentsScreen>
                             final bytes = (item['sizeBytes'] as num?)?.toInt() ?? 0;
                             return ListTile(
                               dense: true,
-                              leading: const Icon(Icons.picture_as_pdf_outlined),
+                              leading: DocumentThumbnail(
+                                documentId: 'phone_search_$uri',
+                                storagePath: uri,
+                                sizeBytes: bytes,
+                                sourceLastModifiedMillis:
+                                    (item['lastModified'] as num?)?.toInt(),
+                              ),
                               title: Text(name, maxLines: 1, overflow: TextOverflow.ellipsis),
                               subtitle: Text(
                                 'Phone Storage · ${folder.isEmpty ? 'Root' : folder} · ${_size(bytes)}',
@@ -2920,6 +2930,7 @@ class _PhoneRecentSelectionScreenState extends State<_PhoneRecentSelectionScreen
               documentId: 'phone_recent_$uri',
               storagePath: uri,
               sizeBytes: (item['sizeBytes'] as num?)?.toInt() ?? 0,
+              sourceLastModifiedMillis: (item['lastModified'] as num?)?.toInt(),
             ),
             title: Text(item['name'] as String? ?? 'PDF'),
             subtitle: Text('Phone · ${item['openedAt'] ?? ''}'),
