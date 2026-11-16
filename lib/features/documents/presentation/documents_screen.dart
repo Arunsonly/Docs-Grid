@@ -2757,6 +2757,7 @@ class _RecentSelectionScreenState extends State<_RecentSelectionScreen> {
                     documentId: item.id,
                     storagePath: item.storagePath,
                     sizeBytes: item.sizeBytes,
+                    contentSha256: item.sha256,
                   ),
                   title: Text('${item.name}.pdf',
                     maxLines: 1, overflow: TextOverflow.ellipsis),
