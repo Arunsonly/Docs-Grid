@@ -1133,6 +1133,7 @@ class _FoldersScreenState extends State<FoldersScreen> {
                                         documentId: document.id,
                                         storagePath: document.storagePath,
                                         sizeBytes: document.sizeBytes,
+                                        contentSha256: document.sha256,
                                       ),
                                 title: Text('${document.name}.pdf', maxLines: 1, overflow: TextOverflow.ellipsis),
                                 subtitle: Text(_size(document.sizeBytes)),
