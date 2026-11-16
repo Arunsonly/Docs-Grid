@@ -1,3 +1,4 @@
+import 'package:docs_grid/features/documents/presentation/document_thumbnail.dart';
 import 'package:docs_grid/features/documents/presentation/phone_storage_browser_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -22,7 +23,7 @@ void main() {
       {'name': 'Work Files', 'uri': '', 'folderPath': '', 'path': 'Work Files', 'isDirectory': true},
       {'name': 'Archived Files', 'uri': '', 'folderPath': 'Work Files', 'path': 'Work Files/Archived Files', 'isDirectory': true},
       {'name': 'Empty Folder', 'uri': '', 'folderPath': '', 'path': 'Empty Folder', 'isDirectory': true},
-      {'name': 'Policy.pdf', 'uri': 'content://policy', 'folderPath': '', 'path': 'Work Files', 'isDirectory': false, 'sizeBytes': 128},
+      {'name': 'Policy.pdf', 'uri': 'content://policy', 'folderPath': '', 'path': 'Work Files', 'isDirectory': false, 'sizeBytes': 128, 'lastModified': 1700000000000},
       {'name': 'Archived Filesd.pdf', 'uri': 'content://archive', 'folderPath': '', 'path': 'Work Files/Archived Files', 'isDirectory': false, 'sizeBytes': 256},
       {'name': 'Root.pdf', 'uri': 'content://root', 'folderPath': '', 'path': '', 'isDirectory': false},
     ];
@@ -49,6 +50,10 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Policy.pdf'), findsOneWidget);
     expect(find.text('Archived Filesd.pdf'), findsNothing);
+    final preview = tester.widget<DocumentThumbnail>(
+        find.byType(DocumentThumbnail).first);
+    expect(preview.storagePath, 'content://policy');
+    expect(preview.sourceLastModifiedMillis, 1700000000000);
 
     await tester.tap(find.text('Policy.pdf'));
     await tester.pumpAndSettle();
