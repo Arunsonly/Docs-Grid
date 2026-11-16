@@ -1054,7 +1054,7 @@ class DocumentToolsService {
               currentPath.toLowerCase()).toList();
           if (current.length != 1) rethrow;
           parentId = current.single.folder.id;
-          folderIdsByPath[currentPath] = parentId!;
+          folderIdsByPath[currentPath] = parentId;
         }
       }
       return parentId;
