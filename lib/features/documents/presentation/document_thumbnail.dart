@@ -27,6 +27,11 @@ String thumbnailCacheFileName({
   return '${identity}_${sizeBytes}_${revision}.png';
 }
 
+// Keep SAF, MediaStore, and shared-storage URIs on the verified Android
+// staging path; direct absolute app-private paths do not need to be copied.
+bool thumbnailUsesNativeStaging(String source) =>
+    source.startsWith('content://') || source.startsWith('file://');
+
 // Phone and SAF providers may report times as numbers, strings, or dates.
 int? thumbnailModifiedMillis(Object? raw) {
   if (raw is num) return raw > 0 ? raw.toInt() : null;
@@ -325,7 +330,7 @@ class _DocumentThumbnailState extends State<DocumentThumbnail> {
       // Stage SAF/MediaStore AND file:// PDFs through the verified Android
       // reader. This keeps rendering independent of Android scoped-storage
       // filesystem permissions; cache hits still bypass the copy completely.
-      if (isProvider || isFileUri) {
+      if (thumbnailUsesNativeStaging(source)) {
         final temp = await getTemporaryDirectory();
         staged = File(p.join(
           temp.path,
