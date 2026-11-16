@@ -199,6 +199,39 @@ void main() {
   });
 
 
+  test('permanent folder delete detects separately recycled PDFs without SQL syntax error', () async {
+    final db = await _database();
+    addTearDown(db.close);
+    await _insertFolder(db, 'insurance', 'Insurance');
+    final repository = FolderRepository(
+      database: AppDatabase.forTesting(() async => db),
+    );
+
+    await repository.deleteEmpty('insurance');
+    await db.insert('documents', {
+      'id': 'separately-recycled',
+      'folder_id': 'insurance',
+      'storage_uri': 'file:///docs/Insurance/old.pdf',
+      'deleted_at': '2026-01-02T00:00:00Z',
+      'updated_at': '2026-01-02T00:00:00Z',
+    });
+
+    await expectLater(
+      repository.permanentlyDeleteTrashFolderTree('insurance'),
+      throwsA(isA<StateError>().having(
+        (error) => error.message,
+        'message',
+        contains('separately recycled PDF'),
+      )),
+    );
+    expect(await db.query('folders'), hasLength(1));
+    expect(await db.query('documents'), hasLength(1));
+
+    await db.delete('documents', where: 'id = ?', whereArgs: ['separately-recycled']);
+    await repository.permanentlyDeleteTrashFolderTree('insurance');
+    expect(await db.query('folders'), isEmpty);
+  });
+
   test('legacy deleted folder rows are grouped into one visible tree', () async {
     final db = await _database();
     addTearDown(db.close);
