@@ -270,6 +270,12 @@ class _DocumentThumbnailState extends State<DocumentThumbnail> {
         }
       }
 
+      // Limit both provider I/O and rendering to three concurrent previews.
+      // Acquiring only at the render step previously allowed many full PDF
+      // copies/hashes to run simultaneously while a Phone folder opened.
+      await _acquireRenderSlot();
+      renderSlotAcquired = true;
+
       // Stage provider-backed PDFs only after the known-fingerprint cache lookup
       // has missed. This keeps cache hits independent of provider latency.
       if (isProvider) {
@@ -307,8 +313,6 @@ class _DocumentThumbnailState extends State<DocumentThumbnail> {
         try { await cache.delete(); } catch (_) {}
       }
 
-      await _acquireRenderSlot();
-      renderSlotAcquired = true;
       document = await pdfx.PdfDocument.openFile(pdfPath);
       if (document.pagesCount < 1) return null;
       page = await document.getPage(1);
