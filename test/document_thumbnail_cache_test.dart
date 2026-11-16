@@ -52,4 +52,15 @@ void main() {
       expect(thumbnailModifiedMillis(-1), isNull);
     });
   });
+  group('Android PDF source staging', () {
+    test('stages Android SAF, MediaStore and shared-storage file URIs', () {
+      expect(thumbnailUsesNativeStaging(
+        'content://com.android.providers.media.documents/document/412'), isTrue);
+      expect(thumbnailUsesNativeStaging(
+        'file:///storage/emulated/0/Documents/DocsGrid/policy.pdf'), isTrue);
+      expect(thumbnailUsesNativeStaging(
+        '/data/user/0/com.docsgrid/files/local.pdf'), isFalse);
+    });
+  });
+
 }
