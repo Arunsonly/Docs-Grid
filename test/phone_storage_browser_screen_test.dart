@@ -5,6 +5,16 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
 
+  void setTestViewport(WidgetTester tester) {
+    tester.view.physicalSize = const Size(800, 600);
+    tester.view.devicePixelRatio = 1;
+    tester.view.padding = FakeViewPadding.zero;
+    tester.view.viewPadding = FakeViewPadding.zero;
+    tester.view.viewInsets = FakeViewPadding.zero;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+  }
+
   testWidgets('Phone search right-side sorting keeps search and orders PDFs by Name/Date',
       (tester) async {
     setTestViewport(tester);
@@ -110,15 +120,6 @@ void main() {
   });
 
 
-  void setTestViewport(WidgetTester tester) {
-    tester.view.physicalSize = const Size(800, 600);
-    tester.view.devicePixelRatio = 1;
-    tester.view.padding = FakeViewPadding.zero;
-    tester.view.viewPadding = FakeViewPadding.zero;
-    tester.view.viewInsets = FakeViewPadding.zero;
-    addTearDown(tester.view.resetPhysicalSize);
-    addTearDown(tester.view.resetDevicePixelRatio);
-  }
   
     testWidgets('lists only folders with direct PDFs and opens that folder PDFs',
       (tester) async {
