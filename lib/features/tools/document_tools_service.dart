@@ -1534,8 +1534,6 @@ Future<int?> _restoreBackupLocked(
         }
       }
     }
-    // A ZIP is untrusted input.      }
-    }
     // A ZIP is untrusted input. Validate parent links before creating any
     // directories, and never use imported IDs as filesystem path segments.
     BackupFolderGraphValidator.validate(folderRows);
