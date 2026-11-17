@@ -443,10 +443,6 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       throw StateError('Original Phone folder is unknown. PDF was not deleted.');
     }
     final entry = matching.first;
-    final folder = (entry['folderPath'] ?? entry['path']) as String?;
-    if (folder == null || folder.trim().isEmpty) {
-      throw StateError('Original Phone folder is unavailable. PDF was kept.');
-    }
     final parsed = Uri.tryParse(uri);
     final volume = entry['volumeName'] as String? ??
         ((parsed?.authority == 'media' &&
@@ -454,14 +450,30 @@ class _DocumentsScreenState extends State<DocumentsScreen>
             ? parsed.pathSegments.first
             : null);
     final roots = await StorageLocationService.instance.accessibleStorageRoots();
+    final originalFolder = (entry['folderPath'] ?? entry['path']) as String?;
     final root = PhoneTrashOrigin.selectGrantedRoot(
-      sourceUri: uri, folderPath: folder, roots: roots, volumeName: volume,
+      sourceUri: uri, folderPath: originalFolder ?? '',
+      roots: roots, volumeName: volume,
     );
     if (root == null) {
       throw StateError(
         'Original Phone storage is not accessible. '
         'Grant the original location before deleting this PDF.',
       );
+    }
+    // MediaStore uses an empty relative path for PDFs directly in a storage
+    // volume. That is the root folder, not an unknown destination.
+    final rootLabel = roots.firstWhere(
+      (candidate) => candidate['uri'] == root,
+      orElse: () => const <String, String>{},
+    )['name'];
+    final folder = originalFolder != null && originalFolder.isNotEmpty
+        ? originalFolder
+        : parsed?.authority == 'media' && volume == 'external_primary'
+            ? 'Internal'
+            : rootLabel;
+    if (folder == null || folder.isEmpty) {
+      throw StateError('Original Phone folder is unavailable. PDF was kept.');
     }
     final origin = PhoneTrashOrigin(
       sourceUri: uri,
