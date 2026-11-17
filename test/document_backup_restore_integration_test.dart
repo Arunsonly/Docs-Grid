@@ -304,6 +304,12 @@ void main() {
     expect(preview!['newFolders'], 1);
     expect(await db.query('folders'), isEmpty);
     expect(await db.query('documents'), isEmpty);
+    // No restore checkpoint or full ZIP backup is allowed before a plan is
+    // accepted. A cancelled preview must not consume backup retention slots.
+    final fullBackups = Directory('${appDocuments.path}/DocsGrid/Backups/Full');
+    if (await fullBackups.exists()) {
+      expect(await fullBackups.list().toList(), isEmpty);
+    }
   });
 
   test('library write during preview invalidates plan', () async {
