@@ -537,16 +537,24 @@ void main() {
 
   testWidgets('saved Phone Date descending is restored when browser reopens',
       (tester) async {
-    await StorageSortPreference.save(
-      StorageSortPreference.phoneKey,
-      field: StorageSortField.date, ascending: false, explicit: true,
-    );
+    // Seed a persisted setting synchronously. Awaiting SharedPreferences.save
+    // before the first pump deadlocks under testWidgets' fake async clock.
+    SharedPreferences.setMockInitialValues({
+      StorageSortPreference.phoneKey:
+          '{"field":"date","ascending":false,"explicit":true}',
+    });
     await openActionBrowser(tester);
     await tester.pumpAndSettle();
     expect(find.byIcon(Icons.arrow_downward), findsOneWidget);
     await tester.tap(find.byKey(const ValueKey('storage-sort-filter')));
     await tester.pumpAndSettle();
-    expect(find.text('Date'), findsOneWidget);
+    final dateOption = find.ancestor(
+      of: find.text('Date'),
+      matching: find.byType(PopupMenuItem<StorageSortField>),
+    );
+    expect(dateOption, findsOneWidget);
+    expect(find.descendant(of: dateOption, matching: find.byIcon(Icons.check)),
+        findsOneWidget);
   });
 
   testWidgets('successful Move closes the stale Phone Storage snapshot', (tester) async {
