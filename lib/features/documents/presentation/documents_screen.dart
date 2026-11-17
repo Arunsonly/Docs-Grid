@@ -849,6 +849,10 @@ class _DocumentsScreenState extends State<DocumentsScreen>
     }
 
     if (movedUris.isNotEmpty) {
+      for (final uri in movedUris) {
+        try { await PhoneStarRepository.remove(uri); } catch (_) {}
+      }
+      await _loadPhoneStarred();
       final keep = _phoneRecent
           .where((item) => !movedUris.contains(item['uri']))
           .toList(growable: false);
@@ -1038,6 +1042,32 @@ class _DocumentsScreenState extends State<DocumentsScreen>
     await _tools.shareManyStoredPdfs(
       selected.map((item) => item.storagePath).toList(),
       selected.map((item) => '${item.name}.pdf').toList(),
+    );
+  }
+
+  Widget _phoneStarredTile(Map<String, Object?> item) {
+    final uri = item['uri'] as String;
+    final name = item['name'] as String? ?? 'PDF';
+    return ListTile(
+      key: ValueKey('phone-starred-$uri'),
+      dense: true,
+      leading: DocumentThumbnail(
+        documentId: 'phone_starred_$uri',
+        storagePath: uri,
+        sizeBytes: (item['sizeBytes'] as num?)?.toInt() ?? 0,
+      ),
+      title: Row(children: [
+        Flexible(child: Text(name, maxLines: 1, overflow: TextOverflow.ellipsis)),
+        const SizedBox(width: 6),
+        _recentSourceTag('Phone'),
+      ]),
+      subtitle: const Text('Starred'),
+      onTap: () => _openExternalStoragePdf(uri, name),
+      trailing: PopupMenuButton<String>(
+        tooltip: 'Actions for $name',
+        onSelected: (action) => _handlePhoneRecentAction(item, action),
+        itemBuilder: (_) => _phoneRecentMenu(item),
+      ),
     );
   }
 
@@ -1675,6 +1705,8 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       if (!mounted) return false;
       if (moved) {
         _message('PDF moved to Recycle Bin.');
+        try { await PhoneStarRepository.remove(uri); } catch (_) {}
+        await _loadPhoneStarred();
         final prefs = await SharedPreferences.getInstance();
         final keep = _phoneRecent
             .where((item) => item['uri'] != uri)
@@ -1846,6 +1878,8 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         targetFolderId: destination.isEmpty ? null : destination,
       );
       if (result.added == 1) {
+        try { await PhoneStarRepository.remove(uri); } catch (_) {}
+        await _loadPhoneStarred();
         // The source was deleted only after a checksum-verified Grid import.
         // Persist the removal even if the user switched tabs while moving;
         // the next Home view must not reload the now-invalid Phone URI.
@@ -2223,13 +2257,16 @@ class _DocumentsScreenState extends State<DocumentsScreen>
                     SizedBox(
                       height: 320,
                       child: _showStarredRecent
-                          ? _starredRecent.isEmpty
+                          ? _starredRecent.isEmpty && _phoneStarred.isEmpty
                               ? const Center(child: Text('No starred PDFs'))
                               : ListView.separated(
                                   primary: false,
-                                  itemCount: _starredRecent.length,
+                                  itemCount: _phoneStarred.length + _starredRecent.length,
                                   separatorBuilder: (_, _) => const Divider(height: 1),
-                                  itemBuilder: (context, index) => _recentDocumentTile(_starredRecent[index]),
+                                  itemBuilder: (context, index) =>
+                                      index < _phoneStarred.length
+                                          ? _phoneStarredTile(_phoneStarred[index])
+                                          : _recentDocumentTile(_starredRecent[index - _phoneStarred.length]),
                                 )
                           : _recentFilter == 'phone'
                               ? _phoneRecent.isEmpty
