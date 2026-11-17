@@ -962,7 +962,10 @@ void main() {
     });
 
     final repository = DocumentRepository(
-        database: AppDatabase.forTesting(() async => db));
+      database: AppDatabase.forTesting(() async => db),
+      phoneRootsForTesting: () async =>
+          storageAuthorized ? roots : <Map<String, String>>[],
+    );
     PhoneTrashOrigin origin(String sourceUri, String name) =>
         PhoneTrashOrigin(
           sourceUri: sourceUri,
