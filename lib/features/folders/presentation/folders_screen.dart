@@ -1037,16 +1037,16 @@ class _FoldersScreenState extends State<FoldersScreen> {
                     displayedFolders.sort((a, b) => compareStorageItems(
                       nameA: a.name,
                       nameB: b.name,
-                      dateA: a.createdAt,
-                      dateB: b.createdAt,
+                      dateA: a.updatedAt,
+                      dateB: b.updatedAt,
                       field: _sortField,
                       ascending: _sortAscending,
                     ));
                     displayedDocuments.sort((a, b) => compareStorageItems(
                       nameA: a.name,
                       nameB: b.name,
-                      dateA: a.createdAt,
-                      dateB: b.createdAt,
+                      dateA: a.updatedAt ?? a.createdAt,
+                      dateB: b.updatedAt ?? b.createdAt,
                       field: _sortField,
                       ascending: _sortAscending,
                     ));
