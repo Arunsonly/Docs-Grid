@@ -4,6 +4,112 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+
+  testWidgets('Phone search right-side sorting keeps search and orders PDFs by Name/Date',
+      (tester) async {
+    setTestViewport(tester);
+    final oldDate = DateTime(2026, 11, 10).millisecondsSinceEpoch;
+    final newDate = DateTime(2026, 11, 17).millisecondsSinceEpoch;
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: PhoneStorageBrowserScreen(
+          embedded: true,
+          rootName: 'Internal Storage',
+          entries: [
+            {
+              'name': 'Insurance',
+              'uri': '',
+              'path': 'Internal/Insurance',
+              'isDirectory': true,
+              'pdfCount': 2,
+            },
+            {
+              'name': 'Alpha.pdf', 'uri': 'content://a',
+              'path': 'Internal/Insurance',
+              'folderPath': 'Internal/Insurance',
+              'isDirectory': false, 'lastModified': newDate,
+            },
+            {
+              'name': 'Zulu.pdf', 'uri': 'content://z',
+              'path': 'Internal/Insurance',
+              'folderPath': 'Internal/Insurance',
+              'isDirectory': false, 'lastModified': oldDate,
+            },
+          ],
+          onOpenPdf: (_, __) async {},
+        ),
+      ),
+    ));
+    await tester.tap(find.byKey(const ValueKey('phone-folder-Insurance')));
+    await tester.pumpAndSettle();
+
+    double yOf(String title) => tester.getTopLeft(find.text(title)).dy;
+    expect(yOf('Alpha.pdf'), lessThan(yOf('Zulu.pdf')),
+        reason: 'Default Phone list retains existing Name ascending order.');
+
+    await tester.tap(find.byKey(const ValueKey('storage-sort-filter')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Date'));
+    await tester.pumpAndSettle();
+    expect(yOf('Zulu.pdf'), lessThan(yOf('Alpha.pdf')),
+        reason: 'Ascending Date puts older PDF first.');
+
+    await tester.tap(find.byKey(const ValueKey('storage-sort-direction')));
+    await tester.pumpAndSettle();
+    expect(yOf('Alpha.pdf'), lessThan(yOf('Zulu.pdf')),
+        reason: 'Descending Date puts newer PDF first.');
+
+    await tester.tap(find.byKey(const ValueKey('storage-sort-filter')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Name'));
+    await tester.pumpAndSettle();
+    expect(yOf('Zulu.pdf'), lessThan(yOf('Alpha.pdf')),
+        reason: 'Descending Name works without resetting arrow.');
+
+    await tester.enterText(find.byType(TextField), 'Zulu');
+    await tester.pumpAndSettle();
+    expect(find.text('Zulu.pdf'), findsOneWidget);
+    expect(find.text('Alpha.pdf'), findsNothing);
+    expect(find.byKey(const ValueKey('storage-sort-filter')), findsOneWidget);
+  });
+
+  testWidgets('Phone folder list sorts by most recently modified PDF in each folder',
+      (tester) async {
+    setTestViewport(tester);
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: PhoneStorageBrowserScreen(
+          embedded: true,
+          rootName: 'Internal Storage',
+          entries: [
+            {
+              'name': 'Alpha.pdf', 'uri': 'content://a',
+              'path': 'Internal/Alpha', 'folderPath': 'Internal/Alpha',
+              'isDirectory': false, 'lastModified': 1794904000000,
+            },
+            {
+              'name': 'Zulu.pdf', 'uri': 'content://z',
+              'path': 'Internal/Zulu', 'folderPath': 'Internal/Zulu',
+              'isDirectory': false, 'lastModified': 1700000000000,
+            },
+          ],
+          onOpenPdf: (_, __) async {},
+        ),
+      ),
+    ));
+    double yOf(String title) => tester.getTopLeft(find.text(title)).dy;
+    expect(yOf('Alpha'), lessThan(yOf('Zulu')));
+    await tester.tap(find.byKey(const ValueKey('storage-sort-filter')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Date'));
+    await tester.pumpAndSettle();
+    expect(yOf('Zulu'), lessThan(yOf('Alpha')));
+    await tester.tap(find.byKey(const ValueKey('storage-sort-direction')));
+    await tester.pumpAndSettle();
+    expect(yOf('Alpha'), lessThan(yOf('Zulu')));
+  });
+
+
   void setTestViewport(WidgetTester tester) {
     tester.view.physicalSize = const Size(800, 600);
     tester.view.devicePixelRatio = 1;
