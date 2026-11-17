@@ -23,6 +23,7 @@ class DocumentRecord {
     required this.storagePath,
     required this.sizeBytes,
     required this.createdAt,
+    this.updatedAt,
     required this.isFavorite,
     this.categoryId,
     this.categoryName,
@@ -38,6 +39,7 @@ class DocumentRecord {
   final String storagePath;
   final int sizeBytes;
   final DateTime createdAt;
+  final DateTime? updatedAt;
   final bool isFavorite;
   final String? categoryId;
   final String? categoryName;
@@ -65,6 +67,9 @@ class DocumentRecord {
       storagePath: (row['storage_uri'] as String?) ?? '',
       sizeBytes: (row['size_bytes'] as int?) ?? 0,
       createdAt: DateTime.parse(row['created_at'] as String),
+      updatedAt: row['updated_at'] is String
+          ? DateTime.tryParse(row['updated_at'] as String)
+          : null,
       isFavorite: row['is_favorite'] == null
           ? metadata['favorite'] == true
           : row['is_favorite'] == 1,
