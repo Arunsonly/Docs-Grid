@@ -2,6 +2,8 @@ package com.docsgrid.docs_grid
 
 import android.app.Activity
 import android.content.Intent
+import android.content.ClipData
+import androidx.core.content.FileProvider
 import android.database.ContentObserver
 import android.database.Cursor
 import android.net.Uri
@@ -822,10 +824,35 @@ class MainActivity : FlutterActivity() {
                             }
                             }
                             "openPdf" -> {
-                                val uri = Uri.parse(call.argument<String>("uri")!!)
+                                val requestedUri = Uri.parse(call.argument<String>("uri")!!)
+                                // Grid uses a verified app-cache copy supplied by Dart.
+                                // Export its FileProvider content URI, not a SAF tree or
+                                // private file URI that the chosen reader cannot access.
+                                val viewUri = if (call.argument<Boolean>("gridPdf") == true) {
+                                    val sharedCache = java.io.File(cacheDir, "docsgrid_grid_pdf").canonicalFile
+                                    val staged = java.io.File(
+                                        requestedUri.path ?: throw IllegalArgumentException("Invalid Grid PDF URI.")
+                                    ).canonicalFile
+                                    if (requestedUri.scheme != "file" ||
+                                        staged.parentFile != sharedCache ||
+                                        !staged.isFile ||
+                                        !staged.name.startsWith("grid_") ||
+                                        !staged.name.endsWith(".pdf")) {
+                                        throw SecurityException("Only a verified temporary Grid PDF can be opened.")
+                                    }
+                                    FileProvider.getUriForFile(
+                                        this,
+                                        "$packageName.docsgrid_grid_pdf",
+                                        staged
+                                    )
+                                } else {
+                                    // Keep the existing Phone Storage URI untouched.
+                                    requestedUri
+                                }
                                 val intent = Intent(Intent.ACTION_VIEW).apply {
-                                    setDataAndType(uri, "application/pdf")
+                                    setDataAndType(viewUri, "application/pdf")
                                     addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                    clipData = ClipData.newUri(contentResolver, "PDF", viewUri)
                                 }
                                 startActivity(Intent.createChooser(intent, "Open PDF"))
                                 result.success(true)
