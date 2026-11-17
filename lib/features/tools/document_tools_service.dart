@@ -2108,7 +2108,29 @@ Future<int?> _restoreBackupLocked(
     if (state.isNotEmpty &&
         state.single['last_snapshot_revision'] == snapshotCapture.revision &&
         state.single['last_snapshot_name'] is String) {
-      return state.single['last_snapshot_name'] as String;
+      final lastName = state.single['last_snapshot_name'] as String;
+      // A clean DB revision does not prove the last exported snapshot still
+      // exists or is readable. For explicit snapshot requests, verify the
+      // published recovery point before skipping another export. Never prune
+      // or overwrite an invalid/missing older snapshot here.
+      try {
+        final entries = await StorageLocationService.instance
+            .listDirectory(locations['databaseUri']!);
+        final matching = entries.where((entry) =>
+            entry['name'] == lastName && entry['isDirectory'] == true).toList();
+        if (matching.length == 1) {
+          final verified = await _readVerifiedSnapshot(matching.single['uri'] as String);
+          PortableSnapshotRowsValidator.validate(
+              verified['rows'] as Map<String, List<Map<String, Object?>>>);
+          final manifest = jsonDecode(verified['manifestText'] as String) as Map;
+          if (manifest['portableDataRevision'] == snapshotCapture.revision) {
+            return lastName;
+          }
+        }
+      } catch (_) {
+        // Missing, corrupt or inaccessible recovery points need a fresh
+        // verified snapshot, not a misleading "already current" result.
+      }
     }
     final capturedRevision = snapshotCapture.revision;
     final capturedRows = snapshotCapture.rowsByTable;
