@@ -598,4 +598,36 @@ void main() {
     expect(find.text('Personal Documents'), findsOneWidget);
     expect(find.text('Policy.pdf'), findsOneWidget);
   });
+
+  testWidgets('Phone folder stays visible when its last PDF is in Recycle Bin',
+      (tester) async {
+    setTestViewport(tester);
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(body: PhoneStorageBrowserScreen(
+        rootName: 'Internal Storage',
+        entries: const <Map<String, Object?>>[
+          {
+            'name': 'My Policies',
+            'uri': '',
+            'folderPath': 'Internal',
+            'path': 'Internal/My Policies',
+            'isDirectory': true,
+            'pdfCount': 0,
+            'isPending': true,
+            'trashPdfCount': 2,
+            'sizeBytes': 0,
+          },
+        ],
+        embedded: true,
+        onOpenPdf: (_, __) async {},
+      )),
+    ));
+    expect(find.text('My Policies'), findsOneWidget);
+    expect(find.text('0 PDFs · 2 in Recycle Bin'), findsOneWidget);
+    await tester.tap(find.text('My Policies'));
+    await tester.pumpAndSettle();
+    expect(find.text('0 PDFs'), findsOneWidget);
+    expect(find.byType(DocumentThumbnail), findsNothing);
+  });
+
 }
