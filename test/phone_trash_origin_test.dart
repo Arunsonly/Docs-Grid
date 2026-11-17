@@ -104,6 +104,6 @@ void main() {
     );
     expect(origin('Internal/Download').localSourceMatchesRoot(), isTrue);
     expect(origin('Internal/Other').localSourceMatchesRoot(), isFalse);
-    expect(origin('Internal/../Other').localSourceMatchesRoot(), throwsStateError);
+    expect(() => origin('Internal/../Other').localSourceMatchesRoot(), throwsStateError);
   });
 }
