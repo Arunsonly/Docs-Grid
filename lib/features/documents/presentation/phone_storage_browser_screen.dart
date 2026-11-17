@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../../../core/widgets/storage_sort_controls.dart';
+
 import 'document_thumbnail.dart';
 
 class PhoneStorageBrowserScreen extends StatefulWidget {
@@ -38,6 +40,8 @@ class PhoneStorageBrowserScreen extends StatefulWidget {
 class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
   String? _selectedFolderPath;
   late final TextEditingController _searchController;
+  StorageSortField _sortField = StorageSortField.name;
+  bool _sortAscending = true;
 
   @override
   void initState() {
@@ -117,14 +121,45 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
   List<Map<String, Object?>> get _pdfs =>
       widget.entries.where(_isPdfFile).toList(growable: false);
 
+  DateTime? _modifiedAt(Map<String, Object?> entry) {
+    final value = entry['lastModified'];
+    if (value is num && value > 0) {
+      return DateTime.fromMillisecondsSinceEpoch(value.toInt());
+    }
+    if (value is String) return DateTime.tryParse(value);
+    if (value is DateTime) return value;
+    return null;
+  }
+
+  int _comparePdfs(Map<String, Object?> a, Map<String, Object?> b) {
+    final result = compareStorageItems(
+      nameA: a['name'] as String,
+      nameB: b['name'] as String,
+      dateA: _modifiedAt(a),
+      dateB: _modifiedAt(b),
+      field: _sortField,
+      ascending: _sortAscending,
+    );
+    if (result != 0) return result;
+    return (a['uri'] as String).compareTo(b['uri'] as String);
+  }
+
   Map<String, List<Map<String, Object?>>> get _directPdfFolders {
     final grouped = <String, List<Map<String, Object?>>>{};
+    // Cache directory dates once. Calculating them during every sort
+    // comparison would turn large libraries into quadratic work.
+    final lastModifiedByFolder = <String, DateTime>{};
     for (final pdf in _pdfs) {
       final rawPath = _normalizedFolderPath(pdf);
       // Files directly under the storage root belong in a virtual Internal
       // folder instead of being silently omitted.
       final path = rawPath.isEmpty ? 'Internal' : rawPath;
       (grouped[path] ??= <Map<String, Object?>>[]).add(pdf);
+      final date = _modifiedAt(pdf);
+      final previous = lastModifiedByFolder[path];
+      if (date != null && (previous == null || date.isAfter(previous))) {
+        lastModifiedByFolder[path] = date;
+      }
     }
     for (final entry in widget.entries) {
       if (entry['isDirectory'] != true ||
@@ -137,16 +172,26 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
       final count = (entry['pdfCount'] as num?)?.toInt() ?? 0;
       if (count > 0 || entry['isPending'] == true) {
         grouped.putIfAbsent(path, () => <Map<String, Object?>>[]);
+        final directoryDate = _modifiedAt(entry);
+        final previous = lastModifiedByFolder[path];
+        if (directoryDate != null &&
+            (previous == null || directoryDate.isAfter(previous))) {
+          lastModifiedByFolder[path] = directoryDate;
+        }
       }
     }
     final sorted = grouped.keys.toList()
-      ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+      ..sort((a, b) => compareStorageItems(
+            nameA: a,
+            nameB: b,
+            dateA: lastModifiedByFolder[a],
+            dateB: lastModifiedByFolder[b],
+            field: _sortField,
+            ascending: _sortAscending,
+          ));
     return {
       for (final path in sorted)
-        path: grouped[path]!
-          ..sort((a, b) => (a['name'] as String)
-              .toLowerCase()
-              .compareTo((b['name'] as String).toLowerCase())),
+        path: grouped[path]!..sort(_comparePdfs),
     };
   }
 
@@ -221,29 +266,42 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
 
   Widget _buildSearchField() {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
-      child: TextField(
-        controller: _searchController,
-        onChanged: (_) => setState(() {}),
-        decoration: InputDecoration(
-          hintText: 'Search phone folders or PDF names',
-          prefixIcon: const Icon(Icons.search),
-          suffixIcon: _searchController.text.isEmpty
-              ? null
-              : IconButton(
-                  tooltip: 'Clear search',
-                  onPressed: () {
-                    _searchController.clear();
-                    setState(() {});
-                  },
-                  icon: const Icon(Icons.close),
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+      child: Row(
+        children: [
+          Expanded(
+            child: TextField(
+              controller: _searchController,
+              onChanged: (_) => setState(() {}),
+              decoration: InputDecoration(
+                hintText: 'Search phone folders or PDF names',
+                prefixIcon: const Icon(Icons.search),
+                suffixIcon: _searchController.text.isEmpty
+                    ? null
+                    : IconButton(
+                        tooltip: 'Clear search',
+                        onPressed: () {
+                          _searchController.clear();
+                          setState(() {});
+                        },
+                        icon: const Icon(Icons.close),
+                      ),
+                filled: true,
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(18),
+                  borderSide: BorderSide.none,
                 ),
-          filled: true,
-          border: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(18),
-            borderSide: BorderSide.none,
+              ),
+            ),
           ),
-        ),
+          StorageSortControls(
+            field: _sortField,
+            ascending: _sortAscending,
+            onFieldChanged: (field) => setState(() => _sortField = field),
+            onAscendingChanged: (value) =>
+                setState(() => _sortAscending = value),
+          ),
+        ],
       ),
     );
   }
@@ -367,7 +425,7 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
       return matchesQuery &&
           (selectedPath == null ||
               (folderPath.isEmpty ? 'Internal' : folderPath) == selectedPath);
-    }).toList(growable: false);
+    }).toList(growable: false)..sort(_comparePdfs);
 
     final isSearching = query.isNotEmpty;
     var visiblePdfCount = matchingPdfs.length;
