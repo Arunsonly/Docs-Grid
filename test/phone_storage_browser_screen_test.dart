@@ -459,6 +459,32 @@ void main() {
   }
 
 
+  testWidgets('Recent File Location resolves Internal volume prefix to PDF folder',
+      (tester) async {
+    setTestViewport(tester);
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: PhoneStorageBrowserScreen(
+          rootName: 'Internal Storage',
+          initialPath: 'Internal/Download',
+          embedded: true,
+          entries: const [
+            {
+              'name': 'Insurance.pdf',
+              'uri': 'content://media/external_primary/file/123',
+              'folderPath': 'Internal/Download',
+              'path': 'Internal/Download',
+              'isDirectory': false,
+            },
+          ],
+          onOpenPdf: (_, __) async {},
+        ),
+      ),
+    ));
+    expect(find.text('Insurance.pdf'), findsOneWidget);
+    expect(find.text('Download'), findsOneWidget);
+  });
+
   testWidgets('Phone PDF menu has requested six options in the exact order',
       (tester) async {
     await openActionBrowser(tester,
