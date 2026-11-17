@@ -1631,6 +1631,12 @@ class _DocumentsScreenState extends State<DocumentsScreen>
                                     await _scanPhoneStorage(openBrowser: false);
                                     await _loadRecentDocuments();
                                     await _refreshDashboardSummary();
+                                    if (mounted && document.source ==
+                                        'phone_storage_recycle_bin') {
+                                      _message(
+                                        'PDF restored to its original Phone folder.',
+                                      );
+                                    }
                                   } else if (action == 'delete') {
                                     final confirmed = await showDialog<bool>(
                                       context: dialogContext,
