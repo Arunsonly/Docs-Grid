@@ -6,6 +6,7 @@ import 'package:crypto/crypto.dart';
 import 'package:docs_grid/core/database/app_database.dart';
 import 'package:docs_grid/features/documents/data/document_repository.dart';
 import 'package:docs_grid/features/documents/data/phone_recent_history.dart';
+import 'package:docs_grid/features/documents/data/phone_trash_origin.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:docs_grid/features/tools/document_tools_service.dart';
 import 'package:flutter/services.dart';
@@ -894,4 +895,158 @@ void main() {
       );
     }
   });
+
+  test('two Phone PDFs archived: empty folder stays shown until final Restore',
+      () async {
+    final phoneRoot = Directory('${temp.path}/phone-root');
+    final originalFolder = Directory('${phoneRoot.path}/Work');
+    await originalFolder.create(recursive: true);
+    final rootUri = Uri.file(phoneRoot.path).toString();
+    final roots = [
+      {'uri': rootUri, 'name': 'Internal storage'},
+    ];
+    final a = File('${originalFolder.path}/January.pdf');
+    final b = File('${originalFolder.path}/February.pdf');
+    await a.writeAsString('%PDF-1.7 January original');
+    await b.writeAsString('%PDF-1.7 February original');
+    final aUri = Uri.file(a.path).toString();
+    final bUri = Uri.file(b.path).toString();
+    var storageAuthorized = true;
+
+    String filePathFor(String uri) {
+      final parsed = Uri.tryParse(uri);
+      return parsed?.scheme == 'file' ? parsed!.toFilePath() : uri;
+    }
+
+    messenger.setMockMethodCallHandler(const MethodChannel('docsgrid/storage'),
+        (call) async {
+      final args = Map<String, dynamic>.from(call.arguments as Map);
+      switch (call.method) {
+        case 'getSelectedFolder':
+          return null;
+        case 'getAccessibleScanRoots':
+          return storageAuthorized ? roots : <Map<String, String>>[];
+        case 'copyPdfToPath':
+          final source = File(filePathFor(args['sourceUri'] as String));
+          await source.copy(args['destinationPath'] as String);
+          return true;
+        case 'sha256Pdf':
+          return (await sha256.bind(File(
+            filePathFor(args['uri'] as String)).openRead()).first).toString();
+        case 'findChildUri':
+          final target = File('${filePathFor(args['parentUri'] as String)}/${args['name']}');
+          if (!await target.exists() && !await Directory(target.path).exists()) {
+            throw PlatformException(code: 'NOT_FOUND', message: 'Not present');
+          }
+          return Uri.file(target.path).toString();
+        case 'createDirectory':
+          final target = Directory('${filePathFor(args['parentUri'] as String)}/${args['name']}');
+          await target.create(recursive: false);
+          return Uri.file(target.path).toString();
+        case 'copyFileToStorage':
+          final destination = File('${filePathFor(args['parentUri'] as String)}/${args['name']}');
+          if (await destination.exists()) {
+            throw StateError('Restore tried to overwrite a Phone PDF.');
+          }
+          await File(args['sourcePath'] as String).copy(destination.path);
+          return Uri.file(destination.path).toString();
+        case 'deletePdf':
+          final file = File(filePathFor(args['uri'] as String));
+          if (await file.exists()) await file.delete();
+          return true;
+        default:
+          throw MissingPluginException('Unknown test storage call: ${call.method}');
+      }
+    });
+
+    final repository = DocumentRepository(
+        database: AppDatabase.forTesting(() async => db));
+    PhoneTrashOrigin origin(String sourceUri, String name) =>
+        PhoneTrashOrigin(
+          sourceUri: sourceUri,
+          rootUri: rootUri,
+          folderPath: 'Internal/Work',
+          displayName: name,
+        );
+
+    expect(await repository.moveExternalPdfToTrash(
+      sourceUri: aUri,
+      displayName: 'January.pdf',
+      origin: origin(aUri, 'January.pdf'),
+    ), isTrue);
+    expect(await repository.moveExternalPdfToTrash(
+      sourceUri: bUri,
+      displayName: 'February.pdf',
+      origin: origin(bUri, 'February.pdf'),
+    ), isTrue);
+    expect(await a.exists(), isFalse);
+    expect(await b.exists(), isFalse);
+    expect(await originalFolder.exists(), isTrue,
+        reason: 'Deleting the last PDF must not delete its Phone folder.');
+    var trash = await repository.listTrash();
+    expect(trash, hasLength(2));
+    var placeholders = await repository.phoneTrashFolderEntries();
+    expect(placeholders, hasLength(1));
+    expect(placeholders.single['path'], 'Internal/Work');
+    expect(placeholders.single['trashPdfCount'], 2);
+    expect(placeholders.single['isPending'], isTrue);
+    expect(await repository.list(), isEmpty,
+        reason: 'Archived Phone copies must not leak into active Grid.');
+
+    // If the original SD/Phone access is temporarily unavailable, Restore
+    // must be refused without removing the PDF from Recycle Bin.
+    storageAuthorized = false;
+    await expectLater(
+      repository.restoreFromTrash(trash.first), throwsStateError,
+    );
+    expect(await repository.listTrash(), hasLength(2));
+    expect(await a.exists(), isFalse);
+    storageAuthorized = true;
+
+    await repository.restoreFromTrash(
+      trash.firstWhere((d) => d.name == 'January'),
+    );
+    expect(await a.readAsString(), '%PDF-1.7 January original');
+    expect(await b.exists(), isFalse);
+    trash = await repository.listTrash();
+    expect(trash, hasLength(1));
+    placeholders = await repository.phoneTrashFolderEntries();
+    expect(placeholders.single['trashPdfCount'], 1);
+    expect(await repository.list(), isEmpty,
+        reason: 'Restored Phone PDF must not appear in Grid Storage.');
+
+    await repository.restoreFromTrash(trash.single);
+    expect(await b.readAsString(), '%PDF-1.7 February original');
+    expect(await repository.listTrash(), isEmpty);
+    expect(await repository.phoneTrashFolderEntries(), isEmpty,
+        reason: 'The virtual folder hold ends when no archived PDFs remain.');
+    expect(await repository.list(), isEmpty);
+  });
+
+  test('legacy Phone archive without origin is held in Trash, not sent to Grid',
+      () async {
+    final archive = File('${temp.path}/archive.pdf');
+    await archive.writeAsString('%PDF-1.7 old archive');
+    await db.insert('documents', {
+      'id': 'old-phone-trash',
+      'name': 'Legacy',
+      'storage_uri': archive.path,
+      'sha256': (await sha256.bind(archive.openRead()).first).toString(),
+      'mime_type': 'application/pdf',
+      'size_bytes': await archive.length(),
+      'created_at': '2026-11-17T00:00:00Z',
+      'updated_at': '2026-11-17T00:00:00Z',
+      'deleted_at': '2026-11-17T01:00:00Z',
+      'metadata_json': '{}',
+      'source': 'phone_storage_recycle_bin',
+    });
+    final repository = DocumentRepository(
+        database: AppDatabase.forTesting(() async => db));
+    final old = (await repository.listTrash()).single;
+    await expectLater(repository.restoreFromTrash(old), throwsStateError);
+    expect(await repository.listTrash(), hasLength(1));
+    expect(await archive.exists(), isTrue);
+    expect(await repository.list(), isEmpty);
+  });
+
 }
