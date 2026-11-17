@@ -1741,10 +1741,10 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         displayName: name,
         targetFolderId: destination.isEmpty ? null : destination,
       );
-      if (!mounted) return false;
       if (result.added == 1) {
         // The source was deleted only after a checksum-verified Grid import.
-        // Its old MediaStore URI must no longer appear in Phone Recent.
+        // Persist the removal even if the user switched tabs while moving;
+        // the next Home view must not reload the now-invalid Phone URI.
         var recentSaved = true;
         try {
           await PhoneRecentHistory.removeMovedSource(uri);
@@ -1761,14 +1761,15 @@ class _DocumentsScreenState extends State<DocumentsScreen>
                 .toList(growable: false);
             _recentFilter = 'grid';
           });
+          await _loadRecentDocuments();
+          _message(recentSaved
+              ? 'Moved $name to Grid. It is now in Grid Recent.'
+              : 'Moved $name to Grid, but could not save the Phone Recent cleanup.');
         }
-        await _loadRecentDocuments();
-        _message(recentSaved
-            ? 'Moved $name to Grid. It is now in Grid Recent.'
-            : 'Moved $name to Grid, but could not save the Phone Recent cleanup.');
-      } else if (result.duplicates > 0) {
+      } else if (result.duplicates > 0 && mounted) {
         _message('This PDF already exists in Grid. The Phone original was kept.');
       }
+      if (!mounted) return result.added == 1;
       await _scanPhoneStorage(openBrowser: false);
       await _load();
       await _refreshDashboardSummary();
