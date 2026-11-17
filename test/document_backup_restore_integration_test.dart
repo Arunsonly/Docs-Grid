@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:archive/archive.dart';
 import 'package:crypto/crypto.dart';
 import 'package:docs_grid/core/database/app_database.dart';
+import 'package:docs_grid/features/documents/data/document_repository.dart';
 import 'package:docs_grid/features/tools/document_tools_service.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -56,9 +57,13 @@ Map<String, List<Map<String, Object?>>> _backupRows({
   }] : <Map<String, Object?>>[],
 };
 
-Future<File> _makeBackup(Directory directory, {bool withReminder = false, bool withFolder = false, bool withCollection = false}) async {
+Future<File> _makeBackup(Directory directory, {bool withReminder = false, bool withFolder = false, bool withCollection = false, bool deletedFolder = false}) async {
   final archive = Archive();
   final rows = _backupRows(withReminder: withReminder, withFolder: withFolder, withCollection: withCollection);
+  if (deletedFolder) {
+    rows['folders']!.single['deleted_at'] = '2026-02-01T00:00:00Z';
+    rows['documents']!.single['deleted_at'] = '2026-02-01T00:00:00Z';
+  }
   final metadataFiles = <Map<String, Object?>>[];
   for (final entry in rows.entries) {
     final bytes = Uint8List.fromList(utf8.encode(jsonEncode(entry.value)));
@@ -359,6 +364,80 @@ void main() {
     expect(await root.list().length, lessThanOrEqualTo(9));
     expect(await File('${unknown.path}/keep.pdf').readAsString(), 'user content');
     expect(DocumentToolsService.snapshotDiagnostics['removedSnapshots'], greaterThan(0));
+  });
+
+  test('deleted source folder retains deleted state without revival', () async {
+    final backup = await _makeBackup(temp, withFolder: true, deletedFolder: true);
+    expect(await service.restoreBackup(backup, confirm: (_) async => true), 1);
+    expect((await db.query('folders')).single['deleted_at'], isNotNull);
+    expect((await db.query('documents')).single['deleted_at'], isNotNull);
+    expect(await service.restoreBackup(backup, confirm: (_) async => true), 0);
+    expect(await db.query('folders'), hasLength(1));
+    expect(await db.query('documents'), hasLength(1));
+  });
+
+  test('deleted backup folder never merges into same-name active folder', () async {
+    await db.insert('folders', _backupRows(withFolder: true)['folders']!.single);
+    final backup = await _makeBackup(temp, withFolder: true, deletedFolder: true);
+    await expectLater(service.restoreBackup(backup, confirm: (_) async => true), throwsA(isA<StateError>()));
+    expect((await db.query('folders')).single['deleted_at'], isNull);
+    expect(await db.query('documents'), isEmpty);
+  });
+
+  test('new PDF import after restore uses the verified original Insurance folder', () async {
+    final original = Directory('${appDocuments.path}/Folders/Insurance');
+    await original.create(recursive: true);
+    await db.insert('folders', {..._backupRows(withFolder: true)['folders']!.single,
+      'storage_uri_or_relative_path': original.path});
+    final backup = await _makeBackup(temp, withFolder: true);
+    await service.restoreBackup(backup, confirm: (_) async => true);
+    messenger.setMockMethodCallHandler(const MethodChannel('docsgrid/storage'), (call) async {
+      final args = Map<String, dynamic>.from(call.arguments as Map);
+      if (call.method == 'copyPdf') {
+        expect(args['parentUri'], original.path);
+        final source = File.fromUri(Uri.parse(args['sourceUri'] as String));
+        return (await source.copy('${original.path}/${args['name']}')).uri.toString();
+      }
+      if (call.method == 'sha256Pdf') {
+        final file = File.fromUri(Uri.parse(args['uri'] as String));
+        return (await sha256.bind(file.openRead()).first).toString();
+      }
+      throw MissingPluginException('Unexpected import call: ${call.method}');
+    });
+    final incoming = File('${temp.path}/new.pdf');
+    await incoming.writeAsString('%PDF-1.7 new imported policy');
+    final repository = DocumentRepository(database: AppDatabase.forTesting(() async => db));
+    expect((await repository.importScannedPdf(incoming, targetFolderId: 'folder-1')).added, 1);
+    final rows = await db.query('documents', where: 'id != ?', whereArgs: ['document-1']);
+    final imported = File.fromUri(Uri.parse(rows.single['storage_uri'] as String));
+    expect(imported.parent.path, original.path);
+    expect(await imported.readAsBytes(), await incoming.readAsBytes());
+    expect(await original.list().length, 2);
+  });
+
+  test('incomplete snapshot cleanup requires ownership, grace and two valid points', () async {
+    final root = await mockSnapshotStorage();
+    Future<Directory> incomplete(String name, int hours, {bool owned = true}) async {
+      final directory = Directory('${root.path}/$name');
+      await directory.create();
+      await File('${directory.path}/folders.json').writeAsString('[]');
+      if (owned) await File('${directory.path}/operation.json').writeAsString(jsonEncode({
+        'format': 'DocsGridSnapshotOperation', 'version': 1, 'directoryName': name,
+        'createdAtUtc': DateTime.now().toUtc().subtract(Duration(hours: hours)).toIso8601String(),
+      }));
+      return directory;
+    }
+    final old = await incomplete('snapshot_interrupted_old', 72);
+    final recent = await incomplete('snapshot_interrupted_recent', 1);
+    final unknown = await incomplete('snapshot_legacy_unknown', 720, owned: false);
+    await service.createPortableMetadataSnapshot();
+    expect(await old.exists(), isTrue);
+    await db.insert('folders', {'id': 'later', 'name': 'Later',
+      'created_at': '2026-01-01', 'updated_at': '2026-01-01'});
+    await service.createPortableMetadataSnapshot();
+    expect(await old.exists(), isFalse);
+    expect(await recent.exists(), isTrue);
+    expect(await unknown.exists(), isTrue);
   });
 
   test('schema upgrade creates the Smart Collections table and index', () async {

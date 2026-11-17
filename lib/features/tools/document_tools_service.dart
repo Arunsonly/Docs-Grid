@@ -1413,9 +1413,6 @@ Future<int?> _restoreBackupLocked(
         .toList(growable: false);
     final existingFolderIds =
         existingFolderRows.map((row) => row['id'] as String).toSet();
-    final existingFolderRowsById = <String, Map<String, Object?>>{
-      for (final row in existingFolders) row['id'] as String: row,
-    };
     final existingFolderIdsByPath = <String, String>{};
     final livePaths = <String, String>{};
     for (final row in BackupFolderGraphValidator.parentFirst(existingFolders)) {
@@ -1438,19 +1435,36 @@ Future<int?> _restoreBackupLocked(
     String backupFolderPath(String id) => backupFolderPaths[id]!;
     final folderIdMap = <String, String>{};
     final matchedFolderIds = <String>{};
+    final matchedRowsBySourceId = <String, Map<String, Object?>>{};
+    final allLivePaths = <String, String>{};
+    for (final row in BackupFolderGraphValidator.parentFirst(existingFolderRows)) {
+      final parent = row['parent_id'] as String?;
+      allLivePaths[row['id'] as String] = parent == null ? row['name'] as String
+          : '${allLivePaths[parent]}/${row['name']}';
+    }
     for (final row in BackupFolderGraphValidator.parentFirst(folderRows)) {
       final oldId = row['id'] as String;
+      final deletedMatches = existingFolderRows.where((live) =>
+          row['deleted_at'] != null && live['deleted_at'] != null &&
+          live['id'] == oldId && live['created_at'] == row['created_at'] &&
+          live['trash_operation_id'] == row['trash_operation_id'] &&
+          allLivePaths[oldId]?.toLowerCase() == backupFolderPath(oldId).toLowerCase());
       final match = row['deleted_at'] == null
           ? existingFolderIdsByPath[backupFolderPath(oldId).toLowerCase()]
-          : null;
+          : (deletedMatches.isEmpty ? null : deletedMatches.single['id'] as String);
+      if (row['deleted_at'] != null &&
+          existingFolderIdsByPath.containsKey(backupFolderPath(oldId).toLowerCase())) {
+        throw StateError('Recycle Bin conflict with active folder: ${backupFolderPath(oldId)}');
+      }
       if (match != null) {
-        final candidate = existingFolderRowsById[match]!;
+        final candidate = existingFolderRows.firstWhere((live) => live['id'] == match);
         // Path + independent identity evidence; names or IDs alone are unsafe.
         if (match != oldId && candidate['created_at'] != row['created_at']) {
           throw StateError('Folder conflict: ${backupFolderPath(oldId)} has a different identity. No files were imported.');
         }
         folderIdMap[oldId] = replaceExisting ? oldId : match;
         matchedFolderIds.add(oldId);
+        matchedRowsBySourceId[oldId] = candidate;
       } else {
         folderIdMap[oldId] = !replaceExisting && existingFolderIds.contains(oldId)
             ? _uuid.v5(Uuid.NAMESPACE_URL, 'DocsGrid/folder/${manifest['backupId']}/$oldId')
@@ -1580,8 +1594,7 @@ Future<int?> _restoreBackupLocked(
       final parentPath = parentId == null ? foldersRoot.path : folderPaths[parentId]!;
       var path = p.join(parentPath, row['name'] as String);
       if (matchedFolderIds.contains(id)) {
-        final existingId = existingFolderIdsByPath[backupFolderPath(id).toLowerCase()]!;
-        final uri = existingFolderRowsById[existingId]!['storage_uri_or_relative_path'] as String?;
+        final uri = matchedRowsBySourceId[id]!['storage_uri_or_relative_path'] as String?;
         if (uri != null && uri.isNotEmpty) {
           if (uri.startsWith('content://')) {
             throw StateError('Folder conflict: SAF destination requires explicit relinking before ZIP restore: ${row['name']}');
@@ -1597,8 +1610,8 @@ Future<int?> _restoreBackupLocked(
         throw StateError('Folder conflict: symbolic link at $path');
       }
       // Deleted records must never claim the active hierarchy or its files.
-      if (row['deleted_at'] != null || existingFolderRows.any((candidate) =>
-          candidate['deleted_at'] != null &&
+      if (existingFolderRows.any((candidate) =>
+          candidate['deleted_at'] != null && candidate['id'] != matchedRowsBySourceId[id]?['id'] &&
           (candidate['storage_uri_or_relative_path'] == path ||
            candidate['storage_uri_or_relative_path'] == Uri.file(path).toString()))) {
         throw StateError('Recycle Bin folder conflict: ${row['name']}. Restore it separately before importing this ZIP.');
@@ -2098,6 +2111,13 @@ Future<int?> _restoreBackupLocked(
     final recordCounts = <String, int>{};
 
     try {
+      await StorageLocationService.instance.writeTextFile(
+        parentUri: snapshotUri, name: 'operation.json', contents: jsonEncode({
+          'format': 'DocsGridSnapshotOperation', 'version': 1,
+          'directoryName': snapshotName,
+          'createdAtUtc': DateTime.now().toUtc().toIso8601String(),
+        }),
+      );
       for (final table in tableNames) {
         final rows = capturedRows[table]!;
         final contents = jsonEncode(rows);
@@ -2292,7 +2312,14 @@ Future<int?> _restoreBackupLocked(
         final at = DateTime.parse(raw['createdAtUtc'] as String);
         final manifest = verified['manifest'] as PortableSnapshotManifest;
         final children = await storage.listDirectory(uri);
-        final expected = {'manifest.json', ...manifest.files.map((f) => f.path)};
+        if (children.any((child) => child['name'] == 'operation.json')) {
+          final marker = jsonDecode(await storage.readTextFile(
+            await _findChildUri(uri, 'operation.json')));
+          if (marker is! Map || marker['format'] != 'DocsGridSnapshotOperation' ||
+              marker['version'] != 1 || marker['directoryName'] != entry['name']) continue;
+        }
+        final expected = {'manifest.json', ...manifest.files.map((f) => f.path),
+          if (children.any((child) => child['name'] == 'operation.json')) 'operation.json'};
         if (children.length != expected.length || children.any((child) =>
             child['isDirectory'] == true || !expected.contains(child['name']))) continue;
         final bytes = manifest.files.fold<int>(0, (n, file) => n + file.sizeBytes) +
@@ -2317,7 +2344,8 @@ Future<int?> _restoreBackupLocked(
         if (await FileSystemEntity.type(directory.path, followLinks: false) !=
             FileSystemEntityType.directory) continue;
         final children = await directory.list(followLinks: false).toList();
-        final expected = {'manifest.json', ...manifests[point.uri]!.files.map((f) => f.path)};
+        final expected = {'manifest.json', ...manifests[point.uri]!.files.map((f) => f.path),
+          if (children.any((child) => p.basename(child.path) == 'operation.json')) 'operation.json'};
         if (children.length != expected.length || children.any((child) =>
             child is! File || !expected.contains(p.basename(child.path)))) continue;
         await _readVerifiedSnapshot(point.uri);
@@ -2326,10 +2354,43 @@ Future<int?> _restoreBackupLocked(
         for (final file in manifests[point.uri]!.files) {
           await File(p.join(directory.path, file.path)).delete();
         }
+        final operation = File(p.join(directory.path, 'operation.json'));
+        if (await operation.exists()) await operation.delete();
         await directory.delete();
         freed += point.sizeBytes;
         removed++;
       } catch (_) { break; } // Fail closed; leave all other recovery points.
+    }
+    if (points.length - removed >= 2) {
+      for (final entry in entries) {
+        if (entry['isDirectory'] != true ||
+            !(entry['name'] as String? ?? '').startsWith('snapshot_')) continue;
+        final uri = entry['uri'] as String;
+        if (!uri.startsWith('file://')) continue;
+        final directory = Directory.fromUri(Uri.parse(uri));
+        try {
+          if (await FileSystemEntity.type(directory.path, followLinks: false) !=
+              FileSystemEntityType.directory) continue;
+          final children = await directory.list(followLinks: false).toList();
+          final allowed = {'operation.json',
+            ...PortableSnapshotManifest.supportedTableNames.map((name) => '$name.json')};
+          if (children.any((child) => child is! File || !allowed.contains(p.basename(child.path)))) continue;
+          final marker = File(p.join(directory.path, 'operation.json'));
+          final value = jsonDecode(await marker.readAsString());
+          if (value is! Map || value['format'] != 'DocsGridSnapshotOperation' ||
+              value['version'] != 1 || value['directoryName'] != entry['name'] ||
+              value['createdAtUtc'] is! String || !(value['createdAtUtc'] as String).endsWith('Z')) continue;
+          final age = DateTime.now().toUtc().difference(DateTime.parse(value['createdAtUtc'] as String));
+          if (age < const Duration(hours: 48)) continue;
+          // Recheck completion immediately before deleting enumerated metadata.
+          if (await File(p.join(directory.path, 'manifest.json')).exists()) continue;
+          for (final child in children.where((child) => child.path != marker.path)) {
+            await child.delete();
+          }
+          await marker.delete();
+          await directory.delete();
+        } catch (_) { /* Unknown, future-dated and inaccessible data survives. */ }
+      }
     }
     final times = points.map((point) => point.createdAt).toList()..sort();
     snapshotDiagnostics = {

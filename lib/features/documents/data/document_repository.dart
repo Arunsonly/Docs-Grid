@@ -1192,7 +1192,7 @@ class DocumentRepository {
     String? relativePath;
     final folderUri = targetFolderId == null
         ? null
-        : await FolderRepository().ensurePhysicalStorageUri(targetFolderId);
+        : await FolderRepository(database: _database).ensurePhysicalStorageUri(targetFolderId);
     final destinationUri = targetFolderUri ?? folderUri ??
         (Platform.isAndroid ? portableLocations['documentsUri'] : selected?['uri']) ??
         selected?['uri'];
