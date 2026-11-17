@@ -58,7 +58,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
   bool _showStarredRecent = false;
   List<DocumentRecord> _starredRecent = [];
   List<Map<String, Object?>> _phoneStarred = [];
-  Set<String> _phoneStarredUris = <String>{};
+  final Set<String> _phoneStarredUris = <String>{};
   String _recentFilter = 'grid';
   List<Map<String, Object?>> _phoneEntries = [];
   final Set<String> _selectedIds = <String>{};
@@ -695,8 +695,11 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       if (mounted) {
         setState(() {
           _phoneStarred = items;
-          _phoneStarredUris =
-              items.map((item) => item['uri'] as String).toSet();
+          // Keep the same Set reference: an independently pushed Phone
+          // browser reads it when reopening its menu after a Star action.
+          _phoneStarredUris
+            ..clear()
+            ..addAll(items.map((item) => item['uri'] as String));
         });
       }
     } catch (_) {
@@ -803,7 +806,10 @@ class _DocumentsScreenState extends State<DocumentsScreen>
 
   Future<void> _recordExternalFavorite(String uri, String name) async {
     try {
-      final matching = _phoneEntries.where((entry) => entry['uri'] == uri);
+      final matching = <Map<String, Object?>>[
+        ..._phoneEntries.where((entry) => entry['uri'] == uri),
+        ..._phoneRecent.where((entry) => entry['uri'] == uri),
+      ];
       final entry = matching.isEmpty ? null : matching.first;
       final added = await PhoneStarRepository.toggle(
         uri: uri,
@@ -1136,7 +1142,11 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       final bytes = matchingEntries.isEmpty
           ? 0
           : (matchingEntries.first['sizeBytes'] as num?)?.toInt() ?? 0;
-      await PhoneRecentHistory.recordOpened(uri, name, sizeBytes: bytes);
+      final folderPath = matchingEntries.isEmpty
+          ? null : (matchingEntries.first['folderPath'] ?? matchingEntries.first['path']) as String?;
+      await PhoneRecentHistory.recordOpened(
+        uri, name, sizeBytes: bytes, folderPath: folderPath,
+      );
       if (mounted && !widget.phoneOnly) {
         await _loadRecentDocuments();
       }
