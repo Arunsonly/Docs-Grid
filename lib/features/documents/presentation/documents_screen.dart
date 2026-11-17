@@ -8,6 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../data/document_repository.dart';
 import '../data/phone_recent_history.dart';
+import '../data/phone_star_repository.dart';
 import '../../../core/storage/storage_location_service.dart';
 import '../../categories/data/category_repository.dart';
 import '../../folders/data/folder_repository.dart';
@@ -56,6 +57,8 @@ class _DocumentsScreenState extends State<DocumentsScreen>
   List<DocumentRecord> _gridRecent = [];
   bool _showStarredRecent = false;
   List<DocumentRecord> _starredRecent = [];
+  List<Map<String, Object?>> _phoneStarred = [];
+  Set<String> _phoneStarredUris = <String>{};
   String _recentFilter = 'grid';
   List<Map<String, Object?>> _phoneEntries = [];
   final Set<String> _selectedIds = <String>{};
@@ -71,6 +74,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    unawaited(_loadPhoneStarred());
     _storageChangesSubscription =
         StorageLocationService.instance.storageChanges.listen(
       (_) => _schedulePhoneStorageRefresh(),
@@ -677,16 +681,34 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         onMovePdf: _movePhonePdfToGrid,
         onRenamePdf: _renamePhonePdf,
         onSharePdf: _sharePhonePdf,
+        onToggleStarPdf: _recordExternalFavorite,
+        starredUris: _phoneStarredUris,
         onTrashPdf: _trashPhonePdf,
         initialPath: initialPath,
       ),
     ));
   }
 
+  Future<void> _loadPhoneStarred() async {
+    try {
+      final items = await PhoneStarRepository.list();
+      if (mounted) {
+        setState(() {
+          _phoneStarred = items;
+          _phoneStarredUris =
+              items.map((item) => item['uri'] as String).toSet();
+        });
+      }
+    } catch (_) {
+      // Star metadata is optional; it must never block Phone Storage.
+    }
+  }
+
   Future<void> _loadAllStarred() async {
     try {
       final items = await _repository.listAllStarred();
       if (mounted) setState(() => _starredRecent = items);
+      await _loadPhoneStarred();
     } catch (error) {
       if (mounted) _message('Could not load Starred PDFs: $error');
     }
@@ -713,12 +735,15 @@ class _DocumentsScreenState extends State<DocumentsScreen>
 
   List<PopupMenuEntry<String>> _phoneRecentMenu(Map<String, Object?> item) => [
     const PopupMenuItem(value: 'share', child: Text('Share PDF')),
-    const PopupMenuItem(value: 'favorite', child: Text('Add to Star')),
-    const PopupMenuItem(value: 'category', child: Text('Set category')),
-    const PopupMenuItem(value: 'tags', child: Text('Edit tags')),
+    PopupMenuItem(
+      value: 'favorite',
+      child: Text(_phoneStarredUris.contains(item['uri'])
+          ? 'Remove from Star' : 'Add to Star'),
+    ),
     const PopupMenuItem(value: 'rename', child: Text('Rename')),
     const PopupMenuItem(value: 'move', child: Text('Move to Grid')),
-    const PopupMenuItem(value: 'trash', child: Text('Move to Recycle Bin')),
+    const PopupMenuItem(value: 'trash', child: Text('Delete')),
+    const PopupMenuItem(value: 'location', child: Text('File Location')),
   ];
 
   Future<void> _handlePhoneRecentAction(Map<String, Object?> item, String action) async {
@@ -732,13 +757,66 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       await _recordExternalFavorite(uri, name);
     } else if (action == 'trash') {
       await _trashPhonePdf(uri, name);
-    } else {
-      _message('This Phone PDF action is available from the Phone folder browser.');
+    } else if (action == 'rename') {
+      await _renamePhonePdf(uri, name);
+      await _loadRecentDocuments();
+    } else if (action == 'location') {
+      await _showPhoneFileLocation(uri, name);
+    }
+  }
+
+  Future<void> _showPhoneFileLocation(String uri, String name) async {
+    final matching = <Map<String, Object?>>[
+      ..._phoneEntries.where((item) => item['uri'] == uri),
+      ..._phoneStarred.where((item) => item['uri'] == uri),
+      ..._phoneRecent.where((item) => item['uri'] == uri),
+    ];
+    final rawPath = matching.isEmpty
+        ? '' : (matching.first['folderPath'] ?? matching.first['path'] ?? '').toString();
+    final path = rawPath.replaceAll(String.fromCharCode(92), '/').trim();
+    if (!mounted) return;
+    final showFolder = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('File Location'),
+        content: SelectableText(path.isEmpty
+            ? 'Folder location unavailable for $name.' : path),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Close'),
+          ),
+          if (path.isNotEmpty)
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('Open folder'),
+            ),
+        ],
+      ),
+    );
+    if (showFolder == true && mounted) {
+      await _showRecursiveStoragePdfs(
+        'Internal Storage', _phoneEntries, initialPath: path,
+      );
     }
   }
 
   Future<void> _recordExternalFavorite(String uri, String name) async {
-    _message('Phone files can be starred after importing them into Grid.');
+    try {
+      final matching = _phoneEntries.where((entry) => entry['uri'] == uri);
+      final entry = matching.isEmpty ? null : matching.first;
+      final added = await PhoneStarRepository.toggle(
+        uri: uri,
+        name: name,
+        folderPath: (entry?['folderPath'] ?? entry?['path']) as String?,
+        sizeBytes: (entry?['sizeBytes'] as num?)?.toInt() ?? 0,
+      );
+      await _loadPhoneStarred();
+      if (_showStarredRecent) await _loadAllStarred();
+      if (mounted) _message(added ? 'Added to Star.' : 'Removed from Star.');
+    } catch (error) {
+      if (mounted) _message('Could not update Phone Star: $error');
+    }
   }
 
   Future<bool> _movePhoneRecentSelectionToTrash(
@@ -1959,6 +2037,8 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         onMovePdf: _movePhonePdfToGrid,
         onRenamePdf: _renamePhonePdf,
         onSharePdf: _sharePhonePdf,
+        onToggleStarPdf: _recordExternalFavorite,
+        starredUris: _phoneStarredUris,
         onTrashPdf: _trashPhonePdf,
         embedded: true,
         // Keep the last usable index visible while refresh continues silently.
