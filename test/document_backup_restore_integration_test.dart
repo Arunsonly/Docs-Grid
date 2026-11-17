@@ -920,7 +920,9 @@ void main() {
 
     messenger.setMockMethodCallHandler(const MethodChannel('docsgrid/storage'),
         (call) async {
-      final args = Map<String, dynamic>.from(call.arguments as Map);
+      final args = call.arguments is Map
+          ? Map<String, dynamic>.from(call.arguments as Map)
+          : <String, dynamic>{};
       switch (call.method) {
         case 'getSelectedFolder':
           return null;
