@@ -3,7 +3,6 @@ import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
-import 'package:open_filex/open_filex.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
@@ -509,11 +508,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
     final uri = result['storage_uri']?.toString() ?? '';
     if (uri.isEmpty) return;
     try {
-      if (uri.startsWith('content://') || uri.startsWith('file://')) {
-        await StorageLocationService.instance.openPdf(uri);
-      } else {
-        await OpenFilex.open(uri);
-      }
+      await StorageLocationService.instance.openPdf(uri, gridPdf: true);
     } catch (error) {
       if (mounted) setState(() => _message = 'Could not open matching PDF: $error');
     }
@@ -630,19 +625,13 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
                   subtitle: Text(_formatSize(doc.sizeBytes)),
                   onTap: () async {
                     final uri = doc.storagePath;
-                    if (uri.startsWith('content://') || uri.startsWith('file://')) {
-                      await StorageLocationService.instance.openPdf(uri);
-                    } else {
-                      await OpenFilex.open(uri);
-                    }
+                    await StorageLocationService.instance.openPdf(uri, gridPdf: true);
                   },
                   trailing: PopupMenuButton<String>(
                     onSelected: (action) async {
                       if (action == 'open') {
                         final uri = doc.storagePath;
-                        if (uri.startsWith('content://') || uri.startsWith('file://')) {
-                          await StorageLocationService.instance.openPdf(uri);
-                        } else { await OpenFilex.open(uri); }
+                        await StorageLocationService.instance.openPdf(uri, gridPdf: true);
                       } else if (action == 'share') {
                         await _tools.shareStoredPdf(doc.storagePath, '${doc.name}.pdf');
                       } else if (action == 'trash') {

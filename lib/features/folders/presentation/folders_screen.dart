@@ -1,7 +1,4 @@
-import 'dart:io';
-
 import 'package:flutter/material.dart';
-import 'package:open_filex/open_filex.dart';
 
 import '../../documents/data/document_repository.dart';
 import '../../documents/presentation/document_thumbnail.dart';
@@ -1213,17 +1210,13 @@ class _FoldersScreenState extends State<FoldersScreen> {
                                     setState(() { if (!_selectedDocumentIds.add(document.id)) _selectedDocumentIds.remove(document.id); });
                                     return;
                                   }
-                                  final shared = document.storagePath.startsWith('content://') ||
-                                      document.storagePath.startsWith('file://');
-                                  if (!shared && !await File(document.storagePath).exists()) {
-                                    if (mounted) _message('PDF file is missing from local storage.');
-                                    return;
-                                  }
-                                  await _documents.markOpened(document);
-                                  if (shared) {
-                                    await StorageLocationService.instance.openPdf(document.storagePath);
-                                  } else {
-                                    await OpenFilex.open(document.storagePath);
+                                  try {
+                                    await StorageLocationService.instance.openPdf(
+                                      document.storagePath, gridPdf: true,
+                                    );
+                                    await _documents.markOpened(document);
+                                  } catch (error) {
+                                    if (mounted) _message('Could not open PDF: $error');
                                   }
                                 },
                                 trailing: PopupMenuButton<String>(

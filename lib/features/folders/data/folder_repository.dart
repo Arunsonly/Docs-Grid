@@ -1061,7 +1061,7 @@ class FolderRepository {
     final placeholders = List.filled(ids.length, '?').join(',');
     final otherReferences = await db.query(
       'documents', columns: ['id'],
-      where: 'folder_id IN ($placeholders) AND COALESCE(trash_operation_id, '') != ?',
+      where: "folder_id IN ($placeholders) AND COALESCE(trash_operation_id, '') != ?",
       whereArgs: [...ids, operationId], limit: 1,
     );
     if (otherReferences.isNotEmpty) {
