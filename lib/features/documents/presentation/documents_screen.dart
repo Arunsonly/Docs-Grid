@@ -7,6 +7,7 @@ import 'package:open_filex/open_filex.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../data/document_repository.dart';
+import '../data/phone_recent_history.dart';
 import '../../../core/storage/storage_location_service.dart';
 import '../../categories/data/category_repository.dart';
 import '../../folders/data/folder_repository.dart';
@@ -497,6 +498,14 @@ class _DocumentsScreenState extends State<DocumentsScreen>
               final uri = item['uri'] as String? ?? '';
               if (uri.isNotEmpty) seen.add(uri);
             }
+            // Only a complete, permission-authorized MediaStore index can
+            // prove a media URI is absent. Never prune on partial scans.
+            try {
+              final removed = await PhoneRecentHistory.pruneAbsentMediaStoreUris(seen);
+              if (removed > 0 && mounted) await _loadRecentDocuments();
+            } catch (_) {
+              // Recent metadata is optional; user PDFs and scan remain intact.
+            }
             if (mounted) setState(() {
               _phoneEntries = List<Map<String, Object?>>.from(entries);
               _phoneScanCompleted = true;
@@ -666,7 +675,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
     const PopupMenuItem(value: 'category', child: Text('Set category')),
     const PopupMenuItem(value: 'tags', child: Text('Edit tags')),
     const PopupMenuItem(value: 'rename', child: Text('Rename')),
-    const PopupMenuItem(value: 'move', child: Text('Move to folder')),
+    const PopupMenuItem(value: 'move', child: Text('Move to Grid')),
     const PopupMenuItem(value: 'trash', child: Text('Move to Recycle Bin')),
   ];
 
@@ -675,6 +684,8 @@ class _DocumentsScreenState extends State<DocumentsScreen>
     final name = item['name'] as String? ?? 'PDF';
     if (action == 'share') {
       await _sharePhonePdf(uri, name);
+    } else if (action == 'move') {
+      await _movePhonePdfToGrid(uri, name);
     } else if (action == 'favorite') {
       await _recordExternalFavorite(uri, name);
     } else if (action == 'trash') {
@@ -1730,7 +1741,29 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       );
       if (!mounted) return false;
       if (result.added == 1) {
-        _message('Moved $name to Grid.');
+        // The source was deleted only after a checksum-verified Grid import.
+        // Its old MediaStore URI must no longer appear in Phone Recent.
+        var recentSaved = true;
+        try {
+          await PhoneRecentHistory.removeMovedSource(uri);
+        } catch (_) {
+          recentSaved = false;
+        }
+        if (mounted) {
+          setState(() {
+            _phoneRecent = _phoneRecent
+                .where((entry) => entry['uri'] != uri)
+                .toList(growable: false);
+            _phoneEntries = _phoneEntries
+                .where((entry) => entry['uri'] != uri)
+                .toList(growable: false);
+            _recentFilter = 'grid';
+          });
+        }
+        await _loadRecentDocuments();
+        _message(recentSaved
+            ? 'Moved $name to Grid. It is now in Grid Recent.'
+            : 'Moved $name to Grid, but could not save the Phone Recent cleanup.');
       } else if (result.duplicates > 0) {
         _message('This PDF already exists in Grid. The Phone original was kept.');
       }
