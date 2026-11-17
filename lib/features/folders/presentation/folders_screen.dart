@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../../../core/widgets/storage_sort_controls.dart';
@@ -34,6 +36,7 @@ class _FoldersScreenState extends State<FoldersScreen> {
   bool _sortAscending = true;
   // Respect the existing user-defined folder order until sorting is chosen.
   bool _explicitSort = false;
+  int _sortRevision = 0;
   bool _isSelectingFolders = false;
   bool _isReorderingFolders = false;
   List<Folder> _draftFolderOrder = <Folder>[];
@@ -44,12 +47,45 @@ class _FoldersScreenState extends State<FoldersScreen> {
   void initState() {
     super.initState();
     _load();
+    unawaited(_restoreSortPreference());
   }
 
   @override
   void dispose() {
     _searchController.dispose();
     super.dispose();
+  }
+
+  Future<void> _restoreSortPreference() async {
+    final revision = _sortRevision;
+    final saved = await StorageSortPreference.load(StorageSortPreference.gridKey);
+    if (!mounted || revision != _sortRevision || saved == null) return;
+    setState(() {
+      _sortField = saved.field;
+      _sortAscending = saved.ascending;
+      _explicitSort = saved.explicit;
+    });
+  }
+
+  void _changeSort({StorageSortField? field, bool? ascending}) {
+    _sortRevision++;
+    setState(() {
+      if (field != null) _sortField = field;
+      if (ascending != null) _sortAscending = ascending;
+      _explicitSort = true;
+    });
+    _saveSortPreference();
+  }
+
+  void _saveSortPreference() {
+    unawaited(StorageSortPreference.save(
+      StorageSortPreference.gridKey,
+      field: _sortField,
+      ascending: _sortAscending,
+      explicit: _explicitSort,
+    ).catchError((Object _) {
+      // Only optional UI preference persistence failed; list remains usable.
+    }));
   }
 
   void _load() {
@@ -542,10 +578,14 @@ class _FoldersScreenState extends State<FoldersScreen> {
       _searchQuery = '';
       _documentsFuture = _documents.listInFolder(_currentFolderId);
       _isReorderingFolders = true;
-      // Drag-and-drop edits the persisted custom order, not a sorted view.
+      // Custom drag order supersedes any user-selected alphabetic/date order.
+      _sortRevision++;
       _explicitSort = false;
+      _sortField = StorageSortField.name;
+      _sortAscending = true;
       _draftFolderOrder = List<Folder>.from(visibleFolders);
     });
+    _saveSortPreference();
   }
 
   Future<void> _moveFolders(List<Folder> selected) async {
@@ -939,14 +979,8 @@ class _FoldersScreenState extends State<FoldersScreen> {
                 field: _sortField,
                 ascending: _sortAscending,
                 enabled: !_isReorderingFolders,
-                onFieldChanged: (field) => setState(() {
-                  _sortField = field;
-                  _explicitSort = true;
-                }),
-                onAscendingChanged: (value) => setState(() {
-                  _sortAscending = value;
-                  _explicitSort = true;
-                }),
+                onFieldChanged: (field) => _changeSort(field: field),
+                onAscendingChanged: (value) => _changeSort(ascending: value),
               ),
             ],
           ),
