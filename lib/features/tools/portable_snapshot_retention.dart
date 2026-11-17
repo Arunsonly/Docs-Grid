@@ -30,14 +30,18 @@ class PortableSnapshotRetention {
     Set<String> protectedUris = const {},
   }) {
     final sorted = [...points]
-      ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+      ..sort((a, b) => b.createdAt.compareTo(a.createdAt) != 0
+        ? b.createdAt.compareTo(a.createdAt) : a.uri.compareTo(b.uri));
     final keep = <String>{...protectedUris};
     for (final point in sorted.take(recent < 2 ? 2 : recent)) {
       keep.add(point.uri);
     }
     // Protect the most useful historical recovery point against an empty reset.
     final useful = [...sorted]
-      ..sort((a, b) => b.documentCount.compareTo(a.documentCount));
+      ..sort((a, b) => b.documentCount.compareTo(a.documentCount) != 0
+        ? b.documentCount.compareTo(a.documentCount)
+        : (b.createdAt.compareTo(a.createdAt) != 0
+            ? b.createdAt.compareTo(a.createdAt) : a.uri.compareTo(b.uri)));
     for (final point in useful.take(2)) {
       keep.add(point.uri);
     }

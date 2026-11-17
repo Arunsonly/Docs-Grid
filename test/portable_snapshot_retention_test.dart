@@ -18,7 +18,7 @@ void main() {
     final kept = policy.keep(points, now);
     for (var i = 0; i < 6; i++) { expect(kept, contains('snapshot-${i * 12}')); }
     expect(kept.length, lessThan(points.length));
-    expect(kept, contains('snapshot-168'));
+    expect(kept, contains('snapshot-216'));
     expect(policy.keep(points.reversed.toList(), now), kept);
   });
   test('future clocks and active restore are protected', () {

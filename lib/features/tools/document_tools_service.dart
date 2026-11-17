@@ -73,8 +73,12 @@ enum BackupRestoreSection {
 /// Local-only utilities for indexing, scanning, sharing and portable backups.
 /// This service never uploads document contents to a remote server.
 class DocumentToolsService {
-  DocumentToolsService({AppDatabase? database})
-      : _database = database ?? AppDatabase.instance;
+  DocumentToolsService({AppDatabase? database,
+    @visibleForTesting Future<Map<String, String>> Function()? snapshotLocations,
+  }) : _database = database ?? AppDatabase.instance,
+       _snapshotLocations = snapshotLocations;
+
+  final Future<Map<String, String>> Function()? _snapshotLocations;
 
   final AppDatabase _database;
   static const _uuid = Uuid();
@@ -1392,9 +1396,6 @@ Future<int?> _restoreBackupLocked(
     final manifest = backup.manifest;
     final rowsByTable = backup.rowsByTable;
     final folderRows = rowsByTable['folders']!;
-    final folderRowsById = <String, Map<String, Object?>>{
-      for (final row in folderRows) row['id'] as String: row,
-    };
     final documentsById = <String, Map<String, Object?>>{
       for (final row in rowsByTable['documents']!) row['id'] as String: row,
     };
@@ -1416,36 +1417,25 @@ Future<int?> _restoreBackupLocked(
       for (final row in existingFolders) row['id'] as String: row,
     };
     final existingFolderIdsByPath = <String, String>{};
-    String existingFolderPath(String id, Set<String> visiting) {
-      if (!visiting.add(id)) throw StateError('Existing folder hierarchy contains a cycle.');
-      final row = existingFolderRowsById[id];
-      if (row == null) throw StateError('Existing folder hierarchy contains a missing parent.');
-      final parentId = row['parent_id'] as String?;
-      final name = row['name'] as String;
-      return parentId == null
-          ? name
-          : '${existingFolderPath(parentId, visiting)}/$name';
-    }
-    for (final row in existingFolders) {
+    final livePaths = <String, String>{};
+    for (final row in BackupFolderGraphValidator.parentFirst(existingFolders)) {
       final id = row['id'] as String;
-      final path = existingFolderPath(id, <String>{}).toLowerCase();
+      final parent = row['parent_id'] as String?;
+      final path = (parent == null ? row['name'] as String
+          : '${livePaths[parent]}/${row['name']}').toLowerCase();
       if (existingFolderIdsByPath.containsKey(path)) {
-        throw StateError('Folder conflict: multiple active folders at $path. Cancel restore and resolve the mapping first.');
+        throw StateError('Folder conflict: multiple active folders at $path.');
       }
+      livePaths[id] = path;
       existingFolderIdsByPath[path] = id;
     }
     final backupFolderPaths = <String, String>{};
-    String backupFolderPath(String id) {
-      final known = backupFolderPaths[id];
-      if (known != null) return known;
-      final row = folderRowsById[id];
-      if (row == null) throw StateError('Backup contains an unknown folder reference.');
-      final parentId = row['parent_id'] as String?;
-      final name = row['name'] as String;
-      final path = parentId == null ? name : '${backupFolderPath(parentId)}/$name';
-      backupFolderPaths[id] = path;
-      return path;
+    for (final row in BackupFolderGraphValidator.parentFirst(folderRows)) {
+      final parent = row['parent_id'] as String?;
+      backupFolderPaths[row['id'] as String] = parent == null
+          ? row['name'] as String : '${backupFolderPaths[parent]}/${row['name']}';
     }
+    String backupFolderPath(String id) => backupFolderPaths[id]!;
     final folderIdMap = <String, String>{};
     final matchedFolderIds = <String>{};
     for (final row in BackupFolderGraphValidator.parentFirst(folderRows)) {
@@ -1710,6 +1700,21 @@ Future<int?> _restoreBackupLocked(
         restoredPaths[id] = destination.path;
       }
 
+      for (final row in rowsByTable['documents']!) {
+        final id = row['id'] as String;
+        final uri = duplicateDocumentIds.contains(id)
+            ? existingDocuments.firstWhere((live) => live['id'] == documentIdMap[id])['storage_uri'] as String
+            : restoredPaths[id];
+        if (uri == null) continue; // Explicit database-only missing reference.
+        final hash = uri.startsWith('content://')
+            ? await StorageLocationService.instance.sha256Pdf(uri)
+            : (await sha256.bind(File(uri.startsWith('file://')
+                ? Uri.parse(uri).toFilePath() : uri).openRead()).first).toString();
+        if (hash != row['sha256']) throw StateError('PDF changed during restore: ${row['name']}');
+      }
+      for (final path in folderPaths.values) {
+        await Directory(path).list(followLinks: false).drain<void>();
+      }
       await writeJournal('filesVerified');
       final restoredReminderRows = <Map<String, Object?>>[];
       await db.transaction((txn) async {
@@ -1952,6 +1957,18 @@ Future<int?> _restoreBackupLocked(
           if (pending >= 500) await flushBatch();
         }
         await flushBatch();
+        if ((await txn.rawQuery('PRAGMA foreign_key_check')).isNotEmpty) {
+          throw StateError('Restored database contains inconsistent references.');
+        }
+        for (final entry in folderIdMap.entries) {
+          final actual = (await txn.query('folders',
+              where: 'id = ?', whereArgs: [entry.value])).single;
+          final expected = Platform.isAndroid
+              ? Uri.file(folderPath(entry.key)).toString() : folderPath(entry.key);
+          if (actual['storage_uri_or_relative_path'] != expected) {
+            throw StateError('Restored folder mapping did not verify.');
+          }
+        }
       });
       databaseCommitted = true;
       try { await writeJournal('committed'); } catch (_) { /* DB is authoritative. */ }
@@ -1983,7 +2000,9 @@ Future<int?> _restoreBackupLocked(
             'backupId': manifest['backupId'],
             'backupCreatedAt': manifest['createdAt'],
             'completedAtUtc': DateTime.now().toUtc().toIso8601String(),
-            'pdfPayloadsRestored': restoredPaths.length,
+            'pdfPayloadsRestored': createdFiles.length,
+            'verifiedPdfsReused': restoredPaths.length - createdFiles.length + duplicateDocumentIds.length,
+            'needsRelinking': preview['needsRelinking'],
             'documentsInArchive': rowsByTable['documents']!.length,
             'foldersInArchive': rowsByTable['folders']!.length,
             'categoriesInArchive': rowsByTable['categories']!.length,
@@ -2027,7 +2046,8 @@ Future<int?> _restoreBackupLocked(
 
   Future<String> _createPortableMetadataSnapshotLocked() async {
     await StorageMigrationGate.waitUntilReady();
-    final locations = await StorageLocationService.instance.portableDataLocationsIfAvailable();
+    final locations = await (_snapshotLocations?.call() ??
+        StorageLocationService.instance.portableDataLocationsIfAvailable());
     if (locations['databaseUri'] == null) {
       throw StateError('Portable Database folder is not available. Enable storage access or select an existing recovery tree.');
     }
@@ -2263,6 +2283,8 @@ Future<int?> _restoreBackupLocked(
       try {
         final uri = entry['uri'] as String;
         final verified = await _readVerifiedSnapshot(uri);
+        PortableSnapshotRowsValidator.validate(
+          verified['rows'] as Map<String, List<Map<String, Object?>>>);
         final raw = jsonDecode(verified['manifestText'] as String) as Map;
         // Missing ownership/time data in legacy snapshots means retain, not delete.
         if (raw['app'] != 'DocsGrid' || raw['createdAtUtc'] is! String ||

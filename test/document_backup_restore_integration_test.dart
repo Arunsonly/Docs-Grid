@@ -198,6 +198,7 @@ void main() {
 
   tearDown(() async {
     messenger.setMockMethodCallHandler(pathChannel, null);
+    messenger.setMockMethodCallHandler(const MethodChannel('docsgrid/storage'), null);
     await db.close();
     if (await temp.exists()) await temp.delete(recursive: true);
   });
@@ -280,6 +281,84 @@ void main() {
     expect(await service.restoreBackup(backup, confirm: (_) async => true), 1);
     expect(await pdf.readAsString(), '%PDF-1.7 original protected');
     expect(await original.list().length, 2);
+  });
+
+  Future<Directory> mockSnapshotStorage({bool corruptRead = false,
+      Future<void> Function()? duringWrite}) async {
+    final root = Directory('${temp.path}/snapshots');
+    await root.create();
+    var changed = false;
+    messenger.setMockMethodCallHandler(const MethodChannel('docsgrid/storage'), (call) async {
+      final args = Map<String, dynamic>.from(call.arguments as Map);
+      switch (call.method) {
+        case 'createDirectory':
+          final directory = Directory('${Uri.parse(args['parentUri'] as String).toFilePath()}/${args['name']}');
+          await directory.create();
+          return directory.uri.toString();
+        case 'writeTextFile':
+          final file = File('${Uri.parse(args['parentUri'] as String).toFilePath()}/${args['name']}');
+          await file.writeAsString(args['contents'] as String);
+          if (!changed && duringWrite != null) { changed = true; await duringWrite(); }
+          return file.uri.toString();
+        case 'readTextFile':
+          final file = File.fromUri(Uri.parse(args['uri'] as String));
+          if (corruptRead && file.path.endsWith('folders.json')) return 'corrupt';
+          return file.readAsString();
+        case 'listDirectory':
+          final directory = Directory.fromUri(Uri.parse(args['uri'] as String));
+          return [for (final file in await directory.list().toList()) {
+            'uri': file.uri.toString(), 'name': file.uri.pathSegments.where((s) => s.isNotEmpty).last,
+            'isDirectory': file is Directory,
+          }];
+      }
+      throw MissingPluginException('Unexpected snapshot method: ${call.method}');
+    });
+    service = DocumentToolsService(database: AppDatabase.forTesting(() async => db),
+      snapshotLocations: () async => {'databaseUri': root.uri.toString()});
+    return root;
+  }
+
+  test('snapshot readback verified and unchanged revision creates no second directory', () async {
+    final root = await mockSnapshotStorage();
+    final first = await service.createPortableMetadataSnapshot();
+    expect(await service.createPortableMetadataSnapshot(), first);
+    expect(await root.list().length, 1);
+    expect(await AppDatabase.forTesting(() async => db).isPortableSnapshotDirty(), isFalse);
+  });
+
+  test('snapshot verification failure preserves dirty revision and older content', () async {
+    final root = await mockSnapshotStorage(corruptRead: true);
+    final unknown = File('${root.path}/user-notes.txt');
+    await unknown.writeAsString('keep');
+    await expectLater(service.createPortableMetadataSnapshot(), throwsA(isA<StateError>()));
+    expect(await AppDatabase.forTesting(() async => db).isPortableSnapshotDirty(), isTrue);
+    expect(await unknown.readAsString(), 'keep');
+  });
+
+  test('database write during snapshot stays dirty for subsequent capture', () async {
+    await mockSnapshotStorage(duringWrite: () async {
+      await db.insert('folders', {'id': 'concurrent', 'name': 'Later',
+        'created_at': '2026-01-01', 'updated_at': '2026-01-01'});
+    });
+    await service.createPortableMetadataSnapshot();
+    expect(await AppDatabase.forTesting(() async => db).isPortableSnapshotDirty(), isTrue);
+    await service.createPortableMetadataSnapshot();
+    expect(await AppDatabase.forTesting(() async => db).isPortableSnapshotDirty(), isFalse);
+  });
+
+  test('verified retention prunes only owned complete snapshots', () async {
+    final root = await mockSnapshotStorage();
+    final unknown = Directory('${root.path}/snapshot_unknown');
+    await unknown.create();
+    await File('${unknown.path}/keep.pdf').writeAsString('user content');
+    for (var i = 0; i < 10; i++) {
+      await db.insert('folders', {'id': 'folder-$i', 'name': 'Folder $i',
+        'created_at': '2026-01-01', 'updated_at': '2026-01-01'});
+      await service.createPortableMetadataSnapshot();
+    }
+    expect(await root.list().length, lessThanOrEqualTo(9));
+    expect(await File('${unknown.path}/keep.pdf').readAsString(), 'user content');
+    expect(DocumentToolsService.snapshotDiagnostics['removedSnapshots'], greaterThan(0));
   });
 
   test('schema upgrade creates the Smart Collections table and index', () async {
