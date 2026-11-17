@@ -24,6 +24,7 @@ Future<Database> _database() async {
   await db.execute('''
     CREATE TABLE documents (
       id TEXT PRIMARY KEY,
+      name TEXT,
       folder_id TEXT,
       storage_uri TEXT,
       sha256 TEXT,
