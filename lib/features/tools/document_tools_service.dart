@@ -1473,10 +1473,18 @@ Future<int?> _restoreBackupLocked(
     }
     final existingDocuments = await db.query('documents');
     final existingDocumentsById = {for (final row in existingDocuments) row['id'] as String: row};
-    final existingHashes = existingDocuments.map((row) => row['sha256']).toSet();
+    // Independently managed documents may contain identical PDF bytes.
     final existingDocumentIds = existingDocuments.map((row) => row['id'] as String).toSet();
-    final verifiedPathsByHash = <String, String>{};
     final verifiedDocumentIds = <String>{};
+    final ownedStoragePaths = <String>{
+      for (final row in existingDocuments)
+        if (row['storage_uri'] is String &&
+            !(row['storage_uri'] as String).startsWith('missing://') &&
+            !(row['storage_uri'] as String).startsWith('content://'))
+          p.normalize((row['storage_uri'] as String).startsWith('file://')
+              ? Uri.parse(row['storage_uri'] as String).toFilePath()
+              : row['storage_uri'] as String),
+    };
     for (final row in existingDocuments) {
       final digest = row['sha256'] as String?;
       final uri = row['storage_uri'] as String?;
@@ -1488,20 +1496,14 @@ Future<int?> _restoreBackupLocked(
                 ? Uri.parse(uri).toFilePath() : uri).openRead()).first).toString();
         if (actual == digest) {
           verifiedDocumentIds.add(row['id'] as String);
-          verifiedPathsByHash.putIfAbsent(digest, () => uri);
+          // Keep this verified path owned by its original logical document.
         }
       } catch (_) { /* Missing bytes are never treated as restored. */ }
     }
-    final sourceHashes = <String>{};
-    for (final row in rowsByTable['documents']!) {
-      final hash = row['sha256'] as String?;
-      if (hash != null && hash.isNotEmpty && !sourceHashes.add(hash)) {
-        throw StateError('Document conflict: multiple logical references share PDF bytes in this archive. No references were merged.');
-      }
-    }
+    // The archive may contain independent logical documents with identical
+    // PDF bytes. Preserve both identities and independent physical paths.
     final documentIdMap = <String, String>{};
     final duplicateDocumentIds = <String>{};
-    final relinkedPaths = <String, String>{};
     final repairDocumentIds = <String>{};
     for (final row in rowsByTable['documents']!) {
       final oldId = row['id'] as String;
@@ -1530,17 +1532,9 @@ Future<int?> _restoreBackupLocked(
             throw StateError('Document identity conflict: ${row['name']}');
           }
         }
-        final verified = verifiedPathsByHash[digest];
-        if (verified != null) {
-          // Sharing one physical file across independent records is unsafe with
-          // the current permanent-delete/move semantics. Require resolution;
-          // never collapse logical relationships just because hashes match.
-          if (!replaceExisting && match == null) {
-            throw StateError('Document conflict: ${row['name']} has matching bytes but a different logical record. Existing references are preserved; cancel and resolve before importing.');
-          }
-          relinkedPaths[oldId] = verified;
-        }
       }
+    }
+    // A ZIP is untrusted input.      }
     }
     // A ZIP is untrusted input. Validate parent links before creating any
     // directories, and never use imported IDs as filesystem path segments.
@@ -1585,7 +1579,7 @@ Future<int?> _restoreBackupLocked(
     final fileRows = rowsByTable['documents']!.isEmpty
         ? <Map<String, dynamic>>[]
         : (manifest['files'] as List<dynamic>).cast<Map<String, dynamic>>();
-    final restoredPaths = <String, String>{...relinkedPaths};
+    final restoredPaths = <String, String>{};
     final folderPaths = <String, String>{};
     final createdFiles = <String>[];
     final pendingFiles = <String>[];
@@ -1625,25 +1619,36 @@ Future<int?> _restoreBackupLocked(
       folderPaths[id] = path;
     }
     String folderPath(String id) => folderPaths[id]!;
-    // Hash surviving managed PDFs once, including files whose DB rows were lost.
+    // Reuse an already-present PDF only when it belongs to the expected
+    // directory and is not owned by another live logical record. Sharing one
+    // physical path between distinct records would break move/permanent-delete.
+    final availableByFolderAndHash = <String, List<String>>{};
     for (final directory in <String>{unfiledRoot.path, ...folderPaths.values}) {
       if (!await Directory(directory).exists()) continue;
       await for (final entry in Directory(directory).list(followLinks: false)) {
         if (entry is! File || !entry.path.toLowerCase().endsWith('.pdf')) continue;
+        final path = p.normalize(entry.path);
+        if (!replaceExisting && ownedStoragePaths.contains(path)) continue;
         final digest = (await sha256.bind(entry.openRead()).first).toString();
-        verifiedPathsByHash.putIfAbsent(digest, () => entry.path);
+        (availableByFolderAndHash['${p.normalize(directory)}|$digest'] ??= <String>[])
+            .add(path);
       }
     }
+    final assignedPhysicalPaths = <String>{};
     for (final row in rowsByTable['documents']!) {
       final id = row['id'] as String;
       if (duplicateDocumentIds.contains(id)) continue;
-      final path = verifiedPathsByHash[row['sha256']];
-      if (path != null) {
-        if (!replaceExisting && !repairDocumentIds.contains(id) &&
-            existingHashes.contains(row['sha256'])) {
-          throw StateError('Document conflict: ${row['name']} has another existing logical reference.');
-        }
-        restoredPaths.putIfAbsent(id, () => path);
+      final folderId = row['folder_id'] as String?;
+      final targetDirectory = p.normalize(
+          folderId == null ? unfiledRoot.path : folderPath(folderId));
+      final hash = row['sha256'] as String?;
+      if (hash == null) continue;
+      final candidates = availableByFolderAndHash['$targetDirectory|$hash'] ??
+          const <String>[];
+      for (final candidate in candidates) {
+        if (!assignedPhysicalPaths.add(candidate)) continue;
+        restoredPaths[id] = candidate;
+        break;
       }
     }
     final preview = <String, int>{
