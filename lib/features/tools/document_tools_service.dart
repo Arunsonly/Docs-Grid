@@ -1852,7 +1852,27 @@ class DocumentToolsService {
   /// DocsGrid/System/Database folder. PDF bytes remain in the library folder;
   /// documents.json retains their relative paths and SHA-256 values.
   Future<String> createPortableMetadataSnapshot() =>
-      _withRecoveryLock(_createPortableMetadataSnapshotLocked);
+      _withRecoveryLock(() async {
+        try {
+          final name = await _createPortableMetadataSnapshotLocked();
+          snapshotDiagnostics = {
+            ...snapshotDiagnostics,
+            'lastCreationResult': 'verified',
+            'lastSnapshotName': name,
+            'creationError': null,
+          };
+          return name;
+        } catch (error) {
+          // Diagnostics must not claim an earlier success was the latest
+          // result when this creation attempt failed.
+          snapshotDiagnostics = {
+            ...snapshotDiagnostics,
+            'lastCreationResult': 'failed',
+            'creationErrorType': error.runtimeType.toString(),
+          };
+          rethrow;
+        }
+      });
 
   Future<String> _createPortableMetadataSnapshotLocked() async {
     await StorageMigrationGate.waitUntilReady();
