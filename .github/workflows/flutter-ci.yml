@@ -219,7 +219,29 @@ jobs:
                   </intent-filter>
               '''
               s = s.replace('</activity>', share_filter + '\n            </activity>', 1)
+          # Share only this explicitly scoped cache directory with chosen
+          # Android PDF readers. Never publish the whole app cache.
+          provider = '''
+              <provider
+                  android:name="androidx.core.content.FileProvider"
+                  android:authorities="${applicationId}.docsgrid_grid_pdf"
+                  android:exported="false"
+                  android:grantUriPermissions="true">
+                  <meta-data
+                      android:name="android.support.FILE_PROVIDER_PATHS"
+                      android:resource="@xml/docsgrid_grid_pdf_paths" />
+              </provider>
+          '''
+          if 'docsgrid_grid_pdf_paths' not in s:
+              s = s.replace('</application>', provider + '\n</application>', 1)
           p.write_text(s)
+          paths = Path('android/app/src/main/res/xml/docsgrid_grid_pdf_paths.xml')
+          paths.parent.mkdir(parents=True, exist_ok=True)
+          paths.write_text('''<?xml version="1.0" encoding="utf-8"?>
+          <paths xmlns:android="http://schemas.android.com/apk/res/android">
+              <cache-path name="grid_pdf" path="docsgrid_grid_pdf/" />
+          </paths>
+          ''')
           PY
       - name: Install Android SAF host integration
         if: runner.os == 'Linux'
