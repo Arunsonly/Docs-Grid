@@ -57,7 +57,7 @@ Map<String, List<Map<String, Object?>>> _backupRows({
   }] : <Map<String, Object?>>[],
 };
 
-Future<File> _makeBackup(Directory directory, {bool withReminder = false, bool withFolder = false, bool withCollection = false, bool deletedFolder = false, int documentCount = 1}) async {
+Future<File> _makeBackup(Directory directory, {bool withReminder = false, bool withFolder = false, bool withCollection = false, bool deletedFolder = false, int documentCount = 1, bool identicalPayloads = false}) async {
   final archive = Archive();
   final rows = _backupRows(withReminder: withReminder, withFolder: withFolder, withCollection: withCollection);
   if (deletedFolder) {
@@ -68,7 +68,7 @@ Future<File> _makeBackup(Directory directory, {bool withReminder = false, bool w
   final payloads = <String, Uint8List>{};
   rows['documents'] = List.generate(documentCount, (index) {
     final id = index == 0 ? 'document-1' : 'large-document-$index';
-    final bytes = index == 0 ? _pdfBytes : Uint8List.fromList(utf8.encode('%PDF-1.7 document $index'));
+    final bytes = (index == 0 || identicalPayloads) ? _pdfBytes : Uint8List.fromList(utf8.encode('%PDF-1.7 document $index'));
     payloads[id] = bytes;
     return {...documentTemplate, 'id': id, 'sha256': sha256.convert(bytes).toString(),
       'size_bytes': bytes.length};
@@ -253,6 +253,36 @@ void main() {
     expect(await original.list().length, 1);
   });
 
+  test('independent records with identical PDF bytes keep distinct physical files', () async {
+    final backup = await _makeBackup(temp, withFolder: true,
+        documentCount: 2, identicalPayloads: true);
+    expect(await service.restoreBackup(backup, confirm: (_) async => true), 2);
+    final documents = await db.query('documents');
+    expect(documents, hasLength(2));
+    final physicalPaths = documents.map((row) => row['storage_uri'] as String).toSet();
+    expect(physicalPaths, hasLength(2),
+        reason: 'Move or delete of one document must never invalidate another.');
+    for (final path in physicalPaths) {
+      expect(await File(path).exists(), isTrue);
+      expect((await sha256.bind(File(path).openRead()).first).toString(), _pdfHash);
+    }
+    expect(await service.restoreBackup(backup, confirm: (_) async => true), 0);
+    expect(await db.query('documents'), hasLength(2));
+  });
+
+  test('existing same-hash document never shares its physical file with another record', () async {
+    final existing = File('${temp.path}/existing_same_content.pdf');
+    await existing.writeAsBytes(_pdfBytes);
+    await _insertExistingDocument(db, id: 'other-document', pdfFile: existing);
+    final backup = await _makeBackup(temp, withFolder: true);
+    expect(await service.restoreBackup(backup, confirm: (_) async => true), 1);
+    final all = await db.query('documents');
+    expect(all, hasLength(2));
+    final restored = all.singleWhere((row) => row['id'] == 'document-1');
+    expect(restored['storage_uri'], isNot(existing.path));
+    expect(await existing.readAsBytes(), orderedEquals(_pdfBytes));
+  });
+
   test('same path with different identity fails without touching original', () async {
     await db.insert('folders', {
       ..._backupRows(withFolder: true)['folders']!.single,
@@ -340,6 +370,16 @@ void main() {
     expect(await service.createPortableMetadataSnapshot(), first);
     expect(await root.list().length, 1);
     expect(await AppDatabase.forTesting(() async => db).isPortableSnapshotDirty(), isFalse);
+  });
+
+  test('missing published snapshot forces a fresh verified recovery point', () async {
+    final root = await mockSnapshotStorage();
+    final previous = await service.createPortableMetadataSnapshot();
+    await Directory('${root.path}/$previous').delete(recursive: true);
+    final replacement = await service.createPortableMetadataSnapshot();
+    expect(replacement, isNot(previous));
+    expect(await Directory('${root.path}/$replacement').exists(), isTrue);
+    expect(await service.createPortableMetadataSnapshot(), replacement);
   });
 
   test('snapshot verification failure preserves dirty revision and older content', () async {
