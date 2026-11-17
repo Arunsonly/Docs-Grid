@@ -1898,6 +1898,53 @@ class DocumentRepository {
     return rows.map(DocumentRecord.fromMap).toList();
   }
 
+
+  /// Empty Phone folders containing only recycled PDFs stay visible in the
+  /// Phone browser until every archived PDF is restored/permanently deleted.
+  /// These are *directory placeholders*, not phantom PDF copies or Grid
+  /// folders; the browser presents an empty folder with a Recycle Bin count.
+  Future<List<Map<String, Object?>>> phoneTrashFolderEntries() async {
+    final db = await _database.database;
+    final rows = await db.query(
+      'documents',
+      columns: ['metadata_json'],
+      where: 'source = ? AND deleted_at IS NOT NULL',
+      whereArgs: ['phone_storage_recycle_bin'],
+    );
+    final counts = <String, int>{};
+    for (final row in rows) {
+      try {
+        final raw = row['metadata_json'];
+        final decoded = raw is String ? jsonDecode(raw) : null;
+        if (decoded is! Map) continue;
+        final origin = PhoneTrashOrigin.fromMetadata(
+            Map<String, Object?>.from(decoded));
+        if (origin == null) continue;
+        origin.relativeFolders; // Refuse unsafe older metadata.
+        final folder = origin.folderPath.replaceAll('\\', '/');
+        counts[folder] = (counts[folder] ?? 0) + 1;
+      } catch (_) {
+        // Never invent folder locations when legacy metadata is incomplete.
+      }
+    }
+    return [
+      for (final entry in counts.entries)
+        <String, Object?>{
+          'name': entry.key.split('/').last,
+          'uri': '',
+          'isDirectory': true,
+          'isPending': true,
+          'path': entry.key,
+          'folderPath': entry.key.contains('/')
+              ? entry.key.substring(0, entry.key.lastIndexOf('/'))
+              : '',
+          'pdfCount': 0,
+          'sizeBytes': 0,
+          'trashPdfCount': entry.value,
+        },
+    ];
+  }
+
   /// Counts only individually recycled PDFs. Folder-grouped PDFs are counted
   /// by their visible folder root and are not duplicated in the PDF section.
   Future<int> trashCount() async {
