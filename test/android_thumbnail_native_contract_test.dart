@@ -15,6 +15,8 @@ void main() {
     final collections = File(
       'lib/features/documents/presentation/smart_collections_screen.dart',
     ).readAsStringSync();
+    final tools = File('lib/features/tools/document_tools_screen.dart')
+        .readAsStringSync();
 
     expect(native, contains('FileProvider.getUriForFile('));
     expect(native, contains('ClipData.newUri(contentResolver, "PDF", viewUri)'));
@@ -27,7 +29,7 @@ void main() {
     expect(storage, contains("await copyPdfToPath("));
     expect(storage, contains("'gridPdf': true"));
     expect(storage, contains("if (gridPdf && Platform.isAndroid)"));
-    for (final screen in [folders, documents, collections]) {
+    for (final screen in [folders, documents, collections, tools]) {
       expect(screen, contains('gridPdf: true'));
       expect(screen, isNot(contains('DocumentPdfViewerScreen(')));
     }
