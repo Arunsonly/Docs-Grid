@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:shared_preferences/shared_preferences.dart';
@@ -9,14 +10,216 @@ class PhoneRecentHistory {
   const PhoneRecentHistory._();
 
   static const storageKey = 'docsgrid_phone_recent_v1';
+  static const observedFilesKey = 'docsgrid_phone_scanned_pdf_uris_v1';
+  static Future<void> _operationsTail = Future<void>.value();
+
+  // MediaStore notifications, Open, Move and Clear can arrive simultaneously.
+  // Serialize preference read/modify/write to avoid undoing a recent action.
+  static Future<T> _exclusive<T>(Future<T> Function() action) async {
+    final previous = _operationsTail;
+    final done = Completer<void>();
+    _operationsTail = done.future;
+    await previous;
+    try {
+      return await action();
+    } finally {
+      done.complete();
+    }
+  }
+
+
+  /// Remember the result of a *completed* Phone storage scan. The first scan
+  /// of each root/MediaStore volume establishes its baseline without treating
+  /// thousands of existing PDFs as newly Added.
+  ///
+  /// On later completed scans, newly observed external PDF URIs are added to
+  /// Phone Recent. Each independently verified scope is updated separately:
+  /// a disconnected SD card, revoked SAF grant, or partial scan cannot erase
+  /// its prior baseline or manufacture "new" entries after reconnection.
+  ///
+  /// The method never changes or deletes the physical PDF.
+  static Future<int> observeCompletedScans(
+    Map<String, List<Map<String, Object?>>> scannedScopes, {
+    DateTime? observedAt,
+  }) => _exclusive(() async {
+    final prefs = await SharedPreferences.getInstance();
+    return observeCompletedScansFromPreferences(
+      prefs, scannedScopes, observedAt: observedAt,
+    );
+  });
+
+  static Future<int> observeCompletedScansFromPreferences(
+    SharedPreferences prefs,
+    Map<String, List<Map<String, Object?>>> scannedScopes, {
+    DateTime? observedAt,
+  }) async {
+    if (scannedScopes.isEmpty) return 0;
+    final now = (observedAt ?? DateTime.now()).toUtc();
+    final previous = <String, Set<String>>{};
+    try {
+      final raw = prefs.getString(observedFilesKey);
+      final parsed = raw == null ? null : jsonDecode(raw);
+      if (parsed is Map) {
+        for (final entry in parsed.entries) {
+          if (entry.key is String && entry.value is List) {
+            previous[entry.key as String] =
+                (entry.value as List).whereType<String>().toSet();
+          }
+        }
+      }
+    } catch (_) {
+      // Damaged inventory is not proof that every file is new. Start a safe
+      // baseline from the next completed scan instead of flooding Recent.
+    }
+
+    final next = <String, Set<String>>{
+      for (final entry in previous.entries) entry.key: entry.value,
+    };
+    final discovered = <Map<String, Object?>>[];
+    final discoveredUris = <String>{};
+
+    for (final entry in scannedScopes.entries) {
+      final scope = entry.key;
+      if (!(scope.startsWith('media:') || scope.startsWith('root:'))) continue;
+      final available = <String>{};
+      final validFiles = <Map<String, Object?>>[];
+      for (final file in entry.value) {
+        if (file['isDirectory'] == true ||
+            file['isInaccessible'] == true ||
+            file['isInaccessibleSummary'] == true) continue;
+        final uri = file['uri'];
+        final name = file['name'];
+        if (uri is! String || uri.isEmpty ||
+            name is! String || !name.toLowerCase().endsWith('.pdf')) continue;
+        // Grid, backups and DocsGrid recycle folders are not Phone PDFs.
+        final location = (file['folderPath'] ?? file['path'] ?? '')
+            .toString().replaceAll('\\', '/').toLowerCase();
+        if (location.contains('android/media/com.docsgrid/') ||
+            location.contains('android/media/docsgrid/')) continue;
+        available.add(uri);
+        validFiles.add(file);
+      }
+
+      final old = previous[scope];
+      if (old != null) {
+        for (final file in validFiles) {
+          final uri = file['uri'] as String;
+          if (!old.contains(uri) && discoveredUris.add(uri)) {
+            discovered.add(file);
+          }
+        }
+      }
+      // A new scope is baseline-only; a previously seen scope accepts
+      // removals so a later re-added PDF can be recognized as Added.
+      next[scope] = available;
+    }
+
+    // Save the inventory even if no new file exists, so subsequent scans can
+    // detect new PDFs. Limit the displayed Recent list, NOT the inventory.
+    if (discovered.isNotEmpty) {
+      discovered.sort((a, b) {
+        final dateA = (a['lastModified'] as num?)?.toInt() ?? 0;
+        final dateB = (b['lastModified'] as num?)?.toInt() ?? 0;
+        return dateB.compareTo(dateA);
+      });
+      final previousRecent = prefs.getStringList(storageKey) ?? <String>[];
+      final existingRecentUris = <String>{};
+      for (final raw in previousRecent) {
+        try {
+          final value = jsonDecode(raw);
+          if (value is Map && value['uri'] is String) {
+            existingRecentUris.add(value['uri'] as String);
+          }
+        } catch (_) {
+          // Preserve unknown historic entries, never classify them as PDFs.
+        }
+      }
+      final added = <String>[];
+      for (final file in discovered) {
+        final uri = file['uri'] as String;
+        if (existingRecentUris.add(uri)) {
+          added.add(jsonEncode({
+            'uri': uri,
+            'name': file['name'],
+            'sizeBytes': (file['sizeBytes'] as num?)?.toInt() ?? 0,
+            'addedAt': now.toIso8601String(),
+          }));
+        }
+        if (added.length == 20) break;
+      }
+      if (added.isNotEmpty) {
+        final nextRecent = [...added, ...previousRecent].take(20).toList();
+        if (!await prefs.setStringList(storageKey, nextRecent)) {
+          throw StateError('Could not save new Phone Recent PDF entries.');
+        }
+      }
+    }
+    final encoded = <String, List<String>>{
+      for (final entry in next.entries)
+        entry.key: entry.value.toList(growable: false)..sort(),
+    };
+    if (!await prefs.setString(observedFilesKey, jsonEncode(encoded))) {
+      throw StateError('Could not save Phone storage scan baseline.');
+    }
+    return discovered.length;
+  }
+
+  /// An opened Phone PDF takes precedence over its earlier Added entry.
+  /// Both actions identify the same URI, so Recent never duplicates a file.
+  static Future<void> recordOpened(
+    String uri,
+    String name, {
+    int sizeBytes = 0,
+    DateTime? openedAt,
+  }) => _exclusive(() async {
+    final prefs = await SharedPreferences.getInstance();
+    final saved = prefs.getStringList(storageKey) ?? const <String>[];
+    final kept = <String>[];
+    Map<String, Object?>? prior;
+    for (final raw in saved) {
+      try {
+        final decoded = jsonDecode(raw);
+        if (decoded is Map && decoded['uri'] == uri) {
+          prior ??= Map<String, Object?>.from(decoded);
+          continue;
+        }
+      } catch (_) {
+        // Preserve older unknown entries.
+      }
+      kept.add(raw);
+    }
+    final active = <String, Object?>{
+      ...?prior,
+      'uri': uri,
+      'name': name,
+      'sizeBytes': sizeBytes > 0
+          ? sizeBytes : (prior?['sizeBytes'] as num?)?.toInt() ?? 0,
+      'openedAt': (openedAt ?? DateTime.now()).toUtc().toIso8601String(),
+    };
+    if (!await prefs.setStringList(
+        storageKey, [jsonEncode(active), ...kept].take(20).toList())) {
+      throw StateError('Could not save the opened Phone PDF.');
+    }
+  });
+
+  /// Clearing Recent is not clearing the scan inventory. Existing Phone PDFs
+  /// must not all reappear as new on the next foreground scan.
+  static Future<void> clearRecent() => _exclusive(() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (!await prefs.remove(storageKey)) {
+      throw StateError('Could not clear Phone Recent.');
+    }
+  });
 
   /// A move is considered complete only after the source was deleted by the
   /// storage provider. Remove that *exact* URI without disturbing any other
   /// recent items, including entries in older or unknown formats.
   static Future<bool> removeMovedSource(String uri) async {
     if (uri.isEmpty) return false;
-    final prefs = await SharedPreferences.getInstance();
-    return removeMovedSourceFromPreferences(prefs, uri);
+    return _exclusive(() async {
+      final prefs = await SharedPreferences.getInstance();
+      return removeMovedSourceFromPreferences(prefs, uri);
+    });
   }
 
   static Future<bool> removeMovedSourceFromPreferences(
@@ -46,9 +249,11 @@ class PhoneRecentHistory {
       Set<String> availableMediaUris, {
       required Set<String> scannedVolumes,
   }) async {
-    final prefs = await SharedPreferences.getInstance();
-    return pruneAbsentMediaStoreUrisFromPreferences(
-        prefs, availableMediaUris, scannedVolumes: scannedVolumes);
+    return _exclusive(() async {
+      final prefs = await SharedPreferences.getInstance();
+      return pruneAbsentMediaStoreUrisFromPreferences(
+          prefs, availableMediaUris, scannedVolumes: scannedVolumes);
+    });
   }
 
   static Future<int> pruneAbsentMediaStoreUrisFromPreferences(
