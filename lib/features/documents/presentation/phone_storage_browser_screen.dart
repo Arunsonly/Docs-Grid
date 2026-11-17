@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../../../core/widgets/storage_sort_controls.dart';
@@ -13,6 +15,8 @@ class PhoneStorageBrowserScreen extends StatefulWidget {
     this.onMovePdf,
     this.onRenamePdf,
     this.onSharePdf,
+    this.onToggleStarPdf,
+    this.starredUris = const <String>{},
     this.onTrashPdf,
     this.initialPath = '',
     this.embedded = false,
@@ -26,6 +30,8 @@ class PhoneStorageBrowserScreen extends StatefulWidget {
   final Future<bool> Function(String uri, String name)? onMovePdf;
   final Future<bool> Function(String uri, String name)? onRenamePdf;
   final Future<void> Function(String uri, String name)? onSharePdf;
+  final Future<void> Function(String uri, String name)? onToggleStarPdf;
+  final Set<String> starredUris;
   final Future<bool> Function(String uri, String name)? onTrashPdf;
   final String initialPath;
   final bool embedded;
@@ -42,11 +48,13 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
   late final TextEditingController _searchController;
   StorageSortField _sortField = StorageSortField.name;
   bool _sortAscending = true;
+  int _sortRevision = 0;
 
   @override
   void initState() {
     super.initState();
     _searchController = TextEditingController();
+    unawaited(_restoreSortPreference());
     _selectedFolderPath =
         widget.initialPath.isEmpty ? null : _normalizePath(widget.initialPath);
   }
@@ -55,6 +63,32 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
   void dispose() {
     _searchController.dispose();
     super.dispose();
+  }
+
+  Future<void> _restoreSortPreference() async {
+    final revision = _sortRevision;
+    final saved = await StorageSortPreference.load(StorageSortPreference.phoneKey);
+    if (!mounted || _sortRevision != revision || saved == null) return;
+    setState(() {
+      _sortField = saved.field;
+      _sortAscending = saved.ascending;
+    });
+  }
+
+  void _changeSort({StorageSortField? field, bool? ascending}) {
+    _sortRevision++;
+    setState(() {
+      if (field != null) _sortField = field;
+      if (ascending != null) _sortAscending = ascending;
+    });
+    unawaited(StorageSortPreference.save(
+      StorageSortPreference.phoneKey,
+      field: _sortField,
+      ascending: _sortAscending,
+      explicit: true,
+    ).catchError((Object _) {
+      // User's immediate in-memory selection still works if OS storage fails.
+    }));
   }
 
   String _normalizePath(String value) {
@@ -252,6 +286,10 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
       sourceChanged = await widget.onRenamePdf?.call(uri, name) ?? false;
     } else if (action == 'share') {
       await widget.onSharePdf?.call(uri, name);
+    } else if (action == 'favorite') {
+      await widget.onToggleStarPdf?.call(uri, name);
+    } else if (action == 'location') {
+      await _showFileLocation(entry);
     } else if (action == 'trash') {
       sourceChanged = await widget.onTrashPdf?.call(uri, name) ?? false;
     }
@@ -261,6 +299,36 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
       await widget.onRefresh?.call();
     } else {
       Navigator.of(context).pop();
+    }
+  }
+
+  Future<void> _showFileLocation(Map<String, Object?> entry) async {
+    final folderPath = _normalizedFolderPath(entry);
+    final original = (entry['folderPath'] ?? entry['path'] ?? '').toString();
+    final external = _normalizePath(original).startsWith('External storage');
+    final display = external
+        ? _normalizePath(original)
+        : folderPath.isEmpty ? widget.rootName : _displayPath(folderPath);
+    final openFolder = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('File Location'),
+        content: SelectableText(display),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Close'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Open folder'),
+          ),
+        ],
+      ),
+    );
+    if (openFolder == true && mounted) {
+      setState(() => _selectedFolderPath =
+          folderPath.isEmpty ? 'Internal' : folderPath);
     }
   }
 
@@ -297,9 +365,8 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
           StorageSortControls(
             field: _sortField,
             ascending: _sortAscending,
-            onFieldChanged: (field) => setState(() => _sortField = field),
-            onAscendingChanged: (value) =>
-                setState(() => _sortAscending = value),
+            onFieldChanged: (field) => _changeSort(field: field),
+            onAscendingChanged: (value) => _changeSort(ascending: value),
           ),
         ],
       ),
@@ -386,17 +453,21 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
       trailing: PopupMenuButton<String>(
         onSelected: (action) => _runPdfAction(action, entry),
         itemBuilder: (_) => [
-          if (widget.onMovePdf != null)
-            const PopupMenuItem(value: 'move', child: Text('Move to Grid')),
+          if (widget.onSharePdf != null)
+            const PopupMenuItem(value: 'share', child: Text('Share PDF')),
+          if (widget.onToggleStarPdf != null)
+            PopupMenuItem(
+              value: 'favorite',
+              child: Text(widget.starredUris.contains(uri)
+                  ? 'Remove from Star' : 'Add to Star'),
+            ),
           if (widget.onRenamePdf != null)
             const PopupMenuItem(value: 'rename', child: Text('Rename')),
-          if (widget.onSharePdf != null)
-            const PopupMenuItem(value: 'share', child: Text('Share')),
+          if (widget.onMovePdf != null)
+            const PopupMenuItem(value: 'move', child: Text('Move to Grid')),
           if (widget.onTrashPdf != null)
-            const PopupMenuItem(
-              value: 'trash',
-              child: Text('Move to Recycle Bin'),
-            ),
+            const PopupMenuItem(value: 'trash', child: Text('Delete')),
+          const PopupMenuItem(value: 'location', child: Text('File Location')),
         ],
       ),
       onTap: () => widget.onOpenPdf(
