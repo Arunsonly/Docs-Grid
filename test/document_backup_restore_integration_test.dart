@@ -5,6 +5,8 @@ import 'package:archive/archive.dart';
 import 'package:crypto/crypto.dart';
 import 'package:docs_grid/core/database/app_database.dart';
 import 'package:docs_grid/features/documents/data/document_repository.dart';
+import 'package:docs_grid/features/documents/data/phone_recent_history.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:docs_grid/features/tools/document_tools_service.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -217,6 +219,133 @@ void main() {
     messenger.setMockMethodCallHandler(const MethodChannel('docsgrid/storage'), null);
     await db.close();
     if (await temp.exists()) await temp.delete(recursive: true);
+  });
+
+
+  test('Phone PDF move deletes source; verified Grid copy appears in Grid Recent', () async {
+    const sourceUri = 'content://media/external_primary/file/1000702003';
+    final source = File('${temp.path}/10th result.pdf');
+    final contents = utf8.encode('%PDF-1.7 phone-to-grid test PDF');
+    await source.writeAsBytes(contents, flush: true);
+    SharedPreferences.setMockInitialValues({});
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList(PhoneRecentHistory.storageKey, [
+      jsonEncode({'uri': sourceUri, 'name': '10th result.pdf',
+        'openedAt': '2026-11-17T11:12:00Z'}),
+      jsonEncode({'uri': 'content://media/external_primary/file/5',
+        'name': 'Other.pdf'}),
+    ]);
+    var deleted = false;
+    messenger.setMockMethodCallHandler(const MethodChannel('docsgrid/storage'),
+        (call) async {
+      final args = Map<String, dynamic>.from(call.arguments as Map);
+      switch (call.method) {
+        case 'copyPdfToPath':
+          expect(args['sourceUri'], sourceUri);
+          await source.copy(args['destinationPath'] as String);
+          return true;
+        case 'deletePdf':
+          expect(args['uri'], sourceUri);
+          deleted = true;
+          await source.delete();
+          return true;
+        default:
+          throw MissingPluginException('Unexpected storage call: ${call.method}');
+      }
+    });
+    final repository = DocumentRepository(
+        database: AppDatabase.forTesting(() async => db));
+    final result = await repository.moveExternalPdfToGrid(
+      sourceUri: sourceUri, displayName: '10th result.pdf',
+    );
+    expect(result.added, 1);
+    expect(deleted, isTrue);
+    expect(await source.exists(), isFalse);
+    final recent = await repository.recentActivity();
+    expect(recent, hasLength(1),
+        reason: 'Newly added Grid PDFs are part of Grid Recent.');
+    final gridFile = File(recent.single.storagePath);
+    expect(await gridFile.exists(), isTrue);
+    expect(await gridFile.readAsBytes(), orderedEquals(contents));
+    expect(await PhoneRecentHistory.removeMovedSource(sourceUri), isTrue);
+    final saved = prefs.getStringList(PhoneRecentHistory.storageKey)!;
+    expect(saved, hasLength(1));
+    expect(jsonDecode(saved.single)['uri'], 'content://media/external_primary/file/5');
+  });
+
+  test('Duplicate Phone move keeps Phone original and Phone Recent untouched', () async {
+    const sourceUri = 'content://media/external_primary/file/120';
+    final source = File('${temp.path}/duplicate_policy.pdf');
+    await source.writeAsBytes(_pdfBytes);
+    final originalGrid = File('${temp.path}/original_grid.pdf');
+    await originalGrid.writeAsBytes(_pdfBytes);
+    await _insertExistingDocument(db, id: 'already-in-grid', pdfFile: originalGrid);
+    SharedPreferences.setMockInitialValues({});
+    final prefs = await SharedPreferences.getInstance();
+    final recentItem = jsonEncode({'uri': sourceUri, 'name': 'duplicate_policy.pdf'});
+    await prefs.setStringList(PhoneRecentHistory.storageKey, [recentItem]);
+    var deletes = 0;
+    messenger.setMockMethodCallHandler(const MethodChannel('docsgrid/storage'),
+        (call) async {
+      final args = Map<String, dynamic>.from(call.arguments as Map);
+      switch (call.method) {
+        case 'copyPdfToPath':
+          await source.copy(args['destinationPath'] as String);
+          return true;
+        case 'deletePdf':
+          deletes++;
+          return true;
+        default:
+          throw MissingPluginException('Unexpected storage call: ${call.method}');
+      }
+    });
+    final repository = DocumentRepository(
+        database: AppDatabase.forTesting(() async => db));
+    final result = await repository.moveExternalPdfToGrid(
+      sourceUri: sourceUri, displayName: 'duplicate_policy.pdf');
+    expect(result.added, 0);
+    expect(result.duplicates, 1);
+    expect(deletes, 0);
+    expect(await source.exists(), isTrue);
+    expect(prefs.getStringList(PhoneRecentHistory.storageKey), [recentItem]);
+    expect(await repository.recentActivity(), hasLength(1));
+  });
+
+  test('Phone source delete denial preserves Phone Recent and verified Grid copy', () async {
+    const sourceUri = 'content://media/external_primary/file/121';
+    final source = File('${temp.path}/delete_denied.pdf');
+    final contents = utf8.encode('%PDF-1.7 deletion denied');
+    await source.writeAsBytes(contents);
+    SharedPreferences.setMockInitialValues({});
+    final prefs = await SharedPreferences.getInstance();
+    final recentItem = jsonEncode({'uri': sourceUri, 'name': 'delete_denied.pdf'});
+    await prefs.setStringList(PhoneRecentHistory.storageKey, [recentItem]);
+    messenger.setMockMethodCallHandler(const MethodChannel('docsgrid/storage'),
+        (call) async {
+      final args = Map<String, dynamic>.from(call.arguments as Map);
+      switch (call.method) {
+        case 'copyPdfToPath':
+          await source.copy(args['destinationPath'] as String);
+          return true;
+        case 'deletePdf':
+          return false; // Android did not authorize deletion of this provider.
+        default:
+          throw MissingPluginException('Unexpected storage call: ${call.method}');
+      }
+    });
+    final repository = DocumentRepository(
+        database: AppDatabase.forTesting(() async => db));
+    await expectLater(
+      repository.moveExternalPdfToGrid(
+          sourceUri: sourceUri, displayName: 'delete_denied.pdf'),
+      throwsStateError,
+    );
+    expect(await source.readAsBytes(), orderedEquals(contents));
+    expect(prefs.getStringList(PhoneRecentHistory.storageKey), [recentItem]);
+    final grid = await repository.recentActivity();
+    expect(grid, hasLength(1));
+    expect(await File(grid.single.storagePath).readAsBytes(),
+        orderedEquals(contents));
   });
 
   test('verified Insurance mapping survives five restores without extra PDF copies', () async {
