@@ -99,6 +99,12 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
           'Verified existing PDFs: ${plan['verifiedPdfs']}\n'
           'New PDFs to copy: ${plan['newPdfs']}\n'
           'Needs relinking: ${plan['needsRelinking']}\n'
+          'Legacy folder mappings to repair: ${plan['legacyFolderRepairs'] ?? 0}\n'
+          'Existing legacy PDFs to copy safely: ${plan['legacyPdfsToCopy'] ?? 0}\n'
+          'Existing PDFs reused after verification: ${plan['legacyPdfsReused'] ?? 0}\n'
+          'Old Restored_ folders and their source PDFs will NOT be deleted. '
+          'Approving this preview permits verified copies and SQLite relinking '
+          'to the original folder.\n'
           'Conflicts: ${plan['conflicts']}'),
       actions: [
         TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
