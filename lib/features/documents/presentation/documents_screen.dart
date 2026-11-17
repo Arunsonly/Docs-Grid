@@ -483,6 +483,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       var mediaStoreVolumes = <String, Object?>{};
       final entries = <Map<String, Object?>>[];
       final seen = <String>{};
+      final completedRootScans = <String, List<Map<String, Object?>>>{};
 
       if (Platform.isAndroid && hasAllFilesAccess) {
         try {
@@ -494,9 +495,29 @@ class _DocumentsScreenState extends State<DocumentsScreen>
             mediaStoreVolumes =
                 Map<String, Object?>.from(index['volumes'] as Map);
             entries.addAll(indexed);
+            final completeVolumes = <String, List<Map<String, Object?>>>{
+              for (final volume in mediaStoreVolumes.keys)
+                'media:$volume': <Map<String, Object?>>[],
+            };
             for (final item in indexed) {
               final uri = item['uri'] as String? ?? '';
               if (uri.isNotEmpty) seen.add(uri);
+              final volume = item['volumeName'] as String?;
+              if (volume != null) {
+                completeVolumes['media:$volume']?.add(item);
+              }
+            }
+            // Baseline the first complete scan; later scans add newly seen
+            // external PDFs to Phone Recent, without importing their bytes.
+            try {
+              final count = await PhoneRecentHistory.observeCompletedScans(
+                completeVolumes,
+              );
+              if (count > 0 && mounted && !widget.phoneOnly) {
+                await _loadRecentDocuments();
+              }
+            } catch (_) {
+              // An optional Recent-list failure never interrupts Phone browsing.
             }
             // Only a complete, permission-authorized MediaStore index can
             // prove a media URI is absent. Never prune on partial scans.
@@ -573,6 +594,16 @@ class _DocumentsScreenState extends State<DocumentsScreen>
             rootLabel: label,
             includeEmptyFolders: false,
           );
+          // Only successfully scanned, entirely accessible SAF/file roots
+          // may advance the discovery baseline. Otherwise a permission change
+          // could make old PDFs look newly added on the following scan.
+          if (!found.any((item) =>
+              item['isInaccessible'] == true ||
+              item['isInaccessibleSummary'] == true)) {
+            completedRootScans['root:$uri'] = found
+                .where((item) => item['isDirectory'] != true)
+                .toList(growable: false);
+          }
           for (final item in found) {
             final itemUri = item['uri'] as String? ?? '';
             if (item['isDirectory'] != true &&
@@ -594,6 +625,18 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         }
       }
       if (!mounted) return;
+      if (completedRootScans.isNotEmpty) {
+        try {
+          final count = await PhoneRecentHistory.observeCompletedScans(
+            completedRootScans,
+          );
+          if (count > 0 && mounted && !widget.phoneOnly) {
+            await _loadRecentDocuments();
+          }
+        } catch (_) {
+          // Optional Phone Recent must never interfere with file browsing.
+        }
+      }
       if (mediaStoreVolumes.isNotEmpty) {
         await _persistPhoneStorageIndexCache(
           roots,
@@ -653,8 +696,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
 
   Future<void> _clearRecentActivity() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.remove('docsgrid_phone_recent_v1');
+      await PhoneRecentHistory.clearRecent();
       await _repository.clearOpenedHistory();
       if (!mounted) return;
       setState(() => _phoneRecent = []);
@@ -927,6 +969,8 @@ class _DocumentsScreenState extends State<DocumentsScreen>
     final name = item['name'] as String? ?? 'PDF';
     final uri = item['uri'] as String? ?? '';
     final openedAt = DateTime.tryParse(item['openedAt']?.toString() ?? '');
+    final addedAt = DateTime.tryParse(item['addedAt']?.toString() ?? '');
+    final activity = openedAt == null && addedAt != null ? 'Added' : 'Opened';
     return ListTile(
       key: ValueKey('phone-recent-$uri'),
       dense: true,
@@ -940,7 +984,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         const SizedBox(width: 6),
         _recentSourceTag('Phone'),
       ]),
-      subtitle: Text('Opened · ${_recentDateLabel(openedAt ?? DateTime.now())}'),
+      subtitle: Text('$activity · ${_recentDateLabel(openedAt ?? addedAt ?? DateTime.now())}'),
       onTap: () => _openExternalStoragePdf(uri, name),
       onLongPress: () => _openPhoneRecentSelection(item),
       trailing: PopupMenuButton<String>(
@@ -981,31 +1025,15 @@ class _DocumentsScreenState extends State<DocumentsScreen>
 
   Future<void> _recordPhoneRecent(String uri, String name) async {
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final saved = prefs.getStringList('docsgrid_phone_recent_v1') ?? <String>[];
-      final recent = <Map<String, Object?>>[];
-      for (final item in saved) {
-        try {
-          final decoded = jsonDecode(item);
-          if (decoded is Map && decoded['uri'] != uri) {
-            recent.add(Map<String, Object?>.from(decoded));
-          }
-        } catch (_) {}
-      }
-      final matchingEntries = _phoneEntries.where((entry) => entry['uri'] == uri).toList();
+      final matchingEntries =
+          _phoneEntries.where((entry) => entry['uri'] == uri).toList();
       final bytes = matchingEntries.isEmpty
           ? 0
           : (matchingEntries.first['sizeBytes'] as num?)?.toInt() ?? 0;
-      recent.insert(0, {
-        'uri': uri,
-        'name': name,
-        'sizeBytes': bytes,
-        'openedAt': DateTime.now().toUtc().toIso8601String(),
-      });
-      final limited = recent.take(20).toList(growable: false);
-      await prefs.setStringList('docsgrid_phone_recent_v1',
-          limited.map((item) => jsonEncode(item)).toList());
-      if (mounted) setState(() => _phoneRecent = limited);
+      await PhoneRecentHistory.recordOpened(uri, name, sizeBytes: bytes);
+      if (mounted && !widget.phoneOnly) {
+        await _loadRecentDocuments();
+      }
     } catch (_) {
       // Failure to save optional recent metadata must not affect PDF opening.
     }
