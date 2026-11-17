@@ -137,6 +137,13 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
   String _normalizedDirectoryPath(Map<String, Object?> entry) {
     final rawValue = entry['path'];
     if (rawValue is! String) return '';
+    // "Internal" is the virtual folder for PDFs at the volume root.
+    // A pending Recycle Bin placeholder still needs to appear when the
+    // root's last PDF has been deleted; otherwise path normalization hides it.
+    if (entry['isPending'] == true &&
+        _normalizePath(rawValue).toLowerCase() == 'internal') {
+      return 'Internal';
+    }
     return _rootRelativePath(rawValue);
   }
 
