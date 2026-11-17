@@ -383,6 +383,7 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
           (sum, file) => sum + ((file['sizeBytes'] as num?)?.toInt() ?? 0),
         );
     final count = (directory?['pdfCount'] as num?)?.toInt() ?? files.length;
+    final inRecycleBin = (directory?['trashPdfCount'] as num?)?.toInt() ?? 0;
     return ListTile(
       key: ValueKey('phone-folder-$path'),
       leading: const Icon(Icons.folder_outlined),
@@ -391,7 +392,9 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
       ),
-      subtitle: Text('$count PDFs · ${_formatSize(bytes)}'),
+      subtitle: Text(inRecycleBin == 0
+          ? '$count PDFs · ${_formatSize(bytes)}'
+          : '$count PDFs · $inRecycleBin in Recycle Bin'),
       onTap: () => setState(() => _selectedFolderPath = path),
       trailing: PopupMenuButton<String>(
         tooltip: 'Folder details and actions',
