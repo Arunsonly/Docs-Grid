@@ -510,10 +510,10 @@ class _DocumentsScreenState extends State<DocumentsScreen>
             // Baseline the first complete scan; later scans add newly seen
             // external PDFs to Phone Recent, without importing their bytes.
             try {
-              final count = await PhoneRecentHistory.observeCompletedScans(
-                completeVolumes,
-              );
-              if (count > 0 && mounted && !widget.phoneOnly) {
+              await PhoneRecentHistory.observeCompletedScans(completeVolumes);
+              // Another mounted Phone tab may have recorded this scan first.
+              // Always refresh the Home panel after a completed scan.
+              if (mounted && !widget.phoneOnly) {
                 await _loadRecentDocuments();
               }
             } catch (_) {
@@ -627,10 +627,8 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       if (!mounted) return;
       if (completedRootScans.isNotEmpty) {
         try {
-          final count = await PhoneRecentHistory.observeCompletedScans(
-            completedRootScans,
-          );
-          if (count > 0 && mounted && !widget.phoneOnly) {
+          await PhoneRecentHistory.observeCompletedScans(completedRootScans);
+          if (mounted && !widget.phoneOnly) {
             await _loadRecentDocuments();
           }
         } catch (_) {
