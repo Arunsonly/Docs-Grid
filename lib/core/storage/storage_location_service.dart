@@ -5,6 +5,8 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:open_filex/open_filex.dart';
+import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class StorageLocationService {
@@ -393,8 +395,66 @@ class StorageLocationService {
     if (deleted != true) throw StateError('The platform could not delete the PDF.');
   }
 
-  Future<void> openPdf(String uri) async {
+  /// Opens Grid PDFs through the Android app chooser. An SAF URI often cannot
+  /// be re-granted directly to a third-party reader, so stage verified bytes
+  /// once through the existing native streaming copy and share only that copy.
+  /// Phone PDFs keep their original opening behaviour.
+  Future<void> openPdf(String uri, {bool gridPdf = false}) async {
+    if (gridPdf && Platform.isAndroid) {
+      final normalizedUri = uri.startsWith('/')
+          ? Uri.file(uri).toString()
+          : uri;
+      if (!normalizedUri.startsWith('content://') &&
+          !normalizedUri.startsWith('file://')) {
+        throw StateError('Grid PDF has an unsupported storage location.');
+      }
+      final cache = Directory(p.join(
+        (await getTemporaryDirectory()).path,
+        'docsgrid_grid_pdf',
+      ));
+      await cache.create(recursive: true);
+      await _pruneGridPdfOpenCache(cache);
+      final staged = File(p.join(
+        cache.path,
+        'grid_${DateTime.now().microsecondsSinceEpoch}.pdf',
+      ));
+      try {
+        await copyPdfToPath(
+          sourceUri: normalizedUri,
+          destinationPath: staged.path,
+        );
+        final opened = await _channel.invokeMethod<bool>('openPdf', {
+          'uri': staged.uri.toString(),
+          'gridPdf': true,
+        });
+        if (opened != true) {
+          throw StateError('Android could not launch the PDF app chooser.');
+        }
+      } catch (_) {
+        try {
+          if (await staged.exists()) await staged.delete();
+        } catch (_) {
+          // Failure to clean up a temporary file must not mask the error.
+        }
+        rethrow;
+      }
+      // Do NOT delete the staged file on chooser dismissal or app resume:
+      // the receiving PDF app may still be reading its granted content URI.
+      return;
+    }
+    if (gridPdf && uri.startsWith('/')) {
+      final opened = await _channel.invokeMethod<bool>('openPdf', {
+        'uri': Uri.file(uri).toString(),
+      });
+      if (opened != true) throw StateError('Could not open the Grid PDF.');
+      return;
+    }
     if (uri.startsWith('file://')) {
+      if (gridPdf) {
+        final opened = await _channel.invokeMethod<bool>('openPdf', {'uri': uri});
+        if (opened != true) throw StateError('Could not open the Grid PDF.');
+        return;
+      }
       final result = await OpenFilex.open(
         Uri.parse(uri).toFilePath(),
         type: 'application/pdf',
@@ -406,7 +466,35 @@ class StorageLocationService {
       }
       return;
     }
-    await _channel.invokeMethod<bool>('openPdf', {'uri': uri});
+    final opened = await _channel.invokeMethod<bool>('openPdf', {'uri': uri});
+    if (opened != true) throw StateError('Could not open the PDF.');
+  }
+
+  /// Limit retained chooser copies without revoking access from a reader
+  /// that is still opening asynchronously. Only files owned by this feature
+  /// are eligible; active/young copies are never deleted.
+  Future<void> _pruneGridPdfOpenCache(Directory cache) async {
+    try {
+      final files = await cache.list(followLinks: false)
+          .where((entry) => entry is File &&
+              p.basename(entry.path).startsWith('grid_') &&
+              p.extension(entry.path).toLowerCase() == '.pdf')
+          .cast<File>()
+          .toList();
+      files.sort((a, b) => b.lastModifiedSync().compareTo(a.lastModifiedSync()));
+      final now = DateTime.now();
+      for (var i = 0; i < files.length; i++) {
+        final age = now.difference(await files[i].lastModified());
+        // Keep at most 20 long-lived copies. Never delete an open copy
+        // less than two hours old; all copies expire after 72 hours.
+        if (age > const Duration(hours: 72) ||
+            (i >= 20 && age > const Duration(hours: 2))) {
+          await files[i].delete();
+        }
+      }
+    } catch (_) {
+      // Cache housekeeping must never prevent the user from opening a PDF.
+    }
   }
 
   /// Writes a generic UTF-8 metadata file through the platform's granted
