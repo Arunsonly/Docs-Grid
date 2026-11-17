@@ -825,10 +825,11 @@ class MainActivity : FlutterActivity() {
                             }
                             "openPdf" -> {
                                 val requestedUri = Uri.parse(call.argument<String>("uri")!!)
+                                val isGridPdf = call.argument<Boolean>("gridPdf") == true
                                 // Grid uses a verified app-cache copy supplied by Dart.
                                 // Export its FileProvider content URI, not a SAF tree or
                                 // private file URI that the chosen reader cannot access.
-                                val viewUri = if (call.argument<Boolean>("gridPdf") == true) {
+                                val viewUri = if (isGridPdf) {
                                     val sharedCache = java.io.File(cacheDir, "docsgrid_grid_pdf").canonicalFile
                                     val staged = java.io.File(
                                         requestedUri.path ?: throw IllegalArgumentException("Invalid Grid PDF URI.")
@@ -852,7 +853,9 @@ class MainActivity : FlutterActivity() {
                                 val intent = Intent(Intent.ACTION_VIEW).apply {
                                     setDataAndType(viewUri, "application/pdf")
                                     addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                    clipData = ClipData.newUri(contentResolver, "PDF", viewUri)
+                                    if (isGridPdf) {
+                                        clipData = ClipData.newUri(contentResolver, "PDF", viewUri)
+                                    }
                                 }
                                 startActivity(Intent.createChooser(intent, "Open PDF"))
                                 result.success(true)
