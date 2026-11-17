@@ -184,10 +184,16 @@ PdfImportDestination resolvePdfImportDestination({
 }
 
 class DocumentRepository {
-  DocumentRepository({AppDatabase? database})
-      : _database = database ?? AppDatabase.instance;
+  DocumentRepository({
+    AppDatabase? database,
+    Future<List<Map<String, String>>> Function()? phoneRootsForTesting,
+  }) : _database = database ?? AppDatabase.instance,
+       _phoneRootsForTesting = phoneRootsForTesting;
 
   final AppDatabase _database;
+  // Native Android root discovery is unavailable on desktop test runners.
+  // Tests may inject grants without weakening production permission checks.
+  final Future<List<Map<String, String>>> Function()? _phoneRootsForTesting;
   static const _uuid = Uuid();
   DocumentLibrarySummary? _summaryCache;
   int? _summaryCacheRevision;
@@ -2028,7 +2034,8 @@ class DocumentRepository {
     }
     final segments = origin.relativeFolders;
     final storage = StorageLocationService.instance;
-    final currentRoots = await storage.accessibleStorageRoots();
+    final currentRoots = await (_phoneRootsForTesting?.call() ??
+        storage.accessibleStorageRoots());
     final currentRoot = PhoneTrashOrigin.selectGrantedRoot(
       sourceUri: origin.sourceUri,
       folderPath: origin.folderPath,
