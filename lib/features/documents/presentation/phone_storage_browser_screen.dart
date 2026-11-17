@@ -55,8 +55,10 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
     super.initState();
     _searchController = TextEditingController();
     unawaited(_restoreSortPreference());
+    // Initial paths from MediaStore/Recent may include the synthetic
+    // "Internal/" volume label; browser folder keys are root-relative.
     _selectedFolderPath =
-        widget.initialPath.isEmpty ? null : _normalizePath(widget.initialPath);
+        widget.initialPath.isEmpty ? null : _rootRelativePath(widget.initialPath);
   }
 
   @override
