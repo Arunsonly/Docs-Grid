@@ -240,6 +240,125 @@ void main() {
     expect(await db.rawQuery('PRAGMA foreign_key_check'), isEmpty);
   });
 
+
+  test('old Restored Insurance is repaired; next PDF uses original folder', () async {
+    final base = Directory('${appDocuments.path}/DocsGrid/Library/Folders');
+    final original = Directory('${base.path}/Insurance');
+    final legacy = Directory('${base.path}/Restored_1794904040961709/Insurance_360d1ef9');
+    await original.create(recursive: true);
+    await legacy.create(recursive: true);
+    final oldBytes = utf8.encode('%PDF-1.7 independent legacy policy');
+    final oldPdf = File('${legacy.path}/old.pdf');
+    await oldPdf.writeAsBytes(oldBytes);
+    await db.insert('folders', {
+      ..._backupRows(withFolder: true)['folders']!.single,
+      'storage_uri_or_relative_path': Uri.file(legacy.path).toString(),
+    });
+    await db.insert('documents', {
+      'id': 'legacy-doc', 'name': 'Old policy', 'mime_type': 'application/pdf',
+      'folder_id': 'folder-1', 'storage_uri': Uri.file(oldPdf.path).toString(),
+      'sha256': sha256.convert(oldBytes).toString(), 'size_bytes': oldBytes.length,
+      'created_at': '2025-01-01T00:00:00Z',
+      'updated_at': '2025-01-01T00:00:00Z',
+    });
+    final zip = await _makeBackup(temp, withFolder: true);
+    Map<String, int>? preview;
+    expect(await service.restoreBackup(zip, confirm: (_) async => true,
+        confirmPlan: (value) async {preview = value; return true;}), 1);
+    expect(preview!['legacyFolderRepairs'], 1);
+    expect(preview!['legacyPdfsToCopy'], 1);
+    expect((await db.query('folders')).single['storage_uri_or_relative_path'],
+        original.path);
+    expect((await db.query('documents')).length, 2);
+    for (final row in await db.query('documents')) {
+      final uri = row['storage_uri'] as String;
+      final path = uri.startsWith('file://') ? Uri.parse(uri).toFilePath() : uri;
+      expect(File(path).parent.path, original.path);
+      expect(await File(path).exists(), isTrue);
+    }
+    expect(await oldPdf.readAsBytes(), orderedEquals(oldBytes));
+    expect(await service.restoreBackup(zip, confirm: (_) async => true,
+        confirmPlan: (_) async => true), 0);
+    expect(await original.list().length, 2);
+    messenger.setMockMethodCallHandler(const MethodChannel('docsgrid/storage'), (call) async {
+      final args = Map<String, dynamic>.from(call.arguments as Map);
+      if (call.method == 'copyPdf') {
+        expect(args['parentUri'], original.path);
+        final input = File.fromUri(Uri.parse(args['sourceUri'] as String));
+        return (await input.copy('${original.path}/${args['name']}')).uri.toString();
+      }
+      if (call.method == 'sha256Pdf') {
+        final input = File.fromUri(Uri.parse(args['uri'] as String));
+        return (await sha256.bind(input.openRead()).first).toString();
+      }
+      throw MissingPluginException('Unexpected import channel operation');
+    });
+    final incoming = File('${temp.path}/new.pdf');
+    await incoming.writeAsString('%PDF-1.7 brand new document');
+    final summary = await DocumentRepository(
+        database: AppDatabase.forTesting(() async => db))
+        .importScannedPdf(incoming, targetFolderId: 'folder-1');
+    expect(summary.added, 1);
+    expect(await original.list().length, 3);
+    expect(await oldPdf.exists(), isTrue);
+  });
+
+  test('declined legacy folder repair leaves original and old storage untouched', () async {
+    final base = Directory('${appDocuments.path}/DocsGrid/Library/Folders');
+    final original = Directory('${base.path}/Insurance');
+    final legacy = Directory('${base.path}/Restored_1794904040961709/Insurance_360d1ef9');
+    await original.create(recursive: true);
+    await legacy.create(recursive: true);
+    await db.insert('folders', {
+      ..._backupRows(withFolder: true)['folders']!.single,
+      'storage_uri_or_relative_path': legacy.path,
+    });
+    final old = File('${legacy.path}/old.pdf');
+    await old.writeAsBytes(_pdfBytes);
+    await db.insert('documents', {
+      'id': 'old-doc', 'name': 'Old', 'mime_type': 'application/pdf',
+      'folder_id': 'folder-1', 'storage_uri': old.path,
+      'sha256': _pdfHash, 'size_bytes': _pdfBytes.length,
+      'created_at': '2025-01-01T00:00:00Z',
+      'updated_at': '2025-01-01T00:00:00Z',
+    });
+    final zip = await _makeBackup(temp, withFolder: true);
+    Map<String, int>? preview;
+    expect(await service.restoreBackup(zip, confirm: (_) async => true,
+        confirmPlan: (value) async {preview = value; return false;}), isNull);
+    expect(preview!['legacyFolderRepairs'], 1);
+    expect((await db.query('folders')).single['storage_uri_or_relative_path'], legacy.path);
+    expect(await old.readAsBytes(), orderedEquals(_pdfBytes));
+    expect(await original.list().length, 0);
+  });
+
+  test('legacy SHA mismatch fails before changing any mapping', () async {
+    final base = Directory('${appDocuments.path}/DocsGrid/Library/Folders');
+    final original = Directory('${base.path}/Insurance');
+    final legacy = Directory('${base.path}/Restored_1794904040961709/Insurance_360d1ef9');
+    await original.create(recursive: true);
+    await legacy.create(recursive: true);
+    await db.insert('folders', {
+      ..._backupRows(withFolder: true)['folders']!.single,
+      'storage_uri_or_relative_path': legacy.path,
+    });
+    final old = File('${legacy.path}/old.pdf');
+    await old.writeAsString('%PDF-1.7 wrong original contents');
+    await db.insert('documents', {
+      'id': 'old-doc', 'name': 'Old', 'mime_type': 'application/pdf',
+      'folder_id': 'folder-1', 'storage_uri': old.path,
+      'sha256': _pdfHash, 'size_bytes': _pdfBytes.length,
+      'created_at': '2025-01-01T00:00:00Z',
+      'updated_at': '2025-01-01T00:00:00Z',
+    });
+    final zip = await _makeBackup(temp, withFolder: true);
+    await expectLater(service.restoreBackup(zip, confirm: (_) async => true,
+        confirmPlan: (_) async => true), throwsA(isA<StateError>()));
+    expect((await db.query('folders')).single['storage_uri_or_relative_path'], legacy.path);
+    expect(await original.list().length, 0);
+    expect(await old.readAsString(), '%PDF-1.7 wrong original contents');
+  });
+
   test('physical Insurance without a database row is reused after hash verification', () async {
     final original = Directory('${appDocuments.path}/DocsGrid/Library/Folders/Insurance');
     await original.create(recursive: true);
