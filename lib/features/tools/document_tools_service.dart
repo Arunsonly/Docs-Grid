@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:isolate';
@@ -24,6 +25,7 @@ import 'backup_archive_limits.dart';
 import 'backup_schema_compatibility.dart';
 import 'backup_folder_graph_validator.dart';
 import 'portable_snapshot_manifest.dart';
+import 'portable_snapshot_retention.dart';
 import 'portable_snapshot_rows_validator.dart';
 
 
@@ -71,11 +73,24 @@ enum BackupRestoreSection {
 /// Local-only utilities for indexing, scanning, sharing and portable backups.
 /// This service never uploads document contents to a remote server.
 class DocumentToolsService {
-  DocumentToolsService({AppDatabase? database})
-      : _database = database ?? AppDatabase.instance;
+  DocumentToolsService({AppDatabase? database,
+    @visibleForTesting Future<Map<String, String>> Function()? snapshotLocations,
+  }) : _database = database ?? AppDatabase.instance,
+       _snapshotLocations = snapshotLocations;
 
+  final Future<Map<String, String>> Function()? _snapshotLocations;
   final AppDatabase _database;
   static const _uuid = Uuid();
+
+  // Serialize snapshot publication, pruning, and both recovery paths.
+  static Future<void> _recoveryTail = Future<void>.value();
+  static Future<T> _withRecoveryLock<T>(Future<T> Function() action) async {
+    final previous = _recoveryTail;
+    final done = Completer<void>();
+    _recoveryTail = done.future;
+    await previous;
+    try { return await action(); } finally { done.complete(); }
+  }
 
   /// Hashes untrusted IDs before using them as restore path segments.
   @visibleForTesting
@@ -1239,6 +1254,15 @@ class DocumentToolsService {
     Future<bool> Function(int pdfCount)? confirm,
     BackupRestoreMode mode = BackupRestoreMode.merge,
     Set<BackupRestoreSection>? selection,
+  }) => _withRecoveryLock(() => _restoreBackupLocked(
+    zipFile, confirm: confirm, mode: mode, selection: selection,
+  ));
+
+  Future<int?> _restoreBackupLocked(
+    File zipFile, {
+    Future<bool> Function(int pdfCount)? confirm,
+    BackupRestoreMode mode = BackupRestoreMode.merge,
+    Set<BackupRestoreSection>? selection,
   }) async {
     await StorageMigrationGate.waitUntilReady();
     final backup = await _decodeValidatedBackup(zipFile);
@@ -1827,9 +1851,13 @@ class DocumentToolsService {
   /// Writes a versioned, verified metadata snapshot into the user-selected
   /// DocsGrid/System/Database folder. PDF bytes remain in the library folder;
   /// documents.json retains their relative paths and SHA-256 values.
-  Future<String> createPortableMetadataSnapshot() async {
+  Future<String> createPortableMetadataSnapshot() =>
+      _withRecoveryLock(_createPortableMetadataSnapshotLocked);
+
+  Future<String> _createPortableMetadataSnapshotLocked() async {
     await StorageMigrationGate.waitUntilReady();
-    final locations = await StorageLocationService.instance.portableDataLocationsIfAvailable();
+    final locations = await (_snapshotLocations?.call() ??
+        StorageLocationService.instance.portableDataLocationsIfAvailable());
     if (locations['databaseUri'] == null) {
       throw StateError('Portable Database folder is not available. Enable storage access or select an existing recovery tree.');
     }
@@ -1857,6 +1885,34 @@ class DocumentToolsService {
         rowsByTable: rowsByTable,
       );
     });
+    final state = await db.query('portable_snapshot_state', where: 'id = 1');
+    if (state.isNotEmpty &&
+        state.single['last_snapshot_revision'] == snapshotCapture.revision &&
+        state.single['last_snapshot_name'] is String) {
+      final lastName = state.single['last_snapshot_name'] as String;
+      // A clean DB revision does not prove the last exported snapshot still
+      // exists or is readable. For explicit snapshot requests, verify the
+      // published recovery point before skipping another export. Never prune
+      // or overwrite an invalid/missing older snapshot here.
+      try {
+        final entries = await StorageLocationService.instance
+            .listDirectory(locations['databaseUri']!);
+        final matching = entries.where((entry) =>
+            entry['name'] == lastName && entry['isDirectory'] == true).toList();
+        if (matching.length == 1) {
+          final verified = await _readVerifiedSnapshot(matching.single['uri'] as String);
+          PortableSnapshotRowsValidator.validate(
+              verified['rows'] as Map<String, List<Map<String, Object?>>>);
+          final manifest = jsonDecode(verified['manifestText'] as String) as Map;
+          if (manifest['portableDataRevision'] == snapshotCapture.revision) {
+            return lastName;
+          }
+        }
+      } catch (_) {
+        // Missing, corrupt or inaccessible recovery points need a fresh
+        // verified snapshot, not a misleading "already current" result.
+      }
+    }
     final capturedRevision = snapshotCapture.revision;
     final capturedRows = snapshotCapture.rowsByTable;
     if (!tableNames.contains('documents') || !tableNames.contains('folders')) {
@@ -1874,6 +1930,13 @@ class DocumentToolsService {
     final recordCounts = <String, int>{};
 
     try {
+      await StorageLocationService.instance.writeTextFile(
+        parentUri: snapshotUri, name: 'operation.json', contents: jsonEncode({
+          'format': 'DocsGridSnapshotOperation', 'version': 1,
+          'directoryName': snapshotName,
+          'createdAtUtc': DateTime.now().toUtc().toIso8601String(),
+        }),
+      );
       for (final table in tableNames) {
         final rows = capturedRows[table]!;
         final contents = jsonEncode(rows);
@@ -1913,12 +1976,22 @@ class DocumentToolsService {
         name: 'manifest.json',
         contents: jsonEncode(manifest),
       );
+      // Validate published bytes and every supported relationship before
+      // marking the captured revision clean or pruning older recovery points.
+      final verifiedExport = await _readVerifiedSnapshot(snapshotUri);
+      PortableSnapshotRowsValidator.validate(
+          verifiedExport['rows'] as Map<String, List<Map<String, Object?>>>);
       // If any durable record changed during export, the revision mismatch
       // deliberately leaves the snapshot dirty for the next coalesced pass.
       await _database.markPortableSnapshotClean(
         capturedRevision: capturedRevision,
         snapshotName: snapshotName,
       );
+      try {
+        await _prunePortableSnapshots(locations['databaseUri']!, snapshotUri);
+      } catch (error) {
+        snapshotDiagnostics = {...snapshotDiagnostics, 'cleanupError': '$error'};
+      }
       return snapshotName;
     } catch (_) {
       // Keep the incomplete directory for diagnostics; without manifest it
@@ -1927,54 +2000,8 @@ class DocumentToolsService {
     }
   }
 
-  /// Returns the newest fully verified snapshot, skipping incomplete or
-  /// damaged snapshots left by an interrupted export. A broken newest folder
-  /// must not hide an older recoverable snapshot.
-  Future<Map<String, Object?>?> _findLatestVerifiedPortableSnapshot() async {
+  Future<Map<String, Object?>> _readVerifiedSnapshot(String snapshotUri) async {
     final storage = StorageLocationService.instance;
-    final locations = await storage.portableDataLocations();
-    final databaseUris = <String>[locations['databaseUri']!];
-    final legacyUri = locations['legacyRootUri'];
-    if (legacyUri != null && legacyUri.startsWith('file://')) {
-      final legacyRoot = Uri.parse(legacyUri).toFilePath();
-      for (final path in [
-        p.join(legacyRoot, 'Database'),
-        p.join(legacyRoot, 'System', 'Database'),
-      ]) {
-        final directory = Directory(path);
-        if (await directory.exists()) {
-          databaseUris.add(Uri.directory(directory.path).toString());
-        }
-      }
-    }
-    final snapshots = <Map<String, Object?>>[];
-    for (final databaseUri in databaseUris.toSet()) {
-      try {
-        final children = await storage.listDirectory(databaseUri);
-        snapshots.addAll(children.where((entry) =>
-            entry['isDirectory'] == true &&
-            entry['name'] is String &&
-            (entry['name'] as String).startsWith('snapshot_')));
-      } catch (_) {
-        // One missing legacy location must not hide valid snapshots elsewhere.
-      }
-    }
-    snapshots.sort((a, b) =>
-        (b['name'] as String).compareTo(a['name'] as String));
-
-    // A reinstall can create a newer, valid-but-empty snapshot before the
-    // previous portable tree is selected. Timestamp-only selection would then
-    // restore built-in folders/categories from the empty install and silently
-    // ignore the older snapshot containing the user's PDFs and metadata.
-    // Validate every candidate and prefer the snapshot with the most document
-    // records, then the most total records; use timestamp only as a tie-breaker.
-    Map<String, Object?>? bestSnapshot;
-    var bestDocumentCount = -1;
-    var bestRecordCount = -1;
-
-    for (final snapshot in snapshots) {
-      try {
-        final snapshotUri = snapshot['uri'] as String;
         final manifestText = await storage.readTextFile(
           await _findChildUri(snapshotUri, 'manifest.json'),
         );
@@ -2076,17 +2103,200 @@ class DocumentToolsService {
           }
         }
 
+    PortableSnapshotManifest.validateRelations(rowsByTable);
+    return {'manifestText': manifestText, 'manifest': manifest,
+      'rows': rowsByTable, 'documents': documentRows.length,
+      'records': rowsByTable.values.fold<int>(0, (n, rows) => n + rows.length)};
+  }
+
+  /// Internal diagnostics; no additional dashboard or snapshot format change.
+  static Map<String, Object?> snapshotDiagnostics = {};
+
+  Future<void> _prunePortableSnapshots(String databaseUri, String publishedUri) async {
+    final storage = StorageLocationService.instance;
+    final entries = await storage.listDirectory(databaseUri);
+    final points = <VerifiedSnapshotPoint>[];
+    final manifests = <String, PortableSnapshotManifest>{};
+    var invalid = 0;
+    var totalBytes = 0;
+    for (final entry in entries) {
+      if (entry['isDirectory'] != true ||
+          !(entry['name'] as String? ?? '').startsWith('snapshot_')) continue;
+      try {
+        final uri = entry['uri'] as String;
+        final verified = await _readVerifiedSnapshot(uri);
+        PortableSnapshotRowsValidator.validate(
+          verified['rows'] as Map<String, List<Map<String, Object?>>>);
+        final raw = jsonDecode(verified['manifestText'] as String) as Map;
+        // Missing ownership/time data in legacy snapshots means retain, not delete.
+        if (raw['app'] != 'DocsGrid' || raw['createdAtUtc'] is! String ||
+            !(raw['createdAtUtc'] as String).endsWith('Z')) continue;
+        final at = DateTime.parse(raw['createdAtUtc'] as String);
+        final manifest = verified['manifest'] as PortableSnapshotManifest;
+        final children = await storage.listDirectory(uri);
+        // Legacy copies without our explicit operation marker remain readable
+        // recovery points, but are NOT eligible for automatic deletion.
+        if (!children.any((child) => child['name'] == 'operation.json')) continue;
+        final marker = jsonDecode(await storage.readTextFile(
+            await _findChildUri(uri, 'operation.json')));
+        if (marker is! Map || marker['format'] != 'DocsGridSnapshotOperation' ||
+            marker['version'] != 1 || marker['directoryName'] != entry['name']) continue;
+        final expected = {'manifest.json', ...manifest.files.map((f) => f.path),
+          if (children.any((child) => child['name'] == 'operation.json')) 'operation.json'};
+        if (children.length != expected.length || children.any((child) =>
+            child['isDirectory'] == true || !expected.contains(child['name']))) continue;
+        final bytes = manifest.files.fold<int>(0, (n, file) => n + file.sizeBytes) +
+            utf8.encode(verified['manifestText'] as String).length;
+        totalBytes += bytes;
+        points.add(VerifiedSnapshotPoint(uri: uri, createdAt: at,
+            documentCount: verified['documents'] as int, sizeBytes: bytes));
+        manifests[uri] = manifest;
+      } catch (_) { invalid++; }
+    }
+    final keep = const PortableSnapshotRetention().keep(points, DateTime.now(),
+        protectedUris: {publishedUri});
+    var freed = 0;
+    var removed = 0;
+    // The same gate protects the complete restore, not just snapshot selection.
+    // Only file-backed snapshots can be removed safely without provider-specific
+    // recursive-delete races. SAF and all unknown/incomplete directories remain.
+    for (final point in points) {
+      if (keep.contains(point.uri) || !point.uri.startsWith('file://')) continue;
+      final directory = Directory.fromUri(Uri.parse(point.uri));
+      try {
+        if (await FileSystemEntity.type(directory.path, followLinks: false) !=
+            FileSystemEntityType.directory) continue;
+        final children = await directory.list(followLinks: false).toList();
+        final expected = {'manifest.json', ...manifests[point.uri]!.files.map((f) => f.path),
+          if (children.any((child) => p.basename(child.path) == 'operation.json')) 'operation.json'};
+        if (children.length != expected.length || children.any((child) =>
+            child is! File || !expected.contains(p.basename(child.path)))) continue;
+        await _readVerifiedSnapshot(point.uri);
+        // Invalidate recovery first. Never recursively remove an unknown child.
+        await File(p.join(directory.path, 'manifest.json')).delete();
+        for (final file in manifests[point.uri]!.files) {
+          await File(p.join(directory.path, file.path)).delete();
+        }
+        final operation = File(p.join(directory.path, 'operation.json'));
+        if (await operation.exists()) await operation.delete();
+        await directory.delete();
+        freed += point.sizeBytes;
+        removed++;
+      } catch (_) { break; } // Fail closed; leave all other recovery points.
+    }
+    if (points.length - removed >= 2) {
+      for (final entry in entries) {
+        if (entry['isDirectory'] != true ||
+            !(entry['name'] as String? ?? '').startsWith('snapshot_')) continue;
+        final uri = entry['uri'] as String;
+        if (!uri.startsWith('file://')) continue;
+        final directory = Directory.fromUri(Uri.parse(uri));
+        try {
+          if (await FileSystemEntity.type(directory.path, followLinks: false) !=
+              FileSystemEntityType.directory) continue;
+          final children = await directory.list(followLinks: false).toList();
+          final allowed = {'operation.json',
+            ...PortableSnapshotManifest.supportedTableNames.map((name) => '$name.json')};
+          if (children.any((child) => child is! File || !allowed.contains(p.basename(child.path)))) continue;
+          final marker = File(p.join(directory.path, 'operation.json'));
+          final value = jsonDecode(await marker.readAsString());
+          if (value is! Map || value['format'] != 'DocsGridSnapshotOperation' ||
+              value['version'] != 1 || value['directoryName'] != entry['name'] ||
+              value['createdAtUtc'] is! String || !(value['createdAtUtc'] as String).endsWith('Z')) continue;
+          final age = DateTime.now().toUtc().difference(DateTime.parse(value['createdAtUtc'] as String));
+          if (age < const Duration(hours: 48)) continue;
+          // Recheck completion immediately before deleting enumerated metadata.
+          if (await File(p.join(directory.path, 'manifest.json')).exists()) continue;
+          for (final child in children.where((child) => child.path != marker.path)) {
+            await child.delete();
+          }
+          await marker.delete();
+          await directory.delete();
+        } catch (_) { /* Unknown, future-dated and inaccessible data survives. */ }
+      }
+    }
+    final times = points.map((point) => point.createdAt).toList()..sort();
+    snapshotDiagnostics = {
+      'snapshotDirectories': entries.where((e) => e['isDirectory'] == true &&
+          (e['name'] as String? ?? '').startsWith('snapshot_')).length,
+      'verifiedSnapshots': points.length, 'invalidOrIncomplete': invalid,
+      'verifiedBytesBeforeCleanup': totalBytes, 'freedBytes': freed,
+      'removedSnapshots': removed, 'lastCreationResult': 'verified',
+      'oldestUtc': times.isEmpty ? null : times.first.toIso8601String(),
+      'newestUtc': times.isEmpty ? null : times.last.toIso8601String(),
+    };
+  }
+
+  /// Returns the newest fully verified snapshot, skipping incomplete or
+  /// damaged snapshots left by an interrupted export. A broken newest folder
+  /// must not hide an older recoverable snapshot.
+  Future<Map<String, Object?>?> _findLatestVerifiedPortableSnapshot() async {
+    final storage = StorageLocationService.instance;
+    final locations = await storage.portableDataLocations();
+    final databaseUris = <String>[locations['databaseUri']!];
+    final legacyUri = locations['legacyRootUri'];
+    if (legacyUri != null && legacyUri.startsWith('file://')) {
+      final legacyRoot = Uri.parse(legacyUri).toFilePath();
+      for (final path in [
+        p.join(legacyRoot, 'Database'),
+        p.join(legacyRoot, 'System', 'Database'),
+      ]) {
+        final directory = Directory(path);
+        if (await directory.exists()) {
+          databaseUris.add(Uri.directory(directory.path).toString());
+        }
+      }
+    }
+    final snapshots = <Map<String, Object?>>[];
+    for (final databaseUri in databaseUris.toSet()) {
+      try {
+        final children = await storage.listDirectory(databaseUri);
+        snapshots.addAll(children.where((entry) =>
+            entry['isDirectory'] == true &&
+            entry['name'] is String &&
+            (entry['name'] as String).startsWith('snapshot_')));
+      } catch (_) {
+        // One missing legacy location must not hide valid snapshots elsewhere.
+      }
+    }
+    snapshots.sort((a, b) =>
+        (b['name'] as String).compareTo(a['name'] as String));
+
+    // A reinstall can create a newer, valid-but-empty snapshot before the
+    // previous portable tree is selected. Timestamp-only selection would then
+    // restore built-in folders/categories from the empty install and silently
+    // ignore the older snapshot containing the user's PDFs and metadata.
+    // Validate every candidate and prefer the snapshot with the most document
+    // records, then the most total records; use timestamp only as a tie-breaker.
+    Map<String, Object?>? bestSnapshot;
+    var bestDocumentCount = -1;
+    var bestRecordCount = -1;
+    var bestCreatedAt = DateTime.fromMillisecondsSinceEpoch(0, isUtc: true);
+
+    for (final snapshot in snapshots) {
+      try {
+        final snapshotUri = snapshot['uri'] as String;
+        final verified = await _readVerifiedSnapshot(snapshotUri);
+        final manifestText = verified['manifestText'] as String;
+        final manifest = verified['manifest'] as PortableSnapshotManifest;
+        final rowsByTable = verified['rows'] as Map<String, List<Map<String, Object?>>>;
+        final documentRows = rowsByTable['documents']!;
         final documentCount = documentRows.length;
         final recordCount = rowsByTable.values.fold<int>(
           0,
           (total, rows) => total + rows.length,
         );
+        final rawManifest = jsonDecode(manifestText) as Map;
+        final createdAt = DateTime.tryParse(rawManifest['createdAtUtc'] as String? ?? '') ??
+            DateTime.fromMillisecondsSinceEpoch(0, isUtc: true);
         final isBetter = documentCount > bestDocumentCount ||
             (documentCount == bestDocumentCount &&
-                recordCount > bestRecordCount);
+                (recordCount > bestRecordCount ||
+                 (recordCount == bestRecordCount && createdAt.isAfter(bestCreatedAt))));
         if (isBetter) {
           bestDocumentCount = documentCount;
           bestRecordCount = recordCount;
+          bestCreatedAt = createdAt;
           bestSnapshot = {
             'name': snapshot['name'] as String,
             'uri': snapshotUri,
@@ -2101,15 +2311,21 @@ class DocumentToolsService {
     return bestSnapshot;
   }
 
-  Future<String?> verifyLatestPortableMetadataSnapshot() async {
-    final snapshot = await _findLatestVerifiedPortableSnapshot();
-    return snapshot?['name'] as String?;
-  }
+  Future<String?> verifyLatestPortableMetadataSnapshot() =>
+      _withRecoveryLock(() async {
+        final snapshot = await _findLatestVerifiedPortableSnapshot();
+        return snapshot?['name'] as String?;
+      });
 
   /// Restores the newest portable snapshot additively. Existing records are
   /// retained; imported IDs are remapped where needed. PDFs are relinked by
   /// SHA-256 from the currently selected library and are never overwritten.
   Future<Map<String, int>> restoreLatestPortableMetadataSnapshot({
+    void Function(int completed, int total)? onProgress,
+  }) => _withRecoveryLock(() =>
+      _restoreLatestPortableMetadataSnapshotLocked(onProgress: onProgress));
+
+  Future<Map<String, int>> _restoreLatestPortableMetadataSnapshotLocked({
     void Function(int completed, int total)? onProgress,
   }) async {
     await StorageMigrationGate.waitUntilReady();
