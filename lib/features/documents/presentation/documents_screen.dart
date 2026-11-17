@@ -501,7 +501,9 @@ class _DocumentsScreenState extends State<DocumentsScreen>
             // Only a complete, permission-authorized MediaStore index can
             // prove a media URI is absent. Never prune on partial scans.
             try {
-              final removed = await PhoneRecentHistory.pruneAbsentMediaStoreUris(seen);
+              final removed = await PhoneRecentHistory.pruneAbsentMediaStoreUris(
+                seen, scannedVolumes: mediaStoreVolumes.keys.toSet(),
+              );
               if (removed > 0 && mounted) await _loadRecentDocuments();
             } catch (_) {
               // Recent metadata is optional; user PDFs and scan remain intact.
