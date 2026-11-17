@@ -1785,6 +1785,7 @@ Future<int?> _restoreBackupLocked(
     await writeJournal('planned');
 
     var databaseCommitted = false;
+    var backupPayloadCopies = 0;
     try {
       for (final row in folderRows) {
         final directory = Directory(folderPath(row['id'] as String));
@@ -1848,6 +1849,7 @@ Future<int?> _restoreBackupLocked(
         }
         await pendingFile.rename(destination.path);
         restoredPaths[id] = destination.path;
+        backupPayloadCopies++;
       }
 
       for (final row in rowsByTable['documents']!) {
@@ -2165,8 +2167,9 @@ Future<int?> _restoreBackupLocked(
             'backupId': manifest['backupId'],
             'backupCreatedAt': manifest['createdAt'],
             'completedAtUtc': DateTime.now().toUtc().toIso8601String(),
-            'pdfPayloadsRestored': createdFiles.length,
-            'verifiedPdfsReused': restoredPaths.length - createdFiles.length + duplicateDocumentIds.length,
+            'pdfPayloadsRestored': backupPayloadCopies,
+            'legacyPdfsRelinked': legacyDocumentRepairs.length,
+            'verifiedPdfsReused': restoredPaths.length - backupPayloadCopies + duplicateDocumentIds.length,
             'needsRelinking': preview['needsRelinking'],
             'documentsInArchive': rowsByTable['documents']!.length,
             'foldersInArchive': rowsByTable['folders']!.length,
@@ -2185,7 +2188,7 @@ Future<int?> _restoreBackupLocked(
       } catch (_) {
         // A report write failure must not roll back an already committed restore.
       }
-      return createdFiles.length;
+      return backupPayloadCopies;
     } catch (_) {
       if (!databaseCommitted) {
         for (final path in [...createdFiles, ...pendingFiles]) {
