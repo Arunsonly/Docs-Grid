@@ -142,6 +142,8 @@ class PhoneRecentHistory {
             'uri': uri,
             'name': file['name'],
             'sizeBytes': (file['sizeBytes'] as num?)?.toInt() ?? 0,
+            if (file['folderPath'] is String)
+              'folderPath': file['folderPath'],
             'addedAt': now.toIso8601String(),
           }));
         }
@@ -170,6 +172,7 @@ class PhoneRecentHistory {
     String uri,
     String name, {
     int sizeBytes = 0,
+    String? folderPath,
     DateTime? openedAt,
   }) => _exclusive(() async {
     final prefs = await SharedPreferences.getInstance();
@@ -194,6 +197,8 @@ class PhoneRecentHistory {
       'name': name,
       'sizeBytes': sizeBytes > 0
           ? sizeBytes : (prior?['sizeBytes'] as num?)?.toInt() ?? 0,
+      if (folderPath != null && folderPath.isNotEmpty)
+        'folderPath': folderPath,
       'openedAt': (openedAt ?? DateTime.now()).toUtc().toIso8601String(),
     };
     if (!await prefs.setStringList(
