@@ -4,8 +4,6 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:open_filex/open_filex.dart';
-import 'package:path/path.dart' as p;
-import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../data/document_repository.dart';
@@ -13,7 +11,6 @@ import '../../../core/storage/storage_location_service.dart';
 import '../../categories/data/category_repository.dart';
 import '../../folders/data/folder_repository.dart';
 import '../../tools/document_tools_service.dart';
-import 'document_pdf_viewer_screen.dart';
 import 'document_thumbnail.dart';
 import 'phone_storage_browser_screen.dart';
 import '../../folders/presentation/folders_screen.dart';
@@ -1113,73 +1110,18 @@ class _DocumentsScreenState extends State<DocumentsScreen>
   }
 
   Future<void> _open(DocumentRecord document) async {
-    final isProviderUri = document.storagePath.startsWith('content://') ||
-        document.storagePath.startsWith('file://');
-    File? stagedProviderFile;
-    late final String viewerPath;
     try {
-      if (isProviderUri) {
-        // Stage provider-backed content with native streaming I/O; never read
-        // the entire PDF into Dart memory before the viewer starts.
-        final temp = await getTemporaryDirectory();
-        stagedProviderFile = File(p.join(
-          temp.path,
-          'docsgrid_view_${DateTime.now().microsecondsSinceEpoch}.pdf',
-        ));
-        await StorageLocationService.instance.copyPdfToPath(
-          sourceUri: document.storagePath,
-          destinationPath: stagedProviderFile.path,
-        );
-        viewerPath = stagedProviderFile.path;
-      } else {
-        final localFile = File(document.storagePath);
-        if (!await localFile.exists()) {
-          if (mounted) _message('PDF file is missing from local storage.');
-          return;
-        }
-        viewerPath = localFile.path;
-      }
+      await StorageLocationService.instance.openPdf(
+        document.storagePath, gridPdf: true,
+      );
       await _repository.markOpened(document);
       if (!mounted) return;
-      await Navigator.of(context).push<void>(
-        MaterialPageRoute(
-          builder: (_) => DocumentPdfViewerScreen(
-            filePath: viewerPath,
-            title: '${document.name}.pdf',
-          ),
-        ),
-      );
       await _patchDocument(document.id);
       await _loadRecentDocuments();
     } catch (error) {
-      if (mounted) {
-        _message('Could not open PDF in the fast viewer: $error');
-        // Keep an OS-viewer fallback for files that a native PDF renderer
-        // cannot decode (for example, unsupported encryption).
-        if (isProviderUri) {
-          try {
-            await StorageLocationService.instance.openPdf(document.storagePath);
-          } catch (fallbackError) {
-            _message('External PDF viewer also failed: $fallbackError');
-          }
-        } else {
-          final result = await OpenFilex.open(document.storagePath);
-          if (mounted && result.type != ResultType.done) {
-            _message(result.message.isEmpty ? 'No PDF viewer is available.' : result.message);
-          }
-        }
-      }
-    } finally {
-      if (stagedProviderFile != null) {
-        try {
-          if (await stagedProviderFile.exists()) await stagedProviderFile.delete();
-        } catch (_) {
-          // Do not let cache cleanup mask the viewer outcome.
-        }
-      }
+      if (mounted) _message('Could not open PDF: $error');
     }
   }
-
 
   Future<void> _share(DocumentRecord document) async {
     try {
