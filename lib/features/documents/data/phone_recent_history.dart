@@ -43,14 +43,18 @@ class PhoneRecentHistory {
   /// item URIs still exist. Do not remove SAF, file:// or other provider
   /// references, and do not run this on partial scans or permission failures.
   static Future<int> pruneAbsentMediaStoreUris(
-      Set<String> availableMediaUris) async {
+      Set<String> availableMediaUris, {
+      required Set<String> scannedVolumes,
+  }) async {
     final prefs = await SharedPreferences.getInstance();
     return pruneAbsentMediaStoreUrisFromPreferences(
-        prefs, availableMediaUris);
+        prefs, availableMediaUris, scannedVolumes: scannedVolumes);
   }
 
   static Future<int> pruneAbsentMediaStoreUrisFromPreferences(
-      SharedPreferences prefs, Set<String> availableMediaUris) async {
+      SharedPreferences prefs, Set<String> availableMediaUris, {
+      required Set<String> scannedVolumes,
+  }) async {
     final saved = prefs.getStringList(storageKey) ?? const <String>[];
     final kept = <String>[];
     var removed = 0;
@@ -58,11 +62,18 @@ class PhoneRecentHistory {
       try {
         final decoded = jsonDecode(raw);
         final uri = decoded is Map ? decoded['uri'] : null;
-        if (uri is String &&
-            uri.startsWith('content://media/') &&
-            !availableMediaUris.contains(uri)) {
-          removed++;
-          continue;
+        if (uri is String && uri.startsWith('content://media/')) {
+          // A complete scan of mounted storage cannot establish anything
+          // about disconnected SD cards or unindexed/legacy URI volumes.
+          final parsed = Uri.tryParse(uri);
+          final volume = parsed == null || parsed.pathSegments.isEmpty
+              ? null : parsed.pathSegments.first;
+          if (volume != null &&
+              scannedVolumes.contains(volume) &&
+              !availableMediaUris.contains(uri)) {
+            removed++;
+            continue;
+          }
         }
       } catch (_) {
         // Preserve unknown entries rather than guessing their identity.
