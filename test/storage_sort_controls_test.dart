@@ -1,8 +1,64 @@
 import 'package:docs_grid/core/widgets/storage_sort_controls.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
+  setUp(() => SharedPreferences.setMockInitialValues({}));
+
+  test('Phone and Grid sort defaults are saved and restored independently', () async {
+    expect(await StorageSortPreference.load(StorageSortPreference.phoneKey), isNull);
+    expect(await StorageSortPreference.load(StorageSortPreference.gridKey), isNull);
+    await StorageSortPreference.save(
+      StorageSortPreference.phoneKey,
+      field: StorageSortField.date,
+      ascending: false,
+      explicit: true,
+    );
+    await StorageSortPreference.save(
+      StorageSortPreference.gridKey,
+      field: StorageSortField.name,
+      ascending: true,
+      explicit: false,
+    );
+    final phone = await StorageSortPreference.load(StorageSortPreference.phoneKey);
+    final grid = await StorageSortPreference.load(StorageSortPreference.gridKey);
+    expect(phone?.field, StorageSortField.date);
+    expect(phone?.ascending, isFalse);
+    expect(phone?.explicit, isTrue);
+    expect(grid?.field, StorageSortField.name);
+    expect(grid?.ascending, isTrue);
+    expect(grid?.explicit, isFalse,
+        reason: 'Existing Grid manual folder order remains the default.');
+  });
+
+  test('rapid direction and field changes retain last saved choice', () async {
+    final calls = [
+      StorageSortPreference.save(
+        StorageSortPreference.phoneKey,
+        field: StorageSortField.date, ascending: true, explicit: true,
+      ),
+      StorageSortPreference.save(
+        StorageSortPreference.phoneKey,
+        field: StorageSortField.date, ascending: false, explicit: true,
+      ),
+      StorageSortPreference.save(
+        StorageSortPreference.phoneKey,
+        field: StorageSortField.name, ascending: false, explicit: true,
+      ),
+    ];
+    await Future.wait(calls);
+    final saved = await StorageSortPreference.load(StorageSortPreference.phoneKey);
+    expect(saved?.field, StorageSortField.name);
+    expect(saved?.ascending, isFalse);
+  });
+
+  test('corrupt saved sort settings preserve screen defaults', () async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(StorageSortPreference.gridKey, '{bad JSON');
+    expect(await StorageSortPreference.load(StorageSortPreference.gridKey), isNull);
+  });
+
   test('Name sorting is case-insensitive in both directions', () {
     expect(compareStorageItems(
       nameA: 'alpha.pdf', nameB: 'Zulu.pdf',
