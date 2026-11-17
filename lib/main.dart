@@ -3,7 +3,6 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:open_filex/open_filex.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'features/documents/presentation/documents_screen.dart';
@@ -184,20 +183,9 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
         return;
       }
       await DocumentRepository().markOpened(document);
-      final isProviderUri = document.storagePath.startsWith('content://') ||
-          document.storagePath.startsWith('file://');
-      if (isProviderUri) {
-        await StorageLocationService.instance.openPdf(document.storagePath);
-      } else {
-        final file = File(document.storagePath);
-        if (!await file.exists()) {
-          throw StateError('The PDF file is missing from local storage.');
-        }
-        final result = await OpenFilex.open(document.storagePath);
-        if (result.type != ResultType.done) {
-          throw StateError(result.message.isEmpty ? 'No PDF viewer is available.' : result.message);
-        }
-      }
+      await StorageLocationService.instance.openPdf(
+        document.storagePath, gridPdf: true,
+      );
     } catch (error) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
