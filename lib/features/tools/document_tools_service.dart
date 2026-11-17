@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:isolate';
@@ -24,6 +25,7 @@ import 'backup_archive_limits.dart';
 import 'backup_schema_compatibility.dart';
 import 'backup_folder_graph_validator.dart';
 import 'portable_snapshot_manifest.dart';
+import 'portable_snapshot_retention.dart';
 import 'portable_snapshot_rows_validator.dart';
 
 
@@ -76,6 +78,17 @@ class DocumentToolsService {
 
   final AppDatabase _database;
   static const _uuid = Uuid();
+  // Snapshot publication/cleanup and restore must not overlap, including calls
+  // made through different service instances in the foreground isolate.
+  static Future<void> _recoveryTail = Future<void>.value();
+  static Future<T> _withRecoveryLock<T>(Future<T> Function() action) async {
+    final previous = _recoveryTail;
+    final done = Completer<void>();
+    _recoveryTail = done.future;
+    await previous;
+    try { return await action(); } finally { done.complete(); }
+  }
+
 
   /// Hashes untrusted IDs before using them as restore path segments.
   @visibleForTesting
@@ -1126,6 +1139,7 @@ class DocumentToolsService {
   /// is tried; Database archives are used only after every Full archive fails.
   Future<int?> restoreNewestPortableBackup({
     Future<bool> Function(int pdfCount)? confirm,
+    Future<bool> Function(Map<String, int> preview)? confirmPlan,
   }) async {
     await StorageMigrationGate.waitUntilReady();
     final candidates = await listPortableBackupArchives();
@@ -1171,7 +1185,7 @@ class DocumentToolsService {
     try {
       for (final item in classified) {
         try {
-          return await restoreBackup(item.file, confirm: confirm);
+          return await restoreBackup(item.file, confirm: confirm, confirmPlan: confirmPlan);
         } catch (error) {
           lastError = error;
         }
@@ -1237,9 +1251,22 @@ class DocumentToolsService {
   Future<int?> restoreBackup(
     File zipFile, {
     Future<bool> Function(int pdfCount)? confirm,
+    Future<bool> Function(Map<String, int> preview)? confirmPlan,
+    BackupRestoreMode mode = BackupRestoreMode.merge,
+    Set<BackupRestoreSection>? selection,
+  }) => _withRecoveryLock(() => _restoreBackupLocked(
+    zipFile, confirm: confirm, mode: mode, selection: selection,
+    confirmPlan: confirmPlan,
+  ));
+
+Future<int?> _restoreBackupLocked(
+    File zipFile, {
+    Future<bool> Function(int pdfCount)? confirm,
+    Future<bool> Function(Map<String, int> preview)? confirmPlan,
     BackupRestoreMode mode = BackupRestoreMode.merge,
     Set<BackupRestoreSection>? selection,
   }) async {
+
     await StorageMigrationGate.waitUntilReady();
     final backup = await _decodeValidatedBackup(zipFile);
     try {
@@ -1342,22 +1369,25 @@ class DocumentToolsService {
         return await _restoreValidatedBackup(
           selectiveBackup,
           restoreMode: BackupRestoreMode.selective.name,
+          confirmPlan: confirmPlan,
         );
       }
       return await _restoreValidatedBackup(
         backup,
         replaceExisting: mode == BackupRestoreMode.fullReplacement,
         restoreMode: mode.name,
+        confirmPlan: confirmPlan,
       );
     } finally {
       await backup.dispose();
     }
   }
 
-  Future<int> _restoreValidatedBackup(
+  Future<int?> _restoreValidatedBackup(
     _ValidatedBackup backup, {
     bool replaceExisting = false,
     String restoreMode = 'merge',
+    Future<bool> Function(Map<String, int> preview)? confirmPlan,
   }) async {
     final manifest = backup.manifest;
     final rowsByTable = backup.rowsByTable;
@@ -1369,11 +1399,14 @@ class DocumentToolsService {
       for (final row in rowsByTable['documents']!) row['id'] as String: row,
     };
     final db = await _database.database;
+    final inventoryRevision = await _database.portableSnapshotRevision();
     // Keep every persisted ID for collision detection, but only active folders
     // participate in path matching. A soft-deleted row still owns its primary key.
-    final existingFolderRows = replaceExisting
-        ? <Map<String, Object?>>[]
-        : await db.query('folders', columns: ['id', 'name', 'parent_id', 'deleted_at']);
+    final existingFolderRows = await db.query('folders');
+    BackupFolderGraphValidator.validate(folderRows);
+    for (final row in folderRows) {
+      FolderRepository.validateFolderName(row['name'] as String);
+    }
     final existingFolders = existingFolderRows
         .where((row) => row['deleted_at'] == null)
         .toList(growable: false);
@@ -1395,7 +1428,11 @@ class DocumentToolsService {
     }
     for (final row in existingFolders) {
       final id = row['id'] as String;
-      existingFolderIdsByPath[existingFolderPath(id, <String>{})] = id;
+      final path = existingFolderPath(id, <String>{}).toLowerCase();
+      if (existingFolderIdsByPath.containsKey(path)) {
+        throw StateError('Folder conflict: multiple active folders at $path. Cancel restore and resolve the mapping first.');
+      }
+      existingFolderIdsByPath[path] = id;
     }
     final backupFolderPaths = <String, String>{};
     String backupFolderPath(String id) {
@@ -1410,37 +1447,93 @@ class DocumentToolsService {
       return path;
     }
     final folderIdMap = <String, String>{};
-    final folderNameOverrides = <String, String>{};
-    for (final row in folderRows) {
+    final matchedFolderIds = <String>{};
+    for (final row in BackupFolderGraphValidator.parentFirst(folderRows)) {
       final oldId = row['id'] as String;
-      final samePathExists = existingFolderIdsByPath.containsKey(backupFolderPath(oldId));
-      folderIdMap[oldId] = existingFolderIds.contains(oldId) || samePathExists
-          ? _uuid.v4()
-          : oldId;
-      if (samePathExists) {
-        folderNameOverrides[oldId] = '${row['name']} (restored)';
+      final match = row['deleted_at'] == null
+          ? existingFolderIdsByPath[backupFolderPath(oldId).toLowerCase()]
+          : null;
+      if (match != null) {
+        final candidate = existingFolderRowsById[match]!;
+        // Path + independent identity evidence; names or IDs alone are unsafe.
+        if (match != oldId && candidate['created_at'] != row['created_at']) {
+          throw StateError('Folder conflict: ${backupFolderPath(oldId)} has a different identity. No files were imported.');
+        }
+        folderIdMap[oldId] = replaceExisting ? oldId : match;
+        matchedFolderIds.add(oldId);
+      } else {
+        folderIdMap[oldId] = !replaceExisting && existingFolderIds.contains(oldId)
+            ? _uuid.v5(Uuid.NAMESPACE_URL, 'DocsGrid/folder/${manifest['backupId']}/$oldId')
+            : oldId;
       }
     }
-    final existingDocuments = replaceExisting
-        ? <Map<String, Object?>>[]
-        : await db.query('documents', columns: ['id', 'sha256']);
+    final existingDocuments = await db.query('documents');
     final existingDocumentIds = existingDocuments.map((row) => row['id'] as String).toSet();
-    final existingDocumentIdsByHash = <String, String>{
-      for (final row in existingDocuments)
-        if (row['sha256'] is String && (row['sha256'] as String).isNotEmpty)
-          row['sha256'] as String: row['id'] as String,
-    };
+    final verifiedPathsByHash = <String, String>{};
+    final verifiedDocumentIds = <String>{};
+    for (final row in existingDocuments) {
+      final digest = row['sha256'] as String?;
+      final uri = row['storage_uri'] as String?;
+      if (digest == null || uri == null || uri.startsWith('missing://')) continue;
+      try {
+        final actual = uri.startsWith('content://')
+            ? await StorageLocationService.instance.sha256Pdf(uri)
+            : (await sha256.bind(File(uri.startsWith('file://')
+                ? Uri.parse(uri).toFilePath() : uri).openRead()).first).toString();
+        if (actual == digest) {
+          verifiedDocumentIds.add(row['id'] as String);
+          verifiedPathsByHash.putIfAbsent(digest, () => uri);
+        }
+      } catch (_) { /* Missing bytes are never treated as restored. */ }
+    }
+    final sourceHashes = <String>{};
+    for (final row in rowsByTable['documents']!) {
+      final hash = row['sha256'] as String?;
+      if (hash != null && hash.isNotEmpty && !sourceHashes.add(hash)) {
+        throw StateError('Document conflict: multiple logical references share PDF bytes in this archive. No references were merged.');
+      }
+    }
     final documentIdMap = <String, String>{};
     final duplicateDocumentIds = <String>{};
+    final relinkedPaths = <String, String>{};
+    final repairDocumentIds = <String>{};
     for (final row in rowsByTable['documents']!) {
       final oldId = row['id'] as String;
       final digest = row['sha256'] as String?;
-      final duplicateId = digest == null ? null : existingDocumentIdsByHash[digest];
-      if (duplicateId != null) {
-        documentIdMap[oldId] = duplicateId;
+      final oldFolder = row['folder_id'] as String?;
+      final mappedFolder = oldFolder == null ? null : folderIdMap[oldFolder];
+      final stableId = _uuid.v5(Uuid.NAMESPACE_URL,
+          'DocsGrid/document/${manifest['backupId']}/$oldId');
+      final matches = existingDocuments.where((candidate) =>
+          (candidate['id'] == oldId || candidate['id'] == stableId) &&
+          candidate['sha256'] == digest && candidate['folder_id'] == mappedFolder &&
+          candidate['deleted_at'] == row['deleted_at']);
+      final match = matches.isEmpty ? null : matches.first;
+      if (!replaceExisting && match != null &&
+          verifiedDocumentIds.contains(match['id'])) {
+        documentIdMap[oldId] = match['id'] as String;
         duplicateDocumentIds.add(oldId);
       } else {
-        documentIdMap[oldId] = existingDocumentIds.contains(oldId) ? _uuid.v4() : oldId;
+        if (!replaceExisting && match != null) {
+          documentIdMap[oldId] = match['id'] as String;
+          repairDocumentIds.add(oldId);
+        } else {
+          documentIdMap[oldId] = !replaceExisting && existingDocumentIds.contains(oldId)
+              ? stableId : oldId;
+          if (!replaceExisting && existingDocumentIds.contains(documentIdMap[oldId])) {
+            throw StateError('Document identity conflict: ${row['name']}');
+          }
+        }
+        final verified = verifiedPathsByHash[digest];
+        if (verified != null) {
+          // Sharing one physical file across independent records is unsafe with
+          // the current permanent-delete/move semantics. Require resolution;
+          // never collapse logical relationships just because hashes match.
+          if (!replaceExisting && match == null) {
+            throw StateError('Document conflict: ${row['name']} has matching bytes but a different logical record. Existing references are preserved; cancel and resolve before importing.');
+          }
+          relinkedPaths[oldId] = verified;
+        }
       }
     }
     // A ZIP is untrusted input. Validate parent links before creating any
@@ -1470,7 +1563,7 @@ class DocumentToolsService {
     final fallbackRoot = p.join(
       (await getApplicationDocumentsDirectory()).path,
       'DocsGrid',
-      'Restored',
+      'Library',
     );
     final unfiledRoot = Directory(
       portableUnfiledUri != null && portableUnfiledUri.startsWith('file://')
@@ -1482,49 +1575,112 @@ class DocumentToolsService {
           ? Uri.parse(portableFoldersUri).toFilePath()
           : p.join(fallbackRoot, 'Folders'),
     );
-    final restoreStamp = 'Restored_${DateTime.now().microsecondsSinceEpoch}';
-    final restoreRoot = Directory(p.join(unfiledRoot.path, restoreStamp));
-    final folderRestoreRoot = Directory(p.join(foldersRoot.path, restoreStamp));
-    final usesFallbackFoldersRoot =
-        portableFoldersUri == null || !portableFoldersUri.startsWith('file://');
-    await restoreRoot.create(recursive: true);
-    if (folderRows.isNotEmpty) await folderRestoreRoot.create(recursive: true);
+    final restoreRoot = unfiledRoot;
     final fileRows = rowsByTable['documents']!.isEmpty
         ? <Map<String, dynamic>>[]
         : (manifest['files'] as List<dynamic>).cast<Map<String, dynamic>>();
-    final restoredPaths = <String, String>{};
+    final restoredPaths = <String, String>{...relinkedPaths};
     final folderPaths = <String, String>{};
-    final folderDirectoryNames = <String, String>{
-      for (final row in folderRows)
-        (row['id'] as String): '${(folderNameOverrides[row['id']] ?? row['name'] as String).replaceAll(RegExp(r'[^A-Za-z0-9 _.-]'), '_').trim()}_${safeRestorePathToken(row['id'] as String).substring(0, 8)}',
-    };
-    String folderPath(String id) {
-      final known = folderPaths[id];
-      if (known != null) return known;
-      final unresolved = <String>[];
-      String? current = id;
-      while (current != null && !folderPaths.containsKey(current)) {
-        unresolved.add(current);
-        final row = folderRowsById[current];
-        if (row == null) throw StateError('Backup contains an unknown folder reference.');
-        current = row['parent_id'] as String?;
+    final createdFiles = <String>[];
+    final createdDirectories = <String>[];
+    final claimedPaths = <String, String>{};
+    for (final row in BackupFolderGraphValidator.parentFirst(folderRows)) {
+      final id = row['id'] as String;
+      final parentId = row['parent_id'] as String?;
+      final parentPath = parentId == null ? foldersRoot.path : folderPaths[parentId]!;
+      var path = p.join(parentPath, row['name'] as String);
+      if (matchedFolderIds.contains(id)) {
+        final existingId = existingFolderIdsByPath[backupFolderPath(id).toLowerCase()]!;
+        final uri = existingFolderRowsById[existingId]!['storage_uri_or_relative_path'] as String?;
+        if (uri != null && uri.isNotEmpty) {
+          if (uri.startsWith('content://')) {
+            throw StateError('Folder conflict: SAF destination requires explicit relinking before ZIP restore: ${row['name']}');
+          }
+          path = uri.startsWith('file://') ? Uri.parse(uri).toFilePath() : uri;
+          if (!p.isAbsolute(path) || !await Directory(path).exists()) {
+            throw StateError('Folder mapping is unavailable: ${row['name']}. Restore storage access before retrying.');
+          }
+        }
       }
-      var base = current == null ? folderRestoreRoot.path : folderPaths[current]!;
-      for (final folderId in unresolved.reversed) {
-        base = p.join(base, folderDirectoryNames[folderId]!);
-        folderPaths[folderId] = base;
+      path = p.normalize(p.absolute(path));
+      if (await FileSystemEntity.type(path, followLinks: false) == FileSystemEntityType.link) {
+        throw StateError('Folder conflict: symbolic link at $path');
       }
-      return folderPaths[id]!;
+      // Deleted records must never claim the active hierarchy or its files.
+      if (row['deleted_at'] != null || existingFolderRows.any((candidate) =>
+          candidate['deleted_at'] != null &&
+          (candidate['storage_uri_or_relative_path'] == path ||
+           candidate['storage_uri_or_relative_path'] == Uri.file(path).toString()))) {
+        throw StateError('Recycle Bin folder conflict: ${row['name']}. Restore it separately before importing this ZIP.');
+      }
+      if (claimedPaths.containsKey(path)) throw StateError('Ambiguous destination: $path');
+      claimedPaths[path] = id;
+      if (await Directory(path).exists()) await Directory(path).list().drain<void>();
+      folderPaths[id] = path;
     }
+    String folderPath(String id) => folderPaths[id]!;
+    // Hash surviving managed PDFs once, including files whose DB rows were lost.
+    for (final directory in <String>{unfiledRoot.path, ...folderPaths.values}) {
+      if (!await Directory(directory).exists()) continue;
+      await for (final entry in Directory(directory).list(followLinks: false)) {
+        if (entry is! File || !entry.path.toLowerCase().endsWith('.pdf')) continue;
+        final digest = (await sha256.bind(entry.openRead()).first).toString();
+        verifiedPathsByHash.putIfAbsent(digest, () => entry.path);
+      }
+    }
+    for (final row in rowsByTable['documents']!) {
+      final id = row['id'] as String;
+      if (duplicateDocumentIds.contains(id)) continue;
+      final path = verifiedPathsByHash[row['sha256']];
+      if (path != null) {
+        if (!replaceExisting && !repairDocumentIds.contains(id) &&
+            existingDocuments.any((live) => live['sha256'] == row['sha256'])) {
+          throw StateError('Document conflict: ${row['name']} has another existing logical reference.');
+        }
+        restoredPaths.putIfAbsent(id, () => path);
+      }
+    }
+    final preview = <String, int>{
+      'folders': folderRows.length,
+      'matchedFolders': matchedFolderIds.length,
+      'newFolders': folderPaths.values.where((path) => !Directory(path).existsSync()).length,
+      'documents': rowsByTable['documents']!.length,
+      'verifiedPdfs': duplicateDocumentIds.length + restoredPaths.length,
+      'newPdfs': fileRows.where((row) => !duplicateDocumentIds.contains(row['documentId']) &&
+          !restoredPaths.containsKey(row['documentId'])).length,
+      'needsRelinking': rowsByTable['documents']!.where((row) =>
+          !duplicateDocumentIds.contains(row['id']) && !restoredPaths.containsKey(row['id']) &&
+          !backup.stagedPdfPaths.containsKey(row['id'])).length,
+      'conflicts': 0,
+    };
+    if (confirmPlan != null && !await confirmPlan(preview)) return null;
+    // Durable journal precedes all library writes. Interrupted operations retain
+    // their new files for verified reuse on retry; no broad recursive rollback.
+    final journalDirectory = Directory(p.join(
+        (await getApplicationSupportDirectory()).path, 'docsgrid', 'recovery', 'operations'));
+    await journalDirectory.create(recursive: true);
+    final journal = File(p.join(journalDirectory.path, '${_uuid.v4()}.json'));
+    Future<void> writeJournal(String status) => journal.writeAsString(jsonEncode({
+      'format': 'DocsGridRestoreOperation', 'version': 1,
+      'backupId': manifest['backupId'], 'status': status,
+      'createdFiles': createdFiles, 'createdDirectories': createdDirectories,
+      'folderPaths': folderPaths,
+    }), flush: true).then((_) {});
+    await writeJournal('planned');
 
     var databaseCommitted = false;
     try {
       for (final row in folderRows) {
-        await Directory(folderPath(row['id'] as String)).create(recursive: true);
+        final directory = Directory(folderPath(row['id'] as String));
+        if (!await directory.exists()) {
+          createdDirectories.add(directory.path);
+          await writeJournal('creatingFolders');
+          await directory.create(recursive: true);
+        }
       }
       for (final item in fileRows) {
         final id = item['documentId'] as String;
-        if (duplicateDocumentIds.contains(id)) continue;
+        if (duplicateDocumentIds.contains(id) || restoredPaths.containsKey(id)) continue;
         final document = documentsById[id];
         if (document == null) throw StateError('Backup contains an unknown document reference.');
         final folderId = document['folder_id'] as String?;
@@ -1543,6 +1699,8 @@ class DocumentToolsService {
         final destination = File(p.join(destinationDir.path, '${_uuid.v4()}_$safeName'));
         final stagedPath = backup.stagedPdfPaths[id];
         if (stagedPath == null) throw StateError('Backup is missing staged PDF bytes.');
+        createdFiles.add(destination.path);
+        await writeJournal('copying');
         await File(stagedPath).copy(destination.path);
         final digest = (await sha256.bind(destination.openRead()).first).toString();
         if (digest != item['sha256']) {
@@ -1552,8 +1710,13 @@ class DocumentToolsService {
         restoredPaths[id] = destination.path;
       }
 
+      await writeJournal('filesVerified');
       final restoredReminderRows = <Map<String, Object?>>[];
       await db.transaction((txn) async {
+        final revision = await txn.query('portable_snapshot_state', columns: ['revision'], where: 'id = 1');
+        if (revision.single['revision'] != inventoryRevision) {
+          throw StateError('The library changed during restore preview. Retry to generate a fresh plan.');
+        }
         if (replaceExisting) {
           // Dependent rows are removed before parents. SQLite rolls the
           // complete replacement back if any insert or constraint fails.
@@ -1591,9 +1754,15 @@ class DocumentToolsService {
 
         for (final row in BackupFolderGraphValidator.parentFirst(folderRows)) {
           final oldId = row['id'] as String;
+          if (!replaceExisting && matchedFolderIds.contains(oldId)) {
+            await txn.update('folders', {
+              'storage_uri_or_relative_path': Platform.isAndroid
+                  ? Uri.file(folderPath(oldId)).toString() : folderPath(oldId),
+            }, where: 'id = ?', whereArgs: [folderIdMap[oldId]]);
+            continue;
+          }
           final copy = Map<String, Object?>.from(row);
           copy['id'] = folderIdMap[oldId];
-          copy['name'] = folderNameOverrides[oldId] ?? row['name'];
           final oldParentId = row['parent_id'] as String?;
           copy['parent_id'] = oldParentId == null ? null : folderIdMap[oldParentId];
           // Folder storage columns contain URIs, not bare filesystem paths.
@@ -1662,7 +1831,21 @@ class DocumentToolsService {
           // while marking unavailable PDF payloads for explicit relinking.
           copy['storage_uri'] = restored ?? 'missing://$oldId';
           copy['relative_path'] = null;
-          queueInsert('documents', copy);
+          if (restored == null) {
+            final raw = copy['metadata_json'];
+            final metadata = raw is String && raw.isNotEmpty
+                ? Map<String, dynamic>.from(jsonDecode(raw) as Map) : <String, dynamic>{};
+            metadata['docsGridRecoveryStatus'] = 'pdf_missing_relink_required';
+            copy['metadata_json'] = jsonEncode(metadata);
+          }
+          if (repairDocumentIds.contains(oldId)) {
+            await txn.update('documents', {
+              'storage_uri': copy['storage_uri'], 'relative_path': null,
+              'metadata_json': copy['metadata_json'],
+            }, where: 'id = ?', whereArgs: [documentIdMap[oldId]]);
+          } else {
+            queueInsert('documents', copy);
+          }
           if (pending >= 500) await flushBatch();
         }
         for (final row in rowsByTable['document_tags']!) {
@@ -1691,11 +1874,18 @@ class DocumentToolsService {
         for (final row in rowsByTable['reminders']!) {
           final copy = Map<String, Object?>.from(row);
           final oldId = row['id'] as String;
-          copy['id'] = existingReminderIds.contains(oldId) ? _uuid.v4() : oldId;
+          copy['id'] = oldId;
           final oldDocumentId = row['document_id'] as String?;
           copy['document_id'] = oldDocumentId == null
               ? null
               : (documentIdMap[oldDocumentId] ?? oldDocumentId);
+          if (existingReminderIds.contains(oldId)) {
+            final current = (await txn.query('reminders', where: 'id = ?', whereArgs: [oldId])).single;
+            if (copy.entries.any((entry) => current[entry.key] != entry.value)) {
+              throw StateError('reminders identity conflict: $oldId. Existing metadata was preserved.');
+            }
+            continue;
+          }
           queueInsert('reminders', copy);
           restoredReminderRows.add(copy);
           existingReminderIds.add(copy['id'] as String);
@@ -1704,11 +1894,18 @@ class DocumentToolsService {
         for (final row in rowsByTable['history']!) {
           final copy = Map<String, Object?>.from(row);
           final oldId = row['id'] as String;
-          copy['id'] = existingHistoryIds.contains(oldId) ? _uuid.v4() : oldId;
+          copy['id'] = oldId;
           final oldDocumentId = row['document_id'] as String?;
           copy['document_id'] = oldDocumentId == null
               ? null
               : (documentIdMap[oldDocumentId] ?? oldDocumentId);
+          if (existingHistoryIds.contains(oldId)) {
+            final current = (await txn.query('history', where: 'id = ?', whereArgs: [oldId])).single;
+            if (copy.entries.any((entry) => current[entry.key] != entry.value)) {
+              throw StateError('history identity conflict: $oldId. Existing metadata was preserved.');
+            }
+            continue;
+          }
           queueInsert('history', copy);
           existingHistoryIds.add(copy['id'] as String);
           if (pending >= 500) await flushBatch();
@@ -1757,6 +1954,7 @@ class DocumentToolsService {
         await flushBatch();
       });
       databaseCommitted = true;
+      try { await writeJournal('committed'); } catch (_) { /* DB is authoritative. */ }
       for (final row in restoredReminderRows) {
         if ((row['enabled'] as int? ?? 0) != 1 || row['status'] == 'completed') continue;
         try {
@@ -1803,22 +2001,19 @@ class DocumentToolsService {
       } catch (_) {
         // A report write failure must not roll back an already committed restore.
       }
-      return restoredPaths.length;
+      return createdFiles.length;
     } catch (_) {
       if (!databaseCommitted) {
-        try {
-          if (await restoreRoot.exists()) await restoreRoot.delete(recursive: true);
-        } catch (_) {}
-        try {
-          if (await folderRestoreRoot.exists()) {
-            await folderRestoreRoot.delete(recursive: true);
-          }
-          if (usesFallbackFoldersRoot &&
-              await foldersRoot.exists() &&
-              await foldersRoot.list().isEmpty) {
-            await foldersRoot.delete();
-          }
-        } catch (_) {}
+        for (final path in createdFiles) {
+          try { if (await File(path).exists()) await File(path).delete(); } catch (_) {}
+        }
+        for (final path in createdDirectories.reversed) {
+          try {
+            final directory = Directory(path);
+            if (await directory.exists() && await directory.list().isEmpty) await directory.delete();
+          } catch (_) {}
+        }
+        await writeJournal('rolledBack');
       }
       rethrow;
     }
@@ -1827,7 +2022,10 @@ class DocumentToolsService {
   /// Writes a versioned, verified metadata snapshot into the user-selected
   /// DocsGrid/System/Database folder. PDF bytes remain in the library folder;
   /// documents.json retains their relative paths and SHA-256 values.
-  Future<String> createPortableMetadataSnapshot() async {
+  Future<String> createPortableMetadataSnapshot() =>
+      _withRecoveryLock(_createPortableMetadataSnapshotLocked);
+
+  Future<String> _createPortableMetadataSnapshotLocked() async {
     await StorageMigrationGate.waitUntilReady();
     final locations = await StorageLocationService.instance.portableDataLocationsIfAvailable();
     if (locations['databaseUri'] == null) {
@@ -1857,6 +2055,12 @@ class DocumentToolsService {
         rowsByTable: rowsByTable,
       );
     });
+    final state = await db.query('portable_snapshot_state', where: 'id = 1');
+    if (state.isNotEmpty &&
+        state.single['last_snapshot_revision'] == snapshotCapture.revision &&
+        state.single['last_snapshot_name'] is String) {
+      return state.single['last_snapshot_name'] as String;
+    }
     final capturedRevision = snapshotCapture.revision;
     final capturedRows = snapshotCapture.rowsByTable;
     if (!tableNames.contains('documents') || !tableNames.contains('folders')) {
@@ -1913,12 +2117,19 @@ class DocumentToolsService {
         name: 'manifest.json',
         contents: jsonEncode(manifest),
       );
+      // Read back the published bytes, counts, schema and graph before clean.
+      await _readVerifiedSnapshot(snapshotUri);
       // If any durable record changed during export, the revision mismatch
       // deliberately leaves the snapshot dirty for the next coalesced pass.
       await _database.markPortableSnapshotClean(
         capturedRevision: capturedRevision,
         snapshotName: snapshotName,
       );
+      try {
+        await _prunePortableSnapshots(locations['databaseUri']!, snapshotUri);
+      } catch (error) {
+        snapshotDiagnostics = {...snapshotDiagnostics, 'cleanupError': '$error'};
+      }
       return snapshotName;
     } catch (_) {
       // Keep the incomplete directory for diagnostics; without manifest it
@@ -1927,54 +2138,8 @@ class DocumentToolsService {
     }
   }
 
-  /// Returns the newest fully verified snapshot, skipping incomplete or
-  /// damaged snapshots left by an interrupted export. A broken newest folder
-  /// must not hide an older recoverable snapshot.
-  Future<Map<String, Object?>?> _findLatestVerifiedPortableSnapshot() async {
+  Future<Map<String, Object?>> _readVerifiedSnapshot(String snapshotUri) async {
     final storage = StorageLocationService.instance;
-    final locations = await storage.portableDataLocations();
-    final databaseUris = <String>[locations['databaseUri']!];
-    final legacyUri = locations['legacyRootUri'];
-    if (legacyUri != null && legacyUri.startsWith('file://')) {
-      final legacyRoot = Uri.parse(legacyUri).toFilePath();
-      for (final path in [
-        p.join(legacyRoot, 'Database'),
-        p.join(legacyRoot, 'System', 'Database'),
-      ]) {
-        final directory = Directory(path);
-        if (await directory.exists()) {
-          databaseUris.add(Uri.directory(directory.path).toString());
-        }
-      }
-    }
-    final snapshots = <Map<String, Object?>>[];
-    for (final databaseUri in databaseUris.toSet()) {
-      try {
-        final children = await storage.listDirectory(databaseUri);
-        snapshots.addAll(children.where((entry) =>
-            entry['isDirectory'] == true &&
-            entry['name'] is String &&
-            (entry['name'] as String).startsWith('snapshot_')));
-      } catch (_) {
-        // One missing legacy location must not hide valid snapshots elsewhere.
-      }
-    }
-    snapshots.sort((a, b) =>
-        (b['name'] as String).compareTo(a['name'] as String));
-
-    // A reinstall can create a newer, valid-but-empty snapshot before the
-    // previous portable tree is selected. Timestamp-only selection would then
-    // restore built-in folders/categories from the empty install and silently
-    // ignore the older snapshot containing the user's PDFs and metadata.
-    // Validate every candidate and prefer the snapshot with the most document
-    // records, then the most total records; use timestamp only as a tie-breaker.
-    Map<String, Object?>? bestSnapshot;
-    var bestDocumentCount = -1;
-    var bestRecordCount = -1;
-
-    for (final snapshot in snapshots) {
-      try {
-        final snapshotUri = snapshot['uri'] as String;
         final manifestText = await storage.readTextFile(
           await _findChildUri(snapshotUri, 'manifest.json'),
         );
@@ -2076,6 +2241,139 @@ class DocumentToolsService {
           }
         }
 
+    PortableSnapshotManifest.validateRelations(rowsByTable);
+    return {'manifestText': manifestText, 'manifest': manifest,
+      'rows': rowsByTable, 'documents': documentRows.length,
+      'records': rowsByTable.values.fold<int>(0, (n, rows) => n + rows.length)};
+  }
+
+  /// Internal diagnostics; no additional dashboard or snapshot format change.
+  static Map<String, Object?> snapshotDiagnostics = {};
+
+  Future<void> _prunePortableSnapshots(String databaseUri, String publishedUri) async {
+    final storage = StorageLocationService.instance;
+    final entries = await storage.listDirectory(databaseUri);
+    final points = <VerifiedSnapshotPoint>[];
+    final manifests = <String, PortableSnapshotManifest>{};
+    var invalid = 0;
+    var totalBytes = 0;
+    for (final entry in entries) {
+      if (entry['isDirectory'] != true ||
+          !(entry['name'] as String? ?? '').startsWith('snapshot_')) continue;
+      try {
+        final uri = entry['uri'] as String;
+        final verified = await _readVerifiedSnapshot(uri);
+        final raw = jsonDecode(verified['manifestText'] as String) as Map;
+        // Missing ownership/time data in legacy snapshots means retain, not delete.
+        if (raw['app'] != 'DocsGrid' || raw['createdAtUtc'] is! String ||
+            !(raw['createdAtUtc'] as String).endsWith('Z')) continue;
+        final at = DateTime.parse(raw['createdAtUtc'] as String);
+        final manifest = verified['manifest'] as PortableSnapshotManifest;
+        final children = await storage.listDirectory(uri);
+        final expected = {'manifest.json', ...manifest.files.map((f) => f.path)};
+        if (children.length != expected.length || children.any((child) =>
+            child['isDirectory'] == true || !expected.contains(child['name']))) continue;
+        final bytes = manifest.files.fold<int>(0, (n, file) => n + file.sizeBytes) +
+            utf8.encode(verified['manifestText'] as String).length;
+        totalBytes += bytes;
+        points.add(VerifiedSnapshotPoint(uri: uri, createdAt: at,
+            documentCount: verified['documents'] as int, sizeBytes: bytes));
+        manifests[uri] = manifest;
+      } catch (_) { invalid++; }
+    }
+    final keep = const PortableSnapshotRetention().keep(points, DateTime.now(),
+        protectedUris: {publishedUri});
+    var freed = 0;
+    var removed = 0;
+    // The same gate protects the complete restore, not just snapshot selection.
+    // Only file-backed snapshots can be removed safely without provider-specific
+    // recursive-delete races. SAF and all unknown/incomplete directories remain.
+    for (final point in points) {
+      if (keep.contains(point.uri) || !point.uri.startsWith('file://')) continue;
+      final directory = Directory.fromUri(Uri.parse(point.uri));
+      try {
+        if (await FileSystemEntity.type(directory.path, followLinks: false) !=
+            FileSystemEntityType.directory) continue;
+        final children = await directory.list(followLinks: false).toList();
+        final expected = {'manifest.json', ...manifests[point.uri]!.files.map((f) => f.path)};
+        if (children.length != expected.length || children.any((child) =>
+            child is! File || !expected.contains(p.basename(child.path)))) continue;
+        await _readVerifiedSnapshot(point.uri);
+        // Invalidate recovery first. Never recursively remove an unknown child.
+        await File(p.join(directory.path, 'manifest.json')).delete();
+        for (final file in manifests[point.uri]!.files) {
+          await File(p.join(directory.path, file.path)).delete();
+        }
+        await directory.delete();
+        freed += point.sizeBytes;
+        removed++;
+      } catch (_) { break; } // Fail closed; leave all other recovery points.
+    }
+    final times = points.map((point) => point.createdAt).toList()..sort();
+    snapshotDiagnostics = {
+      'snapshotDirectories': entries.where((e) => e['isDirectory'] == true &&
+          (e['name'] as String? ?? '').startsWith('snapshot_')).length,
+      'verifiedSnapshots': points.length, 'invalidOrIncomplete': invalid,
+      'verifiedBytesBeforeCleanup': totalBytes, 'freedBytes': freed,
+      'removedSnapshots': removed, 'lastCreationResult': 'verified',
+      'oldestUtc': times.isEmpty ? null : times.first.toIso8601String(),
+      'newestUtc': times.isEmpty ? null : times.last.toIso8601String(),
+    };
+  }
+
+  /// Returns the newest fully verified snapshot, skipping incomplete or
+  /// damaged snapshots left by an interrupted export. A broken newest folder
+  /// must not hide an older recoverable snapshot.
+  Future<Map<String, Object?>?> _findLatestVerifiedPortableSnapshot() async {
+    final storage = StorageLocationService.instance;
+    final locations = await storage.portableDataLocations();
+    final databaseUris = <String>[locations['databaseUri']!];
+    final legacyUri = locations['legacyRootUri'];
+    if (legacyUri != null && legacyUri.startsWith('file://')) {
+      final legacyRoot = Uri.parse(legacyUri).toFilePath();
+      for (final path in [
+        p.join(legacyRoot, 'Database'),
+        p.join(legacyRoot, 'System', 'Database'),
+      ]) {
+        final directory = Directory(path);
+        if (await directory.exists()) {
+          databaseUris.add(Uri.directory(directory.path).toString());
+        }
+      }
+    }
+    final snapshots = <Map<String, Object?>>[];
+    for (final databaseUri in databaseUris.toSet()) {
+      try {
+        final children = await storage.listDirectory(databaseUri);
+        snapshots.addAll(children.where((entry) =>
+            entry['isDirectory'] == true &&
+            entry['name'] is String &&
+            (entry['name'] as String).startsWith('snapshot_')));
+      } catch (_) {
+        // One missing legacy location must not hide valid snapshots elsewhere.
+      }
+    }
+    snapshots.sort((a, b) =>
+        (b['name'] as String).compareTo(a['name'] as String));
+
+    // A reinstall can create a newer, valid-but-empty snapshot before the
+    // previous portable tree is selected. Timestamp-only selection would then
+    // restore built-in folders/categories from the empty install and silently
+    // ignore the older snapshot containing the user's PDFs and metadata.
+    // Validate every candidate and prefer the snapshot with the most document
+    // records, then the most total records; use timestamp only as a tie-breaker.
+    Map<String, Object?>? bestSnapshot;
+    var bestDocumentCount = -1;
+    var bestRecordCount = -1;
+
+    for (final snapshot in snapshots) {
+      try {
+        final snapshotUri = snapshot['uri'] as String;
+        final verified = await _readVerifiedSnapshot(snapshotUri);
+        final manifestText = verified['manifestText'] as String;
+        final manifest = verified['manifest'] as PortableSnapshotManifest;
+        final rowsByTable = verified['rows'] as Map<String, List<Map<String, Object?>>>;
+        final documentRows = rowsByTable['documents']!;
         final documentCount = documentRows.length;
         final recordCount = rowsByTable.values.fold<int>(
           0,
@@ -2110,6 +2408,10 @@ class DocumentToolsService {
   /// retained; imported IDs are remapped where needed. PDFs are relinked by
   /// SHA-256 from the currently selected library and are never overwritten.
   Future<Map<String, int>> restoreLatestPortableMetadataSnapshot({
+    void Function(int completed, int total)? onProgress,
+  }) => _withRecoveryLock(() => _restoreLatestPortableMetadataSnapshotLocked(onProgress: onProgress));
+
+  Future<Map<String, int>> _restoreLatestPortableMetadataSnapshotLocked({
     void Function(int completed, int total)? onProgress,
   }) async {
     await StorageMigrationGate.waitUntilReady();

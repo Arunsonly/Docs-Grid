@@ -222,6 +222,7 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
       final lastSnapshotAt =
           await AppDatabase.instance.portableSnapshotLastAt();
       if (lastSnapshotAt != null &&
+          !lastSnapshotAt.isAfter(DateTime.now().toUtc()) &&
           DateTime.now().toUtc().difference(lastSnapshotAt) <
               const Duration(minutes: 5)) {
         return;

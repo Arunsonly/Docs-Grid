@@ -202,6 +202,86 @@ void main() {
     if (await temp.exists()) await temp.delete(recursive: true);
   });
 
+  test('verified Insurance mapping survives five restores without extra PDF copies', () async {
+    final original = Directory('${appDocuments.path}/Folders/Insurance');
+    await original.create(recursive: true);
+    final row = Map<String, Object?>.from(_backupRows(withFolder: true)['folders']!.single);
+    row['storage_uri_or_relative_path'] = original.path;
+    await db.insert('folders', row);
+    final backup = await _makeBackup(temp, withFolder: true, withReminder: true);
+    for (var i = 0; i < 5; i++) {
+      expect(await service.restoreBackup(backup, confirm: (_) async => true), i == 0 ? 1 : 0);
+    }
+    final folders = await db.query('folders');
+    expect(folders, hasLength(1));
+    expect(folders.single['storage_uri_or_relative_path'], original.path);
+    expect(await db.query('documents'), hasLength(1));
+    expect(await db.query('reminders'), hasLength(1));
+    final documents = await db.query('documents');
+    expect(File(documents.single['storage_uri'] as String).parent.path, original.path);
+    expect(await original.list().length, 1);
+    expect(await db.rawQuery('PRAGMA foreign_key_check'), isEmpty);
+  });
+
+  test('physical Insurance without a database row is reused after hash verification', () async {
+    final original = Directory('${appDocuments.path}/DocsGrid/Library/Folders/Insurance');
+    await original.create(recursive: true);
+    final pdf = File('${original.path}/original.pdf');
+    await pdf.writeAsBytes(_pdfBytes);
+    final backup = await _makeBackup(temp, withFolder: true);
+    expect(await service.restoreBackup(backup, confirm: (_) async => true), 0);
+    final folders = await db.query('folders');
+    expect(folders.single['storage_uri_or_relative_path'], original.path);
+    expect((await db.query('documents')).single['storage_uri'], pdf.path);
+    expect(await original.list().length, 1);
+  });
+
+  test('same path with different identity fails without touching original', () async {
+    await db.insert('folders', {
+      ..._backupRows(withFolder: true)['folders']!.single,
+      'id': 'unrelated', 'created_at': '2020-01-01T00:00:00Z',
+    });
+    final backup = await _makeBackup(temp, withFolder: true);
+    await expectLater(service.restoreBackup(backup, confirm: (_) async => true),
+        throwsA(isA<StateError>()));
+    expect(await db.query('folders'), hasLength(1));
+    expect(await db.query('documents'), isEmpty);
+  });
+
+  test('preview cancellation performs no library mutation', () async {
+    final backup = await _makeBackup(temp, withFolder: true);
+    Map<String, int>? preview;
+    expect(await service.restoreBackup(backup, confirm: (_) async => true,
+      confirmPlan: (plan) async { preview = plan; return false; }), isNull);
+    expect(preview!['newPdfs'], 1);
+    expect(preview!['newFolders'], 1);
+    expect(await db.query('folders'), isEmpty);
+    expect(await db.query('documents'), isEmpty);
+  });
+
+  test('library write during preview invalidates plan', () async {
+    final backup = await _makeBackup(temp, withFolder: true);
+    await expectLater(service.restoreBackup(backup, confirm: (_) async => true,
+      confirmPlan: (_) async {
+        await db.insert('folders', {'id': 'concurrent', 'name': 'Other',
+          'created_at': '2026-01-01', 'updated_at': '2026-01-01'});
+        return true;
+      }), throwsA(isA<StateError>()));
+    expect((await db.query('folders')).single['id'], 'concurrent');
+    expect(await db.query('documents'), isEmpty);
+  });
+
+  test('same filename different contents never overwrites original bytes', () async {
+    final original = Directory('${appDocuments.path}/DocsGrid/Library/Folders/Insurance');
+    await original.create(recursive: true);
+    final pdf = File('${original.path}/Policy.pdf');
+    await pdf.writeAsString('%PDF-1.7 original protected');
+    final backup = await _makeBackup(temp, withFolder: true);
+    expect(await service.restoreBackup(backup, confirm: (_) async => true), 1);
+    expect(await pdf.readAsString(), '%PDF-1.7 original protected');
+    expect(await original.list().length, 2);
+  });
+
   test('schema upgrade creates the Smart Collections table and index', () async {
     final tables = await db.query(
       'sqlite_master',
