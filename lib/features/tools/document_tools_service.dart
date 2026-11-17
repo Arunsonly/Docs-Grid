@@ -1576,6 +1576,9 @@ Future<int?> _restoreBackupLocked(
     final createdFiles = <String>[];
     final pendingFiles = <String>[];
     final createdDirectories = <String>[];
+    // Restoration of a legacy timestamped folder needs a separately approved
+    // relocation plan. The original folders and PDF bytes are never deleted.
+    final legacyFolderPaths = <String, String>{};
     final claimedPaths = <String, String>{};
     for (final row in BackupFolderGraphValidator.parentFirst(folderRows)) {
       final id = row['id'] as String;
@@ -1588,9 +1591,40 @@ Future<int?> _restoreBackupLocked(
           if (uri.startsWith('content://')) {
             throw StateError('Folder conflict: SAF destination requires explicit relinking before ZIP restore: ${row['name']}');
           }
-          path = uri.startsWith('file://') ? Uri.parse(uri).toFilePath() : uri;
-          if (!p.isAbsolute(path) || !await Directory(path).exists()) {
+          final storedPath = uri.startsWith('file://')
+              ? Uri.parse(uri).toFilePath() : uri;
+          if (!p.isAbsolute(storedPath) || !await Directory(storedPath).exists()) {
             throw StateError('Folder mapping is unavailable: ${row['name']}. Restore storage access before retrying.');
+          }
+          // Old ZIP restores permanently routed every new PDF into a
+          // Restored_<timestamp>/<name>_<hash> tree. A readable directory alone
+          // is not proof that it is the correct *current* storage mapping.
+          // Reconcile only against the already verified backup/live logical
+          // folder identity; unrecognized paths remain untouched.
+          if (FolderRepository.isLegacyRestoreStorageUri(uri)) {
+            final normalizedOld = p.normalize(p.absolute(storedPath));
+            if (!p.isWithin(foldersRoot.path, normalizedOld)) {
+              throw StateError('Legacy restore folder is outside the authorized library.');
+            }
+            final original = p.normalize(p.absolute(path));
+            if (!p.isWithin(foldersRoot.path, original)) {
+              throw StateError('Original restore destination is outside the authorized library.');
+            }
+            final owner = existingFolderRows.where((candidate) {
+              if (candidate['id'] == matchedRowsBySourceId[id]?['id']) return false;
+              final value = candidate['storage_uri_or_relative_path'] as String?;
+              if (value == null || value.startsWith('content://')) return false;
+              final candidatePath = value.startsWith('file://')
+                  ? Uri.parse(value).toFilePath() : value;
+              return p.normalize(p.absolute(candidatePath)) == original;
+            });
+            if (owner.isNotEmpty) {
+              throw StateError('Original folder is already owned by a different database record: ${row['name']}');
+            }
+            legacyFolderPaths[id] = normalizedOld;
+            // Keep the intended hierarchy, not the legacy timestamped path.
+          } else {
+            path = storedPath;
           }
         }
       }
@@ -1627,6 +1661,65 @@ Future<int?> _restoreBackupLocked(
       }
     }
     final assignedPhysicalPaths = <String>{};
+    // Inventory each existing active PDF tied to a legacy folder. We must
+    // preserve its bytes and independent logical ownership before moving the
+    // folder mapping. Source PDFs will be left in place for rollback.
+    final legacyDocumentRepairs = <String, String>{};
+    final legacyDocumentCopies =
+        <String, ({String sourcePath, String hash, String targetDirectory})>{};
+    for (final oldFolder in legacyFolderPaths.entries) {
+      if (replaceExisting) continue; // Replacement uses the validated ZIP bytes.
+      final liveFolderId = folderIdMap[oldFolder.key]!;
+      final targetDirectory = p.normalize(folderPath(oldFolder.key));
+      for (final row in existingDocuments.where((candidate) =>
+          candidate['folder_id'] == liveFolderId &&
+          candidate['deleted_at'] == null)) {
+        final documentId = row['id'] as String;
+        final savedUri = row['storage_uri'] as String?;
+        if (savedUri == null || savedUri.startsWith('missing://')) {
+          // Keep the existing missing-document marker and never invent bytes.
+          continue;
+        }
+        if (savedUri.startsWith('content://')) {
+          throw StateError('Cannot automatically reconcile an SAF-backed PDF: ${row['name']}');
+        }
+        final sourcePath = p.normalize(p.absolute(savedUri.startsWith('file://')
+            ? Uri.parse(savedUri).toFilePath() : savedUri));
+        if (p.dirname(sourcePath) == targetDirectory) continue;
+        if (p.dirname(sourcePath) != oldFolder.value) {
+          throw StateError('PDF is outside the verified legacy folder: ${row['name']}');
+        }
+        if (await FileSystemEntity.type(sourcePath, followLinks: false) !=
+            FileSystemEntityType.file) {
+          throw StateError('Legacy PDF must be relinked manually: ${row['name']}');
+        }
+        final expected = row['sha256'] as String?;
+        if (expected == null || expected.isEmpty) {
+          throw StateError('Legacy PDF lacks an integrity checksum: ${row['name']}');
+        }
+        final actual = (await sha256.bind(File(sourcePath).openRead()).first).toString();
+        if (actual != expected) {
+          throw StateError('Legacy PDF SHA-256 mismatch: ${row['name']}');
+        }
+        final orphans = availableByFolderAndHash['$targetDirectory|$expected'] ??
+            const <String>[];
+        String? reusable;
+        for (final candidate in orphans) {
+          if (assignedPhysicalPaths.add(candidate)) {
+            reusable = candidate;
+            break;
+          }
+        }
+        if (reusable != null) {
+          legacyDocumentRepairs[documentId] = reusable;
+        } else {
+          legacyDocumentCopies[documentId] = (
+            sourcePath: sourcePath, hash: expected,
+            targetDirectory: targetDirectory,
+          );
+        }
+      }
+    }
     for (final row in rowsByTable['documents']!) {
       final id = row['id'] as String;
       if (duplicateDocumentIds.contains(id)) continue;
@@ -1654,8 +1747,14 @@ Future<int?> _restoreBackupLocked(
       'needsRelinking': rowsByTable['documents']!.where((row) =>
           !duplicateDocumentIds.contains(row['id']) && !restoredPaths.containsKey(row['id']) &&
           !backup.stagedPdfPaths.containsKey(row['id'])).length,
+      'legacyFolderRepairs': legacyFolderPaths.length,
+      'legacyPdfsToCopy': legacyDocumentCopies.length,
+      'legacyPdfsReused': legacyDocumentRepairs.length,
       'conflicts': 0,
     };
+    if (legacyFolderPaths.isNotEmpty && confirmPlan == null) {
+      throw StateError('Legacy storage reconciliation requires explicit restore-preview approval.');
+    }
     if (confirmPlan != null && !await confirmPlan(preview)) return null;
     // Generate a verified Full safety archive only after an accepted plan.
     // A cancelled preview must not create or prune backup files. This still
@@ -1694,6 +1793,27 @@ Future<int?> _restoreBackupLocked(
           await writeJournal('creatingFolders');
           await directory.create(recursive: true);
         }
+      }
+      // Copy old PDFs into the confirmed original folder before changing
+      // any SQLite pointer. Journal, checksum and atomic rename each copy.
+      // Never delete any source in Restored_... (separate cleanup permission).
+      for (final entry in legacyDocumentCopies.entries) {
+        final source = File(entry.value.sourcePath);
+        final target = File(p.join(entry.value.targetDirectory,
+            '${_uuid.v4()}_${p.basename(source.path)}'));
+        final pending = File('${target.path}.pending');
+        createdFiles.add(target.path);
+        pendingFiles.add(pending.path);
+        await writeJournal('copying',
+            documentId: entry.key, expectedHash: entry.value.hash);
+        await source.copy(pending.path);
+        final actual = (await sha256.bind(pending.openRead()).first).toString();
+        if (actual != entry.value.hash) {
+          await pending.delete();
+          throw StateError('Legacy PDF copy failed integrity verification.');
+        }
+        await pending.rename(target.path);
+        legacyDocumentRepairs[entry.key] = target.path;
       }
       for (final item in fileRows) {
         final id = item['documentId'] as String;
@@ -1768,6 +1888,21 @@ Future<int?> _restoreBackupLocked(
           );
           for (final folder in BackupFolderGraphValidator.childFirst(existingFolderRows)) {
             await txn.delete('folders', where: 'id = ?', whereArgs: [folder['id']]);
+          }
+        }
+        // Once physical copies have been verified, atomically publish their
+        // existing document pointers with the corrected folder mappings.
+        // Old physical copies remain untouched, including on rollback.
+        if (!replaceExisting) {
+          for (final entry in legacyDocumentRepairs.entries) {
+            final updated = await txn.update('documents', {
+              'storage_uri': entry.value,
+              'relative_path': null,
+            }, where: 'id = ? AND deleted_at IS NULL',
+                whereArgs: [entry.key]);
+            if (updated != 1) {
+              throw StateError('The library changed while reconciling a legacy PDF.');
+            }
           }
         }
         var batch = txn.batch();
