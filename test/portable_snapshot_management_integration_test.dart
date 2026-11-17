@@ -209,6 +209,35 @@ void main() {
     expect(await unknown.exists(), isTrue);
   });
 
+  for (final count in [1000, 10000]) {
+    test('consistent snapshot export of $count document metadata rows', () async {
+      final root = await mockSnapshotStorage();
+      await db.transaction((txn) async {
+        final batch = txn.batch();
+        for (var i = 0; i < count; i++) {
+          batch.insert('documents', {
+            'id': 'snapshot-stress-$i',
+            'name': 'Document $i',
+            'mime_type': 'application/pdf',
+            'size_bytes': 0,
+            'storage_uri': null,
+            'sha256': null,
+            'created_at': '2026-01-01T00:00:00Z',
+            'updated_at': '2026-01-01T00:00:00Z',
+          });
+        }
+        await batch.commit(noResult: true);
+      });
+      final name = await service.createPortableMetadataSnapshot();
+      final snapshot = Directory('${root.path}/$name');
+      expect(await snapshot.exists(), isTrue);
+      final manifest = jsonDecode(await File('${snapshot.path}/manifest.json').readAsString()) as Map;
+      expect((manifest['tables'] as Map)['documents'], count);
+      expect(DocumentToolsService.snapshotDiagnostics['lastCreationResult'], 'verified');
+      expect(await service.createPortableMetadataSnapshot(), name);
+    });
+  }
+
   test('legacy snapshot without operation ownership marker remains untouched', () async {
     final root = await mockSnapshotStorage();
     final oldName = await service.createPortableMetadataSnapshot();
