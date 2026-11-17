@@ -1,12 +1,9 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
-import 'package:path/path.dart' as p;
-import 'package:path_provider/path_provider.dart';
 
 import '../../documents/data/document_repository.dart';
 import '../../documents/presentation/document_thumbnail.dart';
-import '../../documents/presentation/document_pdf_viewer_screen.dart';
 import '../../tools/document_tools_service.dart';
 import '../../../core/storage/storage_location_service.dart';
 import '../../reminders/data/reminder_repository.dart';
@@ -73,61 +70,6 @@ class _FoldersScreenState extends State<FoldersScreen> {
       await Future.wait<Object?>([_foldersFuture, _documentsFuture]);
     } catch (_) {
       // The corresponding FutureBuilder displays the actionable error state.
-    }
-  }
-
-  /// Grid PDFs may live behind SAF content URIs or file URIs that external
-  /// viewers cannot read. Stage provider-backed PDFs in app cache and open
-  /// them using the same built-in viewer as the Documents screen.
-  Future<void> _openGridPdf(DocumentRecord document) async {
-    final uri = document.storagePath;
-    final isProviderUri = uri.startsWith('content://') ||
-        uri.startsWith('file://');
-    File? stagedFile;
-    try {
-      late final String viewerPath;
-      if (isProviderUri) {
-        final temporary = await getTemporaryDirectory();
-        stagedFile = File(p.join(
-          temporary.path,
-          'docsgrid_folder_view_${DateTime.now().microsecondsSinceEpoch}.pdf',
-        ));
-        await StorageLocationService.instance.copyPdfToPath(
-          sourceUri: uri,
-          destinationPath: stagedFile.path,
-        );
-        viewerPath = stagedFile.path;
-      } else {
-        if (!await File(uri).exists()) {
-          throw StateError('PDF file is missing from local storage.');
-        }
-        viewerPath = uri;
-      }
-
-      await _documents.markOpened(document);
-      if (!mounted) return;
-      await Navigator.of(context).push<void>(
-        MaterialPageRoute(
-          builder: (_) => DocumentPdfViewerScreen(
-            filePath: viewerPath,
-            title: '${document.name}.pdf',
-          ),
-        ),
-      );
-    } catch (error) {
-      if (mounted) _message('Could not open PDF: $error');
-    } finally {
-      // Keep the staged bytes available until the viewer is closed.
-      // Removing them immediately after an external intent would break
-      // readers that open PDFs asynchronously.
-      final file = stagedFile;
-      if (file != null) {
-        try {
-          if (await file.exists()) await file.delete();
-        } catch (_) {
-          // Failed optional cache cleanup must not mask an open result.
-        }
-      }
     }
   }
 
@@ -1270,7 +1212,14 @@ class _FoldersScreenState extends State<FoldersScreen> {
                                     setState(() { if (!_selectedDocumentIds.add(document.id)) _selectedDocumentIds.remove(document.id); });
                                     return;
                                   }
-                                  await _openGridPdf(document);
+                                  try {
+                                    await StorageLocationService.instance.openPdf(
+                                      document.storagePath, gridPdf: true,
+                                    );
+                                    await _documents.markOpened(document);
+                                  } catch (error) {
+                                    if (mounted) _message('Could not open PDF: $error');
+                                  }
                                 },
                                 trailing: PopupMenuButton<String>(
                                   tooltip: 'PDF actions',
