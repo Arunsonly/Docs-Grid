@@ -58,7 +58,8 @@ void main() {
       'unparsed legacy entry',
     ]);
     expect(
-      await PhoneRecentHistory.pruneAbsentMediaStoreUris({alive}), 1,
+      await PhoneRecentHistory.pruneAbsentMediaStoreUris(
+          {alive}, scannedVolumes: {'external_primary'}), 1,
     );
     final saved = prefs.getStringList(PhoneRecentHistory.storageKey)!;
     expect(saved, hasLength(4));
@@ -67,13 +68,33 @@ void main() {
     expect(saved, contains(item(saf, 'SAF PDF.pdf')));
     expect(saved, contains(item(local, 'Local.pdf')));
     expect(saved, contains('unparsed legacy entry'));
-    expect(await PhoneRecentHistory.pruneAbsentMediaStoreUris({alive}), 0);
+    expect(await PhoneRecentHistory.pruneAbsentMediaStoreUris(
+        {alive}, scannedVolumes: {'external_primary'}), 0);
+  });
+
+
+  test('an unavailable SD card volume is never pruned', () async {
+    final prefs = await SharedPreferences.getInstance();
+    const onSd = 'content://media/1234-5678/file/30';
+    const missingOnMounted = 'content://media/external_primary/file/40';
+    final sdHistory = item(onSd, 'Card policy.pdf');
+    await prefs.setStringList(PhoneRecentHistory.storageKey, [
+      sdHistory,
+      item(missingOnMounted, 'Deleted phone.pdf'),
+    ]);
+    expect(
+      await PhoneRecentHistory.pruneAbsentMediaStoreUris(
+          {}, scannedVolumes: {'external_primary'}),
+      1,
+    );
+    expect(prefs.getStringList(PhoneRecentHistory.storageKey), [sdHistory]);
   });
 
   test('empty/unrecognized recent preferences do not trigger removal', () async {
     expect(await PhoneRecentHistory.removeMovedSource('content://media/nope'),
         isFalse);
-    expect(await PhoneRecentHistory.pruneAbsentMediaStoreUris({}), 0);
+    expect(await PhoneRecentHistory.pruneAbsentMediaStoreUris(
+        {}, scannedVolumes: {}), 0);
     final prefs = await SharedPreferences.getInstance();
     expect(prefs.getStringList(PhoneRecentHistory.storageKey), isNull);
   });
