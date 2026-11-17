@@ -1,9 +1,12 @@
 import 'package:docs_grid/features/documents/presentation/document_thumbnail.dart';
 import 'package:docs_grid/features/documents/presentation/phone_storage_browser_screen.dart';
+import 'package:docs_grid/core/widgets/storage_sort_controls.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
+  setUp(() => SharedPreferences.setMockInitialValues({}));
 
   void setTestViewport(WidgetTester tester) {
     tester.view.physicalSize = const Size(800, 600);
@@ -411,6 +414,8 @@ void main() {
     Future<bool> Function(String, String)? onRename,
     Future<bool> Function(String, String)? onTrash,
     Future<void> Function(String, String)? onShare,
+    Future<void> Function(String, String)? onStar,
+    Set<String> starred = const <String>{},
   }) async {
     setTestViewport(tester);
     await tester.pumpWidget(MaterialApp(
@@ -426,6 +431,8 @@ void main() {
                   onMovePdf: onMove,
                   onRenamePdf: onRename,
                   onSharePdf: onShare,
+                  onToggleStarPdf: onStar,
+                  starredUris: starred,
                   onTrashPdf: onTrash,
                 ),
               ),
@@ -450,6 +457,71 @@ void main() {
     await tester.tap(find.text(action).last);
     await tester.pumpAndSettle();
   }
+
+
+  testWidgets('Phone PDF menu has requested six options in the exact order',
+      (tester) async {
+    await openActionBrowser(tester,
+      onShare: (_, __) async {},
+      onStar: (_, __) async {},
+      onRename: (_, __) async => false,
+      onMove: (_, __) async => false,
+      onTrash: (_, __) async => false,
+    );
+    await tester.tap(find.byType(PopupMenuButton<String>));
+    await tester.pumpAndSettle();
+    final expected = [
+      'Share PDF', 'Add to Star', 'Rename',
+      'Move to Grid', 'Delete', 'File Location',
+    ];
+    for (var index = 0; index < expected.length - 1; index++) {
+      expect(tester.getTopLeft(find.text(expected[index])).dy,
+          lessThan(tester.getTopLeft(find.text(expected[index + 1])).dy));
+    }
+    expect(find.byType(PopupMenuItem<String>), findsNWidgets(6));
+  });
+
+  testWidgets('Phone Star invokes callback and leaves source file browser open',
+      (tester) async {
+    var stars = 0;
+    await openActionBrowser(tester,
+      onStar: (uri, name) async {
+        expect(uri, 'content://document/policy');
+        expect(name, 'Policy.pdf');
+        stars++;
+      },
+      starred: const <String>{},
+    );
+    await selectAction(tester, 'Add to Star');
+    expect(stars, 1);
+    expect(find.text('Policy.pdf'), findsOneWidget);
+    expect(find.text('Personal Documents'), findsOneWidget);
+  });
+
+  testWidgets('File Location shows existing folder and can open it safely',
+      (tester) async {
+    await openActionBrowser(tester);
+    await selectAction(tester, 'File Location');
+    expect(find.text('File Location'), findsOneWidget);
+    expect(find.text('Phone Storage/Personal Documents'), findsOneWidget);
+    await tester.tap(find.text('Open folder'));
+    await tester.pumpAndSettle();
+    expect(find.text('Policy.pdf'), findsOneWidget);
+  });
+
+  testWidgets('saved Phone Date descending is restored when browser reopens',
+      (tester) async {
+    await StorageSortPreference.save(
+      StorageSortPreference.phoneKey,
+      field: StorageSortField.date, ascending: false, explicit: true,
+    );
+    await openActionBrowser(tester);
+    await tester.pumpAndSettle();
+    expect(find.byIcon(Icons.arrow_downward), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('storage-sort-filter')));
+    await tester.pumpAndSettle();
+    expect(find.text('Date'), findsOneWidget);
+  });
 
   testWidgets('successful Move closes the stale Phone Storage snapshot', (tester) async {
     await openActionBrowser(tester, onMove: (_, __) async => true);
@@ -481,14 +553,14 @@ void main() {
 
   testWidgets('successful Recycle Bin move closes the stale browser', (tester) async {
     await openActionBrowser(tester, onTrash: (_, __) async => true);
-    await selectAction(tester, 'Move to Recycle Bin');
+    await selectAction(tester, 'Delete');
     expect(find.text('Open browser'), findsOneWidget);
     expect(find.text('Phone Storage'), findsNothing);
   });
 
   testWidgets('Share does not close the selected folder browser', (tester) async {
     await openActionBrowser(tester, onShare: (_, __) async {});
-    await selectAction(tester, 'Share');
+    await selectAction(tester, 'Share PDF');
     expect(find.text('Personal Documents'), findsOneWidget);
     expect(find.text('Policy.pdf'), findsOneWidget);
   });
