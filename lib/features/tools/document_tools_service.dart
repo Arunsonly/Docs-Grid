@@ -1299,12 +1299,6 @@ Future<int?> _restoreBackupLocked(
         );
       }
       if (confirm != null && !await confirm(pdfCount)) return null;
-      // All restore modes can mutate file placement or metadata. Create a
-      // verified Full safety archive before merge/selective/full replacement.
-      await _createRestoreSafetyCheckpoint(
-        mode: mode,
-        sourceBackupId: (backup.manifest['backupId'] ?? 'unknown').toString(),
-      );
       if (mode == BackupRestoreMode.selective) {
         if (selection == null || selection.isEmpty) {
           throw ArgumentError('Select at least one data group to restore.');
@@ -1663,6 +1657,13 @@ Future<int?> _restoreBackupLocked(
       'conflicts': 0,
     };
     if (confirmPlan != null && !await confirmPlan(preview)) return null;
+    // Generate a verified Full safety archive only after an accepted plan.
+    // A cancelled preview must not create or prune backup files. This still
+    // precedes all physical library writes and the SQLite transaction.
+    await _createRestoreSafetyCheckpoint(
+      mode: BackupRestoreMode.values.byName(restoreMode),
+      sourceBackupId: (manifest['backupId'] ?? 'unknown').toString(),
+    );
     // Durable journal precedes all library writes. Interrupted operations retain
     // their new files for verified reuse on retry; no broad recursive rollback.
     final journalDirectory = Directory(p.join(
