@@ -1,7 +1,6 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
-import 'package:open_filex/open_filex.dart';
 import 'package:sqflite/sqflite.dart';
 
 import '../../../core/database/app_database.dart';
@@ -424,15 +423,9 @@ class _SmartCollectionResultsState extends State<_SmartCollectionResults> {
       final document = await DocumentRepository().getById(row['id'] as String);
       if (!mounted || document == null || document.storagePath.isEmpty) return;
       await DocumentRepository().markOpened(document);
-      final uri = document.storagePath;
-      if (uri.startsWith('content://') || uri.startsWith('file://')) {
-        await StorageLocationService.instance.openPdf(uri);
-      } else {
-        final result = await OpenFilex.open(uri, type: 'application/pdf');
-        if (result.type != ResultType.done) {
-          throw StateError(result.message.isEmpty ? 'No PDF viewer is available.' : result.message);
-        }
-      }
+      await StorageLocationService.instance.openPdf(
+        document.storagePath, gridPdf: true,
+      );
     } catch (error) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Could not open PDF: $error')),
