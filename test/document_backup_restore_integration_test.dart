@@ -998,6 +998,12 @@ void main() {
     expect(await repository.list(), isEmpty,
         reason: 'Archived Phone copies must not leak into active Grid.');
 
+    // Even if a file manager physically removes the empty folder, its
+    // Recycle Bin-backed location survives and Restore recreates it under
+    // the original approved Phone storage root.
+    await originalFolder.delete();
+    expect(await originalFolder.exists(), isFalse);
+
     // If the original SD/Phone access is temporarily unavailable, Restore
     // must be refused without removing the PDF from Recycle Bin.
     storageAuthorized = false;
