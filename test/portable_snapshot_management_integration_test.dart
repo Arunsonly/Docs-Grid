@@ -154,6 +154,7 @@ void main() {
     await unknown.writeAsString('keep');
     await expectLater(service.createPortableMetadataSnapshot(), throwsA(isA<StateError>()));
     expect(await AppDatabase.forTesting(() async => db).isPortableSnapshotDirty(), isTrue);
+    expect(DocumentToolsService.snapshotDiagnostics['lastCreationResult'], 'failed');
     expect(await unknown.readAsString(), 'keep');
   });
 
