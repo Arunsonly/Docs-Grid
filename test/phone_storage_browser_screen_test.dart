@@ -599,6 +599,32 @@ void main() {
     expect(find.text('Policy.pdf'), findsOneWidget);
   });
 
+  testWidgets('Internal root folder stays visible when its only PDF is recycled',
+      (tester) async {
+    setTestViewport(tester);
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(body: PhoneStorageBrowserScreen(
+        rootName: 'Internal Storage',
+        entries: const <Map<String, Object?>>[
+          {
+            'name': 'Internal',
+            'uri': '',
+            'folderPath': '',
+            'path': 'Internal',
+            'isDirectory': true,
+            'pdfCount': 0,
+            'isPending': true,
+            'trashPdfCount': 1,
+          },
+        ],
+        embedded: true,
+        onOpenPdf: (_, __) async {},
+      )),
+    ));
+    expect(find.text('Internal'), findsOneWidget);
+    expect(find.text('0 PDFs · 1 in Recycle Bin'), findsOneWidget);
+  });
+
   testWidgets('Phone folder stays visible when its last PDF is in Recycle Bin',
       (tester) async {
     setTestViewport(tester);
