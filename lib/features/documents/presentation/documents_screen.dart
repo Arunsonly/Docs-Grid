@@ -9,6 +9,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../data/document_repository.dart';
 import '../data/phone_recent_history.dart';
 import '../data/phone_star_repository.dart';
+import '../data/phone_trash_origin.dart';
 import '../../../core/storage/storage_location_service.dart';
 import '../../categories/data/category_repository.dart';
 import '../../folders/data/folder_repository.dart';
@@ -428,6 +429,71 @@ class _DocumentsScreenState extends State<DocumentsScreen>
     }
   }
 
+
+  /// Store the real, granted Phone root before deleting the file. A
+  /// MediaStore item URI does not identify a writable parent directory.
+  Future<PhoneTrashOrigin> _phoneTrashOriginFor(
+      String uri, String name) async {
+    final matching = <Map<String, Object?>>[
+      ..._phoneEntries.where((entry) =>
+          entry['isDirectory'] != true && entry['uri'] == uri),
+      ..._phoneRecent.where((entry) => entry['uri'] == uri),
+    ];
+    if (matching.isEmpty) {
+      throw StateError('Original Phone folder is unknown. PDF was not deleted.');
+    }
+    final entry = matching.first;
+    final folder = (entry['folderPath'] ?? entry['path']) as String?;
+    if (folder == null || folder.trim().isEmpty) {
+      throw StateError('Original Phone folder is unavailable. PDF was kept.');
+    }
+    final parsed = Uri.tryParse(uri);
+    final volume = entry['volumeName'] as String? ??
+        ((parsed?.authority == 'media' &&
+                parsed!.pathSegments.isNotEmpty)
+            ? parsed.pathSegments.first
+            : null);
+    final roots = await StorageLocationService.instance.accessibleStorageRoots();
+    final root = PhoneTrashOrigin.selectGrantedRoot(
+      sourceUri: uri, folderPath: folder, roots: roots, volumeName: volume,
+    );
+    if (root == null) {
+      throw StateError(
+        'Original Phone storage is not accessible. '
+        'Grant the original location before deleting this PDF.',
+      );
+    }
+    final origin = PhoneTrashOrigin(
+      sourceUri: uri,
+      folderPath: folder,
+      rootUri: root,
+      displayName: name,
+      volumeName: volume,
+    );
+    if (!origin.localSourceMatchesRoot()) {
+      throw StateError('Original Phone folder does not match its granted root.');
+    }
+    origin.relativeFolders; // Reject any unsafe folder path.
+    return origin;
+  }
+
+  Future<void> _includeRecycledPhoneFolders(
+      List<Map<String, Object?>> entries) async {
+    final held = await _repository.phoneTrashFolderEntries();
+    for (final folder in held) {
+      final path = folder['path'];
+      final existing = entries.where((entry) =>
+          entry['isDirectory'] == true && entry['path'] == path);
+      if (existing.isEmpty) {
+        entries.add(folder);
+      } else {
+        final entry = existing.first;
+        entry['isPending'] = true;
+        entry['trashPdfCount'] = folder['trashPdfCount'];
+      }
+    }
+  }
+
   Future<void> _scanPhoneStorage({required bool openBrowser}) async {
     final storage = StorageLocationService.instance;
     if (_phoneScanLoading) {
@@ -639,6 +705,11 @@ class _DocumentsScreenState extends State<DocumentsScreen>
           // Optional Phone Recent must never interfere with file browsing.
         }
       }
+      // Ordinary scans intentionally suppress PDF-empty folders. Recycle Bin
+      // placeholders keep the original location visible while archived.
+      try { await _includeRecycledPhoneFolders(entries); } catch (_) {
+        // Live Phone browsing must survive optional metadata failures.
+      }
       if (mediaStoreVolumes.isNotEmpty) {
         await _persistPhoneStorageIndexCache(
           roots,
@@ -840,9 +911,11 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       final uri = item['uri'] as String? ?? '';
       final name = item['name'] as String? ?? 'PDF';
       try {
+        final origin = await _phoneTrashOriginFor(uri, name);
         final moved = await _repository.moveExternalPdfToTrash(
           sourceUri: uri,
           displayName: name,
+          origin: origin,
         );
         if (moved) {
           movedUris.add(uri);
@@ -1543,6 +1616,9 @@ class _DocumentsScreenState extends State<DocumentsScreen>
                                     await _repository.restoreFromTrash(document);
                                     refreshDialog(() => trashed.removeAt(index));
                                     await _load();
+                                    await _scanPhoneStorage(openBrowser: false);
+                                    await _loadRecentDocuments();
+                                    await _refreshDashboardSummary();
                                   } else if (action == 'delete') {
                                     final confirmed = await showDialog<bool>(
                                       context: dialogContext,
@@ -1565,6 +1641,8 @@ class _DocumentsScreenState extends State<DocumentsScreen>
                                       await _repository.permanentlyDelete(document);
                                       refreshDialog(() => trashed.removeAt(index));
                                       await _load();
+                                      await _scanPhoneStorage(openBrowser: false);
+                                      await _refreshDashboardSummary();
                                     }
                                   }
                                 } catch (error) {
@@ -1708,9 +1786,11 @@ class _DocumentsScreenState extends State<DocumentsScreen>
     );
     if (!confirmed) return false;
     try {
+      final origin = await _phoneTrashOriginFor(uri, name);
       final moved = await _repository.moveExternalPdfToTrash(
         sourceUri: uri,
         displayName: name,
+        origin: origin,
       );
       if (!mounted) return false;
       if (moved) {
