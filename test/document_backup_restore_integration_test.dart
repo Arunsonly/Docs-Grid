@@ -57,13 +57,22 @@ Map<String, List<Map<String, Object?>>> _backupRows({
   }] : <Map<String, Object?>>[],
 };
 
-Future<File> _makeBackup(Directory directory, {bool withReminder = false, bool withFolder = false, bool withCollection = false, bool deletedFolder = false}) async {
+Future<File> _makeBackup(Directory directory, {bool withReminder = false, bool withFolder = false, bool withCollection = false, bool deletedFolder = false, int documentCount = 1}) async {
   final archive = Archive();
   final rows = _backupRows(withReminder: withReminder, withFolder: withFolder, withCollection: withCollection);
   if (deletedFolder) {
     rows['folders']!.single['deleted_at'] = '2026-02-01T00:00:00Z';
     rows['documents']!.single['deleted_at'] = '2026-02-01T00:00:00Z';
   }
+  final documentTemplate = Map<String, Object?>.from(rows['documents']!.single);
+  final payloads = <String, Uint8List>{};
+  rows['documents'] = List.generate(documentCount, (index) {
+    final id = index == 0 ? 'document-1' : 'large-document-$index';
+    final bytes = index == 0 ? _pdfBytes : Uint8List.fromList(utf8.encode('%PDF-1.7 document $index'));
+    payloads[id] = bytes;
+    return {...documentTemplate, 'id': id, 'sha256': sha256.convert(bytes).toString(),
+      'size_bytes': bytes.length};
+  });
   final metadataFiles = <Map<String, Object?>>[];
   for (final entry in rows.entries) {
     final bytes = Uint8List.fromList(utf8.encode(jsonEncode(entry.value)));
@@ -75,16 +84,18 @@ Future<File> _makeBackup(Directory directory, {bool withReminder = false, bool w
       'sha256': sha256.convert(bytes).toString(),
     });
   }
-  archive.addFile(ArchiveFile('pdfs/policy.pdf', _pdfBytes.length, _pdfBytes));
+  for (final entry in payloads.entries) {
+    archive.addFile(ArchiveFile('pdfs/${entry.key}.pdf', entry.value.length, entry.value));
+  }
   final manifest = {
     'format': 'DocsGridBackup', 'version': 1, 'backupType': 'full',
     'backupId': 'restore-test', 'databaseSchemaVersion': 9,
     'createdAt': '2026-01-01T00:00:00Z',
     'tables': {for (final entry in rows.entries) entry.key: entry.value.length},
     'metadataFiles': metadataFiles,
-    'files': [{
-      'documentId': 'document-1', 'entry': 'pdfs/policy.pdf',
-      'sha256': _pdfHash, 'originalName': 'Policy.pdf',
+    'files': [for (final entry in payloads.entries) {
+      'documentId': entry.key, 'entry': 'pdfs/${entry.key}.pdf',
+      'sha256': sha256.convert(entry.value).toString(), 'originalName': 'Policy.pdf',
     }],
   };
   final manifestBytes = Uint8List.fromList(utf8.encode(jsonEncode(manifest)));
@@ -440,6 +451,20 @@ void main() {
     expect(await unknown.exists(), isTrue);
   });
 
+  for (final count in [1000, 10000]) {
+    test('streamed ZIP restore with $count small PDF payloads', () async {
+      final backup = await _makeBackup(temp, withFolder: true, documentCount: count);
+      final timer = Stopwatch()..start();
+      expect(await service.restoreBackup(backup, confirm: (_) async => true), count);
+      expect((await db.rawQuery('SELECT COUNT(*) AS count FROM documents')).single['count'], count);
+      expect(await db.query('folders'), hasLength(1));
+      expect(await db.rawQuery('PRAGMA foreign_key_check'), isEmpty);
+      // Fixture throughput only, not a real-device/large-PDF certification.
+      // ignore: avoid_print
+      print('Restore fixture: $count PDFs in ${timer.elapsedMilliseconds} ms');
+    }, timeout: const Timeout(Duration(minutes: 5)));
+  }
+
   test('schema upgrade creates the Smart Collections table and index', () async {
     final tables = await db.query(
       'sqlite_master',
@@ -565,13 +590,13 @@ void main() {
       throwsA(anything),
     );
     expect(await db.query('documents'), isEmpty);
-    final restoreRoot = Directory('${appDocuments.path}/DocsGrid/Restored');
+    final restoreRoot = Directory('${appDocuments.path}/DocsGrid/Library');
     if (await restoreRoot.exists()) {
-      final remaining = await restoreRoot.list().toList();
+      final remaining = await restoreRoot.list(recursive: true).where((entry) => entry is File).toList();
       expect(
         remaining,
         isEmpty,
-        reason: 'Failed restores must remove empty fallback parent directories as well as staged files.',
+        reason: 'Failed restores must remove only their newly staged PDFs; original directories survive.',
       );
     }
   });

@@ -1472,6 +1472,8 @@ Future<int?> _restoreBackupLocked(
       }
     }
     final existingDocuments = await db.query('documents');
+    final existingDocumentsById = {for (final row in existingDocuments) row['id'] as String: row};
+    final existingHashes = existingDocuments.map((row) => row['sha256']).toSet();
     final existingDocumentIds = existingDocuments.map((row) => row['id'] as String).toSet();
     final verifiedPathsByHash = <String, String>{};
     final verifiedDocumentIds = <String>{};
@@ -1508,8 +1510,8 @@ Future<int?> _restoreBackupLocked(
       final mappedFolder = oldFolder == null ? null : folderIdMap[oldFolder];
       final stableId = _uuid.v5(Uuid.NAMESPACE_URL,
           'DocsGrid/document/${manifest['backupId']}/$oldId');
-      final matches = existingDocuments.where((candidate) =>
-          (candidate['id'] == oldId || candidate['id'] == stableId) &&
+      final matches = [existingDocumentsById[oldId], existingDocumentsById[stableId]]
+          .whereType<Map<String, Object?>>().where((candidate) =>
           candidate['sha256'] == digest && candidate['folder_id'] == mappedFolder &&
           candidate['deleted_at'] == row['deleted_at']);
       final match = matches.isEmpty ? null : matches.first;
@@ -1586,6 +1588,7 @@ Future<int?> _restoreBackupLocked(
     final restoredPaths = <String, String>{...relinkedPaths};
     final folderPaths = <String, String>{};
     final createdFiles = <String>[];
+    final pendingFiles = <String>[];
     final createdDirectories = <String>[];
     final claimedPaths = <String, String>{};
     for (final row in BackupFolderGraphValidator.parentFirst(folderRows)) {
@@ -1637,7 +1640,7 @@ Future<int?> _restoreBackupLocked(
       final path = verifiedPathsByHash[row['sha256']];
       if (path != null) {
         if (!replaceExisting && !repairDocumentIds.contains(id) &&
-            existingDocuments.any((live) => live['sha256'] == row['sha256'])) {
+            existingHashes.contains(row['sha256'])) {
           throw StateError('Document conflict: ${row['name']} has another existing logical reference.');
         }
         restoredPaths.putIfAbsent(id, () => path);
@@ -1662,13 +1665,20 @@ Future<int?> _restoreBackupLocked(
     final journalDirectory = Directory(p.join(
         (await getApplicationSupportDirectory()).path, 'docsgrid', 'recovery', 'operations'));
     await journalDirectory.create(recursive: true);
-    final journal = File(p.join(journalDirectory.path, '${_uuid.v4()}.json'));
-    Future<void> writeJournal(String status) => journal.writeAsString(jsonEncode({
+    final journal = File(p.join(journalDirectory.path, '${_uuid.v4()}.jsonl'));
+    // Append one intent per write instead of serializing an ever-growing list
+    // (quadratic journal I/O on large libraries). Flush before physical writes.
+    Future<void> writeJournal(String status, {String? documentId, String? expectedHash}) =>
+        journal.writeAsString('${jsonEncode({
       'format': 'DocsGridRestoreOperation', 'version': 1,
       'backupId': manifest['backupId'], 'status': status,
-      'createdFiles': createdFiles, 'createdDirectories': createdDirectories,
-      'folderPaths': folderPaths,
-    }), flush: true).then((_) {});
+      if (status == 'planned') 'folderPaths': folderPaths,
+      if (status == 'creatingFolders') 'directory': createdDirectories.last,
+      if (status == 'copying') ...{
+        'destination': createdFiles.last, 'pending': pendingFiles.last,
+        'documentId': documentId, 'sha256': expectedHash,
+      },
+    })}\n', mode: FileMode.append, flush: true).then((_) {});
     await writeJournal('planned');
 
     var databaseCommitted = false;
@@ -1702,21 +1712,24 @@ Future<int?> _restoreBackupLocked(
         final destination = File(p.join(destinationDir.path, '${_uuid.v4()}_$safeName'));
         final stagedPath = backup.stagedPdfPaths[id];
         if (stagedPath == null) throw StateError('Backup is missing staged PDF bytes.');
+        final pendingFile = File('${destination.path}.pending');
         createdFiles.add(destination.path);
-        await writeJournal('copying');
-        await File(stagedPath).copy(destination.path);
-        final digest = (await sha256.bind(destination.openRead()).first).toString();
+        pendingFiles.add(pendingFile.path);
+        await writeJournal('copying', documentId: id, expectedHash: item['sha256'] as String);
+        await File(stagedPath).copy(pendingFile.path);
+        final digest = (await sha256.bind(pendingFile.openRead()).first).toString();
         if (digest != item['sha256']) {
-          await destination.delete();
+          await pendingFile.delete();
           throw StateError('PDF integrity check failed during restore.');
         }
+        await pendingFile.rename(destination.path);
         restoredPaths[id] = destination.path;
       }
 
       for (final row in rowsByTable['documents']!) {
         final id = row['id'] as String;
         final uri = duplicateDocumentIds.contains(id)
-            ? existingDocuments.firstWhere((live) => live['id'] == documentIdMap[id])['storage_uri'] as String
+            ? existingDocumentsById[documentIdMap[id]]!['storage_uri'] as String
             : restoredPaths[id];
         if (uri == null) continue; // Explicit database-only missing reference.
         final hash = uri.startsWith('content://')
@@ -2036,7 +2049,7 @@ Future<int?> _restoreBackupLocked(
       return createdFiles.length;
     } catch (_) {
       if (!databaseCommitted) {
-        for (final path in createdFiles) {
+        for (final path in [...createdFiles, ...pendingFiles]) {
           try { if (await File(path).exists()) await File(path).delete(); } catch (_) {}
         }
         for (final path in createdDirectories.reversed) {
@@ -2448,6 +2461,7 @@ Future<int?> _restoreBackupLocked(
     Map<String, Object?>? bestSnapshot;
     var bestDocumentCount = -1;
     var bestRecordCount = -1;
+    var bestCreatedAt = DateTime.fromMillisecondsSinceEpoch(0, isUtc: true);
 
     for (final snapshot in snapshots) {
       try {
@@ -2462,12 +2476,17 @@ Future<int?> _restoreBackupLocked(
           0,
           (total, rows) => total + rows.length,
         );
+        final rawManifest = jsonDecode(manifestText) as Map;
+        final createdAt = DateTime.tryParse(rawManifest['createdAtUtc'] as String? ?? '') ??
+            DateTime.fromMillisecondsSinceEpoch(0, isUtc: true);
         final isBetter = documentCount > bestDocumentCount ||
             (documentCount == bestDocumentCount &&
-                recordCount > bestRecordCount);
+                (recordCount > bestRecordCount ||
+                 (recordCount == bestRecordCount && createdAt.isAfter(bestCreatedAt))));
         if (isBetter) {
           bestDocumentCount = documentCount;
           bestRecordCount = recordCount;
+          bestCreatedAt = createdAt;
           bestSnapshot = {
             'name': snapshot['name'] as String,
             'uri': snapshotUri,
