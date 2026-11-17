@@ -448,8 +448,10 @@ class DocumentRepository {
       if (targetFolderId == null) {
         throw StateError('A destination folder is required.');
       }
-      destinationUri = rows.first['storage_uri_or_relative_path'] as String?;
-      destinationUri ??= await FolderRepository().ensurePhysicalStorageUri(targetFolderId);
+      // Always validate the active folder mapping, even when SQLite already
+      // contains a URI: an old ZIP restore may have left Restored_... here.
+      destinationUri = await FolderRepository(database: _database)
+          .ensurePhysicalStorageUri(targetFolderId);
     }
 
     if (Platform.isAndroid && destinationUri == null) {
@@ -879,8 +881,8 @@ class DocumentRepository {
         );
         destinationUri = folderRows.isEmpty
             ? null
-            : folderRows.first['storage_uri_or_relative_path'] as String?;
-        destinationUri ??= await FolderRepository().ensurePhysicalStorageUri(folderId);
+            : await FolderRepository(database: _database)
+                .ensurePhysicalStorageUri(folderId);
       }
 
       if (Platform.isAndroid && destinationUri == null) {
