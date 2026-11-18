@@ -10,6 +10,8 @@ import CryptoKit
     private let bookmarkListKey = "docsgrid_storage_bookmarks"
     private var pendingFolderResult: FlutterResult?
     private var documentController: UIDocumentInteractionController?
+    private var previewScopedURL: URL?
+    private var previewScopeHeld = false
     private let storageQueue = DispatchQueue(label: "com.docsgrid.storage-io", qos: .userInitiated)
     private let storageQueueSlots = DispatchSemaphore(value: 64)
 
@@ -213,16 +215,38 @@ import CryptoKit
             case "openPdf":
                 let url = try urlArg(args, "uri")
                 DispatchQueue.main.async {
+                    // The actual security-scoped resource must remain open for
+                    // the whole preview/menu lifetime, not just the dispatch.
+                    if self.previewScopedURL != nil {
+                        result(FlutterError(code: "BUSY", message: "Another PDF preview is already active.", details: nil))
+                        return
+                    }
+                    let granted = url.startAccessingSecurityScopedResource()
+                    guard granted || self.isInsideAppContainer(url) else {
+                        result(FlutterError(code: "PERMISSION", message: "Selected PDF access has expired.", details: nil))
+                        return
+                    }
+                    guard FileManager.default.fileExists(atPath: url.path),
+                          let view = self.window?.rootViewController?.view else {
+                        if granted { url.stopAccessingSecurityScopedResource() }
+                        result(FlutterError(code: "NOT_FOUND", message: "Selected PDF is unavailable.", details: nil))
+                        return
+                    }
                     let controller = UIDocumentInteractionController(url: url)
                     controller.delegate = self
                     self.documentController = controller
-                    if let view = self.window?.rootViewController?.view {
-                        if !controller.presentPreview(animated: true) {
-                            controller.presentOptionsMenu(from: view.bounds, in: view, animated: true)
-                        }
+                    self.previewScopedURL = url
+                    self.previewScopeHeld = granted
+                    let presented = controller.presentPreview(animated: true)
+                        || controller.presentOptionsMenu(from: view.bounds, in: view, animated: true)
+                    if !presented {
+                        self.releaseDocumentPreviewAccess()
+                        result(FlutterError(code: "OPEN_FAILED", message: "Could not present a PDF preview or chooser.", details: nil))
+                        return
                     }
+                    // This confirms presentation, never successful rendering.
+                    result(true)
                 }
-                result(true)
             default:
                 result(FlutterMethodNotImplemented)
             }
@@ -687,6 +711,21 @@ import CryptoKit
         let callback = pendingFolderResult
         pendingFolderResult = nil
         callback?(nil)
+    }
+
+    private func releaseDocumentPreviewAccess() {
+        if previewScopeHeld { previewScopedURL?.stopAccessingSecurityScopedResource() }
+        previewScopeHeld = false
+        previewScopedURL = nil
+        documentController = nil
+    }
+
+    func documentInteractionControllerDidEndPreview(_ controller: UIDocumentInteractionController) {
+        releaseDocumentPreviewAccess()
+    }
+
+    func documentInteractionControllerDidDismissOptionsMenu(_ controller: UIDocumentInteractionController) {
+        releaseDocumentPreviewAccess()
     }
 
     func documentInteractionControllerViewControllerForPreview(_ controller: UIDocumentInteractionController) -> UIViewController {
