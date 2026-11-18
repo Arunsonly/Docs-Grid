@@ -501,6 +501,8 @@ class DocumentToolsService {
     void Function(int, int)? onProgress,
     bool includePdfs = true,
     bool backgroundSafe = false,
+    // Private rescue archives must not replace or prune ordinary backups.
+    bool rescueCheckpoint = false,
   }) async {
     await StorageMigrationGate.waitUntilReady();
     final storage = StorageLocationService.instance;
@@ -509,10 +511,10 @@ class DocumentToolsService {
             ? await storage.cachedPortableDataLocations()
             : await storage.portableDataLocationsIfAvailable())
         : const <String, String>{};
-    final destinationUri = includePdfs
+    final destinationUri = rescueCheckpoint ? null : includePdfs
         ? (portableLocations['fullBackupsUri'] ?? portableLocations['backupsUri'])
         : (portableLocations['databaseBackupsUri'] ?? portableLocations['backupsUri']);
-    if (Platform.isAndroid && destinationUri == null) {
+    if (Platform.isAndroid && destinationUri == null && !rescueCheckpoint) {
       throw StateError(
         'Set up DocsGrid storage before creating a backup.',
       );
@@ -532,7 +534,8 @@ class DocumentToolsService {
     final manifest = <String, Object?>{
       'format': 'DocsGridBackup',
       'version': 1,
-      'backupType': includePdfs ? 'full' : 'database',
+      'backupType': rescueCheckpoint ? 'rescue' : includePdfs ? 'full' : 'database',
+      if (rescueCheckpoint) 'missingPdfs': <Map<String, Object?>>[],
       'backupId': _uuid.v4(),
       'app': 'DocsGrid',
       'databaseSchemaVersion': databaseSchemaVersion,
@@ -547,12 +550,14 @@ class DocumentToolsService {
     // a second app-private DocsGrid backup library.
     final temporaryBase = await getTemporaryDirectory();
     final appDocuments = await getApplicationDocumentsDirectory();
-    final portableBackupsUri = includePdfs
+    final portableBackupsUri = rescueCheckpoint ? null : includePdfs
         ? (portableLocations['fullBackupsUri'] ?? portableLocations['backupsUri'])
         : (portableLocations['databaseBackupsUri'] ?? portableLocations['backupsUri']);
-    final fallbackBackupPath = Platform.isAndroid
-        ? p.join(temporaryBase.path, 'docsgrid_backup_staging', includePdfs ? 'Full' : 'Database')
-        : p.join(appDocuments.path, 'DocsGrid', 'Backups', includePdfs ? 'Full' : 'Database');
+    final fallbackBackupPath = rescueCheckpoint
+        ? p.join(temporaryBase.path, 'docsgrid_rescue_staging')
+        : Platform.isAndroid
+            ? p.join(temporaryBase.path, 'docsgrid_backup_staging', includePdfs ? 'Full' : 'Database')
+            : p.join(appDocuments.path, 'DocsGrid', 'Backups', includePdfs ? 'Full' : 'Database');
     final backups = Directory(
       portableBackupsUri != null && portableBackupsUri.startsWith('file://')
           ? Uri.parse(portableBackupsUri).toFilePath()
@@ -665,6 +670,10 @@ class DocumentToolsService {
             );
             if (docs.isEmpty) break;
             for (final row in docs) {
+            // The rescue checkpoint records unavailable PDFs honestly instead
+            // of blocking repair of healthy data. Ordinary full backups still
+            // fail closed on a missing or damaged PDF.
+            try {
             final uri = row['storage_uri'] as String?;
             if (uri == null || uri.isEmpty) {
               throw StateError('Backup cannot be complete: "${row['name']}" has no storage reference.');
@@ -709,6 +718,14 @@ class DocumentToolsService {
                 await stagedProviderFile.delete();
               }
             }
+            } catch (error) {
+              if (!rescueCheckpoint) rethrow;
+              (manifest['missingPdfs'] as List).add({
+                'documentId': row['id'],
+                'reason': error is FileSystemException ? 'unavailable_or_unreadable'
+                    : 'not_verified',
+              });
+            }
               completed++;
               onProgress?.call(completed, totalDocs);
             }
@@ -737,11 +754,13 @@ class DocumentToolsService {
           mimeType: 'application/zip',
         );
       }
-      await _pruneBackupArchives(
-        backups,
-        keep: includePdfs ? 4 : 14,
-        newestPath: output.path,
-      );
+      if (!rescueCheckpoint) {
+        await _pruneBackupArchives(
+          backups,
+          keep: includePdfs ? 4 : 14,
+          newestPath: output.path,
+        );
+      }
       return output;
     } catch (_) {
       if (encoderOpened) {
@@ -1216,7 +1235,14 @@ class DocumentToolsService {
     // A normal Full archive lives in a keep-four directory. A JSON pointer
     // there is not sufficient: the actual restore checkpoint must be copied
     // outside that directory before it is advertised as durable.
-    final checkpointArchive = await createBackup(includePdfs: true);
+    final checkpointArchive = await createBackup(
+      includePdfs: true, rescueCheckpoint: true,
+    );
+    // The source can contain missing PDFs. Only this pre-restore checkpoint
+    // may be partial; ordinary Full backups remain complete by contract.
+    final checkpointContents = await _decodeValidatedBackup(checkpointArchive);
+    final missingPdfs = (checkpointContents.manifest['missingPdfs'] as List).length;
+    await checkpointContents.dispose();
     final digest = (await sha256.bind(checkpointArchive.openRead()).first).toString();
     final stamp = '${DateTime.now().toUtc().millisecondsSinceEpoch}_${_uuid.v4()}';
     final archiveName = 'checkpoint_$stamp.zip';
@@ -1258,7 +1284,8 @@ class DocumentToolsService {
     final record = <String, Object?>{
       'format': 'DocsGridRestoreCheckpoint',
       'version': 1,
-      'status': 'verified',
+      'status': missingPdfs == 0 ? 'verified_rescue' : 'partial_rescue',
+      'missingPdfCount': missingPdfs,
       'restoreMode': mode.name,
       'sourceBackupId': sourceBackupId,
       'createdAtUtc': DateTime.now().toUtc().toIso8601String(),
@@ -1266,7 +1293,7 @@ class DocumentToolsService {
       'archiveUri': durableArchiveUri,
       'archiveBytes': await checkpointArchive.length(),
       'archiveSha256': digest,
-      'archiveBackupType': 'full',
+      'archiveBackupType': 'rescue',
     };
     final recordName = 'checkpoint_$stamp.json';
     if (checkpointRoot != null) {
@@ -1419,6 +1446,9 @@ Future<int?> _restoreBackupLocked(
     Future<bool> Function(Map<String, int> preview)? confirmPlan,
   }) async {
     final manifest = backup.manifest;
+    if (replaceExisting && manifest['backupType'] == 'rescue') {
+      throw StateError('A partial rescue archive cannot replace healthy documents.');
+    }
     final rowsByTable = backup.rowsByTable;
     final folderRows = rowsByTable['folders']!;
     final documentsById = <String, Map<String, Object?>>{
@@ -2026,8 +2056,9 @@ Future<int?> _restoreBackupLocked(
           final oldCategoryId = row['category_id'] as String?;
           copy['category_id'] = oldCategoryId == null ? null : categoryIdMap[oldCategoryId];
           final restored = restoredPaths[oldId];
-          final isDatabaseOnly = manifest['backupType'] == 'database';
-          if (restored == null && !isDatabaseOnly) {
+          final permitsMissing = manifest['backupType'] == 'database' ||
+              manifest['backupType'] == 'rescue';
+          if (restored == null && !permitsMissing) {
             throw StateError('Backup is missing PDF bytes for "${row['name']}".');
           }
           // Database-only restores recover document metadata and relationships
@@ -3434,8 +3465,31 @@ Future<int?> _restoreBackupLocked(
         }
         stagedPdfPaths[documentId] = stagedFile.path;
       }
-      final databaseOnly = manifest['backupType'] == 'database';
-      if (!databaseOnly &&
+      final backupType = manifest['backupType'];
+      final databaseOnly = backupType == 'database';
+      final rescue = backupType == 'rescue';
+      if (backupType != 'full' && !databaseOnly && !rescue) {
+        throw StateError('Unsupported backup payload type.');
+      }
+      if (rescue) {
+        final missingRecords = manifest['missingPdfs'];
+        if (missingRecords is! List) {
+          throw StateError('Rescue checkpoint needs a missing-PDF ledger.');
+        }
+        final missingIds = <String>{};
+        for (final record in missingRecords) {
+          if (record is! Map || record['documentId'] is! String ||
+              record['reason'] is! String ||
+              !documentIds.contains(record['documentId']) ||
+              !missingIds.add(record['documentId'] as String)) {
+            throw StateError('Rescue checkpoint has an invalid missing-PDF ledger.');
+          }
+        }
+        if (missingIds.intersection(seenDocuments).isNotEmpty ||
+            missingIds.length + seenDocuments.length != documentIds.length) {
+          throw StateError('Rescue checkpoint does not account for every PDF.');
+        }
+      } else if (!databaseOnly &&
           (seenDocuments.length != documentIds.length ||
            !seenDocuments.containsAll(documentIds))) {
         throw StateError('Backup contains orphaned PDF entries: every document must have exactly one PDF entry.');
