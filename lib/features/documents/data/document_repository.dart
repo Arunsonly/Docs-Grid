@@ -2354,11 +2354,26 @@ class DocumentRepository {
     if (trashed.isEmpty) {
       throw StateError('Only documents in the Recycle Bin can be permanently deleted.');
     }
+    if (trashed.single['storage_uri'] != document.storagePath) {
+      throw StateError('This PDF location changed; refresh Recycle Bin before deleting.');
+    }
     await DurableFileOperations.run<void>(
       db: db,
       resourceKey: 'document:${document.id}',
       kind: 'delete-pdf',
       action: (lease) async {
+    // The original preflight happened before obtaining ownership. Reject any
+    // stale URI/folder state before performing irreversible physical deletion.
+    final latest = await db.query(
+      'documents', columns: ['storage_uri', 'trash_operation_id'],
+      where: 'id = ? AND deleted_at IS NOT NULL',
+      whereArgs: [document.id], limit: 1,
+    );
+    if (latest.length != 1 ||
+        latest.single['storage_uri'] != trashed.single['storage_uri'] ||
+        latest.single['trash_operation_id'] != trashed.single['trash_operation_id']) {
+      throw StateError('The recycled PDF changed while permanent delete was preparing.');
+    }
     if ((trashed.first['trash_operation_id'] as String?)?.isNotEmpty == true) {
       throw StateError('This PDF belongs to a deleted folder. Empty the folder entry in Recycle Bin instead.');
     }
@@ -2399,8 +2414,10 @@ class DocumentRepository {
       );
       final deleted = await txn.delete(
         'documents',
-        where: 'id = ? AND deleted_at IS NOT NULL',
-        whereArgs: [document.id],
+        where: "id = ? AND deleted_at IS NOT NULL "
+            "AND (trash_operation_id IS NULL OR trash_operation_id = '') "
+            "AND storage_uri = ?",
+        whereArgs: [document.id, currentStoragePath],
       );
       if (deleted == 0) {
         throw StateError('The document is no longer in the Recycle Bin.');
