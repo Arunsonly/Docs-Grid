@@ -114,8 +114,9 @@ class DurableFileOperations {
           throw StateError('Previous file operation already committed. '
               'Reconcile it before starting another action.');
         }
-        previousPhase = oldState != null && oldState != 'completed'
-            ? previous?['phase'] as String? : null;
+        if (oldState != null && oldState != 'completed') {
+          previousPhase = previous!['phase'] as String?;
+        }
         final id = previous != null && oldState != 'completed'
             ? previous['operation_id'] as String : _uuid.v4();
 
