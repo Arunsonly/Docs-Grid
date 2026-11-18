@@ -336,6 +336,44 @@ void main() {
     expect(history, hasLength(1));
   });
 
+  test('missing trash directory fails closed before any PDF is deleted',
+      () async {
+    final db = await _database();
+    addTearDown(db.close);
+    final sandbox = await Directory.systemTemp.createTemp('docsgrid-trash-unavailable-');
+    addTearDown(() async {
+      if (await sandbox.exists()) await sandbox.delete(recursive: true);
+    });
+    final safePdf = File('${sandbox.path}/must-survive.pdf');
+    await safePdf.writeAsBytes([37, 80, 68, 70, 45, 49]);
+    final missing = Directory('${sandbox.path}/removed-by-external-provider');
+    await _insertFolder(db, 'unavailable', 'Unavailable');
+    await db.update('folders',
+      {'storage_uri_or_relative_path': missing.uri.toString()},
+      where: 'id = ?', whereArgs: ['unavailable'],
+    );
+    await _insertDocument(db, {
+      'id': 'safe-document', 'folder_id': 'unavailable',
+      'storage_uri': safePdf.uri.toString(),
+    });
+    final repository = FolderRepository(
+      database: AppDatabase.forTesting(() async => db),
+    );
+    await repository.moveManyToRecycleBin(['unavailable']);
+    await expectLater(
+      repository.permanentlyDeleteTrashFolderTree('unavailable'),
+      throwsA(isA<StateError>().having(
+        (e) => e.message, 'message', contains('missing or inaccessible'),
+      )),
+    );
+    expect(await safePdf.exists(), isTrue);
+    expect(await db.query('documents',
+        where: 'id = ?', whereArgs: ['safe-document']), hasLength(1));
+    expect(await db.query('folders',
+        where: 'id = ?', whereArgs: ['unavailable']), hasLength(1));
+    expect(await db.rawQuery('PRAGMA foreign_key_check'), isEmpty);
+  });
+
   test('independently owned child folder blocks permanent delete before file removal',
       () async {
     final db = await _database();
