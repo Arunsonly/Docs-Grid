@@ -441,6 +441,24 @@ class DocumentRepository {
     await StorageMigrationGate.waitUntilReady();
     if (document.folderId == folderId && destinationUri == null) return;
     final db = await _database.database;
+    await DurableFileOperations.run<void>(
+      db: db,
+      resourceKey: 'document:${document.id}',
+      kind: 'move-pdf',
+      action: (lease) async {
+    // Reject a stale selection after obtaining the same ownership used by
+    // rename, trash, restore and permanent deletion.
+    final before = await db.query(
+      'documents', columns: ['id'],
+      where: 'id = ? AND deleted_at IS NULL AND storage_uri = ? '
+          'AND (folder_id = ? OR (folder_id IS NULL AND ? IS NULL))',
+      whereArgs: [document.id, document.storagePath,
+                  document.folderId, document.folderId],
+      limit: 1,
+    );
+    if (before.length != 1) {
+      throw StateError('PDF changed before the move could start. Refresh the list.');
+    }
     final storage = StorageLocationService.instance;
     final portableLocations = Platform.isAndroid
         ? await storage.portableDataLocationsIfAvailable()
@@ -475,6 +493,7 @@ class DocumentRepository {
     final sourceIsShared = sourceUri.startsWith('content://') || sourceUri.startsWith('file://');
     String newStorageUri = sourceUri;
     var copiedToNewLocation = false;
+    await lease.phase('copying-pdf');
 
     if (destinationUri != null) {
       if (sourceIsShared) {
@@ -551,6 +570,7 @@ class DocumentRepository {
     }
 
     try {
+      await lease.phase('committing-move-metadata');
       await db.transaction((txn) async {
         if (folderId != null) {
           final activeFolder = await txn.query(
@@ -568,14 +588,20 @@ class DocumentRepository {
             'relative_path': relativePath,
             'updated_at': DateTime.now().toUtc().toIso8601String(),
           },
-          where: 'id = ? AND deleted_at IS NULL',
-          whereArgs: [document.id],
+          where: 'id = ? AND deleted_at IS NULL AND storage_uri = ? '
+              'AND (folder_id = ? OR (folder_id IS NULL AND ? IS NULL))',
+          whereArgs: [
+            document.id, sourceUri, document.folderId, document.folderId,
+          ],
         );
-        if (count == 0) throw StateError('PDF record no longer exists.');
+        if (count != 1) {
+          throw StateError('PDF location or folder changed during move.');
+        }
         await _recordHistory(txn, document.id, 'moved_to_folder', {
           'folder_id': folderId,
           'storage_uri': newStorageUri,
         });
+        await lease.markDatabaseCommitted(txn);
       });
       PortableSnapshotEvents.notifyDataChanged();
     } catch (_) {
@@ -595,6 +621,14 @@ class DocumentRepository {
     }
 
     if (copiedToNewLocation && newStorageUri != sourceUri) {
+      // A second logical PDF may intentionally point to the same physical
+      // provider item. Never remove bytes another document still references.
+      final otherReferences = await db.query(
+        'documents', columns: ['id'],
+        where: 'id != ? AND storage_uri = ?',
+        whereArgs: [document.id, sourceUri], limit: 1,
+      );
+      if (otherReferences.isNotEmpty) return;
       try {
         if (sourceIsShared) {
           await storage.deletePdf(sourceUri);
@@ -609,6 +643,8 @@ class DocumentRepository {
         );
       }
     }
+      },
+    );
   }
 
   /// Moves the existing document library into the currently selected platform
