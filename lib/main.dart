@@ -221,7 +221,10 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
       // set until the next eligible pass; the 15-minute poll is a fallback.
       final lastSnapshotAt =
           await AppDatabase.instance.portableSnapshotLastAt();
+      // A device clock moving backwards must not suppress snapshots
+      // indefinitely. Only a past timestamp is eligible for debounce.
       if (lastSnapshotAt != null &&
+          !lastSnapshotAt.isAfter(DateTime.now().toUtc()) &&
           DateTime.now().toUtc().difference(lastSnapshotAt) <
               const Duration(minutes: 5)) {
         return;
