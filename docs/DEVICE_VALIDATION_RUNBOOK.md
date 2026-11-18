@@ -80,6 +80,7 @@ Current enforced ZIP limits (from BackupArchiveLimits, reviewed 18 Nov 2026):
 - Entry count: 50,000 maximum.
 - ZIP central directory: 32 MiB maximum.
 - ZIP64 and multi-disk archives are not supported.
+- Backup JSON metadata decode: 64 MiB per JSON entry and 192 MiB combined. This is an additional memory-safety limit, independent of ZIP payload size.
 
 Direct PDF import/relink streaming is not subject to these ZIP-specific limits. A PDF/archive above a limit is expected to be rejected by ZIP restore. These are ZIP policy ceilings, not a guarantee of available disk space or device memory. Include staging copies, checkpoint backups and existing archives in the available-disk preflight; use artificial data for boundary/ZIP-bomb regression tests.
 

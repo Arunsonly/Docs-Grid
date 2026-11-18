@@ -3301,7 +3301,19 @@ Future<int?> _restoreBackupLocked(
     try {
       final decoded = ZipDecoder().decodeStream(input);
       final archiveNames = <String>{};
+      var expandedMetadataBytes = 0;
       for (final entry in decoded.files) {
+        if (entry.name.endsWith('.json')) {
+          // JSON is decoded into Dart maps/lists after decompression. ZIP
+          // expansion ceilings alone are not adequate memory protection.
+          const maxMetadataEntry = 64 * 1024 * 1024;
+          const maxCombinedMetadata = 192 * 1024 * 1024;
+          if (entry.size > maxMetadataEntry ||
+              expandedMetadataBytes > maxCombinedMetadata - entry.size) {
+            throw StateError('Backup JSON metadata exceeds safe memory limits.');
+          }
+          expandedMetadataBytes += entry.size;
+        }
         final name = entry.name;
         final segments = name.split('/');
         if (!entry.isFile || entry.isSymbolicLink || name.isEmpty ||
