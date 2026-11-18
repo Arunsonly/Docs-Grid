@@ -1910,12 +1910,53 @@ class DocumentRepository {
       await source.copy(target.path);
       newUri = target.path;
     }
-    final digest = newUri.startsWith('content://') || newUri.startsWith('file://')
-        ? await storage.sha256Pdf(newUri)
-        : (await sha256.bind(File(newUri).openRead()).first).toString();
+    // The source and the new copy must contain identical PDF bytes. A
+    // stale source or broken provider copy is never committed as a new PDF.
+    late final String digest;
+    try {
+      digest = newUri.startsWith('content://') || newUri.startsWith('file://')
+          ? await storage.sha256Pdf(newUri)
+          : (await sha256.bind(File(newUri).openRead()).first).toString();
+      final sourceDigest = sourceUri.startsWith('content://') ||
+              sourceUri.startsWith('file://')
+          ? await storage.sha256Pdf(sourceUri)
+          : (await sha256.bind(File(sourceUri).openRead()).first).toString();
+      if (digest.toLowerCase() != sourceDigest.toLowerCase()) {
+        throw StateError('Copied PDF differs from source; no document was created.');
+      }
+    } catch (_) {
+      try {
+        if (newUri.startsWith('content://') || newUri.startsWith('file://')) {
+          await storage.deletePdf(newUri);
+        } else {
+          final target = File(newUri);
+          if (await target.exists()) await target.delete();
+        }
+      } catch (_) {}
+      rethrow;
+    }
     final now = DateTime.now().toUtc().toIso8601String();
     try {
-      await db.insert('documents', {
+      await db.transaction((txn) async {
+        final currentSource = await txn.query(
+          'documents', columns: ['id'],
+          where: 'id = ? AND deleted_at IS NULL AND storage_uri = ?',
+          whereArgs: [document.id, sourceUri], limit: 1,
+        );
+        if (currentSource.isEmpty) {
+          throw StateError('The source PDF changed while it was being copied.');
+        }
+        if (targetFolderId != null) {
+          final destination = await txn.query(
+            'folders', columns: ['id'],
+            where: 'id = ? AND deleted_at IS NULL',
+            whereArgs: [targetFolderId], limit: 1,
+          );
+          if (destination.isEmpty) {
+            throw StateError('Destination folder is no longer active.');
+          }
+        }
+      await txn.insert('documents', {
         'id': newId,
         'name': newName,
         'original_name': '$newName.pdf',
@@ -1935,6 +1976,8 @@ class DocumentRepository {
         'metadata_json': jsonEncode({'favorite': false}),
         'is_favorite': 0,
       });
+      await _recordHistory(txn, newId, 'copied', {'from': document.id});
+      });
     } catch (_) {
       try {
         if (newUri.startsWith('content://') || newUri.startsWith('file://')) {
@@ -1947,9 +1990,6 @@ class DocumentRepository {
     }
     final created = await getById(newId);
     if (created == null) throw StateError('Copied PDF was not saved in the library.');
-    await db.transaction((txn) async {
-      await _recordHistory(txn, newId, 'copied', {'from': document.id});
-    });
     PortableSnapshotEvents.notifyDataChanged();
     return created;
   }
