@@ -909,10 +909,16 @@ class MainActivity : FlutterActivity() {
             for (index in 0 until clip.itemCount) clip.getItemAt(index).uri?.let { uris.add(it) }
         }
         val output = mutableListOf<Map<String, String>>()
-        val shareDir = java.io.File(cacheDir, "incoming_docs").apply { mkdirs() }
-        // These files are only hand-off copies. Remove leftovers from a prior
-        // interrupted share/import before staging the current incoming items.
-        shareDir.listFiles()?.forEach { stale -> try { stale.delete() } catch (_: Exception) {} }
+        // Hand-off files must survive activity resume and process restart.
+        // cacheDir may be cleared by Android; keep only these private staged
+        // imports in the app's managed files directory until user completion.
+        val shareDir = java.io.File(filesDir, "incoming_docs").apply { mkdirs() }
+        // Never blindly delete a previously accepted but uncommitted import.
+        // Incomplete .part copies are ignored, not presented as valid PDFs.
+        shareDir.listFiles()?.filter { it.isFile && it.name.endsWith(".pdf") }?.forEach {
+            output.add(mapOf("path" to it.absolutePath, "name" to
+                it.name.substringAfter('_', "Shared document.pdf")))
+        }
         uris.forEachIndexed { index, uri ->
             try {
                 val mime = contentResolver.getType(uri)
@@ -926,16 +932,27 @@ class MainActivity : FlutterActivity() {
                 val name = displayName ?: "Shared_Document_${index + 1}.pdf"
                 if (mime != "application/pdf" && !name.lowercase().endsWith(".pdf")) return@forEachIndexed
                 val safe = name.replace(Regex("[^A-Za-z0-9._ -]"), "_")
-                val target = java.io.File(shareDir, "${System.currentTimeMillis()}_$safe")
-                contentResolver.openInputStream(uri)?.use { input ->
-                    target.outputStream().buffered().use { outputStream -> input.copyTo(outputStream, 64 * 1024) }
-                } ?: return@forEachIndexed
-                val validPdf = target.inputStream().use { input ->
-                    val header = ByteArray(5)
-                    input.read(header) == 5 && String(header) == "%PDF-"
+                    .let { if (it.lowercase().endsWith(".pdf")) it else "$it.pdf" }
+                val fileId = java.util.UUID.randomUUID().toString()
+                val target = java.io.File(shareDir, "${fileId}_$safe")
+                val partial = java.io.File(shareDir, "${fileId}.part")
+                try {
+                    contentResolver.openInputStream(uri)?.use { input ->
+                        partial.outputStream().buffered().use { outputStream ->
+                            input.copyTo(outputStream, 64 * 1024)
+                            outputStream.flush()
+                        }
+                    } ?: return@forEachIndexed
+                    val validPdf = partial.inputStream().use { input ->
+                        val header = ByteArray(5)
+                        input.read(header) == 5 && String(header) == "%PDF-"
+                    }
+                    if (validPdf && partial.renameTo(target)) {
+                        output.add(mapOf("path" to target.absolutePath, "name" to name))
+                    }
+                } finally {
+                    if (partial.exists()) partial.delete()
                 }
-                if (validPdf) output.add(mapOf("path" to target.absolutePath, "name" to name))
-                else target.delete()
             } catch (_: Exception) { }
         }
         return output
