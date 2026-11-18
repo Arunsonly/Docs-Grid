@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/services.dart';
+import 'package:crypto/crypto.dart';
 
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
@@ -979,14 +980,23 @@ class FolderRepository {
     for (final row in documents) {
       final uri = (row['storage_uri'] as String?)?.trim() ?? '';
       if (uri.isEmpty) throw StateError('A PDF in this folder has no storage location.');
-      if (uri.startsWith('content://') || uri.startsWith('file://')) {
-        final actual = await storage.sha256Pdf(uri);
-        final expected = (row['sha256'] as String?) ?? '';
-        if (expected.isNotEmpty && actual != expected) {
-          throw StateError('A PDF in this folder failed SHA-256 verification. No records were restored.');
+      final expected = ((row['sha256'] as String?) ?? '').toLowerCase();
+      final String actual;
+      if (uri.startsWith('content://')) {
+        actual = await storage.sha256Pdf(uri);
+      } else {
+        final file = File(uri.startsWith('file://')
+            ? Uri.parse(uri).toFilePath() : uri);
+        if (!await file.exists()) {
+          throw StateError('A PDF in this folder is missing: ${p.basename(uri)}');
         }
-      } else if (!await File(uri).exists()) {
-        throw StateError('A PDF in this folder is missing: ${p.basename(uri)}');
+        // Existence is not a proof of readability or matching original bytes.
+        actual = (await sha256.bind(file.openRead()).first).toString();
+      }
+      if (expected.isNotEmpty && actual.toLowerCase() != expected) {
+        throw StateError(
+          'A PDF in this folder failed SHA-256 verification. No records were restored.',
+        );
       }
     }
     var restoredPdfs = 0;
