@@ -111,8 +111,20 @@ class DurableFileOperations {
       return value;
     } catch (_) {
       try {
+        final current = await db.query(
+          'file_operation_journal', columns: ['phase'],
+          where: 'resource_key = ? AND operation_id = ? AND owner_id = ?',
+          whereArgs: [resourceKey, operationId, _processOwner], limit: 1,
+        );
+        // A rejected preflight did not mutate any PDF bytes or database row.
+        // Never let a harmless invalid individual-restore attempt permanently
+        // prevent recovery of its parent folder.
+        final noPhysicalChanges = current.isNotEmpty &&
+            current.single['phase'] == 'preflight';
         await db.update('file_operation_journal', {
-          'state': 'interrupted',
+          'state': noPhysicalChanges ? 'completed' : 'interrupted',
+          'phase': noPhysicalChanges ? 'rejected-before-write'
+              : (current.isNotEmpty ? current.single['phase'] : 'unknown'),
           'updated_at': DateTime.now().toUtc().toIso8601String(),
         }, where: 'resource_key = ? AND operation_id = ? AND owner_id = ? AND state = ?',
             whereArgs: [resourceKey, operationId, _processOwner, 'running']);

@@ -61,6 +61,26 @@ void main() {
     expect(await DurableFileOperations.incomplete(db), isEmpty);
   });
 
+  test('rejected preflight does not poison a folder for recovery', () async {
+    final db = await openDb();
+    addTearDown(db.close);
+    await expectLater(
+      DurableFileOperations.run<void>(
+        db: db, resourceKey: 'trash-tree:parent',
+        kind: 'restore-pdf', action: (_) async {
+          throw StateError('Restore the containing folder first');
+        },
+      ),
+      throwsStateError,
+    );
+    expect(await DurableFileOperations.incomplete(db), isEmpty);
+    await DurableFileOperations.run<void>(
+      db: db, resourceKey: 'trash-tree:parent',
+      kind: 'restore-folder-tree', action: (_) async {},
+    );
+    expect(await DurableFileOperations.incomplete(db), isEmpty);
+  });
+
   test('concurrent work with same resource cannot enter twice', () async {
     final db = await openDb();
     addTearDown(db.close);
