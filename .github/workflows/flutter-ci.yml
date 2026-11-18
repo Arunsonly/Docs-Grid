@@ -190,6 +190,29 @@ jobs:
           gradle.write_text(s)
           print(f'Enabled core library desugaring in {gradle}')
           PY
+      - name: Bundle Android Devanagari OCR model (ML Kit 16.0.1)
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          paths = [Path('android/app/build.gradle.kts'), Path('android/app/build.gradle')]
+          gradle = next((p for p in paths if p.exists()), None)
+          if gradle is None:
+              raise SystemExit('Generated Android Gradle app file was not found')
+          code = gradle.read_text()
+          if gradle.suffix == '.kts':
+              dep = 'implementation("com.google.mlkit:text-recognition-devanagari:16.0.1")'
+          else:
+              dep = "implementation 'com.google.mlkit:text-recognition-devanagari:16.0.1'"
+          if dep not in code:
+              match = re.search(r'dependencies\s*\{', code)
+              if match is None:
+                  code += '\ndependencies {\n    ' + dep + '\n}\n'
+              else:
+                  code = code[:match.end()] + '\n    ' + dep + code[match.end():]
+              gradle.write_text(code)
+          print('Pinned bundled Devanagari recognition dependency in', gradle)
+          PY
       - name: Configure Android camera and notification permissions
         run: |
           python3 - <<'PY'

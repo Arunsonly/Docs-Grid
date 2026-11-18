@@ -73,13 +73,15 @@ On a real iPhone:
 
 ## 5. Backup/restore acceptance
 
-Current enforced ZIP limits (from BackupArchiveLimits):
-- Compressed ZIP: 128 MiB maximum.
-- One expanded ZIP entry: 128 MiB maximum.
-- Total expanded archive: 256 MiB maximum.
+Current enforced ZIP limits (from BackupArchiveLimits, reviewed 18 Nov 2026):
+- Compressed ZIP: 2 GiB maximum.
+- One expanded ZIP entry: 1 GiB maximum.
+- Total expanded archive: 3 GiB maximum.
+- Entry count: 50,000 maximum.
+- ZIP central directory: 32 MiB maximum.
 - ZIP64 and multi-disk archives are not supported.
 
-Direct PDF import/relink streaming is not subject to these ZIP-specific limits. A PDF larger than 128 MiB, or a backup whose expanded contents exceed 256 MiB, is expected to be rejected by ZIP restore. If larger backup restores are a product requirement, raise these bounded limits deliberately and add boundary/ZIP-bomb regression tests before release.
+Direct PDF import/relink streaming is not subject to these ZIP-specific limits. A PDF/archive above a limit is expected to be rejected by ZIP restore. These are ZIP policy ceilings, not a guarantee of available disk space or device memory. Include staging copies, checkpoint backups and existing archives in the available-disk preflight; use artificial data for boundary/ZIP-bomb regression tests.
 
 Use a copy of real user data on a test device, never the only production copy.
 1. Create a backup and copy it to a separate location.
