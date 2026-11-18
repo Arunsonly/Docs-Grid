@@ -1980,6 +1980,9 @@ class DocumentRepository {
       kind: 'restore-pdf',
       action: (lease) async {
     if (matching.single['source'] == 'phone_storage_recycle_bin') {
+      // Phone restore may create/remove provider files. Once started, a
+      // failure cannot be treated as an untouched preflight rejection.
+      await lease.phase('restoring-phone-pdf');
       final raw = matching.single['metadata_json'];
       Map<String, Object?> metadata = const <String, Object?>{};
       try {
