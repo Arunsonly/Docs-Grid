@@ -727,6 +727,18 @@ class DocumentToolsService {
                   'Background full backup cannot read a SAF content URI in a headless worker. Open DocsGrid to create a verified foreground full backup.',
                 );
               }
+              // Probe the *source* separately for rescue. A provider's
+              // source-access error can be logged as missing/unreadable, but
+              // a later temporary-storage or ZIP-write failure must abort
+              // the entire rescue rather than masquerading as missing PDF.
+              if (rescueCheckpoint) {
+                try {
+                  await StorageLocationService.instance.sha256Pdf(uri);
+                } catch (_) {
+                  sourceUnavailable = true;
+                  rethrow;
+                }
+              }
               stagedProviderFile = File(p.join(staging.path, 'source_${_uuid.v4()}.pdf'));
               await StorageLocationService.instance.copyPdfToPath(
                 sourceUri: uri,
