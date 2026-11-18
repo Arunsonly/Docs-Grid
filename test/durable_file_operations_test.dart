@@ -106,6 +106,32 @@ void main() {
     );
   });
 
+  test('failed retry preflight preserves prior destructive intent', () async {
+    final db = await openDb();
+    addTearDown(db.close);
+    await expectLater(
+      DurableFileOperations.run<void>(
+        db: db, resourceKey: 'document:crash', kind: 'delete-pdf',
+        action: (lease) async {
+          await lease.phase('deleting-pdf-bytes');
+          throw StateError('interrupted after physical delete');
+        },
+      ), throwsStateError,
+    );
+    await expectLater(
+      DurableFileOperations.run<void>(
+        db: db, resourceKey: 'document:crash', kind: 'delete-pdf',
+        action: (lease) async {
+          expect(lease.previousPhase, 'deleting-pdf-bytes');
+          throw StateError('retry cannot verify old file location');
+        },
+      ), throwsStateError,
+    );
+    final rows = await DurableFileOperations.incomplete(db);
+    expect(rows, hasLength(1));
+    expect(rows.single['state'], 'interrupted');
+  });
+
   test('concurrent work with same resource cannot enter twice', () async {
     final db = await openDb();
     addTearDown(db.close);

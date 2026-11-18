@@ -126,8 +126,13 @@ class DurableFileOperations {
         // A rejected preflight did not mutate any PDF bytes or database row.
         // Never let a harmless invalid individual-restore attempt permanently
         // prevent recovery of its parent folder.
-        final noPhysicalChanges = current.isNotEmpty &&
-            current.single['phase'] == 'preflight';
+        // Do not clear an interrupted destructive operation merely because
+        // its *retry* was rejected in preflight. Its previous phase may have
+        // already deleted or renamed real files before process death.
+        final phase = current.isNotEmpty ? current.single['phase'] : null;
+        final noPhysicalChanges = phase == 'provider-rename-rolled-back' ||
+            (phase == 'preflight' &&
+                (previousPhase == null || previousPhase == 'preflight'));
         await db.update('file_operation_journal', {
           'state': noPhysicalChanges ? 'completed' : 'interrupted',
           'phase': noPhysicalChanges ? 'rejected-before-write'
