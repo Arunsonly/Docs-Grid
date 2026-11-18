@@ -403,6 +403,10 @@ class FolderRepository {
     await StorageMigrationGate.waitUntilReady();
     final cleaned = validateFolderName(name);
     final db = await _database.database;
+    await DurableFileOperations.run<void>(
+      db: db, resourceKey: 'folder:$id', kind: 'rename-folder',
+      scopeKeys: await DurableFileOperations.scopeForFolders(db, [id]),
+      action: (lease) async {
     final rows = await db.query(
       'folders',
       columns: ['name', 'parent_id', 'storage_uri_or_relative_path'],
@@ -414,6 +418,7 @@ class FolderRepository {
     final oldName = rows.first['name'] as String;
     if (oldName == cleaned) return;
     final oldUri = rows.first['storage_uri_or_relative_path'] as String?;
+    await lease.phase('renaming-folder-bytes');
     final storage = StorageLocationService.instance;
     final renamedUri = oldUri == null
         ? null
@@ -599,6 +604,7 @@ class FolderRepository {
             whereArgs: [entry.key],
           );
         }
+        await lease.markDatabaseCommitted(txn);
       });
       PortableSnapshotEvents.notifyDataChanged();
     } catch (_) {
@@ -619,6 +625,8 @@ class FolderRepository {
       }
       rethrow;
     }
+      },
+    );
   }
 
   /// Reparents selected folders as logical library folders. Stable storage
@@ -629,6 +637,13 @@ class FolderRepository {
     final requested = folderIds.toSet();
     if (requested.isEmpty) return;
     final db = await _database.database;
+    final ids = requested.toList()..sort();
+    await DurableFileOperations.run<void>(
+      db: db, resourceKey: 'folder:${ids.first}', kind: 'reparent-folders',
+      scopeKeys: await DurableFileOperations.scopeForFolders(
+        db, <String?>[...ids, parentId],
+      ),
+      action: (lease) async {
     await db.transaction((txn) async {
       final placeholders = List.filled(requested.length, '?').join(',');
       final rows = await txn.query(
@@ -707,8 +722,11 @@ class FolderRepository {
         );
       }
       await batch.commit(noResult: true);
+      await lease.markDatabaseCommitted(txn);
     });
     PortableSnapshotEvents.notifyDataChanged();
+      },
+    );
   }
 
   /// Soft-deletes selected folders and all descendants. PDFs go to Recycle Bin
@@ -721,6 +739,11 @@ class FolderRepository {
     final requested = folderIds.toSet();
     if (requested.isEmpty) return 0;
     final db = await _database.database;
+    final ids = requested.toList()..sort();
+    return DurableFileOperations.run<int>(
+      db: db, resourceKey: 'folder:${ids.first}', kind: 'trash-folder-tree',
+      scopeKeys: await DurableFileOperations.scopeForFolderTrees(db, ids),
+      action: (lease) async {
     var movedPdfCount = 0;
     await db.transaction((txn) async {
       final placeholders = List.filled(requested.length, '?').join(',');
@@ -785,9 +808,12 @@ class FolderRepository {
           whereArgs: allIds.toList(),
         );
       }
+      await lease.markDatabaseCommitted(txn);
     });
     PortableSnapshotEvents.notifyDataChanged();
     return movedPdfCount;
+      },
+    );
   }
 
   Future<void> _backfillLegacyFolderTrashOperations() async {
@@ -942,6 +968,7 @@ class FolderRepository {
     final operationId = roots.single['trash_operation_id'] as String;
     return DurableFileOperations.run<int>(
       db: db, resourceKey: 'trash-tree:$operationId',
+      scopeKeys: await DurableFileOperations.scopeForFolderTrees(db, [rootFolderId]),
       kind: 'restore-folder-tree',
       action: (lease) async {
     final parentId = roots.single['parent_id'] as String?;
@@ -1102,6 +1129,7 @@ class FolderRepository {
     final operationId = roots.single['trash_operation_id'] as String;
     await DurableFileOperations.run<void>(
       db: db, resourceKey: 'trash-tree:$operationId',
+      scopeKeys: await DurableFileOperations.scopeForFolderTrees(db, [rootFolderId]),
       kind: 'delete-folder-tree',
       action: (lease) async {
     final folders = await db.query(
@@ -1253,6 +1281,10 @@ class FolderRepository {
   Future<void> deleteEmpty(String id) async {
     await StorageMigrationGate.waitUntilReady();
     final db = await _database.database;
+    await DurableFileOperations.run<void>(
+      db: db, resourceKey: 'folder:$id', kind: 'trash-empty-folder',
+      scopeKeys: await DurableFileOperations.scopeForFolders(db, [id]),
+      action: (lease) async {
     final folder = await db.query(
       'folders', columns: ['id', 'storage_uri_or_relative_path'],
       where: 'id = ? AND deleted_at IS NULL',
@@ -1284,8 +1316,11 @@ class FolderRepository {
         'trash_operation_id': _uuid.v4(),
       }, where: 'id = ? AND deleted_at IS NULL', whereArgs: [id]);
       if (count == 0) throw StateError('Folder no longer exists.');
+      await lease.markDatabaseCommitted(txn);
     });
     PortableSnapshotEvents.notifyDataChanged();
+      },
+    );
   }
 
 }
