@@ -30,6 +30,12 @@ def configure_release(gradle: Path, env: dict[str, str]) -> None:
         raise RuntimeError("Generated Android Gradle app configuration was not found.")
 
     original = gradle.read_text()
+    # The production artifact must contain exactly the native OCR dependency
+    # that the Android CI APK tested. Refuse silently incomplete releases.
+    if "com.google.mlkit:text-recognition-devanagari:16.0.1" not in original:
+        raise RuntimeError(
+            "Bundled Devanagari OCR dependency missing from release Gradle config."
+        )
     if gradle.suffix == ".kts":
         signature = """
     signingConfigs {
