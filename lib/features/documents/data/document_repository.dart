@@ -2247,6 +2247,11 @@ class DocumentRepository {
   Future<void> moveToTrash(DocumentRecord document) async {
     await StorageMigrationGate.waitUntilReady();
     final db = await _database.database;
+    await DurableFileOperations.run<void>(
+      db: db,
+      resourceKey: 'document:${document.id}',
+      kind: 'move-pdf-to-trash',
+      action: (lease) async {
     await db.transaction((txn) async {
       final changed = await txn.update('documents', {
         'deleted_at': DateTime.now().toUtc().toIso8601String(),
@@ -2258,6 +2263,8 @@ class DocumentRepository {
     });
     PortableSnapshotEvents.notifyDataChanged();
     await _reconcileReminders();
+      },
+    );
   }
 
   Future<void> rename(DocumentRecord document, String newName) async {
