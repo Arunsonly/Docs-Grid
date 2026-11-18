@@ -722,7 +722,9 @@ class DocumentToolsService {
       await addStoredFile(manifestFile, 'manifest.json');
       await encoder.close();
       encoderOpened = false;
-      await BackupArchiveLimits.validate(output);
+      // Structural ZIP checks alone do not prove that the archived bytes
+      // match the manifest. Read back the complete output before pruning.
+      await validateBackup(output);
       // SAF locations use opaque content:// URIs rather than filesystem paths.
       // Publish the validated archive only after ZIP and manifest checks pass.
       if (!backgroundSafe &&

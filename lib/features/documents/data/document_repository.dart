@@ -1965,7 +1965,7 @@ class DocumentRepository {
     final db = await _database.database;
     final matching = await db.query(
       'documents',
-      columns: ['source', 'metadata_json', 'deleted_at'],
+      columns: ['source', 'metadata_json', 'deleted_at', 'storage_uri', 'sha256'],
       where: 'id = ? AND deleted_at IS NOT NULL',
       whereArgs: [document.id],
       limit: 1,
@@ -1989,15 +1989,45 @@ class DocumentRepository {
       await _restorePhonePdfFromTrash(document, origin);
       return;
     }
+    // A database row alone does not prove that the archived Grid PDF exists.
+    // Compare bytes when a trusted expected SHA-256 was saved.
+    final source = (matching.single['storage_uri'] as String?)?.trim() ?? '';
+    if (source.isEmpty || source.startsWith('missing://') ||
+        source.startsWith('backup-pdf://')) {
+      throw StateError('Archived PDF has no readable file. Restore its bytes from a verified backup.');
+    }
+    final String actualHash;
+    if (source.startsWith('content://')) {
+      actualHash = await StorageLocationService.instance.sha256Pdf(source);
+    } else {
+      final file = File(source.startsWith('file://')
+          ? Uri.parse(source).toFilePath() : source);
+      if (!await file.exists()) {
+        throw StateError('Archived PDF is missing. No record was restored.');
+      }
+      try {
+        actualHash = (await sha256.bind(file.openRead()).first).toString();
+      } on FileSystemException catch (error) {
+        throw StateError('Archived PDF could not be read: ${error.message}');
+      }
+    }
+    final expectedHash = matching.single['sha256'] as String?;
+    if (expectedHash != null && expectedHash.isNotEmpty &&
+        expectedHash.toLowerCase() != actualHash.toLowerCase()) {
+      throw StateError('Archived PDF checksum differs; restore was blocked.');
+    }
     await db.transaction((txn) async {
       final rows = await txn.query(
         'documents',
-        columns: ['folder_id', 'trash_operation_id'],
+        columns: ['folder_id', 'trash_operation_id', 'storage_uri', 'sha256'],
         where: 'id = ? AND deleted_at IS NOT NULL',
         whereArgs: [document.id],
         limit: 1,
       );
       if (rows.isEmpty) throw StateError('PDF is no longer in the Recycle Bin.');
+      if (rows.single['storage_uri'] != source || rows.single['sha256'] != expectedHash) {
+        throw StateError('Archived PDF reference changed during verification.');
+      }
       if ((rows.single['trash_operation_id'] as String?)?.isNotEmpty == true) {
         throw StateError('Restore the containing folder from Recycle Bin first.');
       }
