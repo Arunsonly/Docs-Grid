@@ -140,6 +140,56 @@ class DurableFileOperations {
     }
   }
 
+  /// Reconcile only operations whose final SQLite state proves that their
+  /// terminal database commit succeeded. Never infer physical deletion from
+  /// a missing file, and never automatically retry an irreversible delete.
+  /// All other interrupted operations remain visible for safe same-kind retry.
+  static Future<int> reconcileFinished(Database db) async {
+    final rows = await db.query(
+      'file_operation_journal',
+      where: "state != 'completed'",
+    );
+    var completed = 0;
+    for (final row in rows) {
+      final key = row['resource_key'] as String;
+      final kind = row['kind'] as String;
+      final phase = row['phase'] as String;
+      bool committed = false;
+      if (kind == 'delete-folder-tree' &&
+          key.startsWith('trash-tree:') &&
+          phase == 'deleting-folder-records') {
+        final operationId = key.substring('trash-tree:'.length);
+        final folderCount = Sqflite.firstIntValue(await db.rawQuery(
+          'SELECT COUNT(*) FROM folders WHERE trash_operation_id = ?',
+          [operationId],
+        )) ?? 0;
+        final documentCount = Sqflite.firstIntValue(await db.rawQuery(
+          'SELECT COUNT(*) FROM documents WHERE trash_operation_id = ?',
+          [operationId],
+        )) ?? 0;
+        committed = folderCount == 0 && documentCount == 0;
+      } else if (kind == 'delete-pdf' &&
+          key.startsWith('document:') &&
+          phase == 'deleting-pdf-record') {
+        final documentId = key.substring('document:'.length);
+        final existing = await db.query('documents',
+          columns: ['id'], where: 'id = ?', whereArgs: [documentId],
+          limit: 1,
+        );
+        committed = existing.isEmpty;
+      }
+      if (!committed) continue;
+      final n = await db.update('file_operation_journal', {
+        'state': 'completed',
+        'phase': 'reconciled-after-restart',
+        'updated_at': DateTime.now().toUtc().toIso8601String(),
+      }, where: "resource_key = ? AND operation_id = ? AND state != 'completed'",
+          whereArgs: [key, row['operation_id']]);
+      completed += n;
+    }
+    return completed;
+  }
+
   static Future<List<Map<String, Object?>>> incomplete(Database db) =>
       db.query('file_operation_journal',
           where: "state != 'completed'", orderBy: 'updated_at ASC');

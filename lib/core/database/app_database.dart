@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
+import '../storage/durable_file_operations.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart';
@@ -185,6 +186,11 @@ class AppDatabase {
         });
       },
       onUpgrade: upgradeForTesting,
+      onOpen: (db) async {
+        if (await db.getVersion() >= 12) {
+          await DurableFileOperations.reconcileFinished(db);
+        }
+      },
       onDowngrade: (db, oldVersion, newVersion) async {
         throw StateError(
           'Database downgrade from $oldVersion to $newVersion is not supported',

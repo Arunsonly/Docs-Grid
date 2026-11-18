@@ -109,6 +109,46 @@ void main() {
     expect(await DurableFileOperations.incomplete(db), isEmpty);
   });
 
+  test('restart reconciles a completed physical delete by database state only',
+      () async {
+    final directory = await Directory.systemTemp.createTemp('docsgrid-operation-recovery-');
+    addTearDown(() async {
+      if (await directory.exists()) await directory.delete(recursive: true);
+    });
+    final path = '${directory.path}/operations.db';
+    final db = await AppDatabase.instance.openProductionSchemaForTesting(path);
+    await db.insert('file_operation_journal', {
+      'resource_key': 'document:already-removed',
+      'operation_id': 'completed-delete',
+      'kind': 'delete-pdf',
+      'owner_id': 'previous-process',
+      'state': 'interrupted',
+      'phase': 'deleting-pdf-record',
+      'created_at': '2026-11-18T00:00:00Z',
+      'updated_at': '2026-11-18T00:00:00Z',
+    });
+    await db.insert('file_operation_journal', {
+      'resource_key': 'trash-tree:still-pending',
+      'operation_id': 'incomplete-tree-delete',
+      'kind': 'delete-folder-tree',
+      'owner_id': 'previous-process',
+      'state': 'interrupted',
+      'phase': 'deleting-pdf-bytes',
+      'created_at': '2026-11-18T00:00:00Z',
+      'updated_at': '2026-11-18T00:00:00Z',
+    });
+    await db.close();
+    final reopened = await AppDatabase.instance.openProductionSchemaForTesting(path);
+    addTearDown(reopened.close);
+    final done = await reopened.query('file_operation_journal',
+      where: 'operation_id = ?', whereArgs: ['completed-delete']);
+    expect(done.single['state'], 'completed');
+    expect(done.single['phase'], 'reconciled-after-restart');
+    final pending = await DurableFileOperations.incomplete(reopened);
+    expect(pending, hasLength(1));
+    expect(pending.single['resource_key'], 'trash-tree:still-pending');
+  });
+
   test('v11 development DB upgrades to v12 without deleting documents', () async {
     final directory = await Directory.systemTemp.createTemp('docsgrid-v12-');
     addTearDown(() async {
