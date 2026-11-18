@@ -495,11 +495,14 @@ class DocumentRepository {
     var copiedToNewLocation = false;
     await lease.phase('copying-pdf');
 
-    if (destinationUri != null) {
+    // A closure capturing mutable parameters cannot promote String? to String.
+    // Snapshot the resolved destination before invoking the provider.
+    final resolvedDestinationUri = destinationUri;
+    if (resolvedDestinationUri != null) {
       if (sourceIsShared) {
         newStorageUri = await storage.copyPdf(
           sourceUri: sourceUri,
-          parentUri: destinationUri,
+          parentUri: resolvedDestinationUri,
           name: '${document.name}.pdf',
         );
       } else {
@@ -507,7 +510,7 @@ class DocumentRepository {
         if (!await source.exists()) throw StateError('Original PDF is missing; it was not moved.');
         newStorageUri = await storage.copyPdf(
           sourceUri: Uri.file(source.path).toString(),
-          parentUri: destinationUri,
+          parentUri: resolvedDestinationUri,
           name: '${document.name}.pdf',
         );
       }
