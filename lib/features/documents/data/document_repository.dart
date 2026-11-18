@@ -1185,7 +1185,9 @@ class DocumentRepository {
     String sourceType = 'scanner', String? shareImportId,
   }) async {
     if (shareImportId != null && (sourceType != 'share' ||
-        !RegExp(r'^[0-9a-fA-F-]{36}
+        !RegExp(r'^[0-9a-fA-F-]{36}$').hasMatch(shareImportId))) {
+      throw ArgumentError('Share job requires a valid accepted import identity');
+    }
     await StorageMigrationGate.waitUntilReady();
     if (!await source.exists()) throw StateError('Scanned PDF is not available.');
     final header = await source.openRead(0, 5).fold<List<int>>(<int>[], (a, b) => a..addAll(b));
@@ -1200,8 +1202,6 @@ class DocumentRepository {
         return const ImportSummary(added: 0, duplicates: 1, failed: 0);
       }
     } else {
-      // The legacy scanner policy skips duplicate bytes. Independent shares
-      // are distinct logical PDFs, even if their SHA-256 matches.
       final duplicate = await db.query('documents',
         columns: ['id'], where: 'sha256 = ? AND deleted_at IS NULL',
         whereArgs: [digest], limit: 1);
@@ -1298,126 +1298,6 @@ class DocumentRepository {
           'updated_at': now,
           'metadata_json': shareImportId == null
               ? '{}' : jsonEncode({'shareImportId': shareImportId}),
-          'source': sourceType,
-        });
-        await _recordHistory(txn, id, sourceType == 'share' ? 'imported_from_share' : 'scanned', {'name': safeName, 'folder_id': targetFolderId});
-      });
-      PortableSnapshotEvents.notifyDataChanged();
-    } catch (error) {
-      try {
-        if (uri.startsWith('content://') || uri.startsWith('file://')) {
-          await storage.deletePdf(uri);
-        } else {
-          final file = File(uri);
-          if (await file.exists()) await file.delete();
-        }
-      } catch (_) {}
-      if (error is _DuplicatePdfException) {
-        return const ImportSummary(added: 0, duplicates: 1, failed: 0);
-      }
-      rethrow;
-    }
-    return const ImportSummary(added: 1, duplicates: 0, failed: 0);
-  }
-
-  /// Moves a PDF discovered in shared storage into the managed Grid library.
-  /// The source is deleted only after the copied PDF has been verified and its
-  /// database record has committed successfully.).hasMatch(shareImportId))) {
-      throw ArgumentError('Share job requires a valid accepted import identity');
-    }
-    await StorageMigrationGate.waitUntilReady();
-    if (!await source.exists()) throw StateError('Scanned PDF is not available.');
-    final header = await source.openRead(0, 5).fold<List<int>>(<int>[], (a, b) => a..addAll(b));
-    if (header.length < 5 || String.fromCharCodes(header) != '%PDF-') {
-      throw StateError('Scanner output is not a valid PDF.');
-    }
-    final digest = (await sha256.bind(source.openRead()).first).toString();
-    final db = await _database.database;
-    final duplicate = await db.query('documents',
-      columns: ['id'], where: 'sha256 = ? AND deleted_at IS NULL',
-      whereArgs: [digest], limit: 1);
-    if (duplicate.isNotEmpty) return const ImportSummary(added: 0, duplicates: 1, failed: 0);
-
-    final storage = StorageLocationService.instance;
-    final selected = await storage.selectedFolder();
-    final portableLocations = Platform.isAndroid
-        ? await storage.portableDataLocationsIfAvailable()
-        : const <String, String>{};
-    final requestedName = displayName?.trim();
-    final safeName = _safePdfName(requestedName == null || requestedName.isEmpty
-        ? p.basename(source.path)
-        : (requestedName.toLowerCase().endsWith('.pdf') ? requestedName : '$requestedName.pdf'));
-    final id = _uuid.v4();
-    late final String uri;
-    String? relativePath;
-    final folderUri = targetFolderId == null
-        ? null
-        : await FolderRepository(database: _database).ensurePhysicalStorageUri(targetFolderId);
-    final destinationUri = targetFolderUri ?? folderUri ??
-        (Platform.isAndroid ? portableLocations['documentsUri'] : selected?['uri']) ??
-        selected?['uri'];
-    if (Platform.isAndroid && destinationUri == null) {
-      throw StateError('Allow storage access or choose a folder before adding PDFs.');
-    }
-    if (destinationUri != null) {
-      uri = await storage.copyPdf(
-        sourceUri: Uri.file(source.path).toString(),
-        parentUri: destinationUri,
-        name: safeName,
-      );
-      try {
-        final copiedDigest = await storage.sha256Pdf(uri);
-        if (copiedDigest != digest) {
-          throw StateError('Scanned PDF failed SHA-256 verification in selected storage.');
-        }
-      } catch (_) {
-        try { await storage.deletePdf(uri); } catch (_) {}
-        rethrow;
-      }
-    } else {
-      // Keep scanner imports in the same nested private-folder layout used by
-      // ordinary imports; metadata folder_id and the on-disk path must agree.
-      final library = await _privateFolderFor(targetFolderId);
-      final target = await _uniqueFile(library, safeName);
-      await source.copy(target.path);
-      final copiedDigest = (await sha256.bind(target.openRead()).first).toString();
-      if (copiedDigest != digest) {
-        await target.delete();
-        throw StateError('Scanned PDF verification failed.');
-      }
-      final base = await getApplicationDocumentsDirectory();
-      uri = target.path;
-      relativePath = p.relative(
-        target.path,
-        from: p.join(base.path, 'DocsGrid', 'PDFs'),
-      );
-    }
-
-    final now = DateTime.now().toUtc().toIso8601String();
-    try {
-      await db.transaction((txn) async {
-        final existingNow = await txn.query('documents', columns: ['id'],
-          where: 'sha256 = ? AND deleted_at IS NULL', whereArgs: [digest], limit: 1);
-        if (existingNow.isNotEmpty) throw _DuplicatePdfException();
-        if (targetFolderId != null) {
-          final activeFolder = await txn.query('folders', columns: ['id'],
-            where: 'id = ? AND deleted_at IS NULL', whereArgs: [targetFolderId], limit: 1);
-          if (activeFolder.isEmpty) throw StateError('Destination folder no longer exists.');
-        }
-        await txn.insert('documents', {
-          'id': id,
-          'name': p.basenameWithoutExtension(safeName),
-          'original_name': safeName,
-          'storage_uri': uri,
-          'relative_path': relativePath,
-          'mime_type': 'application/pdf',
-          'size_bytes': await source.length(),
-          'sha256': digest,
-          'folder_id': targetFolderId,
-          'extracted_text_status': 'pending',
-          'created_at': now,
-          'updated_at': now,
-          'metadata_json': '{}',
           'source': sourceType,
         });
         await _recordHistory(txn, id, sourceType == 'share' ? 'imported_from_share' : 'scanned', {'name': safeName, 'folder_id': targetFolderId});
