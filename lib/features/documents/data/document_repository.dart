@@ -9,6 +9,7 @@ import 'package:sqflite/sqflite.dart';
 import 'package:uuid/uuid.dart';
 
 import '../../../core/database/app_database.dart';
+import '../../../core/storage/durable_file_operations.dart';
 import '../../../core/storage/byte_stream_file.dart';
 import '../../../core/storage/storage_location_service.dart';
 import '../../../core/storage/portable_snapshot_events.dart';
@@ -1965,12 +1966,19 @@ class DocumentRepository {
     final db = await _database.database;
     final matching = await db.query(
       'documents',
-      columns: ['source', 'metadata_json', 'deleted_at', 'storage_uri', 'sha256'],
+      columns: ['source', 'metadata_json', 'deleted_at', 'storage_uri', 'sha256', 'trash_operation_id'],
       where: 'id = ? AND deleted_at IS NOT NULL',
       whereArgs: [document.id],
       limit: 1,
     );
     if (matching.isEmpty) throw StateError('PDF is no longer in the Recycle Bin.');
+    final group = matching.single['trash_operation_id'] as String?;
+    await DurableFileOperations.run<void>(
+      db: db,
+      resourceKey: group != null && group.isNotEmpty
+          ? 'trash-tree:$group' : 'document:${document.id}',
+      kind: 'restore-pdf',
+      action: (lease) async {
     if (matching.single['source'] == 'phone_storage_recycle_bin') {
       final raw = matching.single['metadata_json'];
       Map<String, Object?> metadata = const <String, Object?>{};
@@ -2050,6 +2058,8 @@ class DocumentRepository {
     });
     PortableSnapshotEvents.notifyDataChanged();
     await _reconcileReminders();
+      },
+    );
   }
 
 
@@ -2309,6 +2319,11 @@ class DocumentRepository {
     if (trashed.isEmpty) {
       throw StateError('Only documents in the Recycle Bin can be permanently deleted.');
     }
+    await DurableFileOperations.run<void>(
+      db: db,
+      resourceKey: 'document:${document.id}',
+      kind: 'delete-pdf',
+      action: (lease) async {
     if ((trashed.first['trash_operation_id'] as String?)?.isNotEmpty == true) {
       throw StateError('This PDF belongs to a deleted folder. Empty the folder entry in Recycle Bin instead.');
     }
@@ -2323,6 +2338,7 @@ class DocumentRepository {
       whereArgs: [document.id],
     );
 
+    await lease.phase('deleting-pdf-bytes');
     // Keep the database record until the physical delete succeeds. The
     // Recycle Bin remains the recovery point if storage access is unavailable.
     if (currentStoragePath.startsWith('content://') ||
@@ -2333,6 +2349,7 @@ class DocumentRepository {
       if (await file.exists()) await file.delete();
     }
 
+    await lease.phase('deleting-pdf-record');
     await db.transaction((txn) async {
       await _recordHistory(
         txn,
@@ -2363,6 +2380,8 @@ class DocumentRepository {
         await ReminderNotifications.instance.cancel(row['id'] as String);
       } catch (_) {}
     }
+      },
+    );
   }
 
   Future<void> _recordHistory(
