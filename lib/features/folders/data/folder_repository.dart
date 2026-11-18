@@ -1013,13 +1013,14 @@ class FolderRepository {
           'rootFolderId': rootFolderId,
           'trashOperationId': operationId,
           'restoredPdfCount': restoredPdfs,
-          },
-    );    }),
+        }),
         'created_at': DateTime.now().toUtc().toIso8601String(),
       });
     });
     PortableSnapshotEvents.notifyDataChanged();
     return restoredPdfs;
+      },
+    );
   }
 
   /// Returns null for a missing local/provider directory and an empty list for
@@ -1180,6 +1181,7 @@ class FolderRepository {
         });
       });
     }
+    await lease.phase('deleting-empty-directories');
     for (final folder in deepestFirst) {
       final uri = folder['storage_uri_or_relative_path'] as String?;
       if (uri != null && uri.isNotEmpty) {
@@ -1195,8 +1197,7 @@ class FolderRepository {
       // Production SQLite uses ON DELETE RESTRICT for folders.parent_id.
       // Removing the whole operation in one DELETE can fail even when every
       // physical file was successfully removed. Delete descendants first.
-      await lease.phase('deleting-empty-directories');
-    for (final folder in deepestFirst) {
+      for (final folder in deepestFirst) {
         final deleted = await txn.delete(
           'folders',
           where: 'id = ? AND trash_operation_id = ? AND deleted_at IS NOT NULL',
@@ -1213,7 +1214,8 @@ class FolderRepository {
         'created_at': DateTime.now().toUtc().toIso8601String(),
       });
     });
-    PortableSnapshotEvents.notifyDataChanged();      },
+    PortableSnapshotEvents.notifyDataChanged();
+      },
     );
   }
 
