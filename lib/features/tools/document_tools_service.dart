@@ -709,12 +709,14 @@ class DocumentToolsService {
             );
             if (docs.isEmpty) break;
             for (final row in docs) {
-            // The rescue checkpoint records unavailable PDFs honestly instead
-            // of blocking repair of healthy data. Ordinary full backups still
-            // fail closed on a missing or damaged PDF.
+            // Only confirmed source-file problems may be written to a
+            // rescue ledger. Never disguise ZIP-write, low-disk or coding
+            // errors as missing PDFs: those must abort the rescue checkpoint.
+            var sourceUnavailable = false;
             try {
             final uri = row['storage_uri'] as String?;
             if (uri == null || uri.isEmpty) {
+              sourceUnavailable = true;
               throw StateError('Backup cannot be complete: "${row['name']}" has no storage reference.');
             }
             File? stagedProviderFile;
@@ -736,11 +738,19 @@ class DocumentToolsService {
             }
             try {
               if (!await file.exists()) {
+                sourceUnavailable = true;
                 throw StateError('Backup cannot be complete: "${row['name']}" is unavailable. Repair storage access and retry.');
               }
-              final digest = (await sha256.bind(file.openRead()).first).toString();
+              late final String digest;
+              try {
+                digest = (await sha256.bind(file.openRead()).first).toString();
+              } on FileSystemException {
+                sourceUnavailable = true;
+                rethrow;
+              }
               final expected = row['sha256'] as String?;
               if (expected != null && expected.isNotEmpty && digest != expected) {
+                sourceUnavailable = true;
                 throw StateError('Backup stopped: "${row['name']}" failed SHA-256 verification.');
               }
               // Never place imported database IDs in archive paths.
@@ -758,11 +768,11 @@ class DocumentToolsService {
               }
             }
             } catch (error) {
-              if (!rescueCheckpoint) rethrow;
+              if (!rescueCheckpoint || !sourceUnavailable) rethrow;
               (manifest['missingPdfs'] as List).add({
                 'documentId': row['id'],
                 'reason': error is FileSystemException ? 'unavailable_or_unreadable'
-                    : 'not_verified',
+                    : 'missing_or_integrity_mismatch',
               });
             }
               completed++;
