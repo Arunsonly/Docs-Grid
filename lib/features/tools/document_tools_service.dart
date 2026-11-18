@@ -498,11 +498,25 @@ class DocumentToolsService {
     await SharePlus.instance.share(ShareParams(files: [XFile(path)], text: text));
   }
 
+  /// Serialize public backup publication and retention with restore.
+  /// A restore creates its own private rescue checkpoint under the already
+  /// held recovery lock, avoiding lock recursion.
   Future<File> createBackup({
     void Function(int, int)? onProgress,
     bool includePdfs = true,
     bool backgroundSafe = false,
-    // Private rescue archives must not replace or prune ordinary backups.
+    bool rescueCheckpoint = false,
+  }) => _withRecoveryLock(() => _createBackupLocked(
+    onProgress: onProgress,
+    includePdfs: includePdfs,
+    backgroundSafe: backgroundSafe,
+    rescueCheckpoint: rescueCheckpoint,
+  ));
+
+  Future<File> _createBackupLocked({
+    void Function(int, int)? onProgress,
+    bool includePdfs = true,
+    bool backgroundSafe = false,
     bool rescueCheckpoint = false,
   }) async {
     await StorageMigrationGate.waitUntilReady();
@@ -1266,7 +1280,7 @@ class DocumentToolsService {
     // A normal Full archive lives in a keep-four directory. A JSON pointer
     // there is not sufficient: the actual restore checkpoint must be copied
     // outside that directory before it is advertised as durable.
-    final checkpointArchive = await createBackup(
+    final checkpointArchive = await _createBackupLocked(
       includePdfs: true, rescueCheckpoint: true,
     );
     try {
