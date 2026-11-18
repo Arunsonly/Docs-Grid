@@ -41,6 +41,16 @@ class AppDatabase {
   Future<Database> _openDatabase() async {
     final directory = await getApplicationDocumentsDirectory();
     final dbPath = p.join(directory.path, 'docs_grid.db');
+    return _openDatabaseAtPath(dbPath);
+  }
+
+  // Tests use the identical onCreate/onUpgrade callbacks and FK configuration
+  // as installed apps, rather than a hand-written partial schema.
+  @visibleForTesting
+  Future<Database> openProductionSchemaForTesting(String dbPath) =>
+      _openDatabaseAtPath(dbPath);
+
+  Future<Database> _openDatabaseAtPath(String dbPath) {
     return openDatabase(
       dbPath,
       version: schemaVersion,
