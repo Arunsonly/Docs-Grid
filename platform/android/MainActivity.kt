@@ -953,7 +953,9 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun consumeSharedPdfs(incomingIntent: Intent? = intent): List<Map<String, String>> {
-        val incoming = incomingIntent ?: return emptyList()
+        // Restart must enumerate existing private staged PDFs even when
+        // Android did not provide a new share intent to this Activity.
+        val incoming = incomingIntent ?: Intent()
         val uris = linkedSetOf<Uri>()
         if (incoming.action == Intent.ACTION_SEND) {
             val single = if (android.os.Build.VERSION.SDK_INT >= 33) {
