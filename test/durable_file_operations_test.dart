@@ -142,7 +142,8 @@ void main() {
         await db.transaction((txn) async {
           await txn.insert('settings', {
             'key': 'db-commit-marker-proof',
-            'value': 'new-name',
+            'value_json': '"new-name"',
+            'updated_at': '2026-11-18T00:00:00Z',
           });
           await lease.markDatabaseCommitted(txn);
         });
