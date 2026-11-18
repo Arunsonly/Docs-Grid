@@ -542,7 +542,23 @@ import CryptoKit
 
     private func readTextFile(url: URL) throws -> String {
         try withAllBookmarkAccess {
-            return try String(contentsOf: url, encoding: .utf8)
+            // Bound reads even when an iCloud/Files provider does not report
+            // a reliable size. Avoid String(contentsOf:) on untrusted JSON.
+            let maxBytes = 64 * 1024 * 1024
+            let handle = try FileHandle(forReadingFrom: url)
+            defer { try? handle.close() }
+            var bytes = Data()
+            while let chunk = try handle.read(upToCount: 64 * 1024),
+                  !chunk.isEmpty {
+                guard chunk.count <= maxBytes - bytes.count else {
+                    throw storageError("Metadata exceeds the supported 64 MiB read limit.")
+                }
+                bytes.append(chunk)
+            }
+            guard let content = String(data: bytes, encoding: .utf8) else {
+                throw storageError("Metadata is not valid UTF-8.")
+            }
+            return content
         }
     }
 

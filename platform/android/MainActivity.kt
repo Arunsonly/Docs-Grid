@@ -744,11 +744,28 @@ class MainActivity : FlutterActivity() {
                             }
                             "readTextFile" -> {
                                 val uri = Uri.parse(call.argument<String>("uri")!!)
-                                val bytes = if (uri.scheme == "file") {
-                                    fileForUri(uri).readBytes()
+                                // Never read attacker-controlled metadata without a bound.
+                                // The 64 MiB ceiling also applies when SAF size is unknown.
+                                val maxBytes = 64L * 1024 * 1024
+                                val input = if (uri.scheme == "file") {
+                                    fileForUri(uri).inputStream()
                                 } else {
-                                    contentResolver.openInputStream(uri)?.use { it.readBytes() }
-                                        ?: throw IllegalStateException("Could not read metadata file.")
+                                    contentResolver.openInputStream(uri)
+                                } ?: throw IllegalStateException("Could not read metadata file.")
+                                val bytes = input.use { stream ->
+                                    val output = java.io.ByteArrayOutputStream()
+                                    val chunk = ByteArray(64 * 1024)
+                                    var total = 0L
+                                    while (true) {
+                                        val read = stream.read(chunk)
+                                        if (read < 0) break
+                                        total += read
+                                        if (total > maxBytes) {
+                                            throw IllegalStateException("Metadata exceeds the supported 64 MiB read limit.")
+                                        }
+                                        output.write(chunk, 0, read)
+                                    }
+                                    output.toByteArray()
                                 }
                                 result.success(String(bytes, Charsets.UTF_8))
                             }
