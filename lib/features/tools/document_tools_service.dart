@@ -2210,7 +2210,27 @@ Future<int?> _restoreBackupLocked(
   /// DocsGrid/System/Database folder. PDF bytes remain in the library folder;
   /// documents.json retains their relative paths and SHA-256 values.
   Future<String> createPortableMetadataSnapshot() =>
-      _withRecoveryLock(_createPortableMetadataSnapshotLocked);
+      _withRecoveryLock(() async {
+        try {
+          final name = await _createPortableMetadataSnapshotLocked();
+          snapshotDiagnostics = {
+            ...snapshotDiagnostics,
+            'lastCreationResult': 'verified',
+            'lastSnapshotName': name,
+            'creationError': null,
+          };
+          return name;
+        } catch (error) {
+          // Diagnostics must not claim an earlier success was the latest
+          // result when this creation attempt failed.
+          snapshotDiagnostics = {
+            ...snapshotDiagnostics,
+            'lastCreationResult': 'failed',
+            'creationErrorType': error.runtimeType.toString(),
+          };
+          rethrow;
+        }
+      });
 
   Future<String> _createPortableMetadataSnapshotLocked() async {
     await StorageMigrationGate.waitUntilReady();
@@ -2334,8 +2354,11 @@ Future<int?> _restoreBackupLocked(
         name: 'manifest.json',
         contents: jsonEncode(manifest),
       );
-      // Read back the published bytes, counts, schema and graph before clean.
-      await _readVerifiedSnapshot(snapshotUri);
+      // Validate published bytes and every supported relationship before
+      // marking the captured revision clean or pruning older recovery points.
+      final verifiedExport = await _readVerifiedSnapshot(snapshotUri);
+      PortableSnapshotRowsValidator.validate(
+          verifiedExport['rows'] as Map<String, List<Map<String, Object?>>>);
       // If any durable record changed during export, the revision mismatch
       // deliberately leaves the snapshot dirty for the next coalesced pass.
       await _database.markPortableSnapshotClean(
@@ -2489,12 +2512,13 @@ Future<int?> _restoreBackupLocked(
         final at = DateTime.parse(raw['createdAtUtc'] as String);
         final manifest = verified['manifest'] as PortableSnapshotManifest;
         final children = await storage.listDirectory(uri);
-        if (children.any((child) => child['name'] == 'operation.json')) {
-          final marker = jsonDecode(await storage.readTextFile(
+        // Legacy copies without our explicit operation marker remain readable
+        // recovery points, but are NOT eligible for automatic deletion.
+        if (!children.any((child) => child['name'] == 'operation.json')) continue;
+        final marker = jsonDecode(await storage.readTextFile(
             await _findChildUri(uri, 'operation.json')));
-          if (marker is! Map || marker['format'] != 'DocsGridSnapshotOperation' ||
-              marker['version'] != 1 || marker['directoryName'] != entry['name']) continue;
-        }
+        if (marker is! Map || marker['format'] != 'DocsGridSnapshotOperation' ||
+            marker['version'] != 1 || marker['directoryName'] != entry['name']) continue;
         final expected = {'manifest.json', ...manifest.files.map((f) => f.path),
           if (children.any((child) => child['name'] == 'operation.json')) 'operation.json'};
         if (children.length != expected.length || children.any((child) =>
@@ -2665,17 +2689,19 @@ Future<int?> _restoreBackupLocked(
     return bestSnapshot;
   }
 
-  Future<String?> verifyLatestPortableMetadataSnapshot() async {
-    final snapshot = await _findLatestVerifiedPortableSnapshot();
-    return snapshot?['name'] as String?;
-  }
+  Future<String?> verifyLatestPortableMetadataSnapshot() =>
+      _withRecoveryLock(() async {
+        final snapshot = await _findLatestVerifiedPortableSnapshot();
+        return snapshot?['name'] as String?;
+      });
 
   /// Restores the newest portable snapshot additively. Existing records are
   /// retained; imported IDs are remapped where needed. PDFs are relinked by
   /// SHA-256 from the currently selected library and are never overwritten.
   Future<Map<String, int>> restoreLatestPortableMetadataSnapshot({
     void Function(int completed, int total)? onProgress,
-  }) => _withRecoveryLock(() => _restoreLatestPortableMetadataSnapshotLocked(onProgress: onProgress));
+  }) => _withRecoveryLock(() =>
+      _restoreLatestPortableMetadataSnapshotLocked(onProgress: onProgress));
 
   Future<Map<String, int>> _restoreLatestPortableMetadataSnapshotLocked({
     void Function(int completed, int total)? onProgress,
