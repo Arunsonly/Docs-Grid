@@ -1269,6 +1269,7 @@ class DocumentToolsService {
     final checkpointArchive = await createBackup(
       includePdfs: true, rescueCheckpoint: true,
     );
+    try {
     // The source can contain missing PDFs. Only this pre-restore checkpoint
     // may be partial; ordinary Full backups remain complete by contract.
     final checkpointContents = await _decodeValidatedBackup(checkpointArchive);
@@ -1336,6 +1337,16 @@ class DocumentToolsService {
     } else {
       await File(p.join(localDirectory!.path, recordName))
           .writeAsString(jsonEncode(record), flush: true);
+    }
+    } finally {
+      // Only the temporary rescue ZIP created by this attempt is removed.
+      // The independently verified protected checkpoint is never pruned here.
+      try {
+        if (await checkpointArchive.exists()) await checkpointArchive.delete();
+      } catch (_) {
+        // Best effort; a failure must not convert a committed checkpoint to
+        // an unsuccessful restore preflight.
+      }
     }
   }
 
