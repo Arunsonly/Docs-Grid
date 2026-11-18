@@ -146,6 +146,36 @@ void main() {
     expect(recycled['storage_uri'], 'file:///docs/Insurance/old.pdf');
   });
 
+  test('folder restore keeps replaced PDF and metadata safely in Trash',
+      () async {
+    final db = await _database();
+    addTearDown(db.close);
+    final folder = await Directory.systemTemp.createTemp('docsgrid-folder-hash-');
+    addTearDown(() async {
+      if (await folder.exists()) await folder.delete(recursive: true);
+    });
+    final pdf = File('${folder.path}/protected.pdf');
+    await pdf.writeAsBytes([37, 80, 68, 70, 45, 49]);
+    await _insertFolder(db, 'root', 'Root');
+    await db.update('folders', {'storage_uri_or_relative_path': folder.uri.toString()},
+        where: 'id = ?', whereArgs: ['root']);
+    await _insertDocument(db, {
+      'id': 'document', 'folder_id': 'root',
+      'storage_uri': pdf.uri.toString(), 'sha256': List.filled(64, '0').join(),
+    });
+    final repository = FolderRepository(
+      database: AppDatabase.forTesting(() async => db),
+    );
+    await repository.moveManyToRecycleBin(['root']);
+    await expectLater(repository.restoreTrashFolderTree('root'),
+        throwsA(isA<StateError>()));
+    expect((await db.query('documents', where: 'id = ?', whereArgs: ['document']))
+        .single['deleted_at'], isNotNull);
+    expect((await db.query('folders', where: 'id = ?', whereArgs: ['root']))
+        .single['deleted_at'], isNotNull);
+    expect(await pdf.exists(), isTrue);
+  });
+
   test('folder trash lists one root and restores its original hierarchy', () async {
     final db = await _database();
     addTearDown(db.close);
