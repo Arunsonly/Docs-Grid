@@ -205,8 +205,8 @@ class DurableFileOperations {
           whereArgs: [key, row['operation_id']]);
       completed += n;
       } finally {
-        try { await recoveryLock?.unlock(); } catch (_) {}
-        try { await recoveryLock?.close(); } catch (_) {}
+        try { await recoveryLock.unlock(); } catch (_) {}
+        try { await recoveryLock.close(); } catch (_) {}
       }
     }
     return completed;
