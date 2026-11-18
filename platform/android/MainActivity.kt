@@ -36,6 +36,13 @@ class MainActivity : FlutterActivity() {
     private val mainHandler = Handler(Looper.getMainLooper())
     private val channelName = "docsgrid/storage"
     private val requestChooseFolder = 4817
+    private val requestMediaStoreRename = 4818
+    private data class PendingMediaRename(
+        val uri: Uri,
+        val name: String,
+        val result: MethodChannel.Result,
+    )
+    private var pendingMediaRename: PendingMediaRename? = null
     private var pendingFolderResult: MethodChannel.Result? = null
     private var pendingRecoverySelection = false
     private var storageChangeSink: EventChannel.EventSink? = null
@@ -812,8 +819,39 @@ class MainActivity : FlutterActivity() {
                                     val values = ContentValues().apply {
                                         put(MediaStore.MediaColumns.DISPLAY_NAME, name)
                                     }
-                                    if (contentResolver.update(uri, values, null, null) != 1) {
-                                        throw IllegalStateException("MediaStore did not rename this PDF.")
+                                    try {
+                                        if (contentResolver.update(uri, values, null, null) != 1) {
+                                            throw IllegalStateException("MediaStore did not rename this PDF.")
+                                        }
+                                    } catch (permission: SecurityException) {
+                                        if (android.os.Build.VERSION.SDK_INT < 29) throw permission
+                                        val consent = if (android.os.Build.VERSION.SDK_INT >= 30) {
+                                            MediaStore.createWriteRequest(contentResolver, listOf(uri))
+                                        } else {
+                                            (permission as? android.app.RecoverableSecurityException)
+                                                ?.userAction?.actionIntent
+                                                ?: throw permission
+                                        }
+                                        // Only the requesting user may grant a MediaStore write.
+                                        // The native call remains pending until Activity result.
+                                        mainHandler.post {
+                                            if (pendingMediaRename != null) {
+                                                result.error("BUSY", "Another PDF rename permission request is active.", null)
+                                            } else {
+                                                pendingMediaRename = PendingMediaRename(uri, name, result)
+                                                try {
+                                                    startIntentSenderForResult(
+                                                        consent.intentSender,
+                                                        requestMediaStoreRename,
+                                                        null, 0, 0, 0,
+                                                    )
+                                                } catch (error: Exception) {
+                                                    pendingMediaRename = null
+                                                    result.error("RENAME_PERMISSION", error.message ?: "Rename permission could not be requested.", null)
+                                                }
+                                            }
+                                        }
+                                        return
                                     }
                                     uri
                                 } else {
@@ -1629,6 +1667,30 @@ class MainActivity : FlutterActivity() {
     @Deprecated("Deprecated in Android API; retained for broad device compatibility")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == requestMediaStoreRename) {
+            val pending = pendingMediaRename
+            pendingMediaRename = null
+            if (pending == null) return
+            if (resultCode != Activity.RESULT_OK) {
+                pending.result.error("RENAME_CANCELLED", "The user did not grant permission to rename this PDF.", null)
+                return
+            }
+            enqueueStorageCall(pending.result) {
+                val callback = onMainThreadResult(pending.result)
+                try {
+                    val values = ContentValues().apply {
+                        put(MediaStore.MediaColumns.DISPLAY_NAME, pending.name)
+                    }
+                    if (contentResolver.update(pending.uri, values, null, null) != 1) {
+                        throw IllegalStateException("MediaStore did not rename the PDF after user consent.")
+                    }
+                    callback.success(pending.uri.toString())
+                } catch (error: Exception) {
+                    callback.error("RENAME_FAILED", error.message ?: "MediaStore rename failed.", null)
+                }
+            }
+            return
+        }
         if (requestCode != requestChooseFolder) return
         val callback = pendingFolderResult
         pendingFolderResult = null
