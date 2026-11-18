@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:docs_grid/core/database/app_database.dart';
 import 'package:docs_grid/core/storage/durable_file_operations.dart';
+import 'package:docs_grid/features/folders/data/folder_repository.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
@@ -225,6 +226,145 @@ void main() {
     final pending = await DurableFileOperations.incomplete(reopened);
     expect(pending, hasLength(1));
     expect(pending.single['resource_key'], 'trash-tree:still-pending');
+  });
+
+  test('folder-delete scope blocks a PDF move but not an unrelated tree',
+      () async {
+    final db = await openDb();
+    addTearDown(db.close);
+    const created = '2026-11-18T00:00:00Z';
+    for (final folder in [
+      {'id': 'parent', 'parent_id': null},
+      {'id': 'child', 'parent_id': 'parent'},
+      {'id': 'other', 'parent_id': null},
+    ]) {
+      await db.insert('folders', {
+        'id': folder['id'], 'name': folder['id'],
+        'parent_id': folder['parent_id'],
+        'created_at': created, 'updated_at': created,
+      });
+    }
+    await db.insert('documents', {
+      'id': 'child-pdf', 'name': 'Child',
+      'folder_id': 'child', 'mime_type': 'application/pdf',
+      'created_at': created, 'updated_at': created,
+    });
+    await db.insert('documents', {
+      'id': 'other-pdf', 'name': 'Other',
+      'folder_id': 'other', 'mime_type': 'application/pdf',
+      'created_at': created, 'updated_at': created,
+    });
+    final folderScopes = await DurableFileOperations.scopeForFolderTrees(
+        db, ['parent']);
+    final childScopes = await DurableFileOperations.scopeForDocument(
+        db, 'child-pdf', destinationFolderId: 'other');
+    expect(folderScopes, contains('folder:parent'));
+    expect(childScopes, contains('folder:parent'));
+    expect(childScopes, contains('folder:child'));
+
+    await expectLater(DurableFileOperations.run<void>(
+      db: db, resourceKey: 'folder:parent', kind: 'trash-folder-tree',
+      scopeKeys: folderScopes,
+      action: (lease) async {
+        await lease.phase('deleting-folder-records');
+        throw StateError('simulated process termination');
+      },
+    ), throwsStateError);
+
+    await expectLater(DurableFileOperations.run<void>(
+      db: db, resourceKey: 'document:child-pdf', kind: 'move-pdf',
+      scopeKeys: childScopes,
+      action: (_) async {
+        fail('Conflicting PDF move must never execute');
+      },
+    ), throwsStateError);
+
+    // No app-wide mutation lock: an unrelated root is still available.
+    await DurableFileOperations.run<void>(
+      db: db, resourceKey: 'document:other-pdf', kind: 'rename-pdf',
+      scopeKeys: await DurableFileOperations.scopeForDocument(db, 'other-pdf'),
+      action: (_) async {},
+    );
+
+    await DurableFileOperations.run<void>(
+      db: db, resourceKey: 'folder:parent', kind: 'trash-folder-tree',
+      scopeKeys: folderScopes,
+      action: (lease) async {
+        expect(lease.previousPhase, 'deleting-folder-records');
+      },
+    );
+    expect(await DurableFileOperations.incomplete(db), isEmpty);
+    await DurableFileOperations.run<void>(
+      db: db, resourceKey: 'document:child-pdf', kind: 'move-pdf',
+      scopeKeys: childScopes, action: (_) async {},
+    );
+    expect(await db.rawQuery('PRAGMA foreign_key_check'), isEmpty);
+  });
+
+  test('parent folder trash does not interleave an actively moving child PDF',
+      () async {
+    final db = await openDb();
+    addTearDown(db.close);
+    const created = '2026-11-18T00:00:00Z';
+    await db.insert('folders', {
+      'id': 'parent', 'name': 'Parent',
+      'created_at': created, 'updated_at': created,
+    });
+    await db.insert('documents', {
+      'id': 'pdf', 'name': 'One', 'folder_id': 'parent',
+      'created_at': created, 'updated_at': created,
+    });
+    final entered = Completer<void>();
+    final finish = Completer<void>();
+    final childMove = DurableFileOperations.run<void>(
+      db: db, resourceKey: 'document:pdf', kind: 'move-pdf',
+      scopeKeys: await DurableFileOperations.scopeForDocument(db, 'pdf'),
+      action: (lease) async {
+        entered.complete();
+        await finish.future;
+      },
+    );
+    await entered.future;
+    try {
+      final repo = FolderRepository(
+        database: AppDatabase.forTesting(() async => db),
+      );
+      await expectLater(repo.moveManyToRecycleBin(['parent']), throwsStateError);
+      final active = await db.query('documents',
+          columns: ['deleted_at'], where: 'id = ?', whereArgs: ['pdf']);
+      expect(active.single['deleted_at'], isNull);
+    } finally {
+      finish.complete();
+      await childMove;
+    }
+  });
+
+  test('committed parent operation releases its crashed scope reservations',
+      () async {
+    final db = await openDb();
+    addTearDown(db.close);
+    await expectLater(DurableFileOperations.run<void>(
+      db: db, resourceKey: 'trash-tree:committed', kind: 'delete-folder-tree',
+      scopeKeys: ['folder:parent', 'document:already-removed'],
+      action: (lease) async {
+        await db.transaction((txn) async {
+          await txn.insert('settings', {
+            'key': 'atomic-scope-check',
+            'value_json': 'true',
+            'updated_at': '2026-11-18T00:00:00Z',
+          });
+          await lease.markDatabaseCommitted(txn);
+        });
+        throw StateError('terminated just after database commit');
+      },
+    ), throwsStateError);
+    expect(await DurableFileOperations.incomplete(db), hasLength(3));
+    expect(await DurableFileOperations.reconcileFinished(db), 3);
+    expect(await DurableFileOperations.incomplete(db), isEmpty);
+    await DurableFileOperations.run<void>(
+      db: db, resourceKey: 'document:already-removed', kind: 'rename-pdf',
+      action: (_) async {},
+    );
   });
 
   test('v11 development DB upgrades to v12 without deleting documents', () async {
