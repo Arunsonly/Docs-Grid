@@ -1175,6 +1175,9 @@ class FolderRepository {
       if (uri.isEmpty) throw StateError('A recycled PDF has no storage location.');
       await _deleteTrashItemIfExists(uri);
       await db.transaction((txn) async {
+        // Delete reminders before the document: its FK uses ON DELETE SET
+        // NULL, so deleting the PDF first would leave orphaned reminders.
+        await txn.delete('reminders', where: 'document_id = ?', whereArgs: [document['id']]);
         final deleted = await txn.delete(
           'documents',
           where: 'id = ? AND trash_operation_id = ? '
@@ -1184,7 +1187,6 @@ class FolderRepository {
         if (deleted != 1) {
           throw StateError('Recycled PDF changed during permanent deletion.');
         }
-        await txn.delete('reminders', where: 'document_id = ?', whereArgs: [document['id']]);
         await txn.insert('history', {
           'id': _uuid.v4(), 'document_id': null,
           'action': 'folder_trash_pdf_permanently_deleted',
