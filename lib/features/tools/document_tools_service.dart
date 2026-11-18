@@ -617,9 +617,20 @@ class DocumentToolsService {
         'document_text_index': 'document_id',
         'smart_collections': 'name COLLATE NOCASE, id',
       };
-      // Hold a read transaction across metadata and PDF enumeration so
-      // the archive represents one consistent database state.
+      // Keep SQLite's read transaction limited to metadata capture. Do not
+      // hold it while hashing/copying multi-gigabyte PDF content from SAF.
+      // A post-capture revision check rejects an internally inconsistent
+      // backup if the library changed during the external file I/O.
+      int? capturedRevision;
       await db.transaction((txn) async {
+        final revisions = await txn.query(
+          'portable_snapshot_state', columns: ['revision'],
+          where: 'id = 1', limit: 1,
+        );
+        if (revisions.length != 1) {
+          throw StateError('Backup cannot establish a database revision.');
+        }
+        capturedRevision = (revisions.single['revision'] as num).toInt();
         for (final table in tables) {
           final metadataFile = File(p.join(staging.path, '$table.json'));
           final outputFile = await metadataFile.open(mode: FileMode.write);
@@ -666,15 +677,16 @@ class DocumentToolsService {
           });
           await addStoredFile(metadataFile, '$table.json');
         }
-  
+      });
+
         if (includePdfs) {
           final totalDocs = Sqflite.firstIntValue(
-            await txn.rawQuery('SELECT COUNT(*) FROM documents'),
+            await db.rawQuery('SELECT COUNT(*) FROM documents'),
           ) ?? 0;
           var completed = 0;
           var documentOffset = 0;
           while (true) {
-            final docs = await txn.query(
+            final docs = await db.query(
               'documents',
               columns: ['id', 'name', 'storage_uri', 'sha256'],
               limit: 250,
@@ -745,8 +757,14 @@ class DocumentToolsService {
             documentOffset += docs.length;
           }
         }
-  
-      });
+
+      final currentRevision = await _database.portableSnapshotRevision();
+      if (currentRevision != capturedRevision) {
+        throw StateError(
+          'The DocsGrid library changed during backup capture. '
+          'Discard this attempt and retry with a new consistent snapshot.',
+        );
+      }
       final manifestFile = File(p.join(staging.path, 'manifest.json'));
       await manifestFile.writeAsString(jsonEncode(manifest), encoding: utf8, flush: true);
       await addStoredFile(manifestFile, 'manifest.json');
