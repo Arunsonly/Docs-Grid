@@ -76,6 +76,33 @@ class PhoneStarRepository {
     return !wasStarred;
   });
 
+  /// Keep a starred PDF pointing to its provider's authoritative new URI.
+  static Future<void> updateRenamedReference(
+      String previousUri, String updatedUri, String updatedName) =>
+      _exclusive(() async {
+        final prefs = await SharedPreferences.getInstance();
+        final old = prefs.getStringList(storageKey) ?? const <String>[];
+        var changed = false;
+        final next = <String>[];
+        for (final raw in old) {
+          try {
+            final record = jsonDecode(raw);
+            if (record is Map && record['uri'] == previousUri) {
+              next.add(jsonEncode({
+                ...Map<String, Object?>.from(record),
+                'uri': updatedUri, 'name': updatedName,
+              }));
+              changed = true;
+              continue;
+            }
+          } catch (_) { /* Preserve malformed legacy entries unchanged. */ }
+          next.add(raw);
+        }
+        if (changed && !await prefs.setStringList(storageKey, next)) {
+          throw StateError('Star reference update was not persisted.');
+        }
+      });
+
   /// Clean only a successfully deleted/moved source reference.
   static Future<void> remove(String uri) => _exclusive(() async {
     if (uri.isEmpty) return;

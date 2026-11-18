@@ -1872,14 +1872,24 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       return false;
     }
     try {
-      await StorageLocationService.instance.renamePdf(
-        uri: uri,
-        name: clean.toLowerCase().endsWith('.pdf') ? clean : '$clean.pdf',
+      final newName = clean.toLowerCase().endsWith('.pdf') ? clean : '$clean.pdf';
+      final newUri = await StorageLocationService.instance.renamePdf(
+        uri: uri, name: newName,
       );
-      if (!mounted) return false;
-      _message('PDF renamed.');
+      // Native rename is already committed. A shortcut preference failure must
+      // not be mistaken for a failed physical rename.
+      String? shortcutWarning;
+      try {
+        await PhoneStarRepository.updateRenamedReference(uri, newUri, newName);
+        await PhoneRecentHistory.updateRenamedReference(uri, newUri, newName);
+      } catch (error) {
+        shortcutWarning = 'PDF renamed, but its Star/Recent shortcut needs attention: $error';
+      }
+      if (!mounted) return true;
+      await _loadPhoneStarred();
       await _scanPhoneStorage(openBrowser: false);
       await _refreshDashboardSummary();
+      if (mounted) _message(shortcutWarning ?? 'PDF renamed.');
       return true;
     } catch (error) {
       if (mounted) _message('Could not rename PDF: $error');

@@ -8,6 +8,7 @@ import android.database.ContentObserver
 import android.database.Cursor
 import android.net.Uri
 import android.content.ContentUris
+import android.content.ContentValues
 import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.os.Bundle
@@ -773,14 +774,23 @@ class MainActivity : FlutterActivity() {
                             "renamePdf" -> {
                                 val uri = Uri.parse(call.argument<String>("uri")!!)
                                 val name = call.argument<String>("name")!!
+                                validateLeafName(name)
                                 val renamed = if (uri.scheme == "file") {
                                     val source = fileForUri(uri)
-                                    validateLeafName(name)
                                     val target = java.io.File(source.parentFile, name)
                                     if (target.exists() || !source.renameTo(target)) {
                                         throw IllegalStateException("Android could not rename this PDF.")
                                     }
                                     Uri.fromFile(target)
+                                } else if (uri.authority == MediaStore.AUTHORITY) {
+                                    // MediaStore content://media items are NOT DocumentsProvider URIs.
+                                    val values = ContentValues().apply {
+                                        put(MediaStore.MediaColumns.DISPLAY_NAME, name)
+                                    }
+                                    if (contentResolver.update(uri, values, null, null) != 1) {
+                                        throw IllegalStateException("MediaStore did not rename this PDF.")
+                                    }
+                                    uri
                                 } else {
                                     DocumentsContract.renameDocument(contentResolver, uri, name)
                                         ?: throw IllegalStateException("Android could not rename this PDF.")

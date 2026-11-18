@@ -39,6 +39,18 @@ void main() {
     expect(await PhoneStarRepository.list(), hasLength(2));
   });
 
+  test('renaming a starred URI keeps exactly one Star', () async {
+    const before = 'content://provider/document/a';
+    const after = 'content://provider/document/b';
+    await PhoneStarRepository.toggle(uri: before, name: 'Old.pdf');
+    await PhoneStarRepository.updateRenamedReference(before, after, 'New.pdf');
+    await PhoneStarRepository.updateRenamedReference(before, after, 'New.pdf');
+    final saved = await PhoneStarRepository.list();
+    expect(saved, hasLength(1));
+    expect(saved.single['uri'], after);
+    expect(saved.single['name'], 'New.pdf');
+  });
+
   test('remove stale Star only after successful move/delete', () async {
     const uri = 'content://provider/doc/5';
     await PhoneStarRepository.toggle(uri: uri, name: 'Invoice.pdf');
