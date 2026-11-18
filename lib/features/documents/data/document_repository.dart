@@ -2278,6 +2278,22 @@ class DocumentRepository {
     if (safeBase.isEmpty) throw ArgumentError('Name is not valid.');
     final safeName = '$safeBase.pdf';
     if (safeBase == document.name) return;
+    final db = await _database.database;
+    await DurableFileOperations.run<void>(
+      db: db, resourceKey: 'document:${document.id}', kind: 'rename-pdf',
+      action: (lease) async {
+    final liveRows = await db.query(
+      'documents', columns: ['name', 'storage_uri', 'deleted_at'],
+      where: 'id = ? AND deleted_at IS NULL',
+      whereArgs: [document.id], limit: 1,
+    );
+    if (liveRows.length != 1 ||
+        liveRows.single['name'] != document.name ||
+        liveRows.single['storage_uri'] != document.storagePath) {
+      throw StateError('PDF changed while preparing rename. Refresh the list.');
+    }
+    // The intent is durable before the provider or filesystem is changed.
+    await lease.phase('renaming-provider-file');
     final isShared = document.storagePath.startsWith('content://') ||
         document.storagePath.startsWith('file://');
     late final String newStorageUri;
@@ -2300,8 +2316,8 @@ class DocumentRepository {
       newStorageUri = newFile.path;
     }
 
-    final db = await _database.database;
     try {
+      await lease.phase('provider-rename-completed');
       await db.transaction((txn) async {
         final now = DateTime.now().toUtc().toIso8601String();
         final count = await txn.update(
@@ -2312,8 +2328,8 @@ class DocumentRepository {
             'relative_path': null,
             'updated_at': now,
           },
-          where: 'id = ? AND deleted_at IS NULL',
-          whereArgs: [document.id],
+          where: 'id = ? AND deleted_at IS NULL AND name = ? AND storage_uri = ?',
+          whereArgs: [document.id, document.name, document.storagePath],
         );
         if (count == 0) throw StateError('PDF record no longer exists.');
         await _recordHistory(txn, document.id, 'renamed', {
@@ -2323,22 +2339,32 @@ class DocumentRepository {
       });
       PortableSnapshotEvents.notifyDataChanged();
     } catch (_) {
+      var physicallyReverted = false;
       try {
         if (isShared) {
           await StorageLocationService.instance.renamePdf(
             uri: newStorageUri,
             name: '${document.name}.pdf',
           );
+          physicallyReverted = true;
         } else {
           final renamedFile = File(newStorageUri);
           final oldFile = File(document.storagePath);
-          if (await renamedFile.exists()) await renamedFile.rename(oldFile.path);
+          if (await renamedFile.exists()) {
+            await renamedFile.rename(oldFile.path);
+            physicallyReverted = true;
+          }
+        }
+        if (physicallyReverted) {
+          await lease.phase('provider-rename-rolled-back');
         }
       } catch (_) {
         // Keep both the original DB reference and the recovery copy if rollback fails.
       }
       rethrow;
     }
+      },
+    );
   }
 
   Future<void> permanentlyDelete(DocumentRecord document) async {
