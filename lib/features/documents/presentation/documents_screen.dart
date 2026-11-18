@@ -988,8 +988,10 @@ class _DocumentsScreenState extends State<DocumentsScreen>
 
   Widget _recentDocumentTile(DocumentRecord document) {
     final activityAt = document.lastOpenedAt ?? document.createdAt;
+    // The Android external chooser reports successful dispatch, not proof
+    // that another application rendered and displayed the PDF.
     final activity = document.lastOpenedAt != null
-        ? 'Opened'
+        ? 'Open requested'
         : document.source == 'download'
             ? 'Downloaded'
             : 'Added';
