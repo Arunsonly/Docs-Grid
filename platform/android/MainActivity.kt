@@ -15,6 +15,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.provider.DocumentsContract
+import org.json.JSONObject
 import java.security.MessageDigest
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -634,6 +635,13 @@ class MainActivity : FlutterActivity() {
                                 result.success(roots.values.toList())
                             }
                             "consumeSharedPdfs" -> result.success(consumeSharedPdfs(incomingShareIntent))
+                            "finishSharedPdf" -> {
+                                val path = call.argument<String>("path")
+                                    ?: throw IllegalArgumentException("Staged PDF path missing")
+                                val outcome = call.argument<String>("outcome")
+                                    ?: throw IllegalArgumentException("Staged PDF outcome missing")
+                                result.success(finishSharedPdf(path, outcome))
+                            }
                             "checkStorageAccess" -> result.success(checkStorageAccess())
                             "hasAllFilesAccess" -> result.success(
                                 android.os.Build.VERSION.SDK_INT < 30 ||
@@ -932,11 +940,32 @@ class MainActivity : FlutterActivity() {
         val shareDir = java.io.File(filesDir, "incoming_docs").apply { mkdirs() }
         // Never blindly delete a previously accepted but uncommitted import.
         // Incomplete .part copies are ignored, not presented as valid PDFs.
-        shareDir.listFiles()?.filter { it.isFile && it.name.endsWith(".pdf") }?.forEach {
+        val pendingSources = mutableSetOf<String>()
+        val metadata = shareDir.listFiles()?.filter {
+            it.isFile && it.name.endsWith(".json")
+        } ?: emptyList()
+        val restoredNames = mutableMapOf<String, String>()
+        for (record in metadata) {
+            try {
+                val json = JSONObject(record.readText())
+                val id = record.name.removeSuffix(".json")
+                val pendingFile = shareDir.listFiles()?.firstOrNull {
+                    it.isFile && it.name.startsWith("${id}_") && it.name.endsWith(".pdf")
+                }
+                if (pendingFile != null) {
+                    restoredNames[pendingFile.name] = json.optString("name", "Shared document.pdf")
+                    pendingSources.add(json.optString("sourceUri"))
+                }
+            } catch (_: Exception) { /* Old staged bytes remain discoverable. */ }
+        }
+        shareDir.listFiles()?.filter {
+            it.isFile && it.name.endsWith(".pdf")
+        }?.forEach {
             output.add(mapOf("path" to it.absolutePath, "name" to
-                it.name.substringAfter('_', "Shared document.pdf")))
+                (restoredNames[it.name] ?: it.name.substringAfter('_', "Shared document.pdf"))))
         }
         uris.forEachIndexed { index, uri ->
+            if (pendingSources.contains(uri.toString())) return@forEachIndexed
             try {
                 val mime = contentResolver.getType(uri)
                 var displayName: String? = null
@@ -965,6 +994,21 @@ class MainActivity : FlutterActivity() {
                         input.read(header) == 5 && String(header) == "%PDF-"
                     }
                     if (validPdf && partial.renameTo(target)) {
+                        // The private sidecar is the durable import ledger.
+                        // Commit/cancel removes it only after the Dart result.
+                        val record = JSONObject()
+                            .put("format", "DocsGridIncomingShare")
+                            .put("version", 1)
+                            .put("id", fileId)
+                            .put("name", name)
+                            .put("sourceUri", uri.toString())
+                            .put("state", "staged")
+                        val sidecar = java.io.File(shareDir, "$fileId.json")
+                        sidecar.outputStream().use { outputStream ->
+                            outputStream.write(record.toString().toByteArray(Charsets.UTF_8))
+                            outputStream.flush()
+                            outputStream.fd.sync()
+                        }
                         output.add(mapOf("path" to target.absolutePath, "name" to name))
                     }
                 } finally {
@@ -973,6 +1017,30 @@ class MainActivity : FlutterActivity() {
             } catch (_: Exception) { }
         }
         return output
+    }
+
+    /** Only terminal outcomes may delete an app-owned staged PDF. */
+    private fun finishSharedPdf(path: String, outcome: String): Boolean {
+        if (outcome != "committed" && outcome != "cancelled") {
+            throw IllegalArgumentException("Unsupported staged import outcome")
+        }
+        val root = java.io.File(filesDir, "incoming_docs").canonicalFile
+        val candidate = java.io.File(path).canonicalFile
+        if (candidate.parentFile != root || !candidate.name.endsWith(".pdf")) {
+            throw SecurityException("Not a DocsGrid staged import")
+        }
+        val id = candidate.name.substringBefore('_')
+        if (!Regex("^[0-9a-fA-F-]{36}$").matches(id)) {
+            throw SecurityException("Invalid DocsGrid staged import identity")
+        }
+        if (candidate.exists() && !candidate.delete()) {
+            throw IllegalStateException("Could not clear completed staged PDF")
+        }
+        val sidecar = java.io.File(root, "$id.json")
+        if (sidecar.exists() && !sidecar.delete()) {
+            throw IllegalStateException("Could not clear completed import ledger")
+        }
+        return true
     }
 
     private fun checkStorageAccess(): Map<String, String> {

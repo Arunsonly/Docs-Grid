@@ -431,7 +431,12 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
         await WidgetsBinding.instance.endOfFrame;
         nameController.dispose();
         if (!mounted) return;
-        if (config == null) { await file.delete(); continue; }
+        if (config == null) {
+          await _storageChannel.invokeMethod<bool>('finishSharedPdf', {
+            'path': file.path, 'outcome': 'cancelled',
+          });
+          continue;
+        }
         final chosenName = (config['name'] as String?)?.trim();
         final result = await DocumentRepository().importScannedPdf(
           file,
@@ -439,7 +444,9 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
           targetFolderId: config['folderId'] as String?,
           sourceType: 'share',
         );
-        await file.delete();
+        await _storageChannel.invokeMethod<bool>('finishSharedPdf', {
+          'path': file.path, 'outcome': 'committed',
+        });
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(
             result.added == 1 ? 'Saved in DocsGrid.' : 'This PDF already exists in your library.',
