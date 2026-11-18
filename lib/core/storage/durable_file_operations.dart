@@ -10,12 +10,19 @@ import 'package:uuid/uuid.dart';
 /// Ownership and phase survive process death; incomplete operations can only
 /// be retried by the same operation kind after a fresh storage preflight.
 class FileOperationLease {
-  FileOperationLease._(this.db, this.resourceKey, this.id, this.ownerId);
+  FileOperationLease._(this.db, this.resourceKey, this.id, this.ownerId, this.previousPhase);
 
   final Database db;
   final String resourceKey;
   final String id;
   final String ownerId;
+  /// Phase recorded by a previous process before this operation was resumed.
+  /// A missing folder is only expected when deletion reached directory cleanup.
+  final String? previousPhase;
+
+  bool get mayHaveDeletedDirectories =>
+      previousPhase == 'deleting-empty-directories' ||
+      previousPhase == 'deleting-folder-records';
 
   Future<void> phase(String phase) async {
     final count = await db.update('file_operation_journal', {
@@ -56,6 +63,7 @@ class DurableFileOperations {
       final lockFile = await _operationLockFile(db, resourceKey);
       processLock = await lockFile.open(mode: FileMode.append);
       await processLock.lock(FileLock.exclusive);
+    String? previousPhase;
     final operationId = await db.transaction<String>((txn) async {
       final rows = await txn.query(
         'file_operation_journal',
@@ -76,6 +84,8 @@ class DurableFileOperations {
         }
         // A previous process can no longer manipulate files. On restart the
         // same operation is retried after its caller revalidates the sources.
+        previousPhase = state == 'completed'
+            ? null : old['phase'] as String?;
         final id = state == 'completed' ? _uuid.v4() :
             old['operation_id'] as String;
         await txn.update('file_operation_journal', {
@@ -93,7 +103,9 @@ class DurableFileOperations {
       });
       return id;
     });
-    final lease = FileOperationLease._(db, resourceKey, operationId, _processOwner);
+    final lease = FileOperationLease._(
+      db, resourceKey, operationId, _processOwner, previousPhase,
+    );
     try {
       final value = await action(lease);
       await lease.phase('db-committed');

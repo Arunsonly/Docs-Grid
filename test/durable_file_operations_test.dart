@@ -81,6 +81,31 @@ void main() {
     expect(await DurableFileOperations.incomplete(db), isEmpty);
   });
 
+  test('resume lease retains prior destructive phase for guarded preflight',
+      () async {
+    final db = await openDb();
+    addTearDown(db.close);
+    await expectLater(
+      DurableFileOperations.run<void>(
+        db: db, resourceKey: 'trash-tree:partial',
+        kind: 'delete-folder-tree',
+        action: (lease) async {
+          expect(lease.previousPhase, isNull);
+          await lease.phase('deleting-empty-directories');
+          throw StateError('simulated process interruption');
+        },
+      ), throwsStateError,
+    );
+    await DurableFileOperations.run<void>(
+      db: db, resourceKey: 'trash-tree:partial',
+      kind: 'delete-folder-tree',
+      action: (lease) async {
+        expect(lease.previousPhase, 'deleting-empty-directories');
+        expect(lease.mayHaveDeletedDirectories, isTrue);
+      },
+    );
+  });
+
   test('concurrent work with same resource cannot enter twice', () async {
     final db = await openDb();
     addTearDown(db.close);

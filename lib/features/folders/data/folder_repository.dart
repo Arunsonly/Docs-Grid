@@ -1153,7 +1153,14 @@ class FolderRepository {
     for (final folder in folders) {
       final uri = folder['storage_uri_or_relative_path'] as String?;
       if (uri == null || uri.isEmpty) continue;
-      final children = (await _listTrashDirectoryChildren(uri)) ?? const <Map<String, Object?>>[];
+      final children = await _listTrashDirectoryChildren(uri);
+      if (children == null) {
+        if (!lease.mayHaveDeletedDirectories) {
+          throw StateError('Recycled folder is missing or inaccessible. '
+              'The folder record was preserved; check storage access.');
+        }
+        continue; // A prior interrupted delete reached directory removal.
+      }
       for (final child in children) {
         final childUri = child['uri'] as String? ?? '';
         if (childUri.isNotEmpty &&
