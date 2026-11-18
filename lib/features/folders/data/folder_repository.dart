@@ -9,6 +9,7 @@ import 'package:sqflite/sqflite.dart';
 import 'package:uuid/uuid.dart';
 
 import '../../../core/database/app_database.dart';
+import '../../../core/storage/durable_file_operations.dart';
 import '../../../core/storage/storage_location_service.dart';
 import '../../../core/storage/portable_snapshot_events.dart';
 import '../../../core/storage/storage_migration_gate.dart';
@@ -938,6 +939,10 @@ class FolderRepository {
     );
     if (roots.isEmpty) throw StateError('Folder is no longer in the Recycle Bin.');
     final operationId = roots.single['trash_operation_id'] as String;
+    return DurableFileOperations.run<int>(
+      db: db, resourceKey: 'trash-tree:$operationId',
+      kind: 'restore-folder-tree',
+      action: (lease) async {
     final parentId = roots.single['parent_id'] as String?;
     if (parentId != null) {
       final parent = await db.query(
@@ -1008,7 +1013,8 @@ class FolderRepository {
           'rootFolderId': rootFolderId,
           'trashOperationId': operationId,
           'restoredPdfCount': restoredPdfs,
-        }),
+          },
+    );    }),
         'created_at': DateTime.now().toUtc().toIso8601String(),
       });
     });
@@ -1082,6 +1088,10 @@ class FolderRepository {
     );
     if (roots.isEmpty) throw StateError('Folder is no longer in the Recycle Bin.');
     final operationId = roots.single['trash_operation_id'] as String;
+    await DurableFileOperations.run<void>(
+      db: db, resourceKey: 'trash-tree:$operationId',
+      kind: 'delete-folder-tree',
+      action: (lease) async {
     final folders = await db.query(
       'folders', columns: ['id', 'parent_id', 'storage_uri_or_relative_path'],
       where: 'trash_operation_id = ? AND deleted_at IS NOT NULL',
@@ -1151,6 +1161,7 @@ class FolderRepository {
         }
       }
     }
+    await lease.phase('deleting-pdf-bytes');
     for (final document in documents) {
       final uri = (document['storage_uri'] as String?)?.trim() ?? '';
       if (uri.isEmpty) throw StateError('A recycled PDF has no storage location.');
@@ -1179,11 +1190,13 @@ class FolderRepository {
         await _deleteTrashItemIfExists(uri);
       }
     }
+    await lease.phase('deleting-folder-records');
     await db.transaction((txn) async {
       // Production SQLite uses ON DELETE RESTRICT for folders.parent_id.
       // Removing the whole operation in one DELETE can fail even when every
       // physical file was successfully removed. Delete descendants first.
-      for (final folder in deepestFirst) {
+      await lease.phase('deleting-empty-directories');
+    for (final folder in deepestFirst) {
         final deleted = await txn.delete(
           'folders',
           where: 'id = ? AND trash_operation_id = ? AND deleted_at IS NOT NULL',
@@ -1200,7 +1213,8 @@ class FolderRepository {
         'created_at': DateTime.now().toUtc().toIso8601String(),
       });
     });
-    PortableSnapshotEvents.notifyDataChanged();
+    PortableSnapshotEvents.notifyDataChanged();      },
+    );
   }
 
   /// Empty folders are sent to Grid Recycle Bin; their physical directory
