@@ -1218,10 +1218,13 @@ class _DocumentsScreenState extends State<DocumentsScreen>
           // Skip malformed optional recent metadata without affecting PDFs.
         }
       }
+      final unlinkedRecent = (await PhonePortableState.pending())
+          .where((item) => item['wasRecent'] == true)
+          .toList(growable: false);
       if (!mounted) return;
       setState(() {
         _gridRecent = recentDocuments;
-        _phoneRecent = phone.take(20).toList(growable: false);
+        _phoneRecent = [...unlinkedRecent, ...phone].take(20).toList(growable: false);
       });
     } catch (_) {
       // Recent metadata is optional and must not block the dashboard.

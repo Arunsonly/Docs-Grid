@@ -19,6 +19,7 @@ import '../../core/database/app_database.dart';
 import '../../core/storage/storage_location_service.dart';
 import '../../core/storage/storage_migration_gate.dart';
 import '../documents/data/document_repository.dart';
+import '../documents/data/phone_portable_state.dart';
 import '../folders/data/folder_repository.dart';
 import '../reminders/data/reminder_notifications.dart';
 import 'backup_archive_limits.dart';
@@ -589,6 +590,18 @@ class DocumentToolsService {
     try {
       encoder.create(output.path);
       encoderOpened = true;
+
+      // User choices are exported separately from scanned Phone inventory.
+      // A portable reference is not a transferable Android/iOS URI grant.
+      final phoneState = await PhonePortableState.capture();
+      final phoneStateFile = File(p.join(staging.path, 'phone-state.json'));
+      await phoneStateFile.writeAsString(jsonEncode(phoneState), flush: true);
+      (manifest['metadataFiles'] as List).add({
+        'entry': 'phone-state.json',
+        'sizeBytes': await phoneStateFile.length(),
+        'sha256': (await sha256.bind(phoneStateFile.openRead()).first).toString(),
+      });
+      await addStoredFile(phoneStateFile, 'phone-state.json');
 
       // Page database rows into JSON files so a large history/documents table
       // does not have to be materialized as one giant List in memory.
@@ -1421,6 +1434,8 @@ Future<int?> _restoreBackupLocked(
           rowsByTable: rows,
           stagedPdfPaths: includeDocuments ? backup.stagedPdfPaths : const <String, String>{},
           stagingDirectory: backup.stagingDirectory,
+          phoneState: selection.contains(BackupRestoreSection.settings)
+              ? backup.phoneState : null,
         );
         return await _restoreValidatedBackup(
           selectiveBackup,
@@ -2201,6 +2216,11 @@ Future<int?> _restoreBackupLocked(
       });
       databaseCommitted = true;
       try { await writeJournal('committed'); } catch (_) { /* DB is authoritative. */ }
+      // Keep imported Phone URIs unlinked: a different device never inherits
+      // Android SAF/MediaStore grants or iOS security-scoped bookmarks.
+      if (backup.phoneState != null) {
+        await PhonePortableState.restoreAsPending(backup.phoneState!);
+      }
       for (final row in restoredReminderRows) {
         if ((row['enabled'] as int? ?? 0) != 1 || row['status'] == 'completed') continue;
         try {
@@ -3366,6 +3386,16 @@ Future<int?> _restoreBackupLocked(
           throw StateError('Backup is missing a metadata checksum or contains an unreferenced metadata checksum.');
         }
       }
+      Map<String, Object?>? phoneState;
+      final phoneStateEntry = decoded.findFile('phone-state.json');
+      if (phoneStateEntry != null) {
+        if (!phoneStateEntry.isFile || phoneStateEntry.size > 4 * 1024 * 1024) {
+          throw StateError('Phone reference backup has an unsafe size or entry type.');
+        }
+        phoneState = PhonePortableState.validate(jsonDecode(
+          utf8.decode(phoneStateEntry.content as List<int>),
+        ));
+      }
       const tableNames = <String>[
         'folders', 'documents', 'categories', 'tags', 'document_tags',
         'reminders', 'history', 'settings', 'document_text_index',
@@ -3501,6 +3531,7 @@ Future<int?> _restoreBackupLocked(
         'manifest.json',
         for (final table in tableNames)
           if (archiveNames.contains('$table.json')) '$table.json',
+        if (phoneState != null) 'phone-state.json',
         for (final raw in rawFiles) (raw as Map)['entry'] as String,
       };
       if (archiveNames.length != expectedEntries.length ||
@@ -3513,6 +3544,7 @@ Future<int?> _restoreBackupLocked(
         rowsByTable: rowsByTable,
         stagedPdfPaths: stagedPdfPaths,
         stagingDirectory: staging,
+        phoneState: phoneState,
       );
     } catch (_) {
       try { input.closeSync(); } catch (_) {}
@@ -3530,12 +3562,14 @@ class _ValidatedBackup {
     required this.rowsByTable,
     required this.stagedPdfPaths,
     required this.stagingDirectory,
+    this.phoneState,
   });
 
   final Map<String, dynamic> manifest;
   final Map<String, List<Map<String, Object?>>> rowsByTable;
   final Map<String, String> stagedPdfPaths;
   final Directory stagingDirectory;
+  final Map<String, Object?>? phoneState;
 
   Future<void> dispose() async {
     try {
