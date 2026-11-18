@@ -2342,11 +2342,13 @@ class DocumentRepository {
       var physicallyReverted = false;
       try {
         if (isShared) {
-          await StorageLocationService.instance.renamePdf(
+          final revertedUri = await StorageLocationService.instance.renamePdf(
             uri: newStorageUri,
             name: '${document.name}.pdf',
           );
-          physicallyReverted = true;
+          // SAF can change its Document URI even when the name is restored.
+          // Only end the journal when SQLite's original locator is valid.
+          physicallyReverted = revertedUri == document.storagePath;
         } else {
           final renamedFile = File(newStorageUri);
           final oldFile = File(document.storagePath);
