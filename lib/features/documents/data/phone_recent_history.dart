@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:shared_preferences/shared_preferences.dart';
+import 'phone_portable_state.dart';
 
 /// The Phone Recent panel tracks external URI *references*, not file copies.
 /// A successful Phone -> Grid move invalidates the source URI; never keep a
@@ -139,6 +140,7 @@ class PhoneRecentHistory {
         final uri = file['uri'] as String;
         if (existingRecentUris.add(uri)) {
           added.add(jsonEncode({
+            'referenceId': await PhoneReferenceIdentity.idForUri(uri),
             'uri': uri,
             'name': file['name'],
             'sizeBytes': (file['sizeBytes'] as num?)?.toInt() ?? 0,
@@ -193,6 +195,7 @@ class PhoneRecentHistory {
     }
     final active = <String, Object?>{
       ...?prior,
+      'referenceId': await PhoneReferenceIdentity.idForUri(uri),
       'uri': uri,
       'name': name,
       'sizeBytes': sizeBytes > 0

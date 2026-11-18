@@ -9,6 +9,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../data/document_repository.dart';
 import '../data/phone_recent_history.dart';
 import '../data/phone_star_repository.dart';
+import '../data/phone_portable_state.dart';
 import '../data/phone_trash_origin.dart';
 import '../../../core/storage/storage_location_service.dart';
 import '../../categories/data/category_repository.dart';
@@ -782,7 +783,8 @@ class _DocumentsScreenState extends State<DocumentsScreen>
           // browser reads it when reopening its menu after a Star action.
           _phoneStarredUris
             ..clear()
-            ..addAll(items.map((item) => item['uri'] as String));
+            ..addAll(items.where((item) => item['needsRelinking'] != true)
+                .map((item) => item['uri'] as String));
         });
       }
     } catch (_) {
@@ -1139,10 +1141,11 @@ class _DocumentsScreenState extends State<DocumentsScreen>
   Widget _phoneStarredTile(Map<String, Object?> item) {
     final uri = item['uri'] as String;
     final name = item['name'] as String? ?? 'PDF';
+    final unresolved = item['needsRelinking'] == true;
     return ListTile(
       key: ValueKey('phone-starred-$uri'),
       dense: true,
-      leading: DocumentThumbnail(
+      leading: unresolved ? const Icon(Icons.link_off_outlined) : DocumentThumbnail(
         documentId: 'phone_starred_$uri',
         storagePath: uri,
         sizeBytes: (item['sizeBytes'] as num?)?.toInt() ?? 0,
@@ -1152,9 +1155,10 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         const SizedBox(width: 6),
         _recentSourceTag('Phone'),
       ]),
-      subtitle: const Text('Starred'),
-      onTap: () => _openExternalStoragePdf(uri, name),
-      trailing: PopupMenuButton<String>(
+      subtitle: Text(unresolved ? 'Starred · Re-link this PDF on this device' : 'Starred'),
+      onTap: unresolved ? () => _message('The backed-up PDF reference needs to be linked to a file on this device.')
+          : () => _openExternalStoragePdf(uri, name),
+      trailing: unresolved ? null : PopupMenuButton<String>(
         tooltip: 'Actions for $name',
         onSelected: (action) => _handlePhoneRecentAction(item, action),
         itemBuilder: (_) => _phoneRecentMenu(item),
@@ -1168,12 +1172,13 @@ class _DocumentsScreenState extends State<DocumentsScreen>
     final openedAt = DateTime.tryParse(item['openedAt']?.toString() ?? '');
     final addedAt = DateTime.tryParse(item['addedAt']?.toString() ?? '');
     // External PDF choosers only acknowledge dispatch, not actual rendering.
-    final activity = openedAt == null && addedAt != null
-        ? 'Added' : 'Open requested';
+    final unresolved = item['needsRelinking'] == true;
+    final activity = unresolved ? 'Re-link required'
+        : openedAt == null && addedAt != null ? 'Added' : 'Open requested';
     return ListTile(
       key: ValueKey('phone-recent-$uri'),
       dense: true,
-      leading: DocumentThumbnail(
+      leading: unresolved ? const Icon(Icons.link_off_outlined) : DocumentThumbnail(
         documentId: 'phone_recent_$uri',
         storagePath: uri,
         sizeBytes: (item['sizeBytes'] as num?)?.toInt() ?? 0,
@@ -1184,9 +1189,10 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         _recentSourceTag('Phone'),
       ]),
       subtitle: Text('$activity · ${_recentDateLabel(openedAt ?? addedAt ?? DateTime.now())}'),
-      onTap: () => _openExternalStoragePdf(uri, name),
-      onLongPress: () => _openPhoneRecentSelection(item),
-      trailing: PopupMenuButton<String>(
+      onTap: unresolved ? () => _message('This backed-up Phone PDF needs re-linking on this device.')
+          : () => _openExternalStoragePdf(uri, name),
+      onLongPress: unresolved ? null : () => _openPhoneRecentSelection(item),
+      trailing: unresolved ? null : PopupMenuButton<String>(
         tooltip: 'Actions for $name',
         onSelected: (action) => _handlePhoneRecentAction(item, action),
         itemBuilder: (_) => _phoneRecentMenu(item),
@@ -1882,6 +1888,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       // not be mistaken for a failed physical rename.
       String? shortcutWarning;
       try {
+        await PhoneReferenceIdentity.renamed(uri, newUri);
         await PhoneStarRepository.updateRenamedReference(uri, newUri, newName);
         await PhoneRecentHistory.updateRenamedReference(uri, newUri, newName);
       } catch (error) {
