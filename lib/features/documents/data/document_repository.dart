@@ -2083,6 +2083,7 @@ class DocumentRepository {
       }, where: 'id = ? AND deleted_at IS NOT NULL', whereArgs: [document.id]);
       if (count == 0) throw StateError('PDF is no longer in the Recycle Bin.');
       await _recordHistory(txn, document.id, 'restored', {});
+      await lease.markDatabaseCommitted(txn);
     });
     PortableSnapshotEvents.notifyDataChanged();
     await _reconcileReminders();
@@ -2260,6 +2261,7 @@ class DocumentRepository {
       }, where: 'id = ? AND deleted_at IS NULL', whereArgs: [document.id]);
       if (changed == 0) throw StateError('PDF record is already in the Recycle Bin.');
       await _recordHistory(txn, document.id, 'moved_to_recycle_bin', {});
+      await lease.markDatabaseCommitted(txn);
     });
     PortableSnapshotEvents.notifyDataChanged();
     await _reconcileReminders();
@@ -2336,7 +2338,8 @@ class DocumentRepository {
           'from': document.name,
           'to': safeBase,
         });
-      });
+        await lease.markDatabaseCommitted(txn);
+    });
       PortableSnapshotEvents.notifyDataChanged();
     } catch (_) {
       var physicallyReverted = false;
@@ -2450,6 +2453,7 @@ class DocumentRepository {
       if (deleted == 0) {
         throw StateError('The document is no longer in the Recycle Bin.');
       }
+      await lease.markDatabaseCommitted(txn);
     });
     PortableSnapshotEvents.notifyDataChanged();
 

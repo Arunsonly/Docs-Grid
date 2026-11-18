@@ -132,6 +132,32 @@ void main() {
     expect(rows.single['state'], 'interrupted');
   });
 
+  test('DB commit marker survives a simulated crash before journal finalize',
+      () async {
+    final db = await openDb();
+    addTearDown(db.close);
+    await expectLater(DurableFileOperations.run<void>(
+      db: db, resourceKey: 'document:atomic', kind: 'rename-pdf',
+      action: (lease) async {
+        await db.transaction((txn) async {
+          await txn.insert('settings', {
+            'key': 'db-commit-marker-proof',
+            'value': 'new-name',
+          });
+          await lease.markDatabaseCommitted(txn);
+        });
+        // Simulate termination just after SQLite commit.
+        throw StateError('crash after DB commit');
+      },
+    ), throwsStateError);
+    expect(await db.query('settings',
+      where: 'key = ?', whereArgs: ['db-commit-marker-proof']),
+      hasLength(1));
+    expect(await DurableFileOperations.incomplete(db), hasLength(1));
+    expect(await DurableFileOperations.reconcileFinished(db), 1);
+    expect(await DurableFileOperations.incomplete(db), isEmpty);
+  });
+
   test('concurrent work with same resource cannot enter twice', () async {
     final db = await openDb();
     addTearDown(db.close);

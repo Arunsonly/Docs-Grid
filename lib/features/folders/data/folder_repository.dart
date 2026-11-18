@@ -1016,6 +1016,7 @@ class FolderRepository {
         }),
         'created_at': DateTime.now().toUtc().toIso8601String(),
       });
+      await lease.markDatabaseCommitted(txn);
     });
     PortableSnapshotEvents.notifyDataChanged();
     return restoredPdfs;
@@ -1230,6 +1231,7 @@ class FolderRepository {
         'details_json': jsonEncode({'rootFolderId': rootFolderId, 'trashOperationId': operationId}),
         'created_at': DateTime.now().toUtc().toIso8601String(),
       });
+      await lease.markDatabaseCommitted(txn);
     });
     PortableSnapshotEvents.notifyDataChanged();
       },

@@ -24,6 +24,21 @@ class FileOperationLease {
       previousPhase == 'deleting-empty-directories' ||
       previousPhase == 'deleting-folder-records';
 
+  /// Record the successful SQLite commit marker in the SAME transaction
+  /// that changes PDF metadata. Crash-after-commit/before-Finalize can then
+  /// be reconciled without redoing physical file operations.
+  Future<void> markDatabaseCommitted(DatabaseExecutor txn) async {
+    final updated = await txn.update('file_operation_journal', {
+      'phase': 'db-committed',
+      'updated_at': DateTime.now().toUtc().toIso8601String(),
+    }, where: "resource_key = ? AND operation_id = ? AND owner_id = ? "
+          "AND state = 'running'",
+        whereArgs: [resourceKey, id, ownerId]);
+    if (updated != 1) {
+      throw StateError('PDF operation lost ownership before database commit.');
+    }
+  }
+
   Future<void> phase(String phase) async {
     final count = await db.update('file_operation_journal', {
       'phase': phase,
@@ -189,8 +204,11 @@ class DurableFileOperations {
       try {
       final kind = row['kind'] as String;
       final phase = row['phase'] as String;
-      bool committed = false;
-      if (kind == 'delete-folder-tree' &&
+      // This marker is written in the same SQLite transaction as the
+      // metadata operation or after its successfully returned callback.
+      // Therefore it proves the DB commit without relying on file existence.
+      bool committed = phase == 'db-committed';
+      if (!committed && kind == 'delete-folder-tree' &&
           key.startsWith('trash-tree:') &&
           phase == 'deleting-folder-records') {
         final operationId = key.substring('trash-tree:'.length);
@@ -203,7 +221,7 @@ class DurableFileOperations {
           [operationId],
         )) ?? 0;
         committed = folderCount == 0 && documentCount == 0;
-      } else if (kind == 'delete-pdf' &&
+      } else if (!committed && kind == 'delete-pdf' &&
           key.startsWith('document:') &&
           phase == 'deleting-pdf-record') {
         final documentId = key.substring('document:'.length);
