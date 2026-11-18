@@ -79,10 +79,11 @@ class DocumentToolsService {
        _snapshotLocations = snapshotLocations;
 
   final Future<Map<String, String>> Function()? _snapshotLocations;
+
   final AppDatabase _database;
   static const _uuid = Uuid();
-
-  // Serialize snapshot publication, pruning, and both recovery paths.
+  // Snapshot publication/cleanup and restore must not overlap, including calls
+  // made through different service instances in the foreground isolate.
   static Future<void> _recoveryTail = Future<void>.value();
   static Future<T> _withRecoveryLock<T>(Future<T> Function() action) async {
     final previous = _recoveryTail;
@@ -91,6 +92,7 @@ class DocumentToolsService {
     await previous;
     try { return await action(); } finally { done.complete(); }
   }
+
 
   /// Hashes untrusted IDs before using them as restore path segments.
   @visibleForTesting
@@ -1141,6 +1143,7 @@ class DocumentToolsService {
   /// is tried; Database archives are used only after every Full archive fails.
   Future<int?> restoreNewestPortableBackup({
     Future<bool> Function(int pdfCount)? confirm,
+    Future<bool> Function(Map<String, int> preview)? confirmPlan,
   }) async {
     await StorageMigrationGate.waitUntilReady();
     final candidates = await listPortableBackupArchives();
@@ -1186,7 +1189,7 @@ class DocumentToolsService {
     try {
       for (final item in classified) {
         try {
-          return await restoreBackup(item.file, confirm: confirm);
+          return await restoreBackup(item.file, confirm: confirm, confirmPlan: confirmPlan);
         } catch (error) {
           lastError = error;
         }
@@ -1252,18 +1255,22 @@ class DocumentToolsService {
   Future<int?> restoreBackup(
     File zipFile, {
     Future<bool> Function(int pdfCount)? confirm,
+    Future<bool> Function(Map<String, int> preview)? confirmPlan,
     BackupRestoreMode mode = BackupRestoreMode.merge,
     Set<BackupRestoreSection>? selection,
   }) => _withRecoveryLock(() => _restoreBackupLocked(
     zipFile, confirm: confirm, mode: mode, selection: selection,
+    confirmPlan: confirmPlan,
   ));
 
-  Future<int?> _restoreBackupLocked(
+Future<int?> _restoreBackupLocked(
     File zipFile, {
     Future<bool> Function(int pdfCount)? confirm,
+    Future<bool> Function(Map<String, int> preview)? confirmPlan,
     BackupRestoreMode mode = BackupRestoreMode.merge,
     Set<BackupRestoreSection>? selection,
   }) async {
+
     await StorageMigrationGate.waitUntilReady();
     final backup = await _decodeValidatedBackup(zipFile);
     try {
@@ -1292,12 +1299,6 @@ class DocumentToolsService {
         );
       }
       if (confirm != null && !await confirm(pdfCount)) return null;
-      // All restore modes can mutate file placement or metadata. Create a
-      // verified Full safety archive before merge/selective/full replacement.
-      await _createRestoreSafetyCheckpoint(
-        mode: mode,
-        sourceBackupId: (backup.manifest['backupId'] ?? 'unknown').toString(),
-      );
       if (mode == BackupRestoreMode.selective) {
         if (selection == null || selection.isEmpty) {
           throw ArgumentError('Select at least one data group to restore.');
@@ -1366,105 +1367,165 @@ class DocumentToolsService {
         return await _restoreValidatedBackup(
           selectiveBackup,
           restoreMode: BackupRestoreMode.selective.name,
+          confirmPlan: confirmPlan,
         );
       }
       return await _restoreValidatedBackup(
         backup,
         replaceExisting: mode == BackupRestoreMode.fullReplacement,
         restoreMode: mode.name,
+        confirmPlan: confirmPlan,
       );
     } finally {
       await backup.dispose();
     }
   }
 
-  Future<int> _restoreValidatedBackup(
+  Future<int?> _restoreValidatedBackup(
     _ValidatedBackup backup, {
     bool replaceExisting = false,
     String restoreMode = 'merge',
+    Future<bool> Function(Map<String, int> preview)? confirmPlan,
   }) async {
     final manifest = backup.manifest;
     final rowsByTable = backup.rowsByTable;
     final folderRows = rowsByTable['folders']!;
-    final folderRowsById = <String, Map<String, Object?>>{
-      for (final row in folderRows) row['id'] as String: row,
-    };
     final documentsById = <String, Map<String, Object?>>{
       for (final row in rowsByTable['documents']!) row['id'] as String: row,
     };
     final db = await _database.database;
+    final inventoryRevision = await _database.portableSnapshotRevision();
     // Keep every persisted ID for collision detection, but only active folders
     // participate in path matching. A soft-deleted row still owns its primary key.
-    final existingFolderRows = replaceExisting
-        ? <Map<String, Object?>>[]
-        : await db.query('folders', columns: ['id', 'name', 'parent_id', 'deleted_at']);
+    final existingFolderRows = await db.query('folders');
+    BackupFolderGraphValidator.validate(folderRows);
+    for (final row in folderRows) {
+      FolderRepository.validateFolderName(row['name'] as String);
+    }
     final existingFolders = existingFolderRows
         .where((row) => row['deleted_at'] == null)
         .toList(growable: false);
     final existingFolderIds =
         existingFolderRows.map((row) => row['id'] as String).toSet();
-    final existingFolderRowsById = <String, Map<String, Object?>>{
-      for (final row in existingFolders) row['id'] as String: row,
-    };
     final existingFolderIdsByPath = <String, String>{};
-    String existingFolderPath(String id, Set<String> visiting) {
-      if (!visiting.add(id)) throw StateError('Existing folder hierarchy contains a cycle.');
-      final row = existingFolderRowsById[id];
-      if (row == null) throw StateError('Existing folder hierarchy contains a missing parent.');
-      final parentId = row['parent_id'] as String?;
-      final name = row['name'] as String;
-      return parentId == null
-          ? name
-          : '${existingFolderPath(parentId, visiting)}/$name';
-    }
-    for (final row in existingFolders) {
+    final livePaths = <String, String>{};
+    for (final row in BackupFolderGraphValidator.parentFirst(existingFolders)) {
       final id = row['id'] as String;
-      existingFolderIdsByPath[existingFolderPath(id, <String>{})] = id;
+      final parent = row['parent_id'] as String?;
+      final path = (parent == null ? row['name'] as String
+          : '${livePaths[parent]}/${row['name']}').toLowerCase();
+      if (existingFolderIdsByPath.containsKey(path)) {
+        throw StateError('Folder conflict: multiple active folders at $path.');
+      }
+      livePaths[id] = path;
+      existingFolderIdsByPath[path] = id;
     }
     final backupFolderPaths = <String, String>{};
-    String backupFolderPath(String id) {
-      final known = backupFolderPaths[id];
-      if (known != null) return known;
-      final row = folderRowsById[id];
-      if (row == null) throw StateError('Backup contains an unknown folder reference.');
-      final parentId = row['parent_id'] as String?;
-      final name = row['name'] as String;
-      final path = parentId == null ? name : '${backupFolderPath(parentId)}/$name';
-      backupFolderPaths[id] = path;
-      return path;
+    for (final row in BackupFolderGraphValidator.parentFirst(folderRows)) {
+      final parent = row['parent_id'] as String?;
+      backupFolderPaths[row['id'] as String] = parent == null
+          ? row['name'] as String : '${backupFolderPaths[parent]}/${row['name']}';
     }
+    String backupFolderPath(String id) => backupFolderPaths[id]!;
     final folderIdMap = <String, String>{};
-    final folderNameOverrides = <String, String>{};
-    for (final row in folderRows) {
+    final matchedFolderIds = <String>{};
+    final matchedRowsBySourceId = <String, Map<String, Object?>>{};
+    final allLivePaths = <String, String>{};
+    for (final row in BackupFolderGraphValidator.parentFirst(existingFolderRows)) {
+      final parent = row['parent_id'] as String?;
+      allLivePaths[row['id'] as String] = parent == null ? row['name'] as String
+          : '${allLivePaths[parent]}/${row['name']}';
+    }
+    for (final row in BackupFolderGraphValidator.parentFirst(folderRows)) {
       final oldId = row['id'] as String;
-      final samePathExists = existingFolderIdsByPath.containsKey(backupFolderPath(oldId));
-      folderIdMap[oldId] = existingFolderIds.contains(oldId) || samePathExists
-          ? _uuid.v4()
-          : oldId;
-      if (samePathExists) {
-        folderNameOverrides[oldId] = '${row['name']} (restored)';
+      final deletedMatches = existingFolderRows.where((live) =>
+          row['deleted_at'] != null && live['deleted_at'] != null &&
+          live['id'] == oldId && live['created_at'] == row['created_at'] &&
+          live['trash_operation_id'] == row['trash_operation_id'] &&
+          allLivePaths[oldId]?.toLowerCase() == backupFolderPath(oldId).toLowerCase());
+      final match = row['deleted_at'] == null
+          ? existingFolderIdsByPath[backupFolderPath(oldId).toLowerCase()]
+          : (deletedMatches.isEmpty ? null : deletedMatches.single['id'] as String);
+      if (row['deleted_at'] != null &&
+          existingFolderIdsByPath.containsKey(backupFolderPath(oldId).toLowerCase())) {
+        throw StateError('Recycle Bin conflict with active folder: ${backupFolderPath(oldId)}');
+      }
+      if (match != null) {
+        final candidate = existingFolderRows.firstWhere((live) => live['id'] == match);
+        // Path + independent identity evidence; names or IDs alone are unsafe.
+        if (match != oldId && candidate['created_at'] != row['created_at']) {
+          throw StateError('Folder conflict: ${backupFolderPath(oldId)} has a different identity. No files were imported.');
+        }
+        folderIdMap[oldId] = replaceExisting ? oldId : match;
+        matchedFolderIds.add(oldId);
+        matchedRowsBySourceId[oldId] = candidate;
+      } else {
+        folderIdMap[oldId] = !replaceExisting && existingFolderIds.contains(oldId)
+            ? _uuid.v5(Uuid.NAMESPACE_URL, 'DocsGrid/folder/${manifest['backupId']}/$oldId')
+            : oldId;
       }
     }
-    final existingDocuments = replaceExisting
-        ? <Map<String, Object?>>[]
-        : await db.query('documents', columns: ['id', 'sha256']);
+    final existingDocuments = await db.query('documents');
+    final existingDocumentsById = {for (final row in existingDocuments) row['id'] as String: row};
+    // Independently managed documents may contain identical PDF bytes.
     final existingDocumentIds = existingDocuments.map((row) => row['id'] as String).toSet();
-    final existingDocumentIdsByHash = <String, String>{
+    final verifiedDocumentIds = <String>{};
+    final ownedStoragePaths = <String>{
       for (final row in existingDocuments)
-        if (row['sha256'] is String && (row['sha256'] as String).isNotEmpty)
-          row['sha256'] as String: row['id'] as String,
+        if (row['storage_uri'] is String &&
+            !(row['storage_uri'] as String).startsWith('missing://') &&
+            !(row['storage_uri'] as String).startsWith('content://'))
+          p.normalize((row['storage_uri'] as String).startsWith('file://')
+              ? Uri.parse(row['storage_uri'] as String).toFilePath()
+              : row['storage_uri'] as String),
     };
+    for (final row in existingDocuments) {
+      final digest = row['sha256'] as String?;
+      final uri = row['storage_uri'] as String?;
+      if (digest == null || uri == null || uri.startsWith('missing://')) continue;
+      try {
+        final actual = uri.startsWith('content://')
+            ? await StorageLocationService.instance.sha256Pdf(uri)
+            : (await sha256.bind(File(uri.startsWith('file://')
+                ? Uri.parse(uri).toFilePath() : uri).openRead()).first).toString();
+        if (actual == digest) {
+          verifiedDocumentIds.add(row['id'] as String);
+          // Keep this verified path owned by its original logical document.
+        }
+      } catch (_) { /* Missing bytes are never treated as restored. */ }
+    }
+    // The archive may contain independent logical documents with identical
+    // PDF bytes. Preserve both identities and independent physical paths.
     final documentIdMap = <String, String>{};
     final duplicateDocumentIds = <String>{};
+    final repairDocumentIds = <String>{};
     for (final row in rowsByTable['documents']!) {
       final oldId = row['id'] as String;
       final digest = row['sha256'] as String?;
-      final duplicateId = digest == null ? null : existingDocumentIdsByHash[digest];
-      if (duplicateId != null) {
-        documentIdMap[oldId] = duplicateId;
+      final oldFolder = row['folder_id'] as String?;
+      final mappedFolder = oldFolder == null ? null : folderIdMap[oldFolder];
+      final stableId = _uuid.v5(Uuid.NAMESPACE_URL,
+          'DocsGrid/document/${manifest['backupId']}/$oldId');
+      final matches = [existingDocumentsById[oldId], existingDocumentsById[stableId]]
+          .whereType<Map<String, Object?>>().where((candidate) =>
+          candidate['sha256'] == digest && candidate['folder_id'] == mappedFolder &&
+          candidate['deleted_at'] == row['deleted_at']);
+      final match = matches.isEmpty ? null : matches.first;
+      if (!replaceExisting && match != null &&
+          verifiedDocumentIds.contains(match['id'])) {
+        documentIdMap[oldId] = match['id'] as String;
         duplicateDocumentIds.add(oldId);
       } else {
-        documentIdMap[oldId] = existingDocumentIds.contains(oldId) ? _uuid.v4() : oldId;
+        if (!replaceExisting && match != null) {
+          documentIdMap[oldId] = match['id'] as String;
+          repairDocumentIds.add(oldId);
+        } else {
+          documentIdMap[oldId] = !replaceExisting && existingDocumentIds.contains(oldId)
+              ? stableId : oldId;
+          if (!replaceExisting && existingDocumentIds.contains(documentIdMap[oldId])) {
+            throw StateError('Document identity conflict: ${row['name']}');
+          }
+        }
       }
     }
     // A ZIP is untrusted input. Validate parent links before creating any
@@ -1494,7 +1555,7 @@ class DocumentToolsService {
     final fallbackRoot = p.join(
       (await getApplicationDocumentsDirectory()).path,
       'DocsGrid',
-      'Restored',
+      'Library',
     );
     final unfiledRoot = Directory(
       portableUnfiledUri != null && portableUnfiledUri.startsWith('file://')
@@ -1506,49 +1567,258 @@ class DocumentToolsService {
           ? Uri.parse(portableFoldersUri).toFilePath()
           : p.join(fallbackRoot, 'Folders'),
     );
-    final restoreStamp = 'Restored_${DateTime.now().microsecondsSinceEpoch}';
-    final restoreRoot = Directory(p.join(unfiledRoot.path, restoreStamp));
-    final folderRestoreRoot = Directory(p.join(foldersRoot.path, restoreStamp));
-    final usesFallbackFoldersRoot =
-        portableFoldersUri == null || !portableFoldersUri.startsWith('file://');
-    await restoreRoot.create(recursive: true);
-    if (folderRows.isNotEmpty) await folderRestoreRoot.create(recursive: true);
+    final restoreRoot = unfiledRoot;
     final fileRows = rowsByTable['documents']!.isEmpty
         ? <Map<String, dynamic>>[]
         : (manifest['files'] as List<dynamic>).cast<Map<String, dynamic>>();
     final restoredPaths = <String, String>{};
     final folderPaths = <String, String>{};
-    final folderDirectoryNames = <String, String>{
-      for (final row in folderRows)
-        (row['id'] as String): '${(folderNameOverrides[row['id']] ?? row['name'] as String).replaceAll(RegExp(r'[^A-Za-z0-9 _.-]'), '_').trim()}_${safeRestorePathToken(row['id'] as String).substring(0, 8)}',
-    };
-    String folderPath(String id) {
-      final known = folderPaths[id];
-      if (known != null) return known;
-      final unresolved = <String>[];
-      String? current = id;
-      while (current != null && !folderPaths.containsKey(current)) {
-        unresolved.add(current);
-        final row = folderRowsById[current];
-        if (row == null) throw StateError('Backup contains an unknown folder reference.');
-        current = row['parent_id'] as String?;
+    final createdFiles = <String>[];
+    final pendingFiles = <String>[];
+    final createdDirectories = <String>[];
+    // Restoration of a legacy timestamped folder needs a separately approved
+    // relocation plan. The original folders and PDF bytes are never deleted.
+    final legacyFolderPaths = <String, String>{};
+    final claimedPaths = <String, String>{};
+    for (final row in BackupFolderGraphValidator.parentFirst(folderRows)) {
+      final id = row['id'] as String;
+      final parentId = row['parent_id'] as String?;
+      final parentPath = parentId == null ? foldersRoot.path : folderPaths[parentId]!;
+      var path = p.join(parentPath, row['name'] as String);
+      if (matchedFolderIds.contains(id)) {
+        final uri = matchedRowsBySourceId[id]!['storage_uri_or_relative_path'] as String?;
+        if (uri != null && uri.isNotEmpty) {
+          if (uri.startsWith('content://')) {
+            throw StateError('Folder conflict: SAF destination requires explicit relinking before ZIP restore: ${row['name']}');
+          }
+          final storedPath = uri.startsWith('file://')
+              ? Uri.parse(uri).toFilePath() : uri;
+          if (!p.isAbsolute(storedPath) || !await Directory(storedPath).exists()) {
+            throw StateError('Folder mapping is unavailable: ${row['name']}. Restore storage access before retrying.');
+          }
+          // Old ZIP restores permanently routed every new PDF into a
+          // Restored_<timestamp>/<name>_<hash> tree. A readable directory alone
+          // is not proof that it is the correct *current* storage mapping.
+          // Reconcile only against the already verified backup/live logical
+          // folder identity; unrecognized paths remain untouched.
+          if (FolderRepository.isLegacyRestoreStorageUri(uri)) {
+            final normalizedOld = p.normalize(p.absolute(storedPath));
+            if (!p.isWithin(foldersRoot.path, normalizedOld)) {
+              throw StateError('Legacy restore folder is outside the authorized library.');
+            }
+            final original = p.normalize(p.absolute(path));
+            if (!p.isWithin(foldersRoot.path, original)) {
+              throw StateError('Original restore destination is outside the authorized library.');
+            }
+            final owner = existingFolderRows.where((candidate) {
+              if (candidate['id'] == matchedRowsBySourceId[id]?['id']) return false;
+              final value = candidate['storage_uri_or_relative_path'] as String?;
+              if (value == null || value.startsWith('content://')) return false;
+              final candidatePath = value.startsWith('file://')
+                  ? Uri.parse(value).toFilePath() : value;
+              return p.normalize(p.absolute(candidatePath)) == original;
+            });
+            if (owner.isNotEmpty) {
+              throw StateError('Original folder is already owned by a different database record: ${row['name']}');
+            }
+            legacyFolderPaths[id] = normalizedOld;
+            // Keep the intended hierarchy, not the legacy timestamped path.
+          } else {
+            path = storedPath;
+          }
+        }
       }
-      var base = current == null ? folderRestoreRoot.path : folderPaths[current]!;
-      for (final folderId in unresolved.reversed) {
-        base = p.join(base, folderDirectoryNames[folderId]!);
-        folderPaths[folderId] = base;
+      path = p.normalize(p.absolute(path));
+      if (await FileSystemEntity.type(path, followLinks: false) == FileSystemEntityType.link) {
+        throw StateError('Folder conflict: symbolic link at $path');
       }
-      return folderPaths[id]!;
+      // Deleted records must never claim the active hierarchy or its files.
+      if (existingFolderRows.any((candidate) =>
+          candidate['deleted_at'] != null && candidate['id'] != matchedRowsBySourceId[id]?['id'] &&
+          (candidate['storage_uri_or_relative_path'] == path ||
+           candidate['storage_uri_or_relative_path'] == Uri.file(path).toString()))) {
+        throw StateError('Recycle Bin folder conflict: ${row['name']}. Restore it separately before importing this ZIP.');
+      }
+      if (claimedPaths.containsKey(path)) throw StateError('Ambiguous destination: $path');
+      claimedPaths[path] = id;
+      if (await Directory(path).exists()) await Directory(path).list().drain<void>();
+      folderPaths[id] = path;
     }
+    String folderPath(String id) => folderPaths[id]!;
+    // Reuse an already-present PDF only when it belongs to the expected
+    // directory and is not owned by another live logical record. Sharing one
+    // physical path between distinct records would break move/permanent-delete.
+    final availableByFolderAndHash = <String, List<String>>{};
+    for (final directory in <String>{unfiledRoot.path, ...folderPaths.values}) {
+      if (!await Directory(directory).exists()) continue;
+      await for (final entry in Directory(directory).list(followLinks: false)) {
+        if (entry is! File || !entry.path.toLowerCase().endsWith('.pdf')) continue;
+        final path = p.normalize(entry.path);
+        if (!replaceExisting && ownedStoragePaths.contains(path)) continue;
+        final digest = (await sha256.bind(entry.openRead()).first).toString();
+        (availableByFolderAndHash['${p.normalize(directory)}|$digest'] ??= <String>[])
+            .add(path);
+      }
+    }
+    final assignedPhysicalPaths = <String>{};
+    // Inventory each existing active PDF tied to a legacy folder. We must
+    // preserve its bytes and independent logical ownership before moving the
+    // folder mapping. Source PDFs will be left in place for rollback.
+    final legacyDocumentRepairs = <String, String>{};
+    final legacyDocumentCopies =
+        <String, ({String sourcePath, String hash, String targetDirectory})>{};
+    for (final oldFolder in legacyFolderPaths.entries) {
+      if (replaceExisting) continue; // Replacement uses the validated ZIP bytes.
+      final liveFolderId = folderIdMap[oldFolder.key]!;
+      final targetDirectory = p.normalize(folderPath(oldFolder.key));
+      for (final row in existingDocuments.where((candidate) =>
+          candidate['folder_id'] == liveFolderId &&
+          candidate['deleted_at'] == null)) {
+        final documentId = row['id'] as String;
+        final savedUri = row['storage_uri'] as String?;
+        if (savedUri == null || savedUri.startsWith('missing://')) {
+          // Keep the existing missing-document marker and never invent bytes.
+          continue;
+        }
+        if (savedUri.startsWith('content://')) {
+          throw StateError('Cannot automatically reconcile an SAF-backed PDF: ${row['name']}');
+        }
+        final sourcePath = p.normalize(p.absolute(savedUri.startsWith('file://')
+            ? Uri.parse(savedUri).toFilePath() : savedUri));
+        if (p.dirname(sourcePath) == targetDirectory) continue;
+        if (p.dirname(sourcePath) != oldFolder.value) {
+          throw StateError('PDF is outside the verified legacy folder: ${row['name']}');
+        }
+        if (await FileSystemEntity.type(sourcePath, followLinks: false) !=
+            FileSystemEntityType.file) {
+          throw StateError('Legacy PDF must be relinked manually: ${row['name']}');
+        }
+        final expected = row['sha256'] as String?;
+        if (expected == null || expected.isEmpty) {
+          throw StateError('Legacy PDF lacks an integrity checksum: ${row['name']}');
+        }
+        final actual = (await sha256.bind(File(sourcePath).openRead()).first).toString();
+        if (actual != expected) {
+          throw StateError('Legacy PDF SHA-256 mismatch: ${row['name']}');
+        }
+        final orphans = availableByFolderAndHash['$targetDirectory|$expected'] ??
+            const <String>[];
+        String? reusable;
+        for (final candidate in orphans) {
+          if (assignedPhysicalPaths.add(candidate)) {
+            reusable = candidate;
+            break;
+          }
+        }
+        if (reusable != null) {
+          legacyDocumentRepairs[documentId] = reusable;
+        } else {
+          legacyDocumentCopies[documentId] = (
+            sourcePath: sourcePath, hash: expected,
+            targetDirectory: targetDirectory,
+          );
+        }
+      }
+    }
+    for (final row in rowsByTable['documents']!) {
+      final id = row['id'] as String;
+      if (duplicateDocumentIds.contains(id)) continue;
+      final folderId = row['folder_id'] as String?;
+      final targetDirectory = p.normalize(
+          folderId == null ? unfiledRoot.path : folderPath(folderId));
+      final hash = row['sha256'] as String?;
+      if (hash == null) continue;
+      final candidates = availableByFolderAndHash['$targetDirectory|$hash'] ??
+          const <String>[];
+      for (final candidate in candidates) {
+        if (!assignedPhysicalPaths.add(candidate)) continue;
+        restoredPaths[id] = candidate;
+        break;
+      }
+    }
+    final preview = <String, int>{
+      'folders': folderRows.length,
+      'matchedFolders': matchedFolderIds.length,
+      'newFolders': folderPaths.values.where((path) => !Directory(path).existsSync()).length,
+      'documents': rowsByTable['documents']!.length,
+      'verifiedPdfs': duplicateDocumentIds.length + restoredPaths.length,
+      'newPdfs': fileRows.where((row) => !duplicateDocumentIds.contains(row['documentId']) &&
+          !restoredPaths.containsKey(row['documentId'])).length,
+      'needsRelinking': rowsByTable['documents']!.where((row) =>
+          !duplicateDocumentIds.contains(row['id']) && !restoredPaths.containsKey(row['id']) &&
+          !backup.stagedPdfPaths.containsKey(row['id'])).length,
+      'legacyFolderRepairs': legacyFolderPaths.length,
+      'legacyPdfsToCopy': legacyDocumentCopies.length,
+      'legacyPdfsReused': legacyDocumentRepairs.length,
+      'conflicts': 0,
+    };
+    if (legacyFolderPaths.isNotEmpty && confirmPlan == null) {
+      throw StateError('Legacy storage reconciliation requires explicit restore-preview approval.');
+    }
+    if (confirmPlan != null && !await confirmPlan(preview)) return null;
+    // Generate a verified Full safety archive only after an accepted plan.
+    // A cancelled preview must not create or prune backup files. This still
+    // precedes all physical library writes and the SQLite transaction.
+    await _createRestoreSafetyCheckpoint(
+      mode: BackupRestoreMode.values.byName(restoreMode),
+      sourceBackupId: (manifest['backupId'] ?? 'unknown').toString(),
+    );
+    // Durable journal precedes all library writes. Interrupted operations retain
+    // their new files for verified reuse on retry; no broad recursive rollback.
+    final journalDirectory = Directory(p.join(
+        (await getApplicationSupportDirectory()).path, 'docsgrid', 'recovery', 'operations'));
+    await journalDirectory.create(recursive: true);
+    final journal = File(p.join(journalDirectory.path, '${_uuid.v4()}.jsonl'));
+    // Append one intent per write instead of serializing an ever-growing list
+    // (quadratic journal I/O on large libraries). Flush before physical writes.
+    Future<void> writeJournal(String status, {String? documentId, String? expectedHash}) =>
+        journal.writeAsString('${jsonEncode({
+      'format': 'DocsGridRestoreOperation', 'version': 1,
+      'backupId': manifest['backupId'], 'status': status,
+      if (status == 'planned') 'folderPaths': folderPaths,
+      if (status == 'creatingFolders') 'directory': createdDirectories.last,
+      if (status == 'copying') ...{
+        'destination': createdFiles.last, 'pending': pendingFiles.last,
+        'documentId': documentId, 'sha256': expectedHash,
+      },
+    })}\n', mode: FileMode.append, flush: true).then((_) {});
+    await writeJournal('planned');
 
     var databaseCommitted = false;
+    var backupPayloadCopies = 0;
     try {
       for (final row in folderRows) {
-        await Directory(folderPath(row['id'] as String)).create(recursive: true);
+        final directory = Directory(folderPath(row['id'] as String));
+        if (!await directory.exists()) {
+          createdDirectories.add(directory.path);
+          await writeJournal('creatingFolders');
+          await directory.create(recursive: true);
+        }
+      }
+      // Copy old PDFs into the confirmed original folder before changing
+      // any SQLite pointer. Journal, checksum and atomic rename each copy.
+      // Never delete any source in Restored_... (separate cleanup permission).
+      for (final entry in legacyDocumentCopies.entries) {
+        final source = File(entry.value.sourcePath);
+        final target = File(p.join(entry.value.targetDirectory,
+            '${_uuid.v4()}_${p.basename(source.path)}'));
+        final pending = File('${target.path}.pending');
+        createdFiles.add(target.path);
+        pendingFiles.add(pending.path);
+        await writeJournal('copying',
+            documentId: entry.key, expectedHash: entry.value.hash);
+        await source.copy(pending.path);
+        final actual = (await sha256.bind(pending.openRead()).first).toString();
+        if (actual != entry.value.hash) {
+          await pending.delete();
+          throw StateError('Legacy PDF copy failed integrity verification.');
+        }
+        await pending.rename(target.path);
+        legacyDocumentRepairs[entry.key] = target.path;
       }
       for (final item in fileRows) {
         final id = item['documentId'] as String;
-        if (duplicateDocumentIds.contains(id)) continue;
+        if (duplicateDocumentIds.contains(id) || restoredPaths.containsKey(id)) continue;
         final document = documentsById[id];
         if (document == null) throw StateError('Backup contains an unknown document reference.');
         final folderId = document['folder_id'] as String?;
@@ -1567,17 +1837,43 @@ class DocumentToolsService {
         final destination = File(p.join(destinationDir.path, '${_uuid.v4()}_$safeName'));
         final stagedPath = backup.stagedPdfPaths[id];
         if (stagedPath == null) throw StateError('Backup is missing staged PDF bytes.');
-        await File(stagedPath).copy(destination.path);
-        final digest = (await sha256.bind(destination.openRead()).first).toString();
+        final pendingFile = File('${destination.path}.pending');
+        createdFiles.add(destination.path);
+        pendingFiles.add(pendingFile.path);
+        await writeJournal('copying', documentId: id, expectedHash: item['sha256'] as String);
+        await File(stagedPath).copy(pendingFile.path);
+        final digest = (await sha256.bind(pendingFile.openRead()).first).toString();
         if (digest != item['sha256']) {
-          await destination.delete();
+          await pendingFile.delete();
           throw StateError('PDF integrity check failed during restore.');
         }
+        await pendingFile.rename(destination.path);
         restoredPaths[id] = destination.path;
+        backupPayloadCopies++;
       }
 
+      for (final row in rowsByTable['documents']!) {
+        final id = row['id'] as String;
+        final uri = duplicateDocumentIds.contains(id)
+            ? existingDocumentsById[documentIdMap[id]]!['storage_uri'] as String
+            : restoredPaths[id];
+        if (uri == null) continue; // Explicit database-only missing reference.
+        final hash = uri.startsWith('content://')
+            ? await StorageLocationService.instance.sha256Pdf(uri)
+            : (await sha256.bind(File(uri.startsWith('file://')
+                ? Uri.parse(uri).toFilePath() : uri).openRead()).first).toString();
+        if (hash != row['sha256']) throw StateError('PDF changed during restore: ${row['name']}');
+      }
+      for (final path in folderPaths.values) {
+        await Directory(path).list(followLinks: false).drain<void>();
+      }
+      await writeJournal('filesVerified');
       final restoredReminderRows = <Map<String, Object?>>[];
       await db.transaction((txn) async {
+        final revision = await txn.query('portable_snapshot_state', columns: ['revision'], where: 'id = 1');
+        if (revision.single['revision'] != inventoryRevision) {
+          throw StateError('The library changed during restore preview. Retry to generate a fresh plan.');
+        }
         if (replaceExisting) {
           // Dependent rows are removed before parents. SQLite rolls the
           // complete replacement back if any insert or constraint fails.
@@ -1594,6 +1890,21 @@ class DocumentToolsService {
           );
           for (final folder in BackupFolderGraphValidator.childFirst(existingFolderRows)) {
             await txn.delete('folders', where: 'id = ?', whereArgs: [folder['id']]);
+          }
+        }
+        // Once physical copies have been verified, atomically publish their
+        // existing document pointers with the corrected folder mappings.
+        // Old physical copies remain untouched, including on rollback.
+        if (!replaceExisting) {
+          for (final entry in legacyDocumentRepairs.entries) {
+            final updated = await txn.update('documents', {
+              'storage_uri': entry.value,
+              'relative_path': null,
+            }, where: 'id = ? AND deleted_at IS NULL',
+                whereArgs: [entry.key]);
+            if (updated != 1) {
+              throw StateError('The library changed while reconciling a legacy PDF.');
+            }
           }
         }
         var batch = txn.batch();
@@ -1615,9 +1926,15 @@ class DocumentToolsService {
 
         for (final row in BackupFolderGraphValidator.parentFirst(folderRows)) {
           final oldId = row['id'] as String;
+          if (!replaceExisting && matchedFolderIds.contains(oldId)) {
+            await txn.update('folders', {
+              'storage_uri_or_relative_path': Platform.isAndroid
+                  ? Uri.file(folderPath(oldId)).toString() : folderPath(oldId),
+            }, where: 'id = ?', whereArgs: [folderIdMap[oldId]]);
+            continue;
+          }
           final copy = Map<String, Object?>.from(row);
           copy['id'] = folderIdMap[oldId];
-          copy['name'] = folderNameOverrides[oldId] ?? row['name'];
           final oldParentId = row['parent_id'] as String?;
           copy['parent_id'] = oldParentId == null ? null : folderIdMap[oldParentId];
           // Folder storage columns contain URIs, not bare filesystem paths.
@@ -1686,7 +2003,21 @@ class DocumentToolsService {
           // while marking unavailable PDF payloads for explicit relinking.
           copy['storage_uri'] = restored ?? 'missing://$oldId';
           copy['relative_path'] = null;
-          queueInsert('documents', copy);
+          if (restored == null) {
+            final raw = copy['metadata_json'];
+            final metadata = raw is String && raw.isNotEmpty
+                ? Map<String, dynamic>.from(jsonDecode(raw) as Map) : <String, dynamic>{};
+            metadata['docsGridRecoveryStatus'] = 'pdf_missing_relink_required';
+            copy['metadata_json'] = jsonEncode(metadata);
+          }
+          if (repairDocumentIds.contains(oldId)) {
+            await txn.update('documents', {
+              'storage_uri': copy['storage_uri'], 'relative_path': null,
+              'metadata_json': copy['metadata_json'],
+            }, where: 'id = ?', whereArgs: [documentIdMap[oldId]]);
+          } else {
+            queueInsert('documents', copy);
+          }
           if (pending >= 500) await flushBatch();
         }
         for (final row in rowsByTable['document_tags']!) {
@@ -1715,11 +2046,18 @@ class DocumentToolsService {
         for (final row in rowsByTable['reminders']!) {
           final copy = Map<String, Object?>.from(row);
           final oldId = row['id'] as String;
-          copy['id'] = existingReminderIds.contains(oldId) ? _uuid.v4() : oldId;
+          copy['id'] = oldId;
           final oldDocumentId = row['document_id'] as String?;
           copy['document_id'] = oldDocumentId == null
               ? null
               : (documentIdMap[oldDocumentId] ?? oldDocumentId);
+          if (existingReminderIds.contains(oldId)) {
+            final current = (await txn.query('reminders', where: 'id = ?', whereArgs: [oldId])).single;
+            if (copy.entries.any((entry) => current[entry.key] != entry.value)) {
+              throw StateError('reminders identity conflict: $oldId. Existing metadata was preserved.');
+            }
+            continue;
+          }
           queueInsert('reminders', copy);
           restoredReminderRows.add(copy);
           existingReminderIds.add(copy['id'] as String);
@@ -1728,11 +2066,18 @@ class DocumentToolsService {
         for (final row in rowsByTable['history']!) {
           final copy = Map<String, Object?>.from(row);
           final oldId = row['id'] as String;
-          copy['id'] = existingHistoryIds.contains(oldId) ? _uuid.v4() : oldId;
+          copy['id'] = oldId;
           final oldDocumentId = row['document_id'] as String?;
           copy['document_id'] = oldDocumentId == null
               ? null
               : (documentIdMap[oldDocumentId] ?? oldDocumentId);
+          if (existingHistoryIds.contains(oldId)) {
+            final current = (await txn.query('history', where: 'id = ?', whereArgs: [oldId])).single;
+            if (copy.entries.any((entry) => current[entry.key] != entry.value)) {
+              throw StateError('history identity conflict: $oldId. Existing metadata was preserved.');
+            }
+            continue;
+          }
           queueInsert('history', copy);
           existingHistoryIds.add(copy['id'] as String);
           if (pending >= 500) await flushBatch();
@@ -1779,8 +2124,21 @@ class DocumentToolsService {
           if (pending >= 500) await flushBatch();
         }
         await flushBatch();
+        if ((await txn.rawQuery('PRAGMA foreign_key_check')).isNotEmpty) {
+          throw StateError('Restored database contains inconsistent references.');
+        }
+        for (final entry in folderIdMap.entries) {
+          final actual = (await txn.query('folders',
+              where: 'id = ?', whereArgs: [entry.value])).single;
+          final expected = Platform.isAndroid
+              ? Uri.file(folderPath(entry.key)).toString() : folderPath(entry.key);
+          if (actual['storage_uri_or_relative_path'] != expected) {
+            throw StateError('Restored folder mapping did not verify.');
+          }
+        }
       });
       databaseCommitted = true;
+      try { await writeJournal('committed'); } catch (_) { /* DB is authoritative. */ }
       for (final row in restoredReminderRows) {
         if ((row['enabled'] as int? ?? 0) != 1 || row['status'] == 'completed') continue;
         try {
@@ -1809,7 +2167,10 @@ class DocumentToolsService {
             'backupId': manifest['backupId'],
             'backupCreatedAt': manifest['createdAt'],
             'completedAtUtc': DateTime.now().toUtc().toIso8601String(),
-            'pdfPayloadsRestored': restoredPaths.length,
+            'pdfPayloadsRestored': backupPayloadCopies,
+            'legacyPdfsRelinked': legacyDocumentRepairs.length,
+            'verifiedPdfsReused': restoredPaths.length - backupPayloadCopies + duplicateDocumentIds.length,
+            'needsRelinking': preview['needsRelinking'],
             'documentsInArchive': rowsByTable['documents']!.length,
             'foldersInArchive': rowsByTable['folders']!.length,
             'categoriesInArchive': rowsByTable['categories']!.length,
@@ -1827,22 +2188,19 @@ class DocumentToolsService {
       } catch (_) {
         // A report write failure must not roll back an already committed restore.
       }
-      return restoredPaths.length;
+      return backupPayloadCopies;
     } catch (_) {
       if (!databaseCommitted) {
-        try {
-          if (await restoreRoot.exists()) await restoreRoot.delete(recursive: true);
-        } catch (_) {}
-        try {
-          if (await folderRestoreRoot.exists()) {
-            await folderRestoreRoot.delete(recursive: true);
-          }
-          if (usesFallbackFoldersRoot &&
-              await foldersRoot.exists() &&
-              await foldersRoot.list().isEmpty) {
-            await foldersRoot.delete();
-          }
-        } catch (_) {}
+        for (final path in [...createdFiles, ...pendingFiles]) {
+          try { if (await File(path).exists()) await File(path).delete(); } catch (_) {}
+        }
+        for (final path in createdDirectories.reversed) {
+          try {
+            final directory = Directory(path);
+            if (await directory.exists() && await directory.list().isEmpty) await directory.delete();
+          } catch (_) {}
+        }
+        await writeJournal('rolledBack');
       }
       rethrow;
     }

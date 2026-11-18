@@ -1343,6 +1343,16 @@ class MainActivity : FlutterActivity() {
                 if (destination.exists() || !temporary.renameTo(destination)) {
                     throw IllegalStateException("Could not safely publish the copied file.")
                 }
+                // A restored PDF published via the file:// volume root is
+                // not automatically guaranteed to appear in MediaStore.
+                // Prompt Android to index it so Phone Storage can find it
+                // again on its next complete MediaStore scan.
+                if (mimeType == "application/pdf") {
+                    android.media.MediaScannerConnection.scanFile(
+                        this, arrayOf(destination.absolutePath),
+                        arrayOf("application/pdf"), null
+                    )
+                }
                 return Uri.fromFile(destination)
             } finally {
                 if (temporary.exists()) temporary.delete()

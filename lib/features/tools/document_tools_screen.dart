@@ -88,6 +88,31 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
     }
   });
 
+  Future<bool> _confirmRestorePlan(Map<String, int> plan) async {
+    if (!mounted) return false;
+    return await showDialog<bool>(context: context, builder: (context) => AlertDialog(
+      title: const Text('Verified restoration preview'),
+      content: Text('Folders in selection: ${plan['folders']}\n'
+          'Verified existing folders: ${plan['matchedFolders']}\n'
+          'New physical folders: ${plan['newFolders']}\n'
+          'Document records: ${plan['documents']}\n'
+          'Verified existing PDFs: ${plan['verifiedPdfs']}\n'
+          'New PDFs to copy: ${plan['newPdfs']}\n'
+          'Needs relinking: ${plan['needsRelinking']}\n'
+          'Legacy folder mappings to repair: ${plan['legacyFolderRepairs'] ?? 0}\n'
+          'Existing legacy PDFs to copy safely: ${plan['legacyPdfsToCopy'] ?? 0}\n'
+          'Existing PDFs reused after verification: ${plan['legacyPdfsReused'] ?? 0}\n'
+          'Old Restored_ folders and their source PDFs will NOT be deleted. '
+          'Approving this preview permits verified copies and SQLite relinking '
+          'to the original folder.\n'
+          'Conflicts: ${plan['conflicts']}'),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+        FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Apply restore')),
+      ],
+    )) ?? false;
+  }
+
   Future<void> _restoreBackup() => _run(() async {
     final source = await showModalBottomSheet<String>(
       context: context, showDragHandle: true,
@@ -222,6 +247,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
         file,
         mode: restoreMode,
         selection: selection,
+        confirmPlan: _confirmRestorePlan,
         confirm: (count) async {
           if (!mounted) return false;
           return await showDialog<bool>(
@@ -323,6 +349,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
     if (!mounted) return;
     try {
       final restored = await _tools.restoreNewestPortableBackup(
+        confirmPlan: _confirmRestorePlan,
         confirm: (count) async {
           if (!mounted) return false;
           return await showDialog<bool>(

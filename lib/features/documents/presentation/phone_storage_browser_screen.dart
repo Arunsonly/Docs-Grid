@@ -1,4 +1,8 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
+
+import '../../../core/widgets/storage_sort_controls.dart';
 
 import 'document_thumbnail.dart';
 
@@ -11,6 +15,8 @@ class PhoneStorageBrowserScreen extends StatefulWidget {
     this.onMovePdf,
     this.onRenamePdf,
     this.onSharePdf,
+    this.onToggleStarPdf,
+    this.starredUris = const <String>{},
     this.onTrashPdf,
     this.initialPath = '',
     this.embedded = false,
@@ -24,6 +30,8 @@ class PhoneStorageBrowserScreen extends StatefulWidget {
   final Future<bool> Function(String uri, String name)? onMovePdf;
   final Future<bool> Function(String uri, String name)? onRenamePdf;
   final Future<void> Function(String uri, String name)? onSharePdf;
+  final Future<void> Function(String uri, String name)? onToggleStarPdf;
+  final Set<String> starredUris;
   final Future<bool> Function(String uri, String name)? onTrashPdf;
   final String initialPath;
   final bool embedded;
@@ -38,19 +46,51 @@ class PhoneStorageBrowserScreen extends StatefulWidget {
 class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
   String? _selectedFolderPath;
   late final TextEditingController _searchController;
+  StorageSortField _sortField = StorageSortField.name;
+  bool _sortAscending = true;
+  int _sortRevision = 0;
 
   @override
   void initState() {
     super.initState();
     _searchController = TextEditingController();
+    unawaited(_restoreSortPreference());
+    // Initial paths from MediaStore/Recent may include the synthetic
+    // "Internal/" volume label; browser folder keys are root-relative.
     _selectedFolderPath =
-        widget.initialPath.isEmpty ? null : _normalizePath(widget.initialPath);
+        widget.initialPath.isEmpty ? null : _rootRelativePath(widget.initialPath);
   }
 
   @override
   void dispose() {
     _searchController.dispose();
     super.dispose();
+  }
+
+  Future<void> _restoreSortPreference() async {
+    final revision = _sortRevision;
+    final saved = await StorageSortPreference.load(StorageSortPreference.phoneKey);
+    if (!mounted || _sortRevision != revision || saved == null) return;
+    setState(() {
+      _sortField = saved.field;
+      _sortAscending = saved.ascending;
+    });
+  }
+
+  void _changeSort({StorageSortField? field, bool? ascending}) {
+    _sortRevision++;
+    setState(() {
+      if (field != null) _sortField = field;
+      if (ascending != null) _sortAscending = ascending;
+    });
+    unawaited(StorageSortPreference.save(
+      StorageSortPreference.phoneKey,
+      field: _sortField,
+      ascending: _sortAscending,
+      explicit: true,
+    ).catchError((Object _) {
+      // User's immediate in-memory selection still works if OS storage fails.
+    }));
   }
 
   String _normalizePath(String value) {
@@ -97,6 +137,13 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
   String _normalizedDirectoryPath(Map<String, Object?> entry) {
     final rawValue = entry['path'];
     if (rawValue is! String) return '';
+    // "Internal" is the virtual folder for PDFs at the volume root.
+    // A pending Recycle Bin placeholder still needs to appear when the
+    // root's last PDF has been deleted; otherwise path normalization hides it.
+    if (entry['isPending'] == true &&
+        _normalizePath(rawValue).toLowerCase() == 'internal') {
+      return 'Internal';
+    }
     return _rootRelativePath(rawValue);
   }
 
@@ -117,14 +164,45 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
   List<Map<String, Object?>> get _pdfs =>
       widget.entries.where(_isPdfFile).toList(growable: false);
 
+  DateTime? _modifiedAt(Map<String, Object?> entry) {
+    final value = entry['lastModified'];
+    if (value is num && value > 0) {
+      return DateTime.fromMillisecondsSinceEpoch(value.toInt());
+    }
+    if (value is String) return DateTime.tryParse(value);
+    if (value is DateTime) return value;
+    return null;
+  }
+
+  int _comparePdfs(Map<String, Object?> a, Map<String, Object?> b) {
+    final result = compareStorageItems(
+      nameA: a['name'] as String,
+      nameB: b['name'] as String,
+      dateA: _modifiedAt(a),
+      dateB: _modifiedAt(b),
+      field: _sortField,
+      ascending: _sortAscending,
+    );
+    if (result != 0) return result;
+    return (a['uri'] as String).compareTo(b['uri'] as String);
+  }
+
   Map<String, List<Map<String, Object?>>> get _directPdfFolders {
     final grouped = <String, List<Map<String, Object?>>>{};
+    // Cache directory dates once. Calculating them during every sort
+    // comparison would turn large libraries into quadratic work.
+    final lastModifiedByFolder = <String, DateTime>{};
     for (final pdf in _pdfs) {
       final rawPath = _normalizedFolderPath(pdf);
       // Files directly under the storage root belong in a virtual Internal
       // folder instead of being silently omitted.
       final path = rawPath.isEmpty ? 'Internal' : rawPath;
       (grouped[path] ??= <Map<String, Object?>>[]).add(pdf);
+      final date = _modifiedAt(pdf);
+      final previous = lastModifiedByFolder[path];
+      if (date != null && (previous == null || date.isAfter(previous))) {
+        lastModifiedByFolder[path] = date;
+      }
     }
     for (final entry in widget.entries) {
       if (entry['isDirectory'] != true ||
@@ -137,16 +215,26 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
       final count = (entry['pdfCount'] as num?)?.toInt() ?? 0;
       if (count > 0 || entry['isPending'] == true) {
         grouped.putIfAbsent(path, () => <Map<String, Object?>>[]);
+        final directoryDate = _modifiedAt(entry);
+        final previous = lastModifiedByFolder[path];
+        if (directoryDate != null &&
+            (previous == null || directoryDate.isAfter(previous))) {
+          lastModifiedByFolder[path] = directoryDate;
+        }
       }
     }
     final sorted = grouped.keys.toList()
-      ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+      ..sort((a, b) => compareStorageItems(
+            nameA: a,
+            nameB: b,
+            dateA: lastModifiedByFolder[a],
+            dateB: lastModifiedByFolder[b],
+            field: _sortField,
+            ascending: _sortAscending,
+          ));
     return {
       for (final path in sorted)
-        path: grouped[path]!
-          ..sort((a, b) => (a['name'] as String)
-              .toLowerCase()
-              .compareTo((b['name'] as String).toLowerCase())),
+        path: grouped[path]!..sort(_comparePdfs),
     };
   }
 
@@ -207,6 +295,10 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
       sourceChanged = await widget.onRenamePdf?.call(uri, name) ?? false;
     } else if (action == 'share') {
       await widget.onSharePdf?.call(uri, name);
+    } else if (action == 'favorite') {
+      await widget.onToggleStarPdf?.call(uri, name);
+    } else if (action == 'location') {
+      await _showFileLocation(entry);
     } else if (action == 'trash') {
       sourceChanged = await widget.onTrashPdf?.call(uri, name) ?? false;
     }
@@ -219,31 +311,73 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
     }
   }
 
+  Future<void> _showFileLocation(Map<String, Object?> entry) async {
+    final folderPath = _normalizedFolderPath(entry);
+    final original = (entry['folderPath'] ?? entry['path'] ?? '').toString();
+    final external = _normalizePath(original).startsWith('External storage');
+    final display = external
+        ? _normalizePath(original)
+        : folderPath.isEmpty ? widget.rootName : _displayPath(folderPath);
+    final openFolder = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('File Location'),
+        content: SelectableText(display),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Close'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Open folder'),
+          ),
+        ],
+      ),
+    );
+    if (openFolder == true && mounted) {
+      setState(() => _selectedFolderPath =
+          folderPath.isEmpty ? 'Internal' : folderPath);
+    }
+  }
+
   Widget _buildSearchField() {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
-      child: TextField(
-        controller: _searchController,
-        onChanged: (_) => setState(() {}),
-        decoration: InputDecoration(
-          hintText: 'Search phone folders or PDF names',
-          prefixIcon: const Icon(Icons.search),
-          suffixIcon: _searchController.text.isEmpty
-              ? null
-              : IconButton(
-                  tooltip: 'Clear search',
-                  onPressed: () {
-                    _searchController.clear();
-                    setState(() {});
-                  },
-                  icon: const Icon(Icons.close),
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+      child: Row(
+        children: [
+          Expanded(
+            child: TextField(
+              controller: _searchController,
+              onChanged: (_) => setState(() {}),
+              decoration: InputDecoration(
+                hintText: 'Search phone folders or PDF names',
+                prefixIcon: const Icon(Icons.search),
+                suffixIcon: _searchController.text.isEmpty
+                    ? null
+                    : IconButton(
+                        tooltip: 'Clear search',
+                        onPressed: () {
+                          _searchController.clear();
+                          setState(() {});
+                        },
+                        icon: const Icon(Icons.close),
+                      ),
+                filled: true,
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(18),
+                  borderSide: BorderSide.none,
                 ),
-          filled: true,
-          border: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(18),
-            borderSide: BorderSide.none,
+              ),
+            ),
           ),
-        ),
+          StorageSortControls(
+            field: _sortField,
+            ascending: _sortAscending,
+            onFieldChanged: (field) => _changeSort(field: field),
+            onAscendingChanged: (value) => _changeSort(ascending: value),
+          ),
+        ],
       ),
     );
   }
@@ -256,6 +390,7 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
           (sum, file) => sum + ((file['sizeBytes'] as num?)?.toInt() ?? 0),
         );
     final count = (directory?['pdfCount'] as num?)?.toInt() ?? files.length;
+    final inRecycleBin = (directory?['trashPdfCount'] as num?)?.toInt() ?? 0;
     return ListTile(
       key: ValueKey('phone-folder-$path'),
       leading: const Icon(Icons.folder_outlined),
@@ -264,7 +399,9 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
       ),
-      subtitle: Text('$count PDFs · ${_formatSize(bytes)}'),
+      subtitle: Text(inRecycleBin == 0
+          ? '$count PDFs · ${_formatSize(bytes)}'
+          : '$count PDFs · $inRecycleBin in Recycle Bin'),
       onTap: () => setState(() => _selectedFolderPath = path),
       trailing: PopupMenuButton<String>(
         tooltip: 'Folder details and actions',
@@ -328,17 +465,21 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
       trailing: PopupMenuButton<String>(
         onSelected: (action) => _runPdfAction(action, entry),
         itemBuilder: (_) => [
-          if (widget.onMovePdf != null)
-            const PopupMenuItem(value: 'move', child: Text('Move to Grid')),
+          if (widget.onSharePdf != null)
+            const PopupMenuItem(value: 'share', child: Text('Share PDF')),
+          if (widget.onToggleStarPdf != null)
+            PopupMenuItem(
+              value: 'favorite',
+              child: Text(widget.starredUris.contains(uri)
+                  ? 'Remove from Star' : 'Add to Star'),
+            ),
           if (widget.onRenamePdf != null)
             const PopupMenuItem(value: 'rename', child: Text('Rename')),
-          if (widget.onSharePdf != null)
-            const PopupMenuItem(value: 'share', child: Text('Share')),
+          if (widget.onMovePdf != null)
+            const PopupMenuItem(value: 'move', child: Text('Move to Grid')),
           if (widget.onTrashPdf != null)
-            const PopupMenuItem(
-              value: 'trash',
-              child: Text('Move to Recycle Bin'),
-            ),
+            const PopupMenuItem(value: 'trash', child: Text('Delete')),
+          const PopupMenuItem(value: 'location', child: Text('File Location')),
         ],
       ),
       onTap: () => widget.onOpenPdf(
@@ -367,7 +508,7 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
       return matchesQuery &&
           (selectedPath == null ||
               (folderPath.isEmpty ? 'Internal' : folderPath) == selectedPath);
-    }).toList(growable: false);
+    }).toList(growable: false)..sort(_comparePdfs);
 
     final isSearching = query.isNotEmpty;
     var visiblePdfCount = matchingPdfs.length;

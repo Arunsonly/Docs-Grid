@@ -14,6 +14,7 @@ import '../../../core/storage/storage_location_service.dart';
 import '../../../core/storage/portable_snapshot_events.dart';
 import '../../../core/storage/storage_migration_gate.dart';
 import '../../folders/data/folder_repository.dart';
+import 'phone_trash_origin.dart';
 import '../../reminders/data/reminder_notifications.dart';
 
 class DocumentRecord {
@@ -23,6 +24,7 @@ class DocumentRecord {
     required this.storagePath,
     required this.sizeBytes,
     required this.createdAt,
+    this.updatedAt,
     required this.isFavorite,
     this.categoryId,
     this.categoryName,
@@ -38,6 +40,7 @@ class DocumentRecord {
   final String storagePath;
   final int sizeBytes;
   final DateTime createdAt;
+  final DateTime? updatedAt;
   final bool isFavorite;
   final String? categoryId;
   final String? categoryName;
@@ -65,6 +68,9 @@ class DocumentRecord {
       storagePath: (row['storage_uri'] as String?) ?? '',
       sizeBytes: (row['size_bytes'] as int?) ?? 0,
       createdAt: DateTime.parse(row['created_at'] as String),
+      updatedAt: row['updated_at'] is String
+          ? DateTime.tryParse(row['updated_at'] as String)
+          : null,
       isFavorite: row['is_favorite'] == null
           ? metadata['favorite'] == true
           : row['is_favorite'] == 1,
@@ -178,10 +184,16 @@ PdfImportDestination resolvePdfImportDestination({
 }
 
 class DocumentRepository {
-  DocumentRepository({AppDatabase? database})
-      : _database = database ?? AppDatabase.instance;
+  DocumentRepository({
+    AppDatabase? database,
+    Future<List<Map<String, String>>> Function()? phoneRootsForTesting,
+  }) : _database = database ?? AppDatabase.instance,
+       _phoneRootsForTesting = phoneRootsForTesting;
 
   final AppDatabase _database;
+  // Native Android root discovery is unavailable on desktop test runners.
+  // Tests may inject grants without weakening production permission checks.
+  final Future<List<Map<String, String>>> Function()? _phoneRootsForTesting;
   static const _uuid = Uuid();
   DocumentLibrarySummary? _summaryCache;
   int? _summaryCacheRevision;
@@ -448,8 +460,10 @@ class DocumentRepository {
       if (targetFolderId == null) {
         throw StateError('A destination folder is required.');
       }
-      destinationUri = rows.first['storage_uri_or_relative_path'] as String?;
-      destinationUri ??= await FolderRepository().ensurePhysicalStorageUri(targetFolderId);
+      // Always validate the active folder mapping, even when SQLite already
+      // contains a URI: an old ZIP restore may have left Restored_... here.
+      destinationUri = await FolderRepository(database: _database)
+          .ensurePhysicalStorageUri(targetFolderId);
     }
 
     if (Platform.isAndroid && destinationUri == null) {
@@ -879,8 +893,8 @@ class DocumentRepository {
         );
         destinationUri = folderRows.isEmpty
             ? null
-            : folderRows.first['storage_uri_or_relative_path'] as String?;
-        destinationUri ??= await FolderRepository().ensurePhysicalStorageUri(folderId);
+            : await FolderRepository(database: _database)
+                .ensurePhysicalStorageUri(folderId);
       }
 
       if (Platform.isAndroid && destinationUri == null) {
@@ -1192,7 +1206,7 @@ class DocumentRepository {
     String? relativePath;
     final folderUri = targetFolderId == null
         ? null
-        : await FolderRepository().ensurePhysicalStorageUri(targetFolderId);
+        : await FolderRepository(database: _database).ensurePhysicalStorageUri(targetFolderId);
     final destinationUri = targetFolderUri ?? folderUri ??
         (Platform.isAndroid ? portableLocations['documentsUri'] : selected?['uri']) ??
         selected?['uri'];
@@ -1325,7 +1339,15 @@ class DocumentRepository {
   Future<bool> moveExternalPdfToTrash({
     required String sourceUri,
     required String displayName,
+    required PhoneTrashOrigin origin,
   }) async {
+    if (origin.sourceUri != sourceUri ||
+        !origin.hasWritableOrigin ||
+        !origin.localSourceMatchesRoot()) {
+      throw StateError('Cannot preserve the original Phone folder for Restore.');
+    }
+    // Fail closed if any original directory segment is unsafe.
+    origin.relativeFolders;
     final storage = StorageLocationService.instance;
     final temp = await getTemporaryDirectory();
     final staged = File(p.join(
@@ -1355,6 +1377,24 @@ class DocumentRepository {
         throw StateError('The archived PDF record could not be found; original kept.');
       }
       final archivedDocument = DocumentRecord.fromMap(rows.first);
+      // Save the real Phone folder BEFORE deleting the original.
+      final rawMetadata = rows.first['metadata_json'];
+      Map<String, Object?> metadata = <String, Object?>{};
+      if (rawMetadata is String && rawMetadata.isNotEmpty) {
+        try {
+          final decoded = jsonDecode(rawMetadata);
+          if (decoded is Map) metadata = Map<String, Object?>.from(decoded);
+        } catch (_) {}
+      }
+      metadata[PhoneTrashOrigin.metadataKey] = origin.toJson();
+      final saved = await db.update(
+        'documents', {'metadata_json': jsonEncode(metadata)},
+        where: 'id = ? AND deleted_at IS NULL',
+        whereArgs: [archivedDocument.id],
+      );
+      if (saved != 1) {
+        throw StateError('Original Phone folder metadata could not be saved; PDF kept.');
+      }
       // Delete the Phone original only after the Grid copy is verified. If
       // Android denies deletion, keep the imported copy active and recoverable;
       // do not leave a failed action half-hidden in Recycle Bin.
@@ -1864,6 +1904,53 @@ class DocumentRepository {
     return rows.map(DocumentRecord.fromMap).toList();
   }
 
+
+  /// Empty Phone folders containing only recycled PDFs stay visible in the
+  /// Phone browser until every archived PDF is restored/permanently deleted.
+  /// These are *directory placeholders*, not phantom PDF copies or Grid
+  /// folders; the browser presents an empty folder with a Recycle Bin count.
+  Future<List<Map<String, Object?>>> phoneTrashFolderEntries() async {
+    final db = await _database.database;
+    final rows = await db.query(
+      'documents',
+      columns: ['metadata_json'],
+      where: 'source = ? AND deleted_at IS NOT NULL',
+      whereArgs: ['phone_storage_recycle_bin'],
+    );
+    final counts = <String, int>{};
+    for (final row in rows) {
+      try {
+        final raw = row['metadata_json'];
+        final decoded = raw is String ? jsonDecode(raw) : null;
+        if (decoded is! Map) continue;
+        final origin = PhoneTrashOrigin.fromMetadata(
+            Map<String, Object?>.from(decoded));
+        if (origin == null) continue;
+        origin.relativeFolders; // Refuse unsafe older metadata.
+        final folder = origin.folderPath.replaceAll('\\', '/');
+        counts[folder] = (counts[folder] ?? 0) + 1;
+      } catch (_) {
+        // Never invent folder locations when legacy metadata is incomplete.
+      }
+    }
+    return [
+      for (final entry in counts.entries)
+        <String, Object?>{
+          'name': entry.key.split('/').last,
+          'uri': '',
+          'isDirectory': true,
+          'isPending': true,
+          'path': entry.key,
+          'folderPath': entry.key.contains('/')
+              ? entry.key.substring(0, entry.key.lastIndexOf('/'))
+              : '',
+          'pdfCount': 0,
+          'sizeBytes': 0,
+          'trashPdfCount': entry.value,
+        },
+    ];
+  }
+
   /// Counts only individually recycled PDFs. Folder-grouped PDFs are counted
   /// by their visible folder root and are not duplicated in the PDF section.
   Future<int> trashCount() async {
@@ -1876,6 +1963,32 @@ class DocumentRepository {
   Future<void> restoreFromTrash(DocumentRecord document) async {
     await StorageMigrationGate.waitUntilReady();
     final db = await _database.database;
+    final matching = await db.query(
+      'documents',
+      columns: ['source', 'metadata_json', 'deleted_at'],
+      where: 'id = ? AND deleted_at IS NOT NULL',
+      whereArgs: [document.id],
+      limit: 1,
+    );
+    if (matching.isEmpty) throw StateError('PDF is no longer in the Recycle Bin.');
+    if (matching.single['source'] == 'phone_storage_recycle_bin') {
+      final raw = matching.single['metadata_json'];
+      Map<String, Object?> metadata = const <String, Object?>{};
+      try {
+        final decoded = raw is String ? jsonDecode(raw) : null;
+        if (decoded is Map) metadata = Map<String, Object?>.from(decoded);
+      } catch (_) {}
+      final origin = PhoneTrashOrigin.fromMetadata(metadata);
+      if (origin == null) {
+        // Old archives have no saved origin. Never silently return them to Grid.
+        throw StateError(
+          'This older Phone PDF has no saved original folder. '
+          'Its PDF remains safe in Recycle Bin; automatic restore is blocked.',
+        );
+      }
+      await _restorePhonePdfFromTrash(document, origin);
+      return;
+    }
     await db.transaction((txn) async {
       final rows = await txn.query(
         'documents',
@@ -1905,6 +2018,160 @@ class DocumentRepository {
       if (count == 0) throw StateError('PDF is no longer in the Recycle Bin.');
       await _recordHistory(txn, document.id, 'restored', {});
     });
+    PortableSnapshotEvents.notifyDataChanged();
+    await _reconcileReminders();
+  }
+
+
+  /// Restore Phone PDFs into the original, possibly empty, external folder.
+  /// Never activate their temporary Grid archive in the library.
+  /// Any failure before database commit preserves the Recycle Bin entry.
+  Future<void> _restorePhonePdfFromTrash(
+    DocumentRecord document, PhoneTrashOrigin origin,
+  ) async {
+    if (!origin.hasWritableOrigin || !origin.localSourceMatchesRoot()) {
+      throw StateError('The saved original Phone location is invalid.');
+    }
+    final segments = origin.relativeFolders;
+    final storage = StorageLocationService.instance;
+    final currentRoots = await (_phoneRootsForTesting?.call() ??
+        storage.accessibleStorageRoots());
+    final currentRoot = PhoneTrashOrigin.selectGrantedRoot(
+      sourceUri: origin.sourceUri,
+      folderPath: origin.folderPath,
+      roots: currentRoots,
+      volumeName: origin.volumeName,
+    );
+    if (currentRoot == null || currentRoot != origin.rootUri) {
+      throw StateError(
+        'Original Phone storage is unavailable or permission was revoked. '
+        'PDF kept safely in Recycle Bin.',
+      );
+    }
+
+    final db = await _database.database;
+    final rows = await db.query(
+      'documents',
+      columns: ['id', 'sha256', 'storage_uri', 'deleted_at', 'source'],
+      where: 'id = ? AND deleted_at IS NOT NULL',
+      whereArgs: [document.id],
+      limit: 1,
+    );
+    if (rows.length != 1 ||
+        rows.single['source'] != 'phone_storage_recycle_bin') {
+      throw StateError('This PDF is no longer a Phone Recycle Bin item.');
+    }
+    final expectedDigest = rows.single['sha256'] as String?;
+    final archivedUri = rows.single['storage_uri'] as String?;
+    if (expectedDigest == null || expectedDigest.isEmpty ||
+        archivedUri == null || archivedUri.isEmpty) {
+      throw StateError('Archived PDF verification metadata is missing.');
+    }
+    if (await storage.sha256Pdf(archivedUri) != expectedDigest) {
+      throw StateError('Recycle Bin PDF failed SHA-256 verification.');
+    }
+
+    var parentUri = currentRoot;
+    for (final segment in segments) {
+      try {
+        parentUri = await storage.findChildUri(
+          parentUri: parentUri, name: segment,
+        );
+      } catch (error) {
+        if (!StorageLocationService.isNotFoundError(error)) rethrow;
+        parentUri = await storage.createDirectory(
+          parentUri: parentUri, name: segment,
+        );
+      }
+    }
+
+    final safeName = _safePdfName(origin.displayName);
+    final baseName = p.basenameWithoutExtension(safeName);
+    final staged = File(p.join(
+      (await getTemporaryDirectory()).path,
+      'docsgrid_phone_restore_${DateTime.now().microsecondsSinceEpoch}.pdf',
+    ));
+    String? restoredUri;
+    var publishedNewFile = false;
+    try {
+      await storage.copyPdfToPath(
+        sourceUri: archivedUri, destinationPath: staged.path,
+      );
+      if ((await sha256.bind(staged.openRead()).first).toString() !=
+          expectedDigest) {
+        throw StateError('Phone restore staging checksum mismatch.');
+      }
+      // Same-name PDFs are never overwritten. Identical existing bytes count
+      // as restored; different bytes receive a safe, unique filename.
+      for (var suffix = 0; suffix < 100; suffix++) {
+        final candidate = suffix == 0
+            ? safeName : '${baseName}_${suffix + 1}.pdf';
+        try {
+          final existing = await storage.findChildUri(
+            parentUri: parentUri, name: candidate,
+          );
+          if (await storage.sha256Pdf(existing) == expectedDigest) {
+            restoredUri = existing;
+            break;
+          }
+          continue;
+        } catch (error) {
+          if (!StorageLocationService.isNotFoundError(error)) rethrow;
+        }
+        final copied = await storage.copyFileToStorage(
+          sourcePath: staged.path,
+          parentUri: parentUri,
+          name: candidate,
+          mimeType: 'application/pdf',
+        );
+        publishedNewFile = true;
+        restoredUri = copied;
+        if (await storage.sha256Pdf(copied) != expectedDigest) {
+          throw StateError('Original Phone folder restore checksum mismatch.');
+        }
+        break;
+      }
+      if (restoredUri == null) {
+        throw StateError('Could not safely restore the original Phone filename.');
+      }
+
+      await db.transaction((txn) async {
+        final existing = await txn.query(
+          'documents', columns: ['id'],
+          where: 'id = ? AND deleted_at IS NOT NULL AND source = ?',
+          whereArgs: [document.id, 'phone_storage_recycle_bin'],
+          limit: 1,
+        );
+        if (existing.isEmpty) {
+          throw StateError('This archived Phone PDF has already been restored.');
+        }
+        await _recordHistory(txn, document.id, 'restored_to_phone', {
+          'original_folder': origin.folderPath,
+          'restored_uri': restoredUri,
+        });
+        await txn.delete('reminders', where: 'document_id = ?',
+            whereArgs: [document.id]);
+        final deleted = await txn.delete(
+          'documents',
+          where: 'id = ? AND deleted_at IS NOT NULL',
+          whereArgs: [document.id],
+        );
+        if (deleted != 1) throw StateError('Could not finalize Phone restore.');
+      });
+    } catch (_) {
+      // Only roll back bytes created by this attempt. Never delete an
+      // existing matching Phone file due to a failed metadata transaction.
+      if (publishedNewFile && restoredUri != null) {
+        try { await storage.deletePdf(restoredUri); } catch (_) {}
+      }
+      rethrow;
+    } finally {
+      try { if (await staged.exists()) await staged.delete(); } catch (_) {}
+    }
+
+    // Recycle Bin entry has been removed only after a verified Phone restore.
+    // Deleting the obsolete Grid archive is best-effort post-commit cleanup.
+    try { await storage.deletePdf(archivedUri); } catch (_) {}
     PortableSnapshotEvents.notifyDataChanged();
     await _reconcileReminders();
   }

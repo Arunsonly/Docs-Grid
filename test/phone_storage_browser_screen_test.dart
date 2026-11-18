@@ -1,9 +1,13 @@
 import 'package:docs_grid/features/documents/presentation/document_thumbnail.dart';
 import 'package:docs_grid/features/documents/presentation/phone_storage_browser_screen.dart';
+import 'package:docs_grid/core/widgets/storage_sort_controls.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
+  setUp(() => SharedPreferences.setMockInitialValues({}));
+
   void setTestViewport(WidgetTester tester) {
     tester.view.physicalSize = const Size(800, 600);
     tester.view.devicePixelRatio = 1;
@@ -13,6 +17,112 @@ void main() {
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
   }
+
+  testWidgets('Phone search right-side sorting keeps search and orders PDFs by Name/Date',
+      (tester) async {
+    setTestViewport(tester);
+    final oldDate = DateTime(2026, 11, 10).millisecondsSinceEpoch;
+    final newDate = DateTime(2026, 11, 17).millisecondsSinceEpoch;
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: PhoneStorageBrowserScreen(
+          embedded: true,
+          rootName: 'Internal Storage',
+          entries: [
+            {
+              'name': 'Insurance',
+              'uri': '',
+              'path': 'Internal/Insurance',
+              'isDirectory': true,
+              'pdfCount': 2,
+            },
+            {
+              'name': 'Alpha.pdf', 'uri': 'content://a',
+              'path': 'Internal/Insurance',
+              'folderPath': 'Internal/Insurance',
+              'isDirectory': false, 'lastModified': newDate,
+            },
+            {
+              'name': 'Zulu.pdf', 'uri': 'content://z',
+              'path': 'Internal/Insurance',
+              'folderPath': 'Internal/Insurance',
+              'isDirectory': false, 'lastModified': oldDate,
+            },
+          ],
+          onOpenPdf: (_, __) async {},
+        ),
+      ),
+    ));
+    await tester.tap(find.byKey(const ValueKey('phone-folder-Insurance')));
+    await tester.pumpAndSettle();
+
+    double yOf(String title) => tester.getTopLeft(find.text(title)).dy;
+    expect(yOf('Alpha.pdf'), lessThan(yOf('Zulu.pdf')),
+        reason: 'Default Phone list retains existing Name ascending order.');
+
+    await tester.tap(find.byKey(const ValueKey('storage-sort-filter')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Date'));
+    await tester.pumpAndSettle();
+    expect(yOf('Zulu.pdf'), lessThan(yOf('Alpha.pdf')),
+        reason: 'Ascending Date puts older PDF first.');
+
+    await tester.tap(find.byKey(const ValueKey('storage-sort-direction')));
+    await tester.pumpAndSettle();
+    expect(yOf('Alpha.pdf'), lessThan(yOf('Zulu.pdf')),
+        reason: 'Descending Date puts newer PDF first.');
+
+    await tester.tap(find.byKey(const ValueKey('storage-sort-filter')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Name'));
+    await tester.pumpAndSettle();
+    expect(yOf('Zulu.pdf'), lessThan(yOf('Alpha.pdf')),
+        reason: 'Descending Name works without resetting arrow.');
+
+    await tester.enterText(find.byType(TextField), 'Zulu');
+    await tester.pumpAndSettle();
+    expect(find.text('Zulu.pdf'), findsOneWidget);
+    expect(find.text('Alpha.pdf'), findsNothing);
+    expect(find.byKey(const ValueKey('storage-sort-filter')), findsOneWidget);
+  });
+
+  testWidgets('Phone folder list sorts by most recently modified PDF in each folder',
+      (tester) async {
+    setTestViewport(tester);
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: PhoneStorageBrowserScreen(
+          embedded: true,
+          rootName: 'Internal Storage',
+          entries: [
+            {
+              'name': 'Alpha.pdf', 'uri': 'content://a',
+              'path': 'Internal/Alpha', 'folderPath': 'Internal/Alpha',
+              'isDirectory': false, 'lastModified': 1794904000000,
+            },
+            {
+              'name': 'Zulu.pdf', 'uri': 'content://z',
+              'path': 'Internal/Zulu', 'folderPath': 'Internal/Zulu',
+              'isDirectory': false, 'lastModified': 1700000000000,
+            },
+          ],
+          onOpenPdf: (_, __) async {},
+        ),
+      ),
+    ));
+    double yOf(String title) => tester.getTopLeft(find.text(title)).dy;
+    expect(yOf('Alpha'), lessThan(yOf('Zulu')));
+    await tester.tap(find.byKey(const ValueKey('storage-sort-filter')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Date'));
+    await tester.pumpAndSettle();
+    expect(yOf('Zulu'), lessThan(yOf('Alpha')));
+    await tester.tap(find.byKey(const ValueKey('storage-sort-direction')));
+    await tester.pumpAndSettle();
+    expect(yOf('Alpha'), lessThan(yOf('Zulu')));
+  });
+
+
   
     testWidgets('lists only folders with direct PDFs and opens that folder PDFs',
       (tester) async {
@@ -304,6 +414,8 @@ void main() {
     Future<bool> Function(String, String)? onRename,
     Future<bool> Function(String, String)? onTrash,
     Future<void> Function(String, String)? onShare,
+    Future<void> Function(String, String)? onStar,
+    Set<String> starred = const <String>{},
   }) async {
     setTestViewport(tester);
     await tester.pumpWidget(MaterialApp(
@@ -319,6 +431,8 @@ void main() {
                   onMovePdf: onMove,
                   onRenamePdf: onRename,
                   onSharePdf: onShare,
+                  onToggleStarPdf: onStar,
+                  starredUris: starred,
                   onTrashPdf: onTrash,
                 ),
               ),
@@ -343,6 +457,105 @@ void main() {
     await tester.tap(find.text(action).last);
     await tester.pumpAndSettle();
   }
+
+
+  testWidgets('Recent File Location resolves Internal volume prefix to PDF folder',
+      (tester) async {
+    setTestViewport(tester);
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: PhoneStorageBrowserScreen(
+          rootName: 'Internal Storage',
+          initialPath: 'Internal/Download',
+          embedded: true,
+          entries: const [
+            {
+              'name': 'Insurance.pdf',
+              'uri': 'content://media/external_primary/file/123',
+              'folderPath': 'Internal/Download',
+              'path': 'Internal/Download',
+              'isDirectory': false,
+            },
+          ],
+          onOpenPdf: (_, __) async {},
+        ),
+      ),
+    ));
+    expect(find.text('Insurance.pdf'), findsOneWidget);
+    expect(find.text('Download'), findsOneWidget);
+  });
+
+  testWidgets('Phone PDF menu has requested six options in the exact order',
+      (tester) async {
+    await openActionBrowser(tester,
+      onShare: (_, __) async {},
+      onStar: (_, __) async {},
+      onRename: (_, __) async => false,
+      onMove: (_, __) async => false,
+      onTrash: (_, __) async => false,
+    );
+    await tester.tap(find.byType(PopupMenuButton<String>));
+    await tester.pumpAndSettle();
+    final expected = [
+      'Share PDF', 'Add to Star', 'Rename',
+      'Move to Grid', 'Delete', 'File Location',
+    ];
+    for (var index = 0; index < expected.length - 1; index++) {
+      expect(tester.getTopLeft(find.text(expected[index])).dy,
+          lessThan(tester.getTopLeft(find.text(expected[index + 1])).dy));
+    }
+    expect(find.byType(PopupMenuItem<String>), findsNWidgets(6));
+  });
+
+  testWidgets('Phone Star invokes callback and leaves source file browser open',
+      (tester) async {
+    var stars = 0;
+    await openActionBrowser(tester,
+      onStar: (uri, name) async {
+        expect(uri, 'content://document/policy');
+        expect(name, 'Policy.pdf');
+        stars++;
+      },
+      starred: const <String>{},
+    );
+    await selectAction(tester, 'Add to Star');
+    expect(stars, 1);
+    expect(find.text('Policy.pdf'), findsOneWidget);
+    expect(find.text('Personal Documents'), findsOneWidget);
+  });
+
+  testWidgets('File Location shows existing folder and can open it safely',
+      (tester) async {
+    await openActionBrowser(tester);
+    await selectAction(tester, 'File Location');
+    expect(find.text('File Location'), findsOneWidget);
+    expect(find.text('Phone Storage/Personal Documents'), findsOneWidget);
+    await tester.tap(find.text('Open folder'));
+    await tester.pumpAndSettle();
+    expect(find.text('Policy.pdf'), findsOneWidget);
+  });
+
+  testWidgets('saved Phone Date descending is restored when browser reopens',
+      (tester) async {
+    // Seed a persisted setting synchronously. Awaiting SharedPreferences.save
+    // before the first pump deadlocks under testWidgets' fake async clock.
+    SharedPreferences.setMockInitialValues({
+      StorageSortPreference.phoneKey:
+          '{"field":"date","ascending":false,"explicit":true}',
+    });
+    await openActionBrowser(tester);
+    await tester.pumpAndSettle();
+    expect(find.byIcon(Icons.arrow_downward), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('storage-sort-filter')));
+    await tester.pumpAndSettle();
+    final dateOption = find.ancestor(
+      of: find.text('Date'),
+      matching: find.byType(PopupMenuItem<StorageSortField>),
+    );
+    expect(dateOption, findsOneWidget);
+    expect(find.descendant(of: dateOption, matching: find.byIcon(Icons.check)),
+        findsOneWidget);
+  });
 
   testWidgets('successful Move closes the stale Phone Storage snapshot', (tester) async {
     await openActionBrowser(tester, onMove: (_, __) async => true);
@@ -374,15 +587,73 @@ void main() {
 
   testWidgets('successful Recycle Bin move closes the stale browser', (tester) async {
     await openActionBrowser(tester, onTrash: (_, __) async => true);
-    await selectAction(tester, 'Move to Recycle Bin');
+    await selectAction(tester, 'Delete');
     expect(find.text('Open browser'), findsOneWidget);
     expect(find.text('Phone Storage'), findsNothing);
   });
 
   testWidgets('Share does not close the selected folder browser', (tester) async {
     await openActionBrowser(tester, onShare: (_, __) async {});
-    await selectAction(tester, 'Share');
+    await selectAction(tester, 'Share PDF');
     expect(find.text('Personal Documents'), findsOneWidget);
     expect(find.text('Policy.pdf'), findsOneWidget);
   });
+
+  testWidgets('Internal root folder stays visible when its only PDF is recycled',
+      (tester) async {
+    setTestViewport(tester);
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(body: PhoneStorageBrowserScreen(
+        rootName: 'Internal Storage',
+        entries: const <Map<String, Object?>>[
+          {
+            'name': 'Internal',
+            'uri': '',
+            'folderPath': '',
+            'path': 'Internal',
+            'isDirectory': true,
+            'pdfCount': 0,
+            'isPending': true,
+            'trashPdfCount': 1,
+          },
+        ],
+        embedded: true,
+        onOpenPdf: (_, __) async {},
+      )),
+    ));
+    expect(find.text('Internal'), findsOneWidget);
+    expect(find.text('0 PDFs · 1 in Recycle Bin'), findsOneWidget);
+  });
+
+  testWidgets('Phone folder stays visible when its last PDF is in Recycle Bin',
+      (tester) async {
+    setTestViewport(tester);
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(body: PhoneStorageBrowserScreen(
+        rootName: 'Internal Storage',
+        entries: const <Map<String, Object?>>[
+          {
+            'name': 'My Policies',
+            'uri': '',
+            'folderPath': 'Internal',
+            'path': 'Internal/My Policies',
+            'isDirectory': true,
+            'pdfCount': 0,
+            'isPending': true,
+            'trashPdfCount': 2,
+            'sizeBytes': 0,
+          },
+        ],
+        embedded: true,
+        onOpenPdf: (_, __) async {},
+      )),
+    ));
+    expect(find.text('My Policies'), findsOneWidget);
+    expect(find.text('0 PDFs · 2 in Recycle Bin'), findsOneWidget);
+    await tester.tap(find.text('My Policies'));
+    await tester.pumpAndSettle();
+    expect(find.text('0 PDFs'), findsOneWidget);
+    expect(find.byType(DocumentThumbnail), findsNothing);
+  });
+
 }

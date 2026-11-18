@@ -1,4 +1,8 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
+
+import '../../../core/widgets/storage_sort_controls.dart';
 
 import '../../documents/data/document_repository.dart';
 import '../../documents/presentation/document_thumbnail.dart';
@@ -28,6 +32,11 @@ class _FoldersScreenState extends State<FoldersScreen> {
   final Set<String> _selectedFolderIds = <String>{};
   final TextEditingController _searchController = TextEditingController();
   String _searchQuery = '';
+  StorageSortField _sortField = StorageSortField.name;
+  bool _sortAscending = true;
+  // Respect the existing user-defined folder order until sorting is chosen.
+  bool _explicitSort = false;
+  int _sortRevision = 0;
   bool _isSelectingFolders = false;
   bool _isReorderingFolders = false;
   List<Folder> _draftFolderOrder = <Folder>[];
@@ -38,12 +47,45 @@ class _FoldersScreenState extends State<FoldersScreen> {
   void initState() {
     super.initState();
     _load();
+    unawaited(_restoreSortPreference());
   }
 
   @override
   void dispose() {
     _searchController.dispose();
     super.dispose();
+  }
+
+  Future<void> _restoreSortPreference() async {
+    final revision = _sortRevision;
+    final saved = await StorageSortPreference.load(StorageSortPreference.gridKey);
+    if (!mounted || revision != _sortRevision || saved == null) return;
+    setState(() {
+      _sortField = saved.field;
+      _sortAscending = saved.ascending;
+      _explicitSort = saved.explicit;
+    });
+  }
+
+  void _changeSort({StorageSortField? field, bool? ascending}) {
+    _sortRevision++;
+    setState(() {
+      if (field != null) _sortField = field;
+      if (ascending != null) _sortAscending = ascending;
+      _explicitSort = true;
+    });
+    _saveSortPreference();
+  }
+
+  void _saveSortPreference() {
+    unawaited(StorageSortPreference.save(
+      StorageSortPreference.gridKey,
+      field: _sortField,
+      ascending: _sortAscending,
+      explicit: _explicitSort,
+    ).catchError((Object _) {
+      // Only optional UI preference persistence failed; list remains usable.
+    }));
   }
 
   void _load() {
@@ -536,8 +578,14 @@ class _FoldersScreenState extends State<FoldersScreen> {
       _searchQuery = '';
       _documentsFuture = _documents.listInFolder(_currentFolderId);
       _isReorderingFolders = true;
+      // Custom drag order supersedes any user-selected alphabetic/date order.
+      _sortRevision++;
+      _explicitSort = false;
+      _sortField = StorageSortField.name;
+      _sortAscending = true;
       _draftFolderOrder = List<Folder>.from(visibleFolders);
     });
+    _saveSortPreference();
   }
 
   Future<void> _moveFolders(List<Folder> selected) async {
@@ -894,34 +942,47 @@ class _FoldersScreenState extends State<FoldersScreen> {
           ),
         ),
         Padding(
-          padding: EdgeInsets.fromLTRB(16, keyboardVisible ? 2 : 8, 16, keyboardVisible ? 2 : 4),
-          child: TextField(
-            controller: _searchController,
-            onChanged: (value) => setState(() {
-              _searchQuery = value;
-              final query = value.trim();
-              _documentsFuture = query.isEmpty
-                  ? _documents.listInFolder(_currentFolderId)
-                  : _documents.list(query: query);
-            }),
-            decoration: InputDecoration(
-              hintText: 'Search folders or PDF names',
-              prefixIcon: const Icon(Icons.search),
-              suffixIcon: _searchQuery.isEmpty ? null : IconButton(
-                tooltip: 'Clear search',
-                icon: const Icon(Icons.close),
-                onPressed: () => setState(() {
-                  _searchController.clear();
-                  _searchQuery = '';
-                  _documentsFuture = _documents.listInFolder(_currentFolderId);
-                }),
+          padding: EdgeInsets.fromLTRB(12, keyboardVisible ? 2 : 8, 12, keyboardVisible ? 2 : 4),
+          child: Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _searchController,
+                  onChanged: (value) => setState(() {
+                    _searchQuery = value;
+                    final query = value.trim();
+                    _documentsFuture = query.isEmpty
+                        ? _documents.listInFolder(_currentFolderId)
+                        : _documents.list(query: query);
+                  }),
+                  decoration: InputDecoration(
+                    hintText: 'Search folders or PDF names',
+                    prefixIcon: const Icon(Icons.search),
+                    suffixIcon: _searchQuery.isEmpty ? null : IconButton(
+                      tooltip: 'Clear search',
+                      icon: const Icon(Icons.close),
+                      onPressed: () => setState(() {
+                        _searchController.clear();
+                        _searchQuery = '';
+                        _documentsFuture = _documents.listInFolder(_currentFolderId);
+                      }),
+                    ),
+                    filled: true,
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(18),
+                      borderSide: BorderSide.none,
+                    ),
+                  ),
+                ),
               ),
-              filled: true,
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(18),
-                borderSide: BorderSide.none,
+              StorageSortControls(
+                field: _sortField,
+                ascending: _sortAscending,
+                enabled: !_isReorderingFolders,
+                onFieldChanged: (field) => _changeSort(field: field),
+                onAscendingChanged: (value) => _changeSort(ascending: value),
               ),
-            ),
+            ],
           ),
         ),
         if (_isSelectingFolders && !keyboardVisible) _buildFolderSelectionToolbar(),
@@ -1002,10 +1063,28 @@ class _FoldersScreenState extends State<FoldersScreen> {
                   final folderSource = _isReorderingFolders ? _draftFolderOrder : folders;
                   final displayedFolders = folderSource
                       .where((folder) => query.isEmpty || folder.name.toLowerCase().contains(query))
-                      .toList(growable: false);
+                      .toList(growable: true);
                   final displayedDocuments = documents
                       .where((document) => query.isEmpty || document.name.toLowerCase().contains(query))
-                      .toList(growable: false);
+                      .toList(growable: true);
+                  if (_explicitSort && !_isReorderingFolders) {
+                    displayedFolders.sort((a, b) => compareStorageItems(
+                      nameA: a.name,
+                      nameB: b.name,
+                      dateA: a.updatedAt,
+                      dateB: b.updatedAt,
+                      field: _sortField,
+                      ascending: _sortAscending,
+                    ));
+                    displayedDocuments.sort((a, b) => compareStorageItems(
+                      nameA: a.name,
+                      nameB: b.name,
+                      dateA: a.updatedAt ?? a.createdAt,
+                      dateB: b.updatedAt ?? b.createdAt,
+                      field: _sortField,
+                      ascending: _sortAscending,
+                    ));
+                  }
                   if (folders.isEmpty && documents.isEmpty && query.isEmpty) {
                     return Center(
                       child: Padding(

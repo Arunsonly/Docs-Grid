@@ -7,6 +7,9 @@ import 'package:open_filex/open_filex.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../data/document_repository.dart';
+import '../data/phone_recent_history.dart';
+import '../data/phone_star_repository.dart';
+import '../data/phone_trash_origin.dart';
 import '../../../core/storage/storage_location_service.dart';
 import '../../categories/data/category_repository.dart';
 import '../../folders/data/folder_repository.dart';
@@ -55,6 +58,8 @@ class _DocumentsScreenState extends State<DocumentsScreen>
   List<DocumentRecord> _gridRecent = [];
   bool _showStarredRecent = false;
   List<DocumentRecord> _starredRecent = [];
+  List<Map<String, Object?>> _phoneStarred = [];
+  final Set<String> _phoneStarredUris = <String>{};
   String _recentFilter = 'grid';
   List<Map<String, Object?>> _phoneEntries = [];
   final Set<String> _selectedIds = <String>{};
@@ -70,6 +75,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    unawaited(_loadPhoneStarred());
     _storageChangesSubscription =
         StorageLocationService.instance.storageChanges.listen(
       (_) => _schedulePhoneStorageRefresh(),
@@ -423,6 +429,83 @@ class _DocumentsScreenState extends State<DocumentsScreen>
     }
   }
 
+
+  /// Store the real, granted Phone root before deleting the file. A
+  /// MediaStore item URI does not identify a writable parent directory.
+  Future<PhoneTrashOrigin> _phoneTrashOriginFor(
+      String uri, String name) async {
+    final matching = <Map<String, Object?>>[
+      ..._phoneEntries.where((entry) =>
+          entry['isDirectory'] != true && entry['uri'] == uri),
+      ..._phoneRecent.where((entry) => entry['uri'] == uri),
+    ];
+    if (matching.isEmpty) {
+      throw StateError('Original Phone folder is unknown. PDF was not deleted.');
+    }
+    final entry = matching.first;
+    final parsed = Uri.tryParse(uri);
+    final volume = entry['volumeName'] as String? ??
+        ((parsed?.authority == 'media' &&
+                parsed!.pathSegments.isNotEmpty)
+            ? parsed.pathSegments.first
+            : null);
+    final roots = await StorageLocationService.instance.accessibleStorageRoots();
+    final originalFolder = (entry['folderPath'] ?? entry['path']) as String?;
+    final root = PhoneTrashOrigin.selectGrantedRoot(
+      sourceUri: uri, folderPath: originalFolder ?? '',
+      roots: roots, volumeName: volume,
+    );
+    if (root == null) {
+      throw StateError(
+        'Original Phone storage is not accessible. '
+        'Grant the original location before deleting this PDF.',
+      );
+    }
+    // MediaStore uses an empty relative path for PDFs directly in a storage
+    // volume. That is the root folder, not an unknown destination.
+    final rootLabel = roots.firstWhere(
+      (candidate) => candidate['uri'] == root,
+      orElse: () => const <String, String>{},
+    )['name'];
+    final folder = originalFolder != null && originalFolder.isNotEmpty
+        ? originalFolder
+        : parsed?.authority == 'media' && volume == 'external_primary'
+            ? 'Internal'
+            : rootLabel;
+    if (folder == null || folder.isEmpty) {
+      throw StateError('Original Phone folder is unavailable. PDF was kept.');
+    }
+    final origin = PhoneTrashOrigin(
+      sourceUri: uri,
+      folderPath: folder,
+      rootUri: root,
+      displayName: name,
+      volumeName: volume,
+    );
+    if (!origin.localSourceMatchesRoot()) {
+      throw StateError('Original Phone folder does not match its granted root.');
+    }
+    origin.relativeFolders; // Reject any unsafe folder path.
+    return origin;
+  }
+
+  Future<void> _includeRecycledPhoneFolders(
+      List<Map<String, Object?>> entries) async {
+    final held = await _repository.phoneTrashFolderEntries();
+    for (final folder in held) {
+      final path = folder['path'];
+      final existing = entries.where((entry) =>
+          entry['isDirectory'] == true && entry['path'] == path);
+      if (existing.isEmpty) {
+        entries.add(folder);
+      } else {
+        final entry = existing.first;
+        entry['isPending'] = true;
+        entry['trashPdfCount'] = folder['trashPdfCount'];
+      }
+    }
+  }
+
   Future<void> _scanPhoneStorage({required bool openBrowser}) async {
     final storage = StorageLocationService.instance;
     if (_phoneScanLoading) {
@@ -482,6 +565,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       var mediaStoreVolumes = <String, Object?>{};
       final entries = <Map<String, Object?>>[];
       final seen = <String>{};
+      final completedRootScans = <String, List<Map<String, Object?>>>{};
 
       if (Platform.isAndroid && hasAllFilesAccess) {
         try {
@@ -493,9 +577,39 @@ class _DocumentsScreenState extends State<DocumentsScreen>
             mediaStoreVolumes =
                 Map<String, Object?>.from(index['volumes'] as Map);
             entries.addAll(indexed);
+            final completeVolumes = <String, List<Map<String, Object?>>>{
+              for (final volume in mediaStoreVolumes.keys)
+                'media:$volume': <Map<String, Object?>>[],
+            };
             for (final item in indexed) {
               final uri = item['uri'] as String? ?? '';
               if (uri.isNotEmpty) seen.add(uri);
+              final volume = item['volumeName'] as String?;
+              if (volume != null) {
+                completeVolumes['media:$volume']?.add(item);
+              }
+            }
+            // Baseline the first complete scan; later scans add newly seen
+            // external PDFs to Phone Recent, without importing their bytes.
+            try {
+              await PhoneRecentHistory.observeCompletedScans(completeVolumes);
+              // Another mounted Phone tab may have recorded this scan first.
+              // Always refresh the Home panel after a completed scan.
+              if (mounted && !widget.phoneOnly) {
+                await _loadRecentDocuments();
+              }
+            } catch (_) {
+              // An optional Recent-list failure never interrupts Phone browsing.
+            }
+            // Only a complete, permission-authorized MediaStore index can
+            // prove a media URI is absent. Never prune on partial scans.
+            try {
+              final removed = await PhoneRecentHistory.pruneAbsentMediaStoreUris(
+                seen, scannedVolumes: mediaStoreVolumes.keys.toSet(),
+              );
+              if (removed > 0 && mounted) await _loadRecentDocuments();
+            } catch (_) {
+              // Recent metadata is optional; user PDFs and scan remain intact.
             }
             if (mounted) setState(() {
               _phoneEntries = List<Map<String, Object?>>.from(entries);
@@ -562,6 +676,16 @@ class _DocumentsScreenState extends State<DocumentsScreen>
             rootLabel: label,
             includeEmptyFolders: false,
           );
+          // Only successfully scanned, entirely accessible SAF/file roots
+          // may advance the discovery baseline. Otherwise a permission change
+          // could make old PDFs look newly added on the following scan.
+          if (!found.any((item) =>
+              item['isInaccessible'] == true ||
+              item['isInaccessibleSummary'] == true)) {
+            completedRootScans['root:$uri'] = found
+                .where((item) => item['isDirectory'] != true)
+                .toList(growable: false);
+          }
           for (final item in found) {
             final itemUri = item['uri'] as String? ?? '';
             if (item['isDirectory'] != true &&
@@ -583,6 +707,21 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         }
       }
       if (!mounted) return;
+      if (completedRootScans.isNotEmpty) {
+        try {
+          await PhoneRecentHistory.observeCompletedScans(completedRootScans);
+          if (mounted && !widget.phoneOnly) {
+            await _loadRecentDocuments();
+          }
+        } catch (_) {
+          // Optional Phone Recent must never interfere with file browsing.
+        }
+      }
+      // Ordinary scans intentionally suppress PDF-empty folders. Recycle Bin
+      // placeholders keep the original location visible while archived.
+      try { await _includeRecycledPhoneFolders(entries); } catch (_) {
+        // Live Phone browsing must survive optional metadata failures.
+      }
       if (mediaStoreVolumes.isNotEmpty) {
         await _persistPhoneStorageIndexCache(
           roots,
@@ -625,16 +764,37 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         onMovePdf: _movePhonePdfToGrid,
         onRenamePdf: _renamePhonePdf,
         onSharePdf: _sharePhonePdf,
+        onToggleStarPdf: _recordExternalFavorite,
+        starredUris: _phoneStarredUris,
         onTrashPdf: _trashPhonePdf,
         initialPath: initialPath,
       ),
     ));
   }
 
+  Future<void> _loadPhoneStarred() async {
+    try {
+      final items = await PhoneStarRepository.list();
+      if (mounted) {
+        setState(() {
+          _phoneStarred = items;
+          // Keep the same Set reference: an independently pushed Phone
+          // browser reads it when reopening its menu after a Star action.
+          _phoneStarredUris
+            ..clear()
+            ..addAll(items.map((item) => item['uri'] as String));
+        });
+      }
+    } catch (_) {
+      // Star metadata is optional; it must never block Phone Storage.
+    }
+  }
+
   Future<void> _loadAllStarred() async {
     try {
       final items = await _repository.listAllStarred();
       if (mounted) setState(() => _starredRecent = items);
+      await _loadPhoneStarred();
     } catch (error) {
       if (mounted) _message('Could not load Starred PDFs: $error');
     }
@@ -642,8 +802,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
 
   Future<void> _clearRecentActivity() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.remove('docsgrid_phone_recent_v1');
+      await PhoneRecentHistory.clearRecent();
       await _repository.clearOpenedHistory();
       if (!mounted) return;
       setState(() => _phoneRecent = []);
@@ -662,12 +821,15 @@ class _DocumentsScreenState extends State<DocumentsScreen>
 
   List<PopupMenuEntry<String>> _phoneRecentMenu(Map<String, Object?> item) => [
     const PopupMenuItem(value: 'share', child: Text('Share PDF')),
-    const PopupMenuItem(value: 'favorite', child: Text('Add to Star')),
-    const PopupMenuItem(value: 'category', child: Text('Set category')),
-    const PopupMenuItem(value: 'tags', child: Text('Edit tags')),
+    PopupMenuItem(
+      value: 'favorite',
+      child: Text(_phoneStarredUris.contains(item['uri'])
+          ? 'Remove from Star' : 'Add to Star'),
+    ),
     const PopupMenuItem(value: 'rename', child: Text('Rename')),
-    const PopupMenuItem(value: 'move', child: Text('Move to folder')),
-    const PopupMenuItem(value: 'trash', child: Text('Move to Recycle Bin')),
+    const PopupMenuItem(value: 'move', child: Text('Move to Grid')),
+    const PopupMenuItem(value: 'trash', child: Text('Delete')),
+    const PopupMenuItem(value: 'location', child: Text('File Location')),
   ];
 
   Future<void> _handlePhoneRecentAction(Map<String, Object?> item, String action) async {
@@ -675,17 +837,75 @@ class _DocumentsScreenState extends State<DocumentsScreen>
     final name = item['name'] as String? ?? 'PDF';
     if (action == 'share') {
       await _sharePhonePdf(uri, name);
+    } else if (action == 'move') {
+      await _movePhonePdfToGrid(uri, name);
     } else if (action == 'favorite') {
       await _recordExternalFavorite(uri, name);
     } else if (action == 'trash') {
       await _trashPhonePdf(uri, name);
-    } else {
-      _message('This Phone PDF action is available from the Phone folder browser.');
+    } else if (action == 'rename') {
+      await _renamePhonePdf(uri, name);
+      await _loadRecentDocuments();
+    } else if (action == 'location') {
+      await _showPhoneFileLocation(uri, name);
+    }
+  }
+
+  Future<void> _showPhoneFileLocation(String uri, String name) async {
+    final matching = <Map<String, Object?>>[
+      ..._phoneEntries.where((item) => item['uri'] == uri),
+      ..._phoneStarred.where((item) => item['uri'] == uri),
+      ..._phoneRecent.where((item) => item['uri'] == uri),
+    ];
+    final rawPath = matching.isEmpty
+        ? '' : (matching.first['folderPath'] ?? matching.first['path'] ?? '').toString();
+    final path = rawPath.replaceAll(String.fromCharCode(92), '/').trim();
+    if (!mounted) return;
+    final showFolder = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('File Location'),
+        content: SelectableText(path.isEmpty
+            ? 'Folder location unavailable for $name.' : path),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Close'),
+          ),
+          if (path.isNotEmpty)
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('Open folder'),
+            ),
+        ],
+      ),
+    );
+    if (showFolder == true && mounted) {
+      await _showRecursiveStoragePdfs(
+        'Internal Storage', _phoneEntries, initialPath: path,
+      );
     }
   }
 
   Future<void> _recordExternalFavorite(String uri, String name) async {
-    _message('Phone files can be starred after importing them into Grid.');
+    try {
+      final matching = <Map<String, Object?>>[
+        ..._phoneEntries.where((entry) => entry['uri'] == uri),
+        ..._phoneRecent.where((entry) => entry['uri'] == uri),
+      ];
+      final entry = matching.isEmpty ? null : matching.first;
+      final added = await PhoneStarRepository.toggle(
+        uri: uri,
+        name: name,
+        folderPath: (entry?['folderPath'] ?? entry?['path']) as String?,
+        sizeBytes: (entry?['sizeBytes'] as num?)?.toInt() ?? 0,
+      );
+      await _loadPhoneStarred();
+      if (_showStarredRecent) await _loadAllStarred();
+      if (mounted) _message(added ? 'Added to Star.' : 'Removed from Star.');
+    } catch (error) {
+      if (mounted) _message('Could not update Phone Star: $error');
+    }
   }
 
   Future<bool> _movePhoneRecentSelectionToTrash(
@@ -703,9 +923,11 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       final uri = item['uri'] as String? ?? '';
       final name = item['name'] as String? ?? 'PDF';
       try {
+        final origin = await _phoneTrashOriginFor(uri, name);
         final moved = await _repository.moveExternalPdfToTrash(
           sourceUri: uri,
           displayName: name,
+          origin: origin,
         );
         if (moved) {
           movedUris.add(uri);
@@ -718,6 +940,10 @@ class _DocumentsScreenState extends State<DocumentsScreen>
     }
 
     if (movedUris.isNotEmpty) {
+      for (final uri in movedUris) {
+        try { await PhoneStarRepository.remove(uri); } catch (_) {}
+      }
+      await _loadPhoneStarred();
       final keep = _phoneRecent
           .where((item) => !movedUris.contains(item['uri']))
           .toList(growable: false);
@@ -910,10 +1136,38 @@ class _DocumentsScreenState extends State<DocumentsScreen>
     );
   }
 
+  Widget _phoneStarredTile(Map<String, Object?> item) {
+    final uri = item['uri'] as String;
+    final name = item['name'] as String? ?? 'PDF';
+    return ListTile(
+      key: ValueKey('phone-starred-$uri'),
+      dense: true,
+      leading: DocumentThumbnail(
+        documentId: 'phone_starred_$uri',
+        storagePath: uri,
+        sizeBytes: (item['sizeBytes'] as num?)?.toInt() ?? 0,
+      ),
+      title: Row(children: [
+        Flexible(child: Text(name, maxLines: 1, overflow: TextOverflow.ellipsis)),
+        const SizedBox(width: 6),
+        _recentSourceTag('Phone'),
+      ]),
+      subtitle: const Text('Starred'),
+      onTap: () => _openExternalStoragePdf(uri, name),
+      trailing: PopupMenuButton<String>(
+        tooltip: 'Actions for $name',
+        onSelected: (action) => _handlePhoneRecentAction(item, action),
+        itemBuilder: (_) => _phoneRecentMenu(item),
+      ),
+    );
+  }
+
   Widget _phoneRecentTile(Map<String, Object?> item) {
     final name = item['name'] as String? ?? 'PDF';
     final uri = item['uri'] as String? ?? '';
     final openedAt = DateTime.tryParse(item['openedAt']?.toString() ?? '');
+    final addedAt = DateTime.tryParse(item['addedAt']?.toString() ?? '');
+    final activity = openedAt == null && addedAt != null ? 'Added' : 'Opened';
     return ListTile(
       key: ValueKey('phone-recent-$uri'),
       dense: true,
@@ -927,7 +1181,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         const SizedBox(width: 6),
         _recentSourceTag('Phone'),
       ]),
-      subtitle: Text('Opened · ${_recentDateLabel(openedAt ?? DateTime.now())}'),
+      subtitle: Text('$activity · ${_recentDateLabel(openedAt ?? addedAt ?? DateTime.now())}'),
       onTap: () => _openExternalStoragePdf(uri, name),
       onLongPress: () => _openPhoneRecentSelection(item),
       trailing: PopupMenuButton<String>(
@@ -968,31 +1222,19 @@ class _DocumentsScreenState extends State<DocumentsScreen>
 
   Future<void> _recordPhoneRecent(String uri, String name) async {
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final saved = prefs.getStringList('docsgrid_phone_recent_v1') ?? <String>[];
-      final recent = <Map<String, Object?>>[];
-      for (final item in saved) {
-        try {
-          final decoded = jsonDecode(item);
-          if (decoded is Map && decoded['uri'] != uri) {
-            recent.add(Map<String, Object?>.from(decoded));
-          }
-        } catch (_) {}
-      }
-      final matchingEntries = _phoneEntries.where((entry) => entry['uri'] == uri).toList();
+      final matchingEntries =
+          _phoneEntries.where((entry) => entry['uri'] == uri).toList();
       final bytes = matchingEntries.isEmpty
           ? 0
           : (matchingEntries.first['sizeBytes'] as num?)?.toInt() ?? 0;
-      recent.insert(0, {
-        'uri': uri,
-        'name': name,
-        'sizeBytes': bytes,
-        'openedAt': DateTime.now().toUtc().toIso8601String(),
-      });
-      final limited = recent.take(20).toList(growable: false);
-      await prefs.setStringList('docsgrid_phone_recent_v1',
-          limited.map((item) => jsonEncode(item)).toList());
-      if (mounted) setState(() => _phoneRecent = limited);
+      final folderPath = matchingEntries.isEmpty
+          ? null : (matchingEntries.first['folderPath'] ?? matchingEntries.first['path']) as String?;
+      await PhoneRecentHistory.recordOpened(
+        uri, name, sizeBytes: bytes, folderPath: folderPath,
+      );
+      if (mounted && !widget.phoneOnly) {
+        await _loadRecentDocuments();
+      }
     } catch (_) {
       // Failure to save optional recent metadata must not affect PDF opening.
     }
@@ -1386,6 +1628,15 @@ class _DocumentsScreenState extends State<DocumentsScreen>
                                     await _repository.restoreFromTrash(document);
                                     refreshDialog(() => trashed.removeAt(index));
                                     await _load();
+                                    await _scanPhoneStorage(openBrowser: false);
+                                    await _loadRecentDocuments();
+                                    await _refreshDashboardSummary();
+                                    if (mounted && document.source ==
+                                        'phone_storage_recycle_bin') {
+                                      _message(
+                                        'PDF restored to its original Phone folder.',
+                                      );
+                                    }
                                   } else if (action == 'delete') {
                                     final confirmed = await showDialog<bool>(
                                       context: dialogContext,
@@ -1408,6 +1659,8 @@ class _DocumentsScreenState extends State<DocumentsScreen>
                                       await _repository.permanentlyDelete(document);
                                       refreshDialog(() => trashed.removeAt(index));
                                       await _load();
+                                      await _scanPhoneStorage(openBrowser: false);
+                                      await _refreshDashboardSummary();
                                     }
                                   }
                                 } catch (error) {
@@ -1551,13 +1804,17 @@ class _DocumentsScreenState extends State<DocumentsScreen>
     );
     if (!confirmed) return false;
     try {
+      final origin = await _phoneTrashOriginFor(uri, name);
       final moved = await _repository.moveExternalPdfToTrash(
         sourceUri: uri,
         displayName: name,
+        origin: origin,
       );
       if (!mounted) return false;
       if (moved) {
         _message('PDF moved to Recycle Bin.');
+        try { await PhoneStarRepository.remove(uri); } catch (_) {}
+        await _loadPhoneStarred();
         final prefs = await SharedPreferences.getInstance();
         final keep = _phoneRecent
             .where((item) => item['uri'] != uri)
@@ -1728,12 +1985,37 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         displayName: name,
         targetFolderId: destination.isEmpty ? null : destination,
       );
-      if (!mounted) return false;
       if (result.added == 1) {
-        _message('Moved $name to Grid.');
-      } else if (result.duplicates > 0) {
+        try { await PhoneStarRepository.remove(uri); } catch (_) {}
+        await _loadPhoneStarred();
+        // The source was deleted only after a checksum-verified Grid import.
+        // Persist the removal even if the user switched tabs while moving;
+        // the next Home view must not reload the now-invalid Phone URI.
+        var recentSaved = true;
+        try {
+          await PhoneRecentHistory.removeMovedSource(uri);
+        } catch (_) {
+          recentSaved = false;
+        }
+        if (mounted) {
+          setState(() {
+            _phoneRecent = _phoneRecent
+                .where((entry) => entry['uri'] != uri)
+                .toList(growable: false);
+            _phoneEntries = _phoneEntries
+                .where((entry) => entry['uri'] != uri)
+                .toList(growable: false);
+            _recentFilter = 'grid';
+          });
+          await _loadRecentDocuments();
+          _message(recentSaved
+              ? 'Moved $name to Grid. It is now in Grid Recent.'
+              : 'Moved $name to Grid, but could not save the Phone Recent cleanup.');
+        }
+      } else if (result.duplicates > 0 && mounted) {
         _message('This PDF already exists in Grid. The Phone original was kept.');
       }
+      if (!mounted) return result.added == 1;
       await _scanPhoneStorage(openBrowser: false);
       await _load();
       await _refreshDashboardSummary();
@@ -1897,6 +2179,8 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         onMovePdf: _movePhonePdfToGrid,
         onRenamePdf: _renamePhonePdf,
         onSharePdf: _sharePhonePdf,
+        onToggleStarPdf: _recordExternalFavorite,
+        starredUris: _phoneStarredUris,
         onTrashPdf: _trashPhonePdf,
         embedded: true,
         // Keep the last usable index visible while refresh continues silently.
@@ -2081,13 +2365,16 @@ class _DocumentsScreenState extends State<DocumentsScreen>
                     SizedBox(
                       height: 320,
                       child: _showStarredRecent
-                          ? _starredRecent.isEmpty
+                          ? _starredRecent.isEmpty && _phoneStarred.isEmpty
                               ? const Center(child: Text('No starred PDFs'))
                               : ListView.separated(
                                   primary: false,
-                                  itemCount: _starredRecent.length,
+                                  itemCount: _phoneStarred.length + _starredRecent.length,
                                   separatorBuilder: (_, _) => const Divider(height: 1),
-                                  itemBuilder: (context, index) => _recentDocumentTile(_starredRecent[index]),
+                                  itemBuilder: (context, index) =>
+                                      index < _phoneStarred.length
+                                          ? _phoneStarredTile(_phoneStarred[index])
+                                          : _recentDocumentTile(_starredRecent[index - _phoneStarred.length]),
                                 )
                           : _recentFilter == 'phone'
                               ? _phoneRecent.isEmpty

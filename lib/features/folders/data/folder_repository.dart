@@ -27,6 +27,29 @@ class FolderRepository {
   final AppDatabase _database;
   static const _uuid = Uuid();
 
+  /// Detects physical folders produced by old timestamped ZIP restorations.
+  /// Recognition never grants permission to relocate or delete user files.
+  static bool isLegacyRestoreStorageUri(String? uri) {
+    if (uri == null || uri.isEmpty || uri.startsWith('content://')) return false;
+    try {
+      final path = uri.startsWith('file://')
+          ? Uri.parse(uri).toFilePath() : uri;
+      if (!p.isAbsolute(path)) return false;
+      final parts = p.normalize(path).replaceAll('\\', '/')
+          .split('/').where((part) => part.isNotEmpty).toList();
+      for (var i = 1; i < parts.length - 1; i++) {
+        if (parts[i - 1].toLowerCase() != 'folders' ||
+            !RegExp(r'^Restored_[0-9]{12,}$').hasMatch(parts[i])) continue;
+        final remaining = parts.skip(i + 1);
+        if (remaining.isNotEmpty && remaining.every((part) =>
+            RegExp(r'^.+_[0-9a-fA-F]{8}$').hasMatch(part))) return true;
+      }
+    } catch (_) {
+      // Unrecognized URIs must not be classified as legacy restoration.
+    }
+    return false;
+  }
+
   /// Validates a folder name before it is used as a path segment.
   /// Dot segments are rejected to prevent escaping the private library root.
   /// Maps a private-library document path after an ancestor folder is renamed.
@@ -200,6 +223,14 @@ class FolderRepository {
     String? parentUri = defaultLibraryRoot ?? selectedRoot?['uri'];
     for (final folder in chain.reversed) {
       var childUri = folder.uri;
+      // Do not silently import new PDFs into a legacy Restored_ tree.
+      if (isLegacyRestoreStorageUri(childUri)) {
+        throw StateError(
+          'This folder still points to an old Restored_ storage directory. '
+          'Use DocsGrid ZIP Restore with its verified repair preview before '
+          'adding more PDFs.',
+        );
+      }
       // Older full restores stored absolute filesystem paths in this URI column.
       // Convert those legacy values to file:// URIs before passing them to the
       // Android channel, which dispatches file:// and SAF content:// separately.
