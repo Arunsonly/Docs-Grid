@@ -813,6 +813,16 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
         ])),
       ],
       if (widget.section == 'backup' || widget.section == 'restore' || widget.section == 'backup_restore') Card(child: Column(children: [
+        const ListTile(
+          leading: Icon(Icons.privacy_tip_outlined),
+          title: Text('Backup privacy'),
+          subtitle: Text(
+            'Portable ZIP backups and metadata snapshots are not encrypted. '
+            'Anyone with access to their saved copies can read document names, '
+            'OCR text and included PDFs. Store backups only in a trusted location.',
+          ),
+        ),
+        const Divider(height: 1),
         ListTile(leading: const Icon(Icons.backup_outlined), title: const Text('Create full backup'),
           subtitle: const Text('Save PDFs, folders, reminders, tags and settings into one ZIP file.'),
           trailing: const Icon(Icons.chevron_right), onTap: _busy ? null : _backup),

@@ -1167,7 +1167,9 @@ class _DocumentsScreenState extends State<DocumentsScreen>
     final uri = item['uri'] as String? ?? '';
     final openedAt = DateTime.tryParse(item['openedAt']?.toString() ?? '');
     final addedAt = DateTime.tryParse(item['addedAt']?.toString() ?? '');
-    final activity = openedAt == null && addedAt != null ? 'Added' : 'Opened';
+    // External PDF choosers only acknowledge dispatch, not actual rendering.
+    final activity = openedAt == null && addedAt != null
+        ? 'Added' : 'Open requested';
     return ListTile(
       key: ValueKey('phone-recent-$uri'),
       dense: true,
