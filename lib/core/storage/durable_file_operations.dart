@@ -171,7 +171,8 @@ class DurableFileOperations {
           final updated = await txn.update('file_operation_journal', {
             'state': 'completed', 'phase': 'completed',
             'updated_at': DateTime.now().toUtc().toIso8601String(),
-          }, where: "operation_id = ? AND owner_id = ? AND state = 'running'",
+          }, where: "operation_id = ? AND (owner_id = ? OR kind = 'scope') "
+                    "AND state != 'completed'",
               whereArgs: [operationId, _processOwner]);
           if (updated == 0) throw StateError('File operation lost its journal.');
         });
@@ -218,6 +219,75 @@ class DurableFileOperations {
       }
       _activeResources.removeAll(orderedKeys);
     }
+  }
+
+  /// Locks the named folder and each ancestor, including inactive ancestors.
+  /// A child PDF always shares an ancestor key with a parent-folder mutation,
+  /// without a global app-wide lock or thousands of child-file locks.
+  static Future<Set<String>> scopeForFolders(
+      Database db, Iterable<String?> folderIds) async {
+    final keys = <String>{};
+    for (final folderId in folderIds) {
+      String? current = folderId;
+      final visited = <String>{};
+      while (current != null && current.isNotEmpty) {
+        if (!visited.add(current) || visited.length > 512) {
+          throw StateError('Folder hierarchy is cyclic or too deep.');
+        }
+        keys.add('folder:$current');
+        final rows = await db.query(
+          'folders', columns: ['parent_id'],
+          where: 'id = ?', whereArgs: [current], limit: 1,
+        );
+        current = rows.isEmpty ? null : rows.single['parent_id'] as String?;
+      }
+    }
+    return keys;
+  }
+
+  /// A PDF mutation leases its current ancestry and, when moving, the target
+  /// ancestry too. A recycled child also shares its folder-trash operation.
+  static Future<Set<String>> scopeForDocument(
+    Database db, String documentId, {String? destinationFolderId}
+  ) async {
+    final rows = await db.query(
+      'documents', columns: ['folder_id', 'trash_operation_id'],
+      where: 'id = ?', whereArgs: [documentId], limit: 1,
+    );
+    final folderId = rows.isEmpty ? null : rows.single['folder_id'] as String?;
+    final keys = await scopeForFolders(db, [folderId, destinationFolderId]);
+    final group = rows.isEmpty
+        ? null : rows.single['trash_operation_id'] as String?;
+    if (group != null && group.isNotEmpty) keys.add('trash-tree:$group');
+    return keys;
+  }
+
+  /// Previous development builds held only document-key journal leases.
+  /// While protecting a folder tree, include those still-interrupted child
+  /// keys as compatibility guards rather than silently racing their recovery.
+  static Future<Set<String>> scopeForFolderTrees(
+      Database db, Iterable<String> roots) async {
+    final ids = roots.toSet().toList();
+    final keys = await scopeForFolders(db, ids);
+    if (ids.isEmpty) return keys;
+    final placeholders = List.filled(ids.length, '?').join(',');
+    final incomplete = await db.rawQuery('''
+      WITH RECURSIVE descendants(id) AS (
+        SELECT id FROM folders WHERE id IN ($placeholders)
+        UNION
+        SELECT f.id FROM folders f
+          INNER JOIN descendants d ON f.parent_id = d.id
+      )
+      SELECT j.resource_key FROM file_operation_journal j
+      INNER JOIN documents d ON j.resource_key = ('document:' || d.id)
+      WHERE j.state != 'completed'
+        AND d.folder_id IN (SELECT id FROM descendants)
+    ''', ids);
+    for (final row in incomplete) {
+      final key = row['resource_key'];
+      if (key is String) keys.add(key);
+    }
+    return keys;
   }
 
   /// Reconcile only operations whose final SQLite state proves that their
