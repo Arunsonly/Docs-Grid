@@ -1213,8 +1213,48 @@ class DocumentToolsService {
     required BackupRestoreMode mode,
     required String sourceBackupId,
   }) async {
+    // A normal Full archive lives in a keep-four directory. A JSON pointer
+    // there is not sufficient: the actual restore checkpoint must be copied
+    // outside that directory before it is advertised as durable.
     final checkpointArchive = await createBackup(includePdfs: true);
-    final digest = await sha256.bind(checkpointArchive.openRead()).first;
+    final digest = (await sha256.bind(checkpointArchive.openRead()).first).toString();
+    final stamp = '${DateTime.now().toUtc().millisecondsSinceEpoch}_${_uuid.v4()}';
+    final archiveName = 'checkpoint_$stamp.zip';
+    final locations = Platform.isAndroid
+        ? await StorageLocationService.instance.portableDataLocationsIfAvailable()
+        : const <String, String>{};
+    final checkpointRoot = locations['restoreCheckpointsUri'];
+    String durableArchiveUri;
+    Directory? localDirectory;
+    if (checkpointRoot != null) {
+      durableArchiveUri = await StorageLocationService.instance.copyFileToStorage(
+        sourcePath: checkpointArchive.path,
+        parentUri: checkpointRoot,
+        name: archiveName,
+        mimeType: 'application/zip',
+      );
+      // A published checkpoint must match the independent full archive, not
+      // merely its copied filename. Native digest reads in bounded chunks.
+      final restoredDigest =
+          await StorageLocationService.instance.sha256Pdf(durableArchiveUri);
+      if (restoredDigest != digest) {
+        throw StateError('Protected restore checkpoint copy failed SHA-256 verification.');
+      }
+    } else {
+      final support = await getApplicationSupportDirectory();
+      localDirectory = Directory(p.join(
+        support.path, 'docsgrid', 'recovery', 'checkpoints',
+      ));
+      await localDirectory.create(recursive: true);
+      final protectedCopy = await checkpointArchive.copy(
+        p.join(localDirectory.path, archiveName),
+      );
+      final actual = (await sha256.bind(protectedCopy.openRead()).first).toString();
+      if (actual != digest) {
+        throw StateError('Local restore checkpoint copy failed SHA-256 verification.');
+      }
+      durableArchiveUri = protectedCopy.uri.toString();
+    }
     final record = <String, Object?>{
       'format': 'DocsGridRestoreCheckpoint',
       'version': 1,
@@ -1222,33 +1262,22 @@ class DocumentToolsService {
       'restoreMode': mode.name,
       'sourceBackupId': sourceBackupId,
       'createdAtUtc': DateTime.now().toUtc().toIso8601String(),
-      'archiveName': p.basename(checkpointArchive.path),
+      'archiveName': archiveName,
+      'archiveUri': durableArchiveUri,
       'archiveBytes': await checkpointArchive.length(),
-      'archiveSha256': digest.toString(),
+      'archiveSha256': digest,
       'archiveBackupType': 'full',
     };
-
-    final locations = Platform.isAndroid
-        ? await StorageLocationService.instance.portableDataLocationsIfAvailable()
-        : const <String, String>{};
-    final checkpointUri = locations['restoreCheckpointsUri'];
-    if (checkpointUri != null) {
+    final recordName = 'checkpoint_$stamp.json';
+    if (checkpointRoot != null) {
       await StorageLocationService.instance.writeTextFile(
-        parentUri: checkpointUri,
-        name: 'checkpoint_${DateTime.now().toUtc().millisecondsSinceEpoch}_${_uuid.v4()}.json',
+        parentUri: checkpointRoot,
+        name: recordName,
         contents: jsonEncode(record),
       );
     } else {
-      final support = await getApplicationSupportDirectory();
-      final directory = Directory(p.join(
-        support.path, 'docsgrid', 'recovery', 'checkpoints',
-      ));
-      await directory.create(recursive: true);
-      final file = File(p.join(
-        directory.path,
-        'checkpoint_${DateTime.now().toUtc().millisecondsSinceEpoch}_${_uuid.v4()}.json',
-      ));
-      await file.writeAsString(jsonEncode(record), flush: true);
+      await File(p.join(localDirectory!.path, recordName))
+          .writeAsString(jsonEncode(record), flush: true);
     }
   }
 
