@@ -108,18 +108,48 @@ import CryptoKit
                     "documentsUri": documents.absoluteString
                 ])
             case "consumeSharedPdfs":
-                let cache = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-                    .appendingPathComponent("DocsGrid", isDirectory: true)
-                    .appendingPathComponent("incoming_docs", isDirectory: true)
-                try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
-                let files = try FileManager.default.contentsOfDirectory(
-                    at: cache,
-                    includingPropertiesForKeys: [.isRegularFileKey],
-                    options: [.skipsHiddenFiles]
-                )
+                let root = incomingShareDirectory()
+                try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+                // Do not destroy accepted copies from a development
+                // installation which still used the old cache directory.
+                let locations = [root, legacyIncomingShareDirectory()]
+                var files: [URL] = []
+                for folder in locations where FileManager.default.fileExists(atPath: folder.path) {
+                    files += try FileManager.default.contentsOfDirectory(
+                        at: folder, includingPropertiesForKeys: [.isRegularFileKey],
+                        options: [.skipsHiddenFiles]
+                    )
+                }
                 result(files.filter { $0.pathExtension.lowercased() == "pdf" }.map { file in
-                    ["path": file.path, "name": file.deletingPathExtension().lastPathComponent]
+                    let base = file.deletingPathExtension().lastPathComponent
+                    let name: String
+                    if base.count > 37, UUID(uuidString: String(base.prefix(36))) != nil,
+                       base.dropFirst(36).first == "_" {
+                        name = String(base.dropFirst(37))
+                    } else {
+                        name = base
+                    }
+                    return ["path": file.path, "name": name]
                 })
+            case "finishSharedPdf":
+                let path = try stringArg(args, "path")
+                let outcome = try stringArg(args, "outcome")
+                guard outcome == "committed" || outcome == "cancelled" else {
+                    throw storageError("Invalid incoming-share completion state.")
+                }
+                let target = URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath()
+                let permittedRoots = [incomingShareDirectory(), legacyIncomingShareDirectory()]
+                    .map { $0.standardizedFileURL.resolvingSymlinksInPath().path }
+                guard permittedRoots.contains(target.deletingLastPathComponent().path),
+                      target.pathExtension.lowercased() == "pdf",
+                      UUID(uuidString: String(target.deletingPathExtension()
+                            .lastPathComponent.prefix(36))) != nil else {
+                    throw storageError("The selected file is not an owned DocsGrid incoming share.")
+                }
+                if FileManager.default.fileExists(atPath: target.path) {
+                    try FileManager.default.removeItem(at: target)
+                }
+                result(true)
             case "getSelectedFolder":
                 guard let selected = try selectedFolder(), let root = URL(string: selected["uri"] ?? "") else {
                     result(nil)
@@ -257,6 +287,20 @@ import CryptoKit
         }
     }
 
+    private func incomingShareDirectory() -> URL {
+        FileManager.default.urls(for: .applicationSupportDirectory,
+                                 in: .userDomainMask)[0]
+            .appendingPathComponent("DocsGrid", isDirectory: true)
+            .appendingPathComponent("incoming_docs", isDirectory: true)
+    }
+
+    private func legacyIncomingShareDirectory() -> URL {
+        FileManager.default.urls(for: .cachesDirectory,
+                                 in: .userDomainMask)[0]
+            .appendingPathComponent("DocsGrid", isDirectory: true)
+            .appendingPathComponent("incoming_docs", isDirectory: true)
+    }
+
     override func application(
         _ app: UIApplication,
         open url: URL,
@@ -270,9 +314,7 @@ import CryptoKit
         do {
             let values = try url.resourceValues(forKeys: [.isRegularFileKey])
             guard values.isRegularFile == true else { return false }
-            let cache = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-                .appendingPathComponent("DocsGrid", isDirectory: true)
-                .appendingPathComponent("incoming_docs", isDirectory: true)
+            let cache = incomingShareDirectory()
             try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
             let rawName = url.deletingPathExtension().lastPathComponent
             let safeName = rawName.replacingOccurrences(
@@ -281,6 +323,9 @@ import CryptoKit
                 options: .regularExpression
             )
             let target = cache.appendingPathComponent("\(UUID().uuidString)_\(safeName).pdf")
+            // A process interruption must never publish a partially copied
+            // file as a ready-to-import PDF.
+            let partial = target.appendingPathExtension("part")
             let coordinator = NSFileCoordinator(filePresenter: nil)
             var coordinationError: NSError?
             var copyError: Error?
@@ -290,19 +335,37 @@ import CryptoKit
                 error: &coordinationError
             ) { coordinatedURL in
                 do {
-                    try FileManager.default.copyItem(at: coordinatedURL, to: target)
+                    try FileManager.default.copyItem(at: coordinatedURL, to: partial)
                 } catch {
                     copyError = error
                 }
             }
-            if let coordinationError { throw coordinationError }
-            if let copyError { throw copyError }
-            let handle = try FileHandle(forReadingFrom: target)
-            defer { try? handle.close() }
-            let header = try handle.read(upToCount: 5) ?? Data()
+            if let coordinationError {
+                try? FileManager.default.removeItem(at: partial)
+                throw coordinationError
+            }
+            if let copyError {
+                try? FileManager.default.removeItem(at: partial)
+                throw copyError
+            }
+            let header: Data
+            do {
+                let handle = try FileHandle(forReadingFrom: partial)
+                defer { try? handle.close() }
+                header = try handle.read(upToCount: 5) ?? Data()
+            } catch {
+                try? FileManager.default.removeItem(at: partial)
+                throw error
+            }
             guard header == Data("%PDF-".utf8) else {
-                try? FileManager.default.removeItem(at: target)
+                try? FileManager.default.removeItem(at: partial)
                 return false
+            }
+            do {
+                try FileManager.default.moveItem(at: partial, to: target)
+            } catch {
+                try? FileManager.default.removeItem(at: partial)
+                throw error
             }
             return true
         } catch {

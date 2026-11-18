@@ -2022,7 +2022,7 @@ class DocumentRepository {
           'Its PDF remains safe in Recycle Bin; automatic restore is blocked.',
         );
       }
-      await _restorePhonePdfFromTrash(document, origin);
+      await _restorePhonePdfFromTrash(document, origin, lease);
       return;
     }
     // A database row alone does not prove that the archived Grid PDF exists.
@@ -2097,6 +2097,7 @@ class DocumentRepository {
   /// Any failure before database commit preserves the Recycle Bin entry.
   Future<void> _restorePhonePdfFromTrash(
     DocumentRecord document, PhoneTrashOrigin origin,
+    FileOperationLease lease,
   ) async {
     if (!origin.hasWritableOrigin || !origin.localSourceMatchesRoot()) {
       throw StateError('The saved original Phone location is invalid.');
@@ -2226,6 +2227,7 @@ class DocumentRepository {
           whereArgs: [document.id],
         );
         if (deleted != 1) throw StateError('Could not finalize Phone restore.');
+        await lease.markDatabaseCommitted(txn);
       });
     } catch (_) {
       // Only roll back bytes created by this attempt. Never delete an
