@@ -444,6 +444,9 @@ class DocumentRepository {
     await DurableFileOperations.run<void>(
       db: db,
       resourceKey: 'document:${document.id}',
+      scopeKeys: await DurableFileOperations.scopeForDocument(
+        db, document.id, destinationFolderId: folderId,
+      ),
       kind: 'move-pdf',
       action: (lease) async {
     // Reject a stale selection after obtaining the same ownership used by
@@ -1721,22 +1724,36 @@ class DocumentRepository {
   Future<void> moveManyToTrash(List<DocumentRecord> documents) async {
     if (documents.isEmpty) return;
     final db = await _database.database;
+    final ids = documents.map((d) => d.id).toSet().toList()..sort();
+    final scopeKeys = <String>{for (final id in ids) 'document:$id'};
+    for (final id in ids) {
+      scopeKeys.addAll(await DurableFileOperations.scopeForDocument(db, id));
+    }
+    await DurableFileOperations.run<void>(
+      db: db,
+      resourceKey: 'bulk-trash:${sha256.convert(utf8.encode(ids.join('|')))}',
+      kind: 'bulk-trash-pdfs',
+      scopeKeys: scopeKeys,
+      action: (lease) async {
     final now = DateTime.now().toUtc().toIso8601String();
     await db.transaction((txn) async {
       for (final document in documents) {
         final changed = await txn.update(
           'documents',
           {'deleted_at': now, 'updated_at': now},
-          where: 'id = ? AND deleted_at IS NULL',
-          whereArgs: [document.id],
+          where: 'id = ? AND deleted_at IS NULL AND storage_uri = ?',
+          whereArgs: [document.id, document.storagePath],
         );
         if (changed > 0) {
           await _recordHistory(txn, document.id, 'moved_to_recycle_bin', {'bulk': true});
         }
       }
+      await lease.markDatabaseCommitted(txn);
     });
     PortableSnapshotEvents.notifyDataChanged();
     await _reconcileReminders();
+      },
+    );
   }
 
   /// Move several PDFs using the same verified copy/commit/cleanup path as a single move.
@@ -2037,11 +2054,14 @@ class DocumentRepository {
     );
     if (matching.isEmpty) throw StateError('PDF is no longer in the Recycle Bin.');
     final group = matching.single['trash_operation_id'] as String?;
+    final scopes = await DurableFileOperations.scopeForDocument(db, document.id);
+    scopes.add('document:${document.id}');
     await DurableFileOperations.run<void>(
       db: db,
       resourceKey: group != null && group.isNotEmpty
           ? 'trash-tree:$group' : 'document:${document.id}',
       kind: 'restore-pdf',
+      scopeKeys: scopes,
       action: (lease) async {
     if (matching.single['source'] == 'phone_storage_recycle_bin') {
       // Phone restore may create/remove provider files. Once started, a
@@ -2292,6 +2312,7 @@ class DocumentRepository {
     await DurableFileOperations.run<void>(
       db: db,
       resourceKey: 'document:${document.id}',
+      scopeKeys: await DurableFileOperations.scopeForDocument(db, document.id),
       kind: 'move-pdf-to-trash',
       action: (lease) async {
     await db.transaction((txn) async {
@@ -2324,6 +2345,7 @@ class DocumentRepository {
     final db = await _database.database;
     await DurableFileOperations.run<void>(
       db: db, resourceKey: 'document:${document.id}', kind: 'rename-pdf',
+      scopeKeys: await DurableFileOperations.scopeForDocument(db, document.id),
       action: (lease) async {
     final liveRows = await db.query(
       'documents', columns: ['name', 'storage_uri', 'deleted_at'],
@@ -2432,6 +2454,7 @@ class DocumentRepository {
     await DurableFileOperations.run<void>(
       db: db,
       resourceKey: 'document:${document.id}',
+      scopeKeys: await DurableFileOperations.scopeForDocument(db, document.id),
       kind: 'delete-pdf',
       action: (lease) async {
     // The original preflight happened before obtaining ownership. Reject any
