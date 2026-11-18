@@ -53,6 +53,42 @@ void main() {
     expect(unlinked['originalUri'], 'content://media/old/file/1');
   });
 
+  test('manual relink restores a shared ID to Star and Recent only once', () async {
+    final imported = {
+      'format': PhonePortableState.format,
+      'version': 1,
+      'stars': [
+        {'referenceId': 'shared-id', 'uri': 'content://old/1', 'name': 'Old.pdf'}
+      ],
+      'recent': [
+        {'referenceId': 'shared-id', 'uri': 'content://old/1', 'name': 'Old.pdf',
+         'openedAt': '2026-11-18T00:00:00Z'}
+      ],
+    };
+    await PhonePortableState.restoreAsPending(imported);
+    const selected = 'content://media/external_primary/file/512';
+    await PhonePortableState.relink(
+      referenceId: 'shared-id', selectedUri: selected, selectedName: 'New.pdf',
+    );
+    expect(await PhonePortableState.pending(), isEmpty);
+    final stars = await PhoneStarRepository.list();
+    expect(stars, hasLength(1));
+    expect(stars.single['referenceId'], 'shared-id');
+    expect(stars.single['uri'], selected);
+    final prefs = await SharedPreferences.getInstance();
+    final recent = prefs.getStringList(PhoneRecentHistory.storageKey)!;
+    expect(recent, hasLength(1));
+    expect(jsonDecode(recent.single)['referenceId'], 'shared-id');
+    expect(await PhoneReferenceIdentity.idForUri(selected), 'shared-id');
+    await expectLater(
+      PhonePortableState.relink(
+        referenceId: 'shared-id', selectedUri: selected,
+        selectedName: 'New.pdf',
+      ),
+      throwsStateError,
+    );
+  });
+
   test('untrusted or duplicate Phone state is rejected', () {
     expect(() => PhonePortableState.validate({
       'format': PhonePortableState.format,
