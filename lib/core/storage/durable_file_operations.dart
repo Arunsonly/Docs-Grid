@@ -1,3 +1,8 @@
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:crypto/crypto.dart';
+import 'package:path/path.dart' as p;
 import 'package:sqflite/sqflite.dart';
 import 'package:uuid/uuid.dart';
 
@@ -27,6 +32,7 @@ class DurableFileOperations {
 
   static const _uuid = Uuid();
   static final String _processOwner = _uuid.v4();
+  static final Set<String> _activeResources = <String>{};
 
   /// Independent operations get independent keys; folder delete and restore
   /// share a trash-operation key so child/parent changes cannot interleave.
@@ -39,6 +45,22 @@ class DurableFileOperations {
     if (resourceKey.isEmpty || kind.isEmpty) {
       throw ArgumentError('PDF operation must identify its resource and kind.');
     }
+    // SQLite ownership prevents conflicts in the database. An OS advisory
+    // lock additionally prevents a second process/isolate from reclaiming a
+    // running owner while that worker is still deleting physical bytes.
+    if (!_activeResources.add(resourceKey)) {
+      throw StateError('A PDF operation is already running for this resource.');
+    }
+    RandomAccessFile? processLock;
+    try {
+      final root = p.isAbsolute(db.path) ? p.dirname(db.path)
+          : Directory.systemTemp.path;
+      final lockDir = Directory(p.join(root, 'docsgrid_file_operation_locks'));
+      await lockDir.create(recursive: true);
+      final token = sha256.convert(utf8.encode(resourceKey)).toString();
+      processLock = await File(p.join(lockDir.path, '$token.lock'))
+          .open(mode: FileMode.append);
+      await processLock.lock(FileLock.exclusive);
     final operationId = await db.transaction<String>((txn) async {
       final rows = await txn.query(
         'file_operation_journal',
@@ -98,6 +120,11 @@ class DurableFileOperations {
         // Never replace the original error with a journal-write failure.
       }
       rethrow;
+    }
+    } finally {
+      try { await processLock?.unlock(); } catch (_) {}
+      try { await processLock?.close(); } catch (_) {}
+      _activeResources.remove(resourceKey);
     }
   }
 
