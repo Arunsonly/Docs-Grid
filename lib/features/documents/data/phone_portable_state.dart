@@ -53,6 +53,25 @@ class PhoneReferenceIdentity {
     return id;
   });
 
+  /// A manual file selection may bind an imported logical ID only if the
+  /// selected storage locator does not belong to another live reference.
+  static Future<void> bindSelected(String uri, String referenceId) =>
+      _serialized(() async {
+    if (uri.isEmpty || referenceId.isEmpty) {
+      throw ArgumentError('A valid Phone file and identity are required');
+    }
+    final prefs = await SharedPreferences.getInstance();
+    final current = _parse(prefs.getString(storageKey));
+    final existing = current[uri];
+    if (existing != null && existing != referenceId) {
+      throw StateError('This Phone PDF already belongs to another reference');
+    }
+    current[uri] = referenceId;
+    if (!await prefs.setString(storageKey, jsonEncode(current))) {
+      throw StateError('Could not bind the selected Phone PDF');
+    }
+  });
+
   static Future<void> renamed(String oldUri, String newUri) =>
       _serialized(() async {
     if (oldUri == newUri) return;
@@ -201,7 +220,17 @@ class PhonePortableState {
       if (stars.any((s) => s['referenceId'] == id)) entry['wasStarred'] = true;
       if (recent.any((s) => s['referenceId'] == id)) entry['wasRecent'] = true;
     }
-    byId.addAll(staged);
+    final liveIds = <String>{
+      for (final entry in [
+        ..._readRecords(prefs.getStringList(starKey)),
+        ..._readRecords(prefs.getStringList(recentKey)),
+      ])
+        if (entry['referenceId'] is String)
+          entry['referenceId'] as String,
+    };
+    for (final entry in staged.entries) {
+      if (!liveIds.contains(entry.key)) byId.putIfAbsent(entry.key, () => entry.value);
+    }
     if (!await prefs.setStringList(
         pendingKey, byId.values.map(jsonEncode).toList())) {
       throw StateError('Phone references could not be staged for relinking');
@@ -213,6 +242,56 @@ class PhonePortableState {
           !await prefs.setString(actualKey, value)) {
         throw StateError('Phone sorting choice could not be restored');
       }
+    }
+  }
+
+  /// Manual relinking is the only authority for reusing an imported
+  /// reference on another phone. The caller must first verify that the
+  /// selected URI is currently readable through the storage provider.
+  static Future<void> relink({
+    required String referenceId,
+    required String selectedUri,
+    required String selectedName,
+  }) async {
+    if (referenceId.isEmpty || selectedUri.isEmpty || selectedName.isEmpty ||
+        !selectedName.toLowerCase().endsWith('.pdf')) {
+      throw ArgumentError('Choose a readable PDF to relink');
+    }
+    final prefs = await SharedPreferences.getInstance();
+    final entries = _readRecords(prefs.getStringList(pendingKey));
+    final matching = entries.where((e) => e['referenceId'] == referenceId);
+    if (matching.length != 1) {
+      throw StateError('The backed-up Phone reference is no longer pending');
+    }
+    final original = matching.single;
+    await PhoneReferenceIdentity.bindSelected(selectedUri, referenceId);
+    final restored = <String, Object?>{
+      ...original,
+      'uri': selectedUri,
+      'name': selectedName,
+      'needsRelinking': false,
+    }..remove('originalUri');
+
+    Future<void> writeIfSelected(String key, bool include) async {
+      if (!include) return;
+      final current = _readRecords(prefs.getStringList(key));
+      if (current.any((e) => e['referenceId'] == referenceId)) return;
+      if (current.any((e) => e['uri'] == selectedUri)) {
+        throw StateError('Selected PDF already has a separate Phone reference');
+      }
+      current.insert(0, restored);
+      if (!await prefs.setStringList(key,
+          (key == recentKey ? current.take(20) : current).map(jsonEncode).toList())) {
+        throw StateError('Could not restore the selected Phone reference');
+      }
+    }
+
+    await writeIfSelected(starKey, original['wasStarred'] == true);
+    await writeIfSelected(recentKey, original['wasRecent'] == true);
+    final remaining = entries.where((e) => e['referenceId'] != referenceId).toList();
+    if (!await prefs.setStringList(
+        pendingKey, remaining.map(jsonEncode).toList())) {
+      throw StateError('Could not complete Phone reference relinking');
     }
   }
 
