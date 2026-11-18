@@ -3507,7 +3507,10 @@ Future<int?> _restoreBackupLocked(
         }
         stagedPdfPaths[documentId] = stagedFile.path;
       }
-      final backupType = manifest['backupType'];
+      // Original v1 DocsGridBackup archives did not declare backupType.
+      // In that exact known legacy format, absent means a full archive;
+      // any unknown explicit type is still rejected.
+      final backupType = manifest['backupType'] ?? 'full';
       final databaseOnly = backupType == 'database';
       final rescue = backupType == 'rescue';
       if (backupType != 'full' && !databaseOnly && !rescue) {
