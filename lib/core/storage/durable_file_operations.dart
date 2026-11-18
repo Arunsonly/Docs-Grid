@@ -53,13 +53,8 @@ class DurableFileOperations {
     }
     RandomAccessFile? processLock;
     try {
-      final root = p.isAbsolute(db.path) ? p.dirname(db.path)
-          : Directory.systemTemp.path;
-      final lockDir = Directory(p.join(root, 'docsgrid_file_operation_locks'));
-      await lockDir.create(recursive: true);
-      final token = sha256.convert(utf8.encode(resourceKey)).toString();
-      processLock = await File(p.join(lockDir.path, '$token.lock'))
-          .open(mode: FileMode.append);
+      final lockFile = await _operationLockFile(db, resourceKey);
+      processLock = await lockFile.open(mode: FileMode.append);
       await processLock.lock(FileLock.exclusive);
     final operationId = await db.transaction<String>((txn) async {
       final rows = await txn.query(
@@ -144,6 +139,16 @@ class DurableFileOperations {
   /// terminal database commit succeeded. Never infer physical deletion from
   /// a missing file, and never automatically retry an irreversible delete.
   /// All other interrupted operations remain visible for safe same-kind retry.
+  static Future<File> _operationLockFile(
+      Database db, String resourceKey) async {
+    final root = p.isAbsolute(db.path) ? p.dirname(db.path)
+        : Directory.systemTemp.path;
+    final directory = Directory(p.join(root, 'docsgrid_file_operation_locks'));
+    await directory.create(recursive: true);
+    final token = sha256.convert(utf8.encode(resourceKey)).toString();
+    return File(p.join(directory.path, '$token.lock'));
+  }
+
   static Future<int> reconcileFinished(Database db) async {
     final rows = await db.query(
       'file_operation_journal',
@@ -152,6 +157,19 @@ class DurableFileOperations {
     var completed = 0;
     for (final row in rows) {
       final key = row['resource_key'] as String;
+      // A different process may still be deleting bytes while this instance
+      // opens SQLite. Never reconcile and release that process's ownership
+      // until the same physical OS lock is available without blocking.
+      RandomAccessFile? recoveryLock;
+      try {
+        recoveryLock = await (await _operationLockFile(db, key))
+            .open(mode: FileMode.append);
+        await recoveryLock.lock(FileLock.exclusive);
+      } on FileSystemException {
+        try { await recoveryLock?.close(); } catch (_) {}
+        continue;
+      }
+      try {
       final kind = row['kind'] as String;
       final phase = row['phase'] as String;
       bool committed = false;
@@ -186,6 +204,10 @@ class DurableFileOperations {
       }, where: "resource_key = ? AND operation_id = ? AND state != 'completed'",
           whereArgs: [key, row['operation_id']]);
       completed += n;
+      } finally {
+        try { await recoveryLock.unlock(); } catch (_) {}
+        try { await recoveryLock.close(); } catch (_) {}
+      }
     }
     return completed;
   }
