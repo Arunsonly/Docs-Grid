@@ -1098,6 +1098,31 @@ class FolderRepository {
     if (otherReferences.isNotEmpty) {
       throw StateError('This folder contains a separately recycled PDF. Permanently delete or restore that PDF first.');
     }
+    // A folder from another trash operation (or an active folder) may still
+    // reference a child in this tree. Reject before touching any physical bytes.
+    final otherFolderReferences = await db.query(
+      'folders', columns: ['id'],
+      where: "parent_id IN ($placeholders) AND "
+          "(COALESCE(trash_operation_id, '') != ? OR deleted_at IS NULL)",
+      whereArgs: [...ids, operationId], limit: 1,
+    );
+    if (otherFolderReferences.isNotEmpty) {
+      throw StateError('This folder tree contains a separately owned child folder.');
+    }
+    final byId = {for (final row in folders) row['id'] as String: row};
+    int depth(Map<String, Object?> row) {
+      var count = 0;
+      var parentId = row['parent_id'] as String?;
+      final seen = <String>{};
+      while (parentId != null && byId.containsKey(parentId)) {
+        if (!seen.add(parentId)) throw StateError('Folder hierarchy contains a cycle.');
+        count++;
+        parentId = byId[parentId]!['parent_id'] as String?;
+      }
+      return count;
+    }
+    // Validate hierarchy before any irreversible file operation.
+    final deepestFirst = [...folders]..sort((a, b) => depth(b).compareTo(depth(a)));
     final documents = await db.query(
       'documents', columns: ['id', 'name', 'storage_uri'],
       where: 'trash_operation_id = ? AND deleted_at IS NOT NULL',
@@ -1144,19 +1169,6 @@ class FolderRepository {
         });
       });
     }
-    final byId = {for (final row in folders) row['id'] as String: row};
-    int depth(Map<String, Object?> row) {
-      var count = 0;
-      var parentId = row['parent_id'] as String?;
-      final seen = <String>{};
-      while (parentId != null && byId.containsKey(parentId)) {
-        if (!seen.add(parentId)) throw StateError('Folder hierarchy contains a cycle.');
-        count++;
-        parentId = byId[parentId]!['parent_id'] as String?;
-      }
-      return count;
-    }
-    final deepestFirst = [...folders]..sort((a, b) => depth(b).compareTo(depth(a)));
     for (final folder in deepestFirst) {
       final uri = folder['storage_uri_or_relative_path'] as String?;
       if (uri != null && uri.isNotEmpty) {
@@ -1168,9 +1180,19 @@ class FolderRepository {
       }
     }
     await db.transaction((txn) async {
-      await txn.delete('folders',
-        where: 'trash_operation_id = ? AND deleted_at IS NOT NULL',
-        whereArgs: [operationId]);
+      // Production SQLite uses ON DELETE RESTRICT for folders.parent_id.
+      // Removing the whole operation in one DELETE can fail even when every
+      // physical file was successfully removed. Delete descendants first.
+      for (final folder in deepestFirst) {
+        final deleted = await txn.delete(
+          'folders',
+          where: 'id = ? AND trash_operation_id = ? AND deleted_at IS NOT NULL',
+          whereArgs: [folder['id'], operationId],
+        );
+        if (deleted != 1) {
+          throw StateError('Recycled folder changed during permanent deletion.');
+        }
+      }
       await txn.insert('history', {
         'id': _uuid.v4(), 'document_id': null,
         'action': 'folder_tree_permanently_deleted',
