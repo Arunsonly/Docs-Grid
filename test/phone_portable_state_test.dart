@@ -89,6 +89,32 @@ void main() {
     );
   });
 
+  test('relink merges into already observed physical PDF without changing its ID',
+      () async {
+    const sameUri = 'content://media/external_primary/file/77';
+    await PhoneRecentHistory.recordOpened(sameUri, 'Same.pdf');
+    final localId = await PhoneReferenceIdentity.idForUri(sameUri);
+    await PhonePortableState.restoreAsPending({
+      'format': PhonePortableState.format,
+      'version': 1,
+      'stars': [
+        {'referenceId': 'imported-id', 'uri': 'content://old/file/77',
+         'name': 'Same.pdf'}
+      ],
+      'recent': <Object>[],
+    });
+    await PhonePortableState.relink(
+      referenceId: 'imported-id', selectedUri: sameUri, selectedName: 'Same.pdf',
+    );
+    expect(await PhoneReferenceIdentity.idForUri(sameUri), localId);
+    final stars = await PhoneStarRepository.list();
+    expect(stars, hasLength(1));
+    expect(stars.single['referenceId'], localId);
+    final prefs = await SharedPreferences.getInstance();
+    expect(prefs.getStringList(PhoneRecentHistory.storageKey), hasLength(1));
+    expect(await PhonePortableState.pending(), isEmpty);
+  });
+
   test('untrusted or duplicate Phone state is rejected', () {
     expect(() => PhonePortableState.validate({
       'format': PhonePortableState.format,

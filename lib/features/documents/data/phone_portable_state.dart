@@ -55,7 +55,7 @@ class PhoneReferenceIdentity {
 
   /// A manual file selection may bind an imported logical ID only if the
   /// selected storage locator does not belong to another live reference.
-  static Future<void> bindSelected(String uri, String referenceId) =>
+  static Future<String> bindSelected(String uri, String referenceId) =>
       _serialized(() async {
     if (uri.isEmpty || referenceId.isEmpty) {
       throw ArgumentError('A valid Phone file and identity are required');
@@ -63,13 +63,17 @@ class PhoneReferenceIdentity {
     final prefs = await SharedPreferences.getInstance();
     final current = _parse(prefs.getString(storageKey));
     final existing = current[uri];
-    if (existing != null && existing != referenceId) {
-      throw StateError('This Phone PDF already belongs to another reference');
+    if (existing != null) {
+      // The selected URI already has a local logical identity (for example,
+      // from a completed Recent scan). The user explicitly selected that
+      // exact physical file, so preserve its ID and merge saved preferences.
+      return existing;
     }
     current[uri] = referenceId;
     if (!await prefs.setString(storageKey, jsonEncode(current))) {
       throw StateError('Could not bind the selected Phone PDF');
     }
+    return referenceId;
   });
 
   static Future<void> renamed(String oldUri, String newUri) =>
@@ -264,9 +268,11 @@ class PhonePortableState {
       throw StateError('The backed-up Phone reference is no longer pending');
     }
     final original = matching.single;
-    await PhoneReferenceIdentity.bindSelected(selectedUri, referenceId);
+    final selectedReferenceId =
+        await PhoneReferenceIdentity.bindSelected(selectedUri, referenceId);
     final restored = <String, Object?>{
       ...original,
+      'referenceId': selectedReferenceId,
       'uri': selectedUri,
       'name': selectedName,
       'needsRelinking': false,
@@ -275,10 +281,8 @@ class PhonePortableState {
     Future<void> writeIfSelected(String key, bool include) async {
       if (!include) return;
       final current = _readRecords(prefs.getStringList(key));
-      if (current.any((e) => e['referenceId'] == referenceId)) return;
-      if (current.any((e) => e['uri'] == selectedUri)) {
-        throw StateError('Selected PDF already has a separate Phone reference');
-      }
+      if (current.any((e) => e['referenceId'] == selectedReferenceId ||
+          e['uri'] == selectedUri)) return;
       current.insert(0, restored);
       if (!await prefs.setStringList(key,
           (key == recentKey ? current.take(20) : current).map(jsonEncode).toList())) {
