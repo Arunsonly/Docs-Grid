@@ -220,8 +220,7 @@ class MainActivity : FlutterActivity() {
                 @Suppress("DEPRECATION")
                 val observer = object : FileObserver(directory.path, localPdfWatchEvents) {
                     override fun onEvent(event: Int, path: String?) {
-                        if ((event and FileObserver.ISDIR) != 0 ||
-                            path == null || !path.endsWith(".pdf", ignoreCase = true) ||
+                        if (path == null || !path.endsWith(".pdf", ignoreCase = true) ||
                             (event and localPdfWatchEvents) == 0) return
                         // Callbacks arrive off the UI thread. Reuse the
                         // existing 650 ms ContentObserver debounce, never
