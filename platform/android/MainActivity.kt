@@ -267,18 +267,26 @@ class MainActivity : FlutterActivity() {
     ) {
         // Precise MediaStore item URIs and local paths can be refreshed without
         // querying the entire PDF library. All other events reconcile fully.
-        if (localPath != null) {
-            pendingLocalPaths.add(localPath)
-        } else if (changedUri != null && changedUri.authority == "media" &&
-            changedUri.pathSegments.size == 3 &&
-            changedUri.pathSegments[1] == "file" &&
-            changedUri.lastPathSegment?.toLongOrNull() != null) {
-            pendingMediaUris.add(changedUri.toString())
-        } else {
-            pendingUnscopedChange = true
-        }
-        if (pendingMediaUris.size + pendingLocalPaths.size > 48) {
-            pendingUnscopedChange = true
+        if (!pendingUnscopedChange) {
+            if (localPath != null) {
+                pendingLocalPaths.add(localPath)
+            } else if (changedUri != null && changedUri.authority == "media" &&
+                changedUri.pathSegments.size == 3 &&
+                changedUri.pathSegments[1] == "file" &&
+                changedUri.lastPathSegment?.toLongOrNull() != null) {
+                pendingMediaUris.add(changedUri.toString())
+            } else {
+                pendingUnscopedChange = true
+            }
+            if (pendingMediaUris.size + pendingLocalPaths.size > 48) {
+                pendingUnscopedChange = true
+            }
+            if (pendingUnscopedChange) {
+                // Never retain an unbounded burst of per-file paths/URIs.
+                // An opaque/overflowed event will get one full reconciliation.
+                pendingMediaUris.clear()
+                pendingLocalPaths.clear()
+            }
         }
         storageChangeRunnable?.let { mainHandler.removeCallbacks(it) }
         val task = Runnable {
