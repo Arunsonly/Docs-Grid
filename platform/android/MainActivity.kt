@@ -296,6 +296,98 @@ class MainActivity : FlutterActivity() {
         mainHandler.postDelayed(task, 650L)
     }
 
+    private fun queryPhonePdfChanges(
+        mediaUris: List<String>, localPaths: List<String>
+    ): Map<String, Any> {
+        // A bounded, fail-closed fast path. Never modify the filesystem here.
+        if (android.os.Build.VERSION.SDK_INT < 29 ||
+            (android.os.Build.VERSION.SDK_INT >= 30 &&
+                !Environment.isExternalStorageManager()) ||
+            mediaUris.size + localPaths.size !in 1..48) {
+            return mapOf("complete" to false)
+        }
+        val volumeNames = MediaStore.getExternalVolumeNames(this)
+        val targets = linkedMapOf<String, MutableList<Pair<String, List<String>>>>()
+        val touchedUris = linkedSetOf<String>()
+        val touchedPaths = linkedSetOf<String>()
+        val watchedFiles = linkedMapOf<String, java.io.File>()
+
+        for (value in mediaUris) {
+            val uri = try { Uri.parse(value) }
+                catch (_: Exception) { return mapOf("complete" to false) }
+            val parts = uri.pathSegments
+            if (uri.scheme != "content" || uri.authority != "media" ||
+                parts.size != 3 || parts[1] != "file" ||
+                parts[2].toLongOrNull() == null || parts[0] !in volumeNames) {
+                return mapOf("complete" to false)
+            }
+            touchedUris.add(value)
+            targets.getOrPut(parts[0]) { mutableListOf() }
+                .add(MediaStore.MediaColumns._ID + " = ?" to listOf(parts[2]))
+        }
+
+        if (localPaths.isNotEmpty()) {
+            val root = try { Environment.getExternalStorageDirectory().canonicalFile }
+                catch (_: Exception) { return mapOf("complete" to false) }
+            val prefix = root.path + java.io.File.separator
+            if (!root.isDirectory || MediaStore.VOLUME_EXTERNAL_PRIMARY !in volumeNames) {
+                return mapOf("complete" to false)
+            }
+            for (raw in localPaths) {
+                val file = try { java.io.File(raw).canonicalFile }
+                    catch (_: Exception) { return mapOf("complete" to false) }
+                if (!file.path.startsWith(prefix) || !file.name.endsWith(".pdf", true) ||
+                    file.name.length > 255) return mapOf("complete" to false)
+                val relative = file.path.substring(prefix.length)
+                    .replace(java.io.File.separatorChar, '/')
+                val folder = relative.substringBeforeLast('/', "")
+                val relativeFolder = if (folder.isEmpty()) "" else "$folder/"
+                val key = "Internal/$relative"
+                touchedPaths.add(key)
+                watchedFiles[key] = file
+                targets.getOrPut(MediaStore.VOLUME_EXTERNAL_PRIMARY) { mutableListOf() }
+                    .add(
+                        "(" + MediaStore.MediaColumns.RELATIVE_PATH + " = ? AND " +
+                            MediaStore.MediaColumns.DISPLAY_NAME + " = ?)" to
+                            listOf(relativeFolder, file.name)
+                    )
+            }
+        }
+        if (targets.isEmpty()) return mapOf("complete" to false)
+        val scoped = targets.mapValues { (_, predicates) ->
+            Pair(predicates.joinToString(" OR ", "(", ")") { it.first },
+                predicates.flatMap { it.second })
+        }
+        val result = queryPhonePdfIndex(scoped)
+        if (result["complete"] != true) return mapOf("complete" to false)
+        @Suppress("UNCHECKED_CAST")
+        val found = result["entries"] as List<Map<String, Any>>
+
+        // MediaStore occasionally retains rows for recently deleted files.
+        // Do not re-add a row for an absent path merely because it is indexed.
+        val absentPaths = watchedFiles.filterValues { !it.isFile }.keys
+        val entries = found.filterNot { item ->
+            val folder = (item["folderPath"] as? String).orEmpty().ifEmpty { "Internal" }
+            val name = item["name"] as? String ?: ""
+            "$folder/$name" in absentPaths
+        }
+
+        // File creation may precede MediaStore indexing. An existing local
+        // PDF without a matching row is NOT proof of deletion: reconcile.
+        for ((key, file) in watchedFiles) {
+            if (file.isFile && entries.none { item ->
+                val folder = (item["folderPath"] as? String).orEmpty().ifEmpty { "Internal" }
+                "$folder/${item["name"]}" == key
+            }) return mapOf("complete" to false)
+        }
+        return mapOf(
+            "complete" to true,
+            "entries" to entries,
+            "touchedUris" to touchedUris.toList(),
+            "touchedPaths" to touchedPaths.toList()
+        )
+    }
+
     private fun queryPhonePdfIndex(
         scopedSelections: Map<String, Pair<String, List<String>>>? = null
     ): Map<String, Any> {
