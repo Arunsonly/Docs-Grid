@@ -7,6 +7,7 @@ class Folder {
     this.parentId,
     this.storageUri,
     this.pdfCount = 0,
+    this.pdfBytes = 0,
   });
 
   final String id;
@@ -14,6 +15,7 @@ class Folder {
   final String? parentId;
   final String? storageUri;
   final int pdfCount;
+  final int pdfBytes;
   final DateTime createdAt;
   final DateTime updatedAt;
 
@@ -23,6 +25,7 @@ class Folder {
         parentId: map['parent_id'] as String?,
         storageUri: map['storage_uri_or_relative_path'] as String?,
         pdfCount: (map['pdf_count'] as num?)?.toInt() ?? 0,
+        pdfBytes: (map['pdf_bytes'] as num?)?.toInt() ?? 0,
         createdAt: DateTime.parse(map['created_at'] as String),
         updatedAt: DateTime.parse(map['updated_at'] as String),
       );

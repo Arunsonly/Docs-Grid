@@ -11,6 +11,7 @@ import '../data/phone_recent_history.dart';
 import '../data/phone_star_repository.dart';
 import '../data/phone_trash_origin.dart';
 import '../../../core/storage/storage_location_service.dart';
+import '../../../core/storage/portable_snapshot_events.dart';
 import '../../categories/data/category_repository.dart';
 import '../../folders/data/folder_repository.dart';
 import '../../tools/document_tools_service.dart';
@@ -20,10 +21,20 @@ import '../../folders/presentation/folders_screen.dart';
 import '../../reminders/data/reminder_repository.dart';
 
 class DocumentsScreen extends StatefulWidget {
-  const DocumentsScreen({super.key, this.favoritesOnly = false, this.recentOnly = false, this.phoneOnly = false});
+  const DocumentsScreen({
+    super.key,
+    this.favoritesOnly = false,
+    this.recentOnly = false,
+    this.phoneOnly = false,
+    this.active = true,
+    this.onBackAtRoot,
+  });
   final bool favoritesOnly;
   final bool recentOnly;
   final bool phoneOnly;
+  // Only the visible tab may intercept Android Back.
+  final bool active;
+  final VoidCallback? onBackAtRoot;
 
   @override
   State<DocumentsScreen> createState() => _DocumentsScreenState();
@@ -50,8 +61,12 @@ class _DocumentsScreenState extends State<DocumentsScreen>
   bool _phoneScanLoading = false;
   bool _phoneScanCompleted = false;
   StreamSubscription<void>? _storageChangesSubscription;
+  StreamSubscription<void>? _libraryChangesSubscription;
+  Timer? _libraryRefreshDebounce;
+  bool _libraryRefreshPendingWhileHidden = false;
   Timer? _phoneRefreshDebounce;
   bool _phoneScanPending = false;
+  bool _phoneRefreshPendingWhileHidden = false;
   int _trashCount = 0;
   int _trashFolderCount = 0;
   List<Map<String, Object?>> _phoneRecent = [];
@@ -88,6 +103,9 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       _loadViewPreference();
       _loadTrashSummary();
       _loadRecentDocuments();
+      _libraryChangesSubscription = PortableSnapshotEvents.changes.listen((_) {
+        _scheduleLibraryRefresh();
+      });
     }
     _search.addListener(_onSearchChanged);
     _scrollController.addListener(_onScroll);
@@ -136,6 +154,41 @@ class _DocumentsScreenState extends State<DocumentsScreen>
   }
 
   @override
+  void didUpdateWidget(covariant DocumentsScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!oldWidget.active && widget.active &&
+        _phoneRefreshPendingWhileHidden) {
+      _phoneRefreshPendingWhileHidden = false;
+      _schedulePhoneStorageRefresh();
+    }
+    if (!oldWidget.active && widget.active &&
+        _libraryRefreshPendingWhileHidden) {
+      _libraryRefreshPendingWhileHidden = false;
+      _scheduleLibraryRefresh();
+    }
+  }
+
+  void _scheduleLibraryRefresh() {
+    if (!mounted || widget.phoneOnly || widget.favoritesOnly ||
+        widget.recentOnly) return;
+    if (!widget.active) {
+      _libraryRefreshPendingWhileHidden = true;
+      return;
+    }
+    _libraryRefreshDebounce?.cancel();
+    _libraryRefreshDebounce = Timer(const Duration(milliseconds: 240), () {
+      if (!mounted) return;
+      if (!widget.active) {
+        _libraryRefreshPendingWhileHidden = true;
+        return;
+      }
+      unawaited(_load());
+      unawaited(_loadRecentDocuments());
+      unawaited(_loadTrashSummary());
+    });
+  }
+
+  @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       _schedulePhoneStorageRefresh();
@@ -144,9 +197,20 @@ class _DocumentsScreenState extends State<DocumentsScreen>
 
   void _schedulePhoneStorageRefresh() {
     if (!mounted || widget.favoritesOnly || widget.recentOnly) return;
+    if (!widget.active) {
+      // Keep the last index visible while the tab is hidden; reconcile it
+      // when the user returns, not with parallel scans from hidden tabs.
+      _phoneRefreshPendingWhileHidden = true;
+      return;
+    }
     _phoneRefreshDebounce?.cancel();
     _phoneRefreshDebounce = Timer(const Duration(milliseconds: 450), () {
-      if (mounted) unawaited(_scanPhoneStorage(openBrowser: false));
+      if (!mounted) return;
+      if (!widget.active) {
+        _phoneRefreshPendingWhileHidden = true;
+        return;
+      }
+      unawaited(_scanPhoneStorage(openBrowser: false));
     });
   }
 
@@ -154,6 +218,8 @@ class _DocumentsScreenState extends State<DocumentsScreen>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _storageChangesSubscription?.cancel();
+    _libraryChangesSubscription?.cancel();
+    _libraryRefreshDebounce?.cancel();
     _phoneRefreshDebounce?.cancel();
     _loadGeneration++;
     _searchDebounce?.cancel();
@@ -741,11 +807,10 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       if(inaccessibleRoots>0 && mounted) _message('$inaccessibleRoots granted location(s) could not be read; they were not marked empty.');
     } catch(error) {
       if (mounted) {
-        setState(() {
-          _phoneEntries = [];
-          _phoneScanCompleted = false;
-        });
-        _message('Phone Storage scan failed; inaccessible locations were not marked empty: $error');
+        // An index-refresh failure must not erase the last usable listing.
+        // Opening a cached PDF still goes through the real storage provider.
+        setState(() => _phoneScanCompleted = _phoneEntries.isNotEmpty);
+        _message('Phone Storage refresh failed; the last index is still shown: $error');
       }
     } finally {
       if (mounted) setState(() => _phoneScanLoading = false);
@@ -2183,16 +2248,22 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         starredUris: _phoneStarredUris,
         onTrashPdf: _trashPhonePdf,
         embedded: true,
+        active: widget.active,
+        onBackAtRoot: widget.onBackAtRoot,
         // Keep the last usable index visible while refresh continues silently.
         isLoading: _phoneScanLoading && _phoneEntries.isEmpty,
         onRefresh: () => _scanPhoneStorage(openBrowser: true),
       );
     }
     return PopScope<void>(
-      canPop: !_selectionMode,
+      canPop: !widget.active ||
+          (!_selectionMode && widget.onBackAtRoot == null),
       onPopInvokedWithResult: (didPop, result) {
-        if (!didPop && _selectionMode && mounted) {
+        if (didPop || !widget.active || !mounted) return;
+        if (_selectionMode) {
           _clearSelection();
+        } else {
+          widget.onBackAtRoot?.call();
         }
       },
       child: RefreshIndicator(

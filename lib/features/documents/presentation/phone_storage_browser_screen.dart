@@ -22,6 +22,8 @@ class PhoneStorageBrowserScreen extends StatefulWidget {
     this.embedded = false,
     this.isLoading = false,
     this.onRefresh,
+    this.active = true,
+    this.onBackAtRoot,
   });
 
   final String rootName;
@@ -37,6 +39,8 @@ class PhoneStorageBrowserScreen extends StatefulWidget {
   final bool embedded;
   final bool isLoading;
   final Future<void> Function()? onRefresh;
+  final bool active;
+  final VoidCallback? onBackAtRoot;
 
   @override
   State<PhoneStorageBrowserScreen> createState() =>
@@ -656,10 +660,14 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
     final selectedPath = _selectedFolderPath;
     if (widget.embedded) {
       return PopScope<void>(
-        canPop: selectedPath == null,
+        canPop: !widget.active ||
+            (selectedPath == null && widget.onBackAtRoot == null),
         onPopInvokedWithResult: (didPop, result) {
-          if (!didPop && _selectedFolderPath != null && mounted) {
+          if (didPop || !widget.active || !mounted) return;
+          if (_selectedFolderPath != null) {
             setState(() => _selectedFolderPath = null);
+          } else {
+            widget.onBackAtRoot?.call();
           }
         },
         child: _buildBrowserContent(),
