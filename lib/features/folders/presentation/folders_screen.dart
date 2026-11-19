@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../../../core/widgets/storage_sort_controls.dart';
+import '../../../core/storage/portable_snapshot_events.dart';
 
 import '../../documents/data/document_repository.dart';
 import '../../documents/presentation/document_thumbnail.dart';
@@ -15,7 +16,14 @@ import '../data/folder_repository.dart';
 import '../domain/folder.dart';
 
 class FoldersScreen extends StatefulWidget {
-  const FoldersScreen({super.key});
+  const FoldersScreen({
+    super.key,
+    this.active = true,
+    this.onBackAtRoot,
+  });
+
+  final bool active;
+  final VoidCallback? onBackAtRoot;
 
   @override
   State<FoldersScreen> createState() => _FoldersScreenState();
@@ -42,18 +50,58 @@ class _FoldersScreenState extends State<FoldersScreen> {
   List<Folder> _draftFolderOrder = <Folder>[];
   late Future<List<Folder>> _foldersFuture;
   late Future<List<DocumentRecord>> _documentsFuture;
+  final Map<String, List<Folder>> _folderSnapshots = {};
+  final Map<String, List<DocumentRecord>> _documentSnapshots = {};
+  int _snapshotGeneration = 0;
+  StreamSubscription<void>? _dataChangesSubscription;
+  Timer? _refreshDebounce;
+  bool _reloadOnReturn = false;
 
   @override
   void initState() {
     super.initState();
     _load();
     unawaited(_restoreSortPreference());
+    _dataChangesSubscription = PortableSnapshotEvents.changes.listen((_) {
+      _invalidateSnapshots();
+      if (!widget.active) {
+        _reloadOnReturn = true;
+        return;
+      }
+      _refreshDebounce?.cancel();
+      _refreshDebounce = Timer(const Duration(milliseconds: 200), () {
+        if (mounted && widget.active) {
+          unawaited(_refresh());
+        } else {
+          _reloadOnReturn = true;
+        }
+      });
+    });
+  }
+
+  @override
+  void didUpdateWidget(covariant FoldersScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!oldWidget.active && widget.active && _reloadOnReturn) {
+      _reloadOnReturn = false;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && widget.active) unawaited(_refresh());
+      });
+    }
   }
 
   @override
   void dispose() {
+    _dataChangesSubscription?.cancel();
+    _refreshDebounce?.cancel();
     _searchController.dispose();
     super.dispose();
+  }
+
+  void _invalidateSnapshots() {
+    _snapshotGeneration++;
+    _folderSnapshots.clear();
+    _documentSnapshots.clear();
   }
 
   Future<void> _restoreSortPreference() async {
@@ -89,17 +137,35 @@ class _FoldersScreenState extends State<FoldersScreen> {
   }
 
   void _load() {
-    _foldersFuture = _repository.childrenOf(_currentFolderId);
+    final folderId = _currentFolderId;
     final query = _searchQuery.trim();
+    final folderKey = folderId ?? '';
+    final documentKey = '$folderKey|$query';
+    final generation = _snapshotGeneration;
+    // Return last successfully rendered rows immediately when navigating
+    // back to a folder. SQLite/provider validation runs in the background;
+    // snapshots hold metadata only, never actual PDF bytes.
+    _foldersFuture = _repository.childrenOf(folderId).then((folders) {
+      if (generation == _snapshotGeneration) {
+        _folderSnapshots[folderKey] = folders;
+      }
+      return folders;
+    });
     // Grid search is library-wide, not limited to the currently open folder.
-    _documentsFuture = query.isEmpty
-        ? _documents.listInFolder(_currentFolderId)
-        : _documents.list(query: query);
+    _documentsFuture = (query.isEmpty
+        ? _documents.listInFolder(folderId)
+        : _documents.list(query: query)).then((documents) {
+      if (generation == _snapshotGeneration) {
+        _documentSnapshots[documentKey] = documents;
+      }
+      return documents;
+    });
   }
 
   Future<void> _refresh() async {
     if (!mounted) return;
     setState(() {
+      _invalidateSnapshots();
       _isReorderingFolders = false;
       _draftFolderOrder = <Folder>[];
       _load();
@@ -839,10 +905,14 @@ class _FoldersScreenState extends State<FoldersScreen> {
     return Material(
       color: Theme.of(context).scaffoldBackgroundColor,
       child: PopScope(
-      canPop: _ancestors.isEmpty,
+      canPop: !widget.active ||
+          (_ancestors.isEmpty && widget.onBackAtRoot == null),
       onPopInvokedWithResult: (didPop, result) {
-        if (!didPop && _ancestors.isNotEmpty) {
+        if (didPop || !widget.active || !mounted) return;
+        if (_ancestors.isNotEmpty) {
           _goToAncestor(_ancestors.length - 2);
+        } else {
+          widget.onBackAtRoot?.call();
         }
       },
       child: Stack(
@@ -1011,8 +1081,10 @@ class _FoldersScreenState extends State<FoldersScreen> {
         Expanded(
           child: FutureBuilder<List<Folder>>(
             future: _foldersFuture,
+            initialData: _folderSnapshots[_currentFolderId ?? ''],
             builder: (context, folderSnapshot) {
-              if (folderSnapshot.connectionState == ConnectionState.waiting) {
+              if (folderSnapshot.connectionState == ConnectionState.waiting &&
+                  !folderSnapshot.hasData) {
                 return const Center(child: CircularProgressIndicator());
               }
               if (folderSnapshot.hasError) {
@@ -1028,8 +1100,11 @@ class _FoldersScreenState extends State<FoldersScreen> {
               final folders = folderSnapshot.data ?? const <Folder>[];
               return FutureBuilder<List<DocumentRecord>>(
                 future: _documentsFuture,
+                initialData: _documentSnapshots[
+                    '${_currentFolderId ?? ''}|${_searchQuery.trim()}'],
                 builder: (context, documentSnapshot) {
-                  if (documentSnapshot.connectionState == ConnectionState.waiting) {
+                  if (documentSnapshot.connectionState == ConnectionState.waiting &&
+                      !documentSnapshot.hasData) {
                     return const Center(child: CircularProgressIndicator());
                   }
                   if (documentSnapshot.hasError) {
