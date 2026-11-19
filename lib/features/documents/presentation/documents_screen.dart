@@ -20,10 +20,20 @@ import '../../folders/presentation/folders_screen.dart';
 import '../../reminders/data/reminder_repository.dart';
 
 class DocumentsScreen extends StatefulWidget {
-  const DocumentsScreen({super.key, this.favoritesOnly = false, this.recentOnly = false, this.phoneOnly = false});
+  const DocumentsScreen({
+    super.key,
+    this.favoritesOnly = false,
+    this.recentOnly = false,
+    this.phoneOnly = false,
+    this.active = true,
+    this.onBackAtRoot,
+  });
   final bool favoritesOnly;
   final bool recentOnly;
   final bool phoneOnly;
+  // Only the visible tab may intercept Android Back.
+  final bool active;
+  final VoidCallback? onBackAtRoot;
 
   @override
   State<DocumentsScreen> createState() => _DocumentsScreenState();
@@ -52,6 +62,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
   StreamSubscription<void>? _storageChangesSubscription;
   Timer? _phoneRefreshDebounce;
   bool _phoneScanPending = false;
+  bool _phoneRefreshPendingWhileHidden = false;
   int _trashCount = 0;
   int _trashFolderCount = 0;
   List<Map<String, Object?>> _phoneRecent = [];
@@ -136,6 +147,16 @@ class _DocumentsScreenState extends State<DocumentsScreen>
   }
 
   @override
+  void didUpdateWidget(covariant DocumentsScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!oldWidget.active && widget.active &&
+        _phoneRefreshPendingWhileHidden) {
+      _phoneRefreshPendingWhileHidden = false;
+      _schedulePhoneStorageRefresh();
+    }
+  }
+
+  @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       _schedulePhoneStorageRefresh();
@@ -144,6 +165,12 @@ class _DocumentsScreenState extends State<DocumentsScreen>
 
   void _schedulePhoneStorageRefresh() {
     if (!mounted || widget.favoritesOnly || widget.recentOnly) return;
+    if (!widget.active) {
+      // Keep the last index visible while the tab is hidden; reconcile it
+      // when the user returns, not with parallel scans from hidden tabs.
+      _phoneRefreshPendingWhileHidden = true;
+      return;
+    }
     _phoneRefreshDebounce?.cancel();
     _phoneRefreshDebounce = Timer(const Duration(milliseconds: 450), () {
       if (mounted) unawaited(_scanPhoneStorage(openBrowser: false));
@@ -741,11 +768,10 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       if(inaccessibleRoots>0 && mounted) _message('$inaccessibleRoots granted location(s) could not be read; they were not marked empty.');
     } catch(error) {
       if (mounted) {
-        setState(() {
-          _phoneEntries = [];
-          _phoneScanCompleted = false;
-        });
-        _message('Phone Storage scan failed; inaccessible locations were not marked empty: $error');
+        // An index-refresh failure must not erase the last usable listing.
+        // Opening a cached PDF still goes through the real storage provider.
+        setState(() => _phoneScanCompleted = _phoneEntries.isNotEmpty);
+        _message('Phone Storage refresh failed; the last index is still shown: $error');
       }
     } finally {
       if (mounted) setState(() => _phoneScanLoading = false);
@@ -2183,16 +2209,22 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         starredUris: _phoneStarredUris,
         onTrashPdf: _trashPhonePdf,
         embedded: true,
+        active: widget.active,
+        onBackAtRoot: widget.onBackAtRoot,
         // Keep the last usable index visible while refresh continues silently.
         isLoading: _phoneScanLoading && _phoneEntries.isEmpty,
         onRefresh: () => _scanPhoneStorage(openBrowser: true),
       );
     }
     return PopScope<void>(
-      canPop: !_selectionMode,
+      canPop: !widget.active ||
+          (!_selectionMode && widget.onBackAtRoot == null),
       onPopInvokedWithResult: (didPop, result) {
-        if (!didPop && _selectionMode && mounted) {
+        if (didPop || !widget.active || !mounted) return;
+        if (_selectionMode) {
           _clearSelection();
+        } else {
+          widget.onBackAtRoot?.call();
         }
       },
       child: RefreshIndicator(
