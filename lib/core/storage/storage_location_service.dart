@@ -196,6 +196,9 @@ class StorageLocationService {
               ?.whereType<String>().toList(growable: false) ?? <String>[],
       'touchedLocalPaths': (raw['touchedPaths'] as List?)
               ?.whereType<String>().toList(growable: false) ?? <String>[],
+      'volumes': normalized['volumes'],
+      'mountedVolumes': (raw['mountedVolumes'] as List?)
+              ?.whereType<String>().toList(growable: false) ?? <String>[],
     };
   }
 
