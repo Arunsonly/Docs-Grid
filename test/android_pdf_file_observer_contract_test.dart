@@ -37,7 +37,7 @@ void main() {
     expect(end, greaterThan(start));
     final watcherCode = source.substring(start, end);
     expect(watcherCode, contains('mainHandler.post {'));
-    expect(watcherCode, contains('scheduleStorageChangeEvent()'));
+    expect(watcherCode, contains('scheduleStorageChangeEvent('));
     expect(watcherCode, isNot(contains('listStorageTreeRecursively(')));
     expect(watcherCode, isNot(contains('copyPdf(')));
     expect(watcherCode, isNot(contains('deletePdf(')));
