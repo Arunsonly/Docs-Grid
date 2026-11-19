@@ -24,6 +24,32 @@ class PhonePdfDelta {
     return true;
   }
 
+  /// Volume mount/unmount, MediaStore database version reset and generation
+  /// rollback invalidate old item IDs. Rebuild rather than patch stale rows.
+  static bool volumesAreCompatible({
+    required Map<String, Object?> previous,
+    required Map<String, Object?> observed,
+    required Iterable<String> mounted,
+  }) {
+    final mountedSet = mounted.toSet();
+    if (previous.isEmpty || observed.isEmpty ||
+        mountedSet.length != previous.length ||
+        !mountedSet.containsAll(previous.keys)) return false;
+    for (final entry in observed.entries) {
+      final old = previous[entry.key];
+      final current = entry.value;
+      if (old is! Map || current is! Map ||
+          old['version'] is! String ||
+          old['version'] != current['version'] ||
+          old['label'] != current['label']) return false;
+      final oldGeneration = old['generation'];
+      final newGeneration = current['generation'];
+      if (oldGeneration is! num || newGeneration is! num ||
+          newGeneration < oldGeneration) return false;
+    }
+    return true;
+  }
+
   static PhonePdfDeltaResult apply({
     required List<Map<String, Object?>> existing,
     required List<Map<String, Object?>> updates,
