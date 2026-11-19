@@ -32,7 +32,7 @@ void main() {
 
   test('FileObserver only signals refresh and does not mutate PDF files', () {
     final start = source.indexOf('private fun startLocalPdfFileObservers()');
-    final end = source.indexOf('private fun scheduleStorageChangeEvent()', start);
+    final end = source.indexOf('private fun scheduleStorageChangeEvent(', start);
     expect(start, greaterThan(-1));
     expect(end, greaterThan(start));
     final watcherCode = source.substring(start, end);
