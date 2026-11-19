@@ -11,6 +11,8 @@ import android.content.ContentUris
 import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.os.Bundle
+import android.os.FileObserver
+import android.os.Environment
 import android.os.Handler
 import android.os.Looper
 import android.provider.DocumentsContract
@@ -39,7 +41,13 @@ class MainActivity : FlutterActivity() {
     private var storageChangeSink: EventChannel.EventSink? = null
     private val storageObservers = mutableListOf<ContentObserver>()
     private var storageObserversRegistered = false
+    private var storageObservationForeground = false
     private var storageChangeRunnable: Runnable? = null
+    // FileObserver complements MediaStore/SAF ContentObservers: a bounded,
+    // non-recursive, foreground-only watch on common local PDF locations.
+    private val localPdfFileObservers = mutableListOf<FileObserver>()
+    private val localPdfWatchEvents = FileObserver.CLOSE_WRITE or FileObserver.MOVED_TO or
+        FileObserver.MOVED_FROM or FileObserver.DELETE
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -101,16 +109,19 @@ class MainActivity : FlutterActivity() {
 
     override fun onResume() {
         super.onResume()
+        storageObservationForeground = true
         registerStorageChangeObservers()
     }
 
     override fun onPause() {
+        storageObservationForeground = false
         unregisterStorageChangeObservers()
         super.onPause()
     }
 
     private fun registerStorageChangeObservers() {
-        if (storageObserversRegistered || storageChangeSink == null) return
+        if (!storageObservationForeground ||
+            storageObserversRegistered || storageChangeSink == null) return
         val observedUris = linkedMapOf<String, Uri>()
         observedUris["media"] = MediaStore.Files.getContentUri("external")
         if (android.os.Build.VERSION.SDK_INT >= 29) {
@@ -150,9 +161,11 @@ class MainActivity : FlutterActivity() {
             }
         }
         storageObserversRegistered = true
+        startLocalPdfFileObservers()
     }
 
     private fun unregisterStorageChangeObservers() {
+        stopLocalPdfFileObservers()
         storageChangeRunnable?.let { mainHandler.removeCallbacks(it) }
         storageChangeRunnable = null
         storageObservers.forEach { observer ->
@@ -160,6 +173,85 @@ class MainActivity : FlutterActivity() {
         }
         storageObservers.clear()
         storageObserversRegistered = false
+    }
+
+    private fun startLocalPdfFileObservers() {
+        if (localPdfFileObservers.isNotEmpty()) return
+        // Do not request any additional permission. Without access, the
+        // existing ContentObservers and resume refresh remain authoritative.
+        if (android.os.Build.VERSION.SDK_INT >= 30 &&
+            !Environment.isExternalStorageManager()) return
+
+        val root = try {
+            Environment.getExternalStorageDirectory().canonicalFile
+        } catch (_: Exception) {
+            return
+        }
+        if (!root.isDirectory || !root.canRead()) return
+
+        // Android FileObserver does not watch subdirectories recursively.
+        // Restrict its scope to known, high-value PDF download locations;
+        // MediaStore/SAF and resume reconciliation still cover other paths.
+        // Never monitor DocsGrid's own portable data or backup directories.
+        val relativeDirectories = listOf(
+            "", "Download", "Downloads", "Documents", "Bluetooth",
+            "DCIM", "Pictures",
+            "WhatsApp/Media/WhatsApp Documents",
+            "Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Documents",
+            "Android/media/com.whatsapp.w4b/WhatsApp Business/Media/WhatsApp Business Documents",
+            "Telegram/Telegram Documents",
+            "Android/media/org.telegram.messenger/Telegram/Telegram Documents"
+        )
+        val rootPrefix = root.path + java.io.File.separator
+        val seen = hashSetOf<String>()
+        for (relative in relativeDirectories) {
+            if (localPdfFileObservers.size >= 16) break
+            val directory = try {
+                java.io.File(root, relative).canonicalFile
+            } catch (_: Exception) {
+                continue
+            }
+            if ((directory != root && !directory.path.startsWith(rootPrefix)) ||
+                !directory.isDirectory || !directory.canRead() ||
+                !seen.add(directory.path)) continue
+            try {
+                // String constructor remains available on older Android
+                // releases; FileObserver(File, mask) requires API 29.
+                @Suppress("DEPRECATION")
+                val observer = object : FileObserver(directory.path, localPdfWatchEvents) {
+                    override fun onEvent(event: Int, path: String?) {
+                        if ((event and FileObserver.ISDIR) != 0 ||
+                            path == null || !path.endsWith(".pdf", ignoreCase = true) ||
+                            (event and localPdfWatchEvents) == 0) return
+                        // Callbacks arrive off the UI thread. Reuse the
+                        // existing 650 ms ContentObserver debounce, never
+                        // perform a file scan or filesystem write here.
+                        mainHandler.post {
+                            if (storageObservationForeground &&
+                                storageObserversRegistered &&
+                                storageChangeSink != null) {
+                                scheduleStorageChangeEvent()
+                            }
+                        }
+                    }
+                }
+                observer.startWatching()
+                localPdfFileObservers.add(observer) // strong ref until stopWatching
+            } catch (_: Exception) {
+                // An inaccessible/OEM-specific directory must not break the app.
+            }
+        }
+    }
+
+    private fun stopLocalPdfFileObservers() {
+        for (observer in localPdfFileObservers) {
+            try {
+                observer.stopWatching()
+            } catch (_: Exception) {
+                // Failure to stop a single watch must not interrupt lifecycle.
+            }
+        }
+        localPdfFileObservers.clear()
     }
 
     private fun scheduleStorageChangeEvent() {
@@ -875,6 +967,8 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun onDestroy() {
+        storageObservationForeground = false
+        unregisterStorageChangeObservers()
         storageExecutor.shutdown()
         super.onDestroy()
     }
