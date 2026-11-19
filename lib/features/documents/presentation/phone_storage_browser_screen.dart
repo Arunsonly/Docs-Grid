@@ -49,6 +49,10 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
   StorageSortField _sortField = StorageSortField.name;
   bool _sortAscending = true;
   int _sortRevision = 0;
+  List<Map<String, Object?>>? _groupedEntries;
+  StorageSortField? _groupedSortField;
+  bool? _groupedSortAscending;
+  Map<String, List<Map<String, Object?>>>? _groupedCache;
 
   @override
   void initState() {
@@ -188,6 +192,13 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
   }
 
   Map<String, List<Map<String, Object?>>> get _directPdfFolders {
+    // Search, Favorites and partial UI updates should not sort all PDFs
+    // again unless the source snapshot or sorting preference changed.
+    final cached = _groupedCache;
+    if (cached != null &&
+        identical(_groupedEntries, widget.entries) &&
+        _groupedSortField == _sortField &&
+        _groupedSortAscending == _sortAscending) return cached;
     final grouped = <String, List<Map<String, Object?>>>{};
     // Cache directory dates once. Calculating them during every sort
     // comparison would turn large libraries into quadratic work.
@@ -232,10 +243,15 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
             field: _sortField,
             ascending: _sortAscending,
           ));
-    return {
+    final result = <String, List<Map<String, Object?>>>{
       for (final path in sorted)
         path: grouped[path]!..sort(_comparePdfs),
     };
+    _groupedEntries = widget.entries;
+    _groupedSortField = _sortField;
+    _groupedSortAscending = _sortAscending;
+    _groupedCache = result;
+    return result;
   }
 
   Map<String, Object?>? _directoryFor(String path) {
@@ -449,6 +465,7 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
       if (locationLabel != null && locationLabel.isNotEmpty) locationLabel,
     ].join(' · ');
     return ListTile(
+      key: ValueKey('phone-pdf-$uri'),
       leading: DocumentThumbnail(
         key: ValueKey('phone-thumbnail-$uri'),
         documentId: 'phone_$uri',
@@ -512,10 +529,10 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
 
     final isSearching = query.isNotEmpty;
     var visiblePdfCount = matchingPdfs.length;
-    final children = <Widget>[];
+    final children = <WidgetBuilder>[];
     if (selectedPath == null) {
       if (folderPaths.isNotEmpty) {
-        children.add(
+        children.add((context) => 
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
             child: Text('FOLDERS',
@@ -523,11 +540,11 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
           ),
         );
         for (final path in folderPaths) {
-          children.add(_buildFolderTile(path, folders[path]!));
+          children.add((context) => _buildFolderTile(path, folders[path]!));
         }
       }
       if (isSearching && matchingPdfs.isNotEmpty) {
-        children.add(
+        children.add((context) => 
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
             child: Text('PDF FILES',
@@ -536,14 +553,14 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
         );
         for (final entry in matchingPdfs) {
           final path = _normalizedFolderPath(entry);
-          children.add(_buildPdfTile(
+          children.add((context) => _buildPdfTile(
             entry,
             locationLabel: path.isEmpty ? 'Internal' : _displayPath(path),
           ));
         }
       }
       if (children.isEmpty) {
-        children.add(
+        children.add((context) => 
           Padding(
             padding: const EdgeInsets.all(28),
             child: Column(
@@ -580,7 +597,7 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
           : selectedFiles;
       visiblePdfCount = visibleFiles.length;
       if (visibleFiles.isEmpty) {
-        children.add(
+        children.add((context) => 
           Padding(
             padding: const EdgeInsets.all(28),
             child: Center(
@@ -596,7 +613,7 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
         );
       } else {
         for (final entry in visibleFiles) {
-          children.add(_buildPdfTile(entry));
+          children.add((context) => _buildPdfTile(entry));
         }
       }
     }
@@ -629,9 +646,10 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
         Expanded(
           child: RefreshIndicator(
             onRefresh: widget.onRefresh ?? () async {},
-            child: ListView(
+            child: ListView.builder(
               physics: const AlwaysScrollableScrollPhysics(),
-              children: children,
+              itemCount: children.length,
+              itemBuilder: (context, index) => children[index](context),
             ),
           ),
         ),
