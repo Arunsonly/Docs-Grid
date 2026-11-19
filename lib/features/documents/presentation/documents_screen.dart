@@ -9,6 +9,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../data/document_repository.dart';
 import '../data/phone_recent_history.dart';
 import '../data/phone_star_repository.dart';
+import '../data/phone_portable_state.dart';
 import '../data/phone_trash_origin.dart';
 import '../../../core/storage/storage_location_service.dart';
 import '../../categories/data/category_repository.dart';
@@ -782,7 +783,8 @@ class _DocumentsScreenState extends State<DocumentsScreen>
           // browser reads it when reopening its menu after a Star action.
           _phoneStarredUris
             ..clear()
-            ..addAll(items.map((item) => item['uri'] as String));
+            ..addAll(items.where((item) => item['needsRelinking'] != true)
+                .map((item) => item['uri'] as String));
         });
       }
     } catch (_) {
@@ -986,8 +988,10 @@ class _DocumentsScreenState extends State<DocumentsScreen>
 
   Widget _recentDocumentTile(DocumentRecord document) {
     final activityAt = document.lastOpenedAt ?? document.createdAt;
+    // The Android external chooser reports successful dispatch, not proof
+    // that another application rendered and displayed the PDF.
     final activity = document.lastOpenedAt != null
-        ? 'Opened'
+        ? 'Open requested'
         : document.source == 'download'
             ? 'Downloaded'
             : 'Added';
@@ -1136,13 +1140,90 @@ class _DocumentsScreenState extends State<DocumentsScreen>
     );
   }
 
+  /// Manual selection is required: old Phone URIs are not portable grants.
+  Future<void> _relinkPendingPhonePdf(Map<String, Object?> item) async {
+    final identity = item['referenceId'] as String?;
+    if (identity == null) return;
+    try {
+      if (_phoneEntries.isEmpty) await _scanPhoneStorage(openBrowser: false);
+      if (!mounted) return;
+      final candidates = <String, Map<String, Object?>>{};
+      for (final row in _phoneEntries) {
+        final uri = row['uri'];
+        final name = row['name'];
+        if (row['isDirectory'] == true || row['isInaccessible'] == true ||
+            uri is! String || uri.isEmpty || name is! String ||
+            !name.toLowerCase().endsWith('.pdf')) continue;
+        candidates.putIfAbsent(uri, () => row);
+      }
+      final files = candidates.values.toList(growable: false);
+      final query = TextEditingController();
+      Map<String, Object?>? selected;
+      try {
+        selected = await showDialog<Map<String, Object?>>(
+          context: context,
+          builder: (dialog) => StatefulBuilder(
+            builder: (dialog, update) {
+              final term = query.text.trim().toLowerCase();
+              final matches = files.where((row) =>
+                (row['name'] as String).toLowerCase().contains(term))
+                  .take(50).toList(growable: false);
+              return AlertDialog(
+                title: const Text('Re-link Phone PDF'),
+                content: SizedBox(
+                  height: 360, width: double.maxFinite,
+                  child: Column(children: [
+                    const Text('Choose the corresponding PDF on this device.'),
+                    TextField(
+                      controller: query,
+                      decoration: const InputDecoration(labelText: 'Search files'),
+                      onChanged: (_) => update(() {}),
+                    ),
+                    Expanded(child: ListView.builder(
+                      itemCount: matches.length,
+                      itemBuilder: (_, index) => ListTile(
+                        dense: true,
+                        leading: const Icon(Icons.picture_as_pdf_outlined),
+                        title: Text(matches[index]['name'] as String),
+                        onTap: () => Navigator.pop(dialog, matches[index]),
+                      ),
+                    )),
+                  ]),
+                ),
+                actions: [TextButton(
+                  onPressed: () => Navigator.pop(dialog),
+                  child: const Text('Cancel'),
+                )],
+              );
+            },
+          ),
+        );
+      } finally {
+        query.dispose();
+      }
+      if (selected == null) return;
+      final uri = selected['uri'] as String;
+      final name = selected['name'] as String;
+      await StorageLocationService.instance.sha256Pdf(uri);
+      await PhonePortableState.relink(
+        referenceId: identity, selectedUri: uri, selectedName: name,
+      );
+      await _loadPhoneStarred();
+      await _loadRecentDocuments();
+      if (mounted) _message('Phone reference re-linked.');
+    } catch (error) {
+      if (mounted) _message('Phone PDF could not be re-linked: $error');
+    }
+  }
+
   Widget _phoneStarredTile(Map<String, Object?> item) {
     final uri = item['uri'] as String;
     final name = item['name'] as String? ?? 'PDF';
+    final unresolved = item['needsRelinking'] == true;
     return ListTile(
       key: ValueKey('phone-starred-$uri'),
       dense: true,
-      leading: DocumentThumbnail(
+      leading: unresolved ? const Icon(Icons.link_off_outlined) : DocumentThumbnail(
         documentId: 'phone_starred_$uri',
         storagePath: uri,
         sizeBytes: (item['sizeBytes'] as num?)?.toInt() ?? 0,
@@ -1152,9 +1233,10 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         const SizedBox(width: 6),
         _recentSourceTag('Phone'),
       ]),
-      subtitle: const Text('Starred'),
-      onTap: () => _openExternalStoragePdf(uri, name),
-      trailing: PopupMenuButton<String>(
+      subtitle: Text(unresolved ? 'Starred · Re-link this PDF on this device' : 'Starred'),
+      onTap: unresolved ? () => _relinkPendingPhonePdf(item)
+          : () => _openExternalStoragePdf(uri, name),
+      trailing: unresolved ? null : PopupMenuButton<String>(
         tooltip: 'Actions for $name',
         onSelected: (action) => _handlePhoneRecentAction(item, action),
         itemBuilder: (_) => _phoneRecentMenu(item),
@@ -1167,11 +1249,14 @@ class _DocumentsScreenState extends State<DocumentsScreen>
     final uri = item['uri'] as String? ?? '';
     final openedAt = DateTime.tryParse(item['openedAt']?.toString() ?? '');
     final addedAt = DateTime.tryParse(item['addedAt']?.toString() ?? '');
-    final activity = openedAt == null && addedAt != null ? 'Added' : 'Opened';
+    // External PDF choosers only acknowledge dispatch, not actual rendering.
+    final unresolved = item['needsRelinking'] == true;
+    final activity = unresolved ? 'Re-link required'
+        : openedAt == null && addedAt != null ? 'Added' : 'Open requested';
     return ListTile(
       key: ValueKey('phone-recent-$uri'),
       dense: true,
-      leading: DocumentThumbnail(
+      leading: unresolved ? const Icon(Icons.link_off_outlined) : DocumentThumbnail(
         documentId: 'phone_recent_$uri',
         storagePath: uri,
         sizeBytes: (item['sizeBytes'] as num?)?.toInt() ?? 0,
@@ -1182,9 +1267,10 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         _recentSourceTag('Phone'),
       ]),
       subtitle: Text('$activity · ${_recentDateLabel(openedAt ?? addedAt ?? DateTime.now())}'),
-      onTap: () => _openExternalStoragePdf(uri, name),
-      onLongPress: () => _openPhoneRecentSelection(item),
-      trailing: PopupMenuButton<String>(
+      onTap: unresolved ? () => _relinkPendingPhonePdf(item)
+          : () => _openExternalStoragePdf(uri, name),
+      onLongPress: unresolved ? null : () => _openPhoneRecentSelection(item),
+      trailing: unresolved ? null : PopupMenuButton<String>(
         tooltip: 'Actions for $name',
         onSelected: (action) => _handlePhoneRecentAction(item, action),
         itemBuilder: (_) => _phoneRecentMenu(item),
@@ -1210,10 +1296,13 @@ class _DocumentsScreenState extends State<DocumentsScreen>
           // Skip malformed optional recent metadata without affecting PDFs.
         }
       }
+      final unlinkedRecent = (await PhonePortableState.pending())
+          .where((item) => item['wasRecent'] == true)
+          .toList(growable: false);
       if (!mounted) return;
       setState(() {
         _gridRecent = recentDocuments;
-        _phoneRecent = phone.take(20).toList(growable: false);
+        _phoneRecent = [...unlinkedRecent, ...phone].take(20).toList(growable: false);
       });
     } catch (_) {
       // Recent metadata is optional and must not block the dashboard.
@@ -1872,14 +1961,25 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       return false;
     }
     try {
-      await StorageLocationService.instance.renamePdf(
-        uri: uri,
-        name: clean.toLowerCase().endsWith('.pdf') ? clean : '$clean.pdf',
+      final newName = clean.toLowerCase().endsWith('.pdf') ? clean : '$clean.pdf';
+      final newUri = await StorageLocationService.instance.renamePdf(
+        uri: uri, name: newName,
       );
-      if (!mounted) return false;
-      _message('PDF renamed.');
+      // Native rename is already committed. A shortcut preference failure must
+      // not be mistaken for a failed physical rename.
+      String? shortcutWarning;
+      try {
+        await PhoneReferenceIdentity.renamed(uri, newUri);
+        await PhoneStarRepository.updateRenamedReference(uri, newUri, newName);
+        await PhoneRecentHistory.updateRenamedReference(uri, newUri, newName);
+      } catch (error) {
+        shortcutWarning = 'PDF renamed, but its Star/Recent shortcut needs attention: $error';
+      }
+      if (!mounted) return true;
+      await _loadPhoneStarred();
       await _scanPhoneStorage(openBrowser: false);
       await _refreshDashboardSummary();
+      if (mounted) _message(shortcutWarning ?? 'PDF renamed.');
       return true;
     } catch (error) {
       if (mounted) _message('Could not rename PDF: $error');

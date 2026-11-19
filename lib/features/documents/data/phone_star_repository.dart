@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:shared_preferences/shared_preferences.dart';
+import 'phone_portable_state.dart';
 
 /// Stars on Phone PDFs are URI references, not imported Grid document copies.
 /// Changing Star cannot move, delete, or otherwise alter a source file.
@@ -36,6 +37,12 @@ class PhoneStarRepository {
         // Malformed optional metadata cannot prevent the Starred view opening.
       }
     }
+    for (final unlinked in await PhonePortableState.pending()) {
+      if (unlinked['wasStarred'] == true &&
+          !items.any((item) => item['referenceId'] == unlinked['referenceId'])) {
+        items.add(unlinked);
+      }
+    }
     return items;
   }
 
@@ -63,6 +70,7 @@ class PhoneStarRepository {
     }
     if (!wasStarred) {
       kept.insert(0, jsonEncode({
+        'referenceId': await PhoneReferenceIdentity.idForUri(uri),
         'uri': uri,
         'name': name,
         'folderPath': folderPath ?? '',
@@ -75,6 +83,33 @@ class PhoneStarRepository {
     }
     return !wasStarred;
   });
+
+  /// Keep a starred PDF pointing to its provider's authoritative new URI.
+  static Future<void> updateRenamedReference(
+      String previousUri, String updatedUri, String updatedName) =>
+      _exclusive(() async {
+        final prefs = await SharedPreferences.getInstance();
+        final old = prefs.getStringList(storageKey) ?? const <String>[];
+        var changed = false;
+        final next = <String>[];
+        for (final raw in old) {
+          try {
+            final record = jsonDecode(raw);
+            if (record is Map && record['uri'] == previousUri) {
+              next.add(jsonEncode({
+                ...Map<String, Object?>.from(record),
+                'uri': updatedUri, 'name': updatedName,
+              }));
+              changed = true;
+              continue;
+            }
+          } catch (_) { /* Preserve malformed legacy entries unchanged. */ }
+          next.add(raw);
+        }
+        if (changed && !await prefs.setStringList(storageKey, next)) {
+          throw StateError('Star reference update was not persisted.');
+        }
+      });
 
   /// Clean only a successfully deleted/moved source reference.
   static Future<void> remove(String uri) => _exclusive(() async {

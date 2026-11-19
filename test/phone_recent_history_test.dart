@@ -32,6 +32,23 @@ void main() {
         reason: 'A repeated move/refresh must never remove unrelated history.');
   });
 
+  test('renamed PDF preserves its Opened time and completed-scan baseline', () async {
+    const before = 'content://media/external_primary/file/120';
+    const after = 'content://media/external_primary/file/230';
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList(PhoneRecentHistory.storageKey, [item(before, 'Old.pdf')]);
+    await prefs.setString(PhoneRecentHistory.observedFilesKey,
+        jsonEncode({'media:external_primary': [before]}));
+    await PhoneRecentHistory.updateRenamedReference(before, after, 'New.pdf');
+    final record = jsonDecode(
+        prefs.getStringList(PhoneRecentHistory.storageKey)!.single) as Map;
+    expect(record['uri'], after);
+    expect(record['name'], 'New.pdf');
+    expect(record['openedAt'], '2026-11-17T11:00:00Z');
+    expect(jsonDecode(prefs.getString(PhoneRecentHistory.observedFilesKey)!),
+        {'media:external_primary': [after]});
+  });
+
   test('failed or duplicate move should not mutate phone history', () async {
     const source = 'content://media/external_primary/file/1000702003';
     final prefs = await SharedPreferences.getInstance();

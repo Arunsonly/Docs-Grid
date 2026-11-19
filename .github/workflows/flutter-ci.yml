@@ -190,6 +190,8 @@ jobs:
           gradle.write_text(s)
           print(f'Enabled core library desugaring in {gradle}')
           PY
+      - name: Bundle pinned Android Devanagari OCR dependency
+        run: PYTHONPATH=tool python3 tool/prepare_android_ocr.py
       - name: Configure Android camera and notification permissions
         run: |
           python3 - <<'PY'
@@ -262,6 +264,9 @@ jobs:
           PY
       - name: Generate DocsGrid launcher icons
         run: dart run flutter_launcher_icons
+      - name: Verify explicit release signing fails closed without keys
+        run: |
+          PYTHONPATH=tool python3 -m unittest discover -s tool/tests -p 'test_*.py'
       - name: Analyze
         run: flutter analyze --no-fatal-infos
       - name: Ensure system SQLite for FFI tests
