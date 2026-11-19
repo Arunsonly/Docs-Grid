@@ -8,6 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../data/document_repository.dart';
 import '../data/phone_recent_history.dart';
+import '../data/phone_pdf_delta.dart';
 import '../data/phone_star_repository.dart';
 import '../data/phone_trash_origin.dart';
 import '../../../core/storage/storage_location_service.dart';
@@ -49,9 +50,16 @@ class _DocumentsScreenState extends State<DocumentsScreen>
   bool? _phoneHasAllFilesAccess;
   bool _phoneScanLoading = false;
   bool _phoneScanCompleted = false;
-  StreamSubscription<void>? _storageChangesSubscription;
+  StreamSubscription<StorageChangeNotice>? _storageChangesSubscription;
   Timer? _phoneRefreshDebounce;
   bool _phoneScanPending = false;
+  bool _phonePatchInFlight = false;
+  bool _phoneNeedsFullRefresh = false;
+  bool _phoneMediaStoreReady = false;
+  final Set<String> _phonePendingMediaUris = <String>{};
+  final Set<String> _phonePendingLocalPaths = <String>{};
+  List<Map<String, String>> _phoneLastRoots = const [];
+  Map<String, Object?> _phoneLastMediaVolumes = const {};
   int _trashCount = 0;
   int _trashFolderCount = 0;
   List<Map<String, Object?>> _phoneRecent = [];
@@ -78,7 +86,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
     unawaited(_loadPhoneStarred());
     _storageChangesSubscription =
         StorageLocationService.instance.storageChanges.listen(
-      (_) => _schedulePhoneStorageRefresh(),
+      (notice) => _schedulePhoneStorageRefresh(notice),
       onError: (_) {
         // Provider change events are best-effort; resume reconciliation remains.
       },
@@ -142,12 +150,104 @@ class _DocumentsScreenState extends State<DocumentsScreen>
     }
   }
 
-  void _schedulePhoneStorageRefresh() {
+  void _schedulePhoneStorageRefresh([StorageChangeNotice? notice]) {
     if (!mounted || widget.favoritesOnly || widget.recentOnly) return;
+    if (notice == null || notice.requiresFullRefresh) {
+      _phoneNeedsFullRefresh = true;
+    } else {
+      _phonePendingMediaUris.addAll(notice.mediaUris);
+      _phonePendingLocalPaths.addAll(notice.paths);
+    }
+    if (_phonePendingMediaUris.length + _phonePendingLocalPaths.length > 48) {
+      _phoneNeedsFullRefresh = true;
+    }
     _phoneRefreshDebounce?.cancel();
     _phoneRefreshDebounce = Timer(const Duration(milliseconds: 450), () {
-      if (mounted) unawaited(_scanPhoneStorage(openBrowser: false));
+      if (mounted) unawaited(_refreshPhoneStorageFromChanges());
     });
+  }
+
+  Future<void> _refreshPhoneStorageFromChanges() async {
+    if (!mounted) return;
+    if (_phoneScanLoading || _phonePatchInFlight) {
+      // A scan in progress will schedule one safe follow-up on completion.
+      _phoneScanPending = true;
+      return;
+    }
+    final requiresFull = _phoneNeedsFullRefresh || !_phoneMediaStoreReady ||
+        !_phoneScanCompleted || _phoneLastRoots.isEmpty;
+    final changedUris = _phonePendingMediaUris.toList(growable: false);
+    final changedPaths = _phonePendingLocalPaths.toList(growable: false);
+    _phoneNeedsFullRefresh = false;
+    _phonePendingMediaUris.clear();
+    _phonePendingLocalPaths.clear();
+    if (requiresFull || changedUris.isEmpty && changedPaths.isEmpty) {
+      await _scanPhoneStorage(openBrowser: false);
+      return;
+    }
+
+    _phonePatchInFlight = true;
+    try {
+      final storage = StorageLocationService.instance;
+      if (!Platform.isAndroid || !await storage.hasAllFilesAccess()) {
+        await _scanPhoneStorage(openBrowser: false);
+        return;
+      }
+      final change = await storage.queryPhonePdfChanges(
+        mediaUris: changedUris,
+        paths: changedPaths,
+      );
+      if (change['complete'] != true) {
+        await _scanPhoneStorage(openBrowser: false);
+        return;
+      }
+      final updated = change['entries'] as List<Map<String, Object?>>;
+      final patch = PhonePdfDelta.apply(
+        existing: _phoneEntries,
+        updates: updated,
+        touchedMediaUris: change['touchedMediaUris'] as List<String>,
+        touchedLocalPaths: change['touchedLocalPaths'] as List<String>,
+      );
+      if (!mounted || !patch.changed) return;
+      setState(() => _phoneEntries = patch.entries);
+      // This is a proven complete MediaStore baseline plus scoped changes,
+      // not a partial scan; keep Recent discovery and the saved cache in sync.
+      final scopes = <String, List<Map<String, Object?>>>{
+        for (final volume in _phoneLastMediaVolumes.keys)
+          'media:$volume': <Map<String, Object?>>[],
+      };
+      for (final item in patch.entries) {
+        final volume = item['volumeName'] as String?;
+        if (volume != null && item['isDirectory'] != true) {
+          scopes['media:$volume']?.add(item);
+        }
+      }
+      try {
+        if (scopes.isNotEmpty) {
+          await PhoneRecentHistory.observeCompletedScans(scopes);
+          if (mounted && !widget.phoneOnly) await _loadRecentDocuments();
+        }
+      } catch (_) {
+        // Recent shortcuts are optional and never block the Phone index.
+      }
+      await _persistPhoneStorageIndexCache(
+        _phoneLastRoots, patch.entries,
+        mediaStoreVolumes: _phoneLastMediaVolumes,
+      );
+    } catch (_) {
+      // Permission change, provider timeout or ambiguous delta: use the
+      // established safe full index, never infer that PDFs were deleted.
+      if (mounted) await _scanPhoneStorage(openBrowser: false);
+    } finally {
+      _phonePatchInFlight = false;
+      if (mounted && (_phoneScanPending || _phoneNeedsFullRefresh ||
+          _phonePendingMediaUris.isNotEmpty ||
+          _phonePendingLocalPaths.isNotEmpty)) {
+        _phoneScanPending = false;
+        // Coalesce any events arriving during the scoped query.
+        _schedulePhoneStorageRefresh();
+      }
+    }
   }
 
   @override
@@ -512,6 +612,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       _phoneScanPending = true;
       return;
     }
+    _phoneMediaStoreReady = false;
     if (mounted) setState(() { _phoneScanLoading = true; _phoneScanCompleted = false; });
     try {
       var hasAllFilesAccess = false;
@@ -731,6 +832,9 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       } else {
         await _persistPhoneStorageIndexCache(roots, entries);
       }
+      _phoneMediaStoreReady = mediaStoreComplete;
+      _phoneLastMediaVolumes = mediaStoreVolumes;
+      _phoneLastRoots = roots;
       setState(() {
         _phoneEntries=entries;
         _phoneScanCompleted = true;
