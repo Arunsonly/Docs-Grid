@@ -173,7 +173,12 @@ class _DocumentsScreenState extends State<DocumentsScreen>
     }
     _phoneRefreshDebounce?.cancel();
     _phoneRefreshDebounce = Timer(const Duration(milliseconds: 450), () {
-      if (mounted) unawaited(_scanPhoneStorage(openBrowser: false));
+      if (!mounted) return;
+      if (!widget.active) {
+        _phoneRefreshPendingWhileHidden = true;
+        return;
+      }
+      unawaited(_scanPhoneStorage(openBrowser: false));
     });
   }
 
