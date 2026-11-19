@@ -105,6 +105,56 @@ void main() {
     expect(identical(result.entries.single, old), isTrue);
   });
 
+  test('MediaStore version/volume mismatch triggers full scan', () {
+    const previous = <String, Object?>{
+      'external_primary': {
+        'version': 'old-v1',
+        'generation': 20,
+        'label': 'Internal',
+      },
+    };
+    const normal = <String, Object?>{
+      'external_primary': {
+        'version': 'old-v1',
+        'generation': 21,
+        'label': 'Internal',
+      },
+    };
+    const reset = <String, Object?>{
+      'external_primary': {
+        'version': 'new-v2',
+        'generation': 1,
+        'label': 'Internal',
+      },
+    };
+    expect(PhonePdfDelta.volumesAreCompatible(
+      previous: previous,
+      observed: normal,
+      mounted: ['external_primary'],
+    ), isTrue);
+    expect(PhonePdfDelta.volumesAreCompatible(
+      previous: previous,
+      observed: reset,
+      mounted: ['external_primary'],
+    ), isFalse);
+    expect(PhonePdfDelta.volumesAreCompatible(
+      previous: previous,
+      observed: normal,
+      mounted: ['external_primary', 'SD'],
+    ), isFalse);
+    expect(PhonePdfDelta.volumesAreCompatible(
+      previous: previous,
+      observed: const {
+        'external_primary': {
+          'version': 'old-v1',
+          'generation': 10,
+          'label': 'Internal',
+        },
+      },
+      mounted: ['external_primary'],
+    ), isFalse);
+  });
+
   test('unknown or legacy events force full reconciliation', () {
     expect(StorageChangeNotice.fromPlatform(null).requiresFullRefresh, isTrue);
     expect(StorageChangeNotice.fromPlatform({
