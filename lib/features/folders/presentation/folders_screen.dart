@@ -1296,7 +1296,7 @@ class _FoldersScreenState extends State<FoldersScreen> {
                                               ),
                                               const SizedBox(height: 4),
                                               Text(
-                                                'Folder · ${folder.pdfCount} PDFs',
+                                                'Folder · ${folder.pdfCount} PDFs · ${_size(folder.pdfBytes)}',
                                                 style: TextStyle(
                                                   fontSize: 15,
                                                   color: scheme.onSurfaceVariant,
