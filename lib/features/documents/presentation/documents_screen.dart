@@ -201,6 +201,18 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         await _scanPhoneStorage(openBrowser: false);
         return;
       }
+      final observedVolumes = Map<String, Object?>.from(
+        change['volumes'] as Map,
+      );
+      final mountedVolumes = change['mountedVolumes'] as List<String>;
+      if (!PhonePdfDelta.volumesAreCompatible(
+        previous: _phoneLastMediaVolumes,
+        observed: observedVolumes,
+        mounted: mountedVolumes,
+      )) {
+        await _scanPhoneStorage(openBrowser: false);
+        return;
+      }
       final updated = change['entries'] as List<Map<String, Object?>>;
       final patch = PhonePdfDelta.apply(
         existing: _phoneEntries,
@@ -208,7 +220,12 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         touchedMediaUris: change['touchedMediaUris'] as List<String>,
         touchedLocalPaths: change['touchedLocalPaths'] as List<String>,
       );
-      if (!mounted || !patch.changed) return;
+      if (!mounted) return;
+      _phoneLastMediaVolumes = {
+        ..._phoneLastMediaVolumes,
+        ...observedVolumes,
+      };
+      if (!patch.changed) return;
       setState(() => _phoneEntries = patch.entries);
       // This is a proven complete MediaStore baseline plus scoped changes,
       // not a partial scan; keep Recent discovery and the saved cache in sync.
