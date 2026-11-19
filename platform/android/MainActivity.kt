@@ -384,7 +384,9 @@ class MainActivity : FlutterActivity() {
             "complete" to true,
             "entries" to entries,
             "touchedUris" to touchedUris.toList(),
-            "touchedPaths" to touchedPaths.toList()
+            "touchedPaths" to touchedPaths.toList(),
+            "mountedVolumes" to volumeNames.toList().sorted(),
+            "volumes" to (result["volumes"] ?: emptyMap<String, Any>())
         )
     }
 
