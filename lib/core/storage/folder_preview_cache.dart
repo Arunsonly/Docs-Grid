@@ -57,16 +57,17 @@ class FolderPreview {
   int get pdfCount => items.where((item) => !item.isFolder).length;
 
   Map<String, Object?> toJson() => {
-    'schema': 1,
-    'key': key,
+    'schema': 2,
+    'keyHash': _previewKeyHash(key),
     'savedAt': savedAt.toUtc().toIso8601String(),
     'items': items.map((item) => item.toJson()).toList(growable: false),
   };
 
   /// Also used by unit tests for corrupt and mismatched cache files.
   static FolderPreview? fromJson(Object? raw, String expectedKey) {
-    if (raw is! Map || raw['schema'] != 1 ||
-        raw['key'] != expectedKey || raw['items'] is! List ||
+    if (raw is! Map || raw['schema'] != 2 ||
+        raw['keyHash'] != _previewKeyHash(expectedKey) ||
+        raw['items'] is! List ||
         raw['savedAt'] is! String) return null;
     final savedAt = DateTime.tryParse(raw['savedAt'] as String);
     if (savedAt == null || savedAt.isAfter(DateTime.now().add(const Duration(minutes: 5))) ||
@@ -88,6 +89,8 @@ class FolderPreview {
     );
   }
 }
+
+String _previewKeyHash(String key) => sha256.convert(utf8.encode(key)).toString();
 
 Object? _decodePreviewJson(String contents) => jsonDecode(contents);
 String _encodePreviewJson(Map<String, Object?> payload) => jsonEncode(payload);
@@ -118,7 +121,7 @@ class FolderPreviewCache {
 
   static Future<File> _fileFor(String key) async {
     final dir = await _directory();
-    final hash = sha256.convert(utf8.encode(key)).toString();
+    final hash = _previewKeyHash(key);
     return File(p.join(dir.path, '$hash.json'));
   }
 
