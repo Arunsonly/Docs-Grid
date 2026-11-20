@@ -503,6 +503,9 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       final signature = roots.map((root) => root['uri']!).join('|');
       if (decoded is! Map || decoded['rootSignature'] != signature ||
           decoded['entries'] is! List) return false;
+      // The cache is scoped to the currently granted roots; make that
+      // signature available to per-folder previews before the live scan ends.
+      _phoneLastRoots = roots;
       final cached = (decoded['entries'] as List).whereType<Map>()
           .map((entry) => Map<String, Object?>.from(entry)).toList(growable: false);
       if (!mounted) return false;
@@ -889,6 +892,8 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         starredUris: _phoneStarredUris,
         onTrashPdf: _trashPhonePdf,
         initialPath: initialPath,
+        cacheScope: _phoneLastRoots
+            .map((root) => root['uri'] ?? '').join('|'),
       ),
     ));
   }
@@ -2304,6 +2309,8 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         starredUris: _phoneStarredUris,
         onTrashPdf: _trashPhonePdf,
         embedded: true,
+        cacheScope: _phoneLastRoots
+            .map((root) => root['uri'] ?? '').join('|'),
         // Keep the last usable index visible while refresh continues silently.
         isLoading: _phoneScanLoading && _phoneEntries.isEmpty,
         onRefresh: () => _scanPhoneStorage(openBrowser: true),
