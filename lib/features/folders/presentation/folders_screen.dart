@@ -354,6 +354,7 @@ class _FoldersScreenState extends State<FoldersScreen>
         savedAt: DateTime.now().toUtc(),
         totalPdfCount: _pagedDocumentsMode
             ? _pagedTotalCount : documents.length,
+        totalFolderCount: folders.length,
         items: [
           for (final folder in folders)
             FolderPreviewItem(
@@ -425,21 +426,26 @@ class _FoldersScreenState extends State<FoldersScreen>
         try {
           // Use the existing provider validation, never bypass it to make a
           // stale folder actionable. The result remains a read-only preview.
-          final subfolders = await _repository.childrenOf(child.id);
+          final subfolders = await _repository.childrenOf(
+            child.id, previewLimit: 16,
+          );
           if (!mounted || !_gridScreenForeground ||
               epoch != _folderLoadEpoch) return;
           final rows = await Future.wait<Object>([
             _documents.listInFolderPage(child.id, pageSize: _gridPageSize),
             _documents.countInFolder(child.id),
+            _repository.countDirectChildren(child.id),
           ]);
           if (!mounted || !_gridScreenForeground ||
               epoch != _folderLoadEpoch) return;
           final page = rows[0] as FolderDocumentPage;
           final count = rows[1] as int;
+          final childCount = rows[2] as int;
           final preview = FolderPreview(
             key: key,
             savedAt: DateTime.now().toUtc(),
             totalPdfCount: count,
+            totalFolderCount: childCount,
             items: [
               for (final folder in subfolders)
                 FolderPreviewItem(
@@ -492,7 +498,7 @@ class _FoldersScreenState extends State<FoldersScreen>
               if (index == 0) return Padding(
                 padding: const EdgeInsets.all(8),
                 child: Text(
-                  '${preview.folderCount} folders · ${preview.totalPdfCount ?? preview.pdfCount} PDFs (saved preview)',
+                  '${preview.totalFolderCount ?? preview.folderCount} folders · ${preview.totalPdfCount ?? preview.pdfCount} PDFs (saved preview)',
                   style: Theme.of(context).textTheme.bodySmall,
                 ),
               );
