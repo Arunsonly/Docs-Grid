@@ -8,6 +8,7 @@ import '../../documents/data/document_repository.dart';
 import '../../documents/presentation/document_thumbnail.dart';
 import '../../tools/document_tools_service.dart';
 import '../../../core/storage/storage_location_service.dart';
+import '../../../core/storage/folder_preview_cache.dart';
 import '../../reminders/data/reminder_repository.dart';
 import '../../categories/data/category_repository.dart';
 
@@ -42,6 +43,10 @@ class _FoldersScreenState extends State<FoldersScreen> {
   List<Folder> _draftFolderOrder = <Folder>[];
   late Future<List<Folder>> _foldersFuture;
   late Future<List<DocumentRecord>> _documentsFuture;
+  final Map<String, FolderPreview> _savedFolderPreviews = {};
+  final Set<String> _loadingFolderPreviews = {};
+  final Set<String> _suppressFolderPreviews = {};
+  int _folderLoadEpoch = 0;
 
   @override
   void initState() {
@@ -89,12 +94,131 @@ class _FoldersScreenState extends State<FoldersScreen> {
   }
 
   void _load() {
-    _foldersFuture = _repository.childrenOf(_currentFolderId);
+    final folderId = _currentFolderId;
+    final epoch = ++_folderLoadEpoch;
+    final folderFuture = _repository.childrenOf(folderId);
     final query = _searchQuery.trim();
-    // Grid search is library-wide, not limited to the currently open folder.
-    _documentsFuture = query.isEmpty
-        ? _documents.listInFolder(_currentFolderId)
+    final documentFuture = query.isEmpty
+        ? _documents.listInFolder(folderId)
         : _documents.list(query: query);
+    _foldersFuture = folderFuture;
+    _documentsFuture = documentFuture;
+    if (query.isEmpty) {
+      // Hydrate previous verified metadata without delaying the live query.
+      if (!_suppressFolderPreviews.contains(FolderPreviewCache.gridKey(folderId))) {
+        unawaited(_restoreFolderPreview(folderId));
+      }
+      unawaited(_saveVerifiedFolderPreview(
+        folderId, epoch, folderFuture, documentFuture,
+      ));
+    }
+  }
+
+  Future<void> _restoreFolderPreview(String? folderId) async {
+    final key = FolderPreviewCache.gridKey(folderId);
+    if (_savedFolderPreviews.containsKey(key) ||
+        _loadingFolderPreviews.contains(key) ||
+        _suppressFolderPreviews.contains(key)) return;
+    _loadingFolderPreviews.add(key);
+    try {
+      final preview = await FolderPreviewCache.read(key);
+      if (preview == null || !mounted ||
+          _savedFolderPreviews.containsKey(key) ||
+          _suppressFolderPreviews.contains(key)) return;
+      setState(() => _savedFolderPreviews[key] = preview);
+    } finally {
+      _loadingFolderPreviews.remove(key);
+    }
+  }
+
+  Future<void> _saveVerifiedFolderPreview(
+    String? folderId,
+    int epoch,
+    Future<List<Folder>> foldersFuture,
+    Future<List<DocumentRecord>> documentsFuture,
+  ) async {
+    try {
+      final folders = await foldersFuture;
+      final documents = await documentsFuture;
+      if (!mounted || epoch != _folderLoadEpoch ||
+          folderId != _currentFolderId ||
+          _searchQuery.trim().isNotEmpty) return;
+      final key = FolderPreviewCache.gridKey(folderId);
+      final preview = FolderPreview(
+        key: key,
+        savedAt: DateTime.now().toUtc(),
+        items: [
+          for (final folder in folders)
+            FolderPreviewItem(
+              name: folder.name,
+              isFolder: true,
+              pdfCount: folder.pdfCount,
+            ),
+          for (final document in documents)
+            FolderPreviewItem(
+              name: document.name,
+              isFolder: false,
+              sizeBytes: document.sizeBytes,
+            ),
+        ],
+      );
+      _savedFolderPreviews[key] = preview;
+      _suppressFolderPreviews.remove(key);
+      // Optional, bounded app-private metadata: do not hold up navigation.
+      unawaited(FolderPreviewCache.write(preview));
+    } catch (_) {
+      // Errors remain visible in the existing FutureBuilder error state.
+    }
+  }
+
+  Widget _savedFolderPreview(FolderPreview preview) {
+    final items = preview.items;
+    return Column(
+      children: [
+        const LinearProgressIndicator(minHeight: 2),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 10, 16, 4),
+          child: Row(children: [
+            const Icon(Icons.history, size: 16),
+            const SizedBox(width: 8),
+            Expanded(child: Text(
+              'Saved preview · verifying current files',
+              style: Theme.of(context).textTheme.bodySmall,
+            )),
+          ]),
+        ),
+        Expanded(
+          child: ListView.builder(
+            key: const ValueKey('grid-folder-saved-preview'),
+            padding: const EdgeInsets.fromLTRB(12, 4, 12, 104),
+            itemCount: items.length + 1,
+            itemBuilder: (context, index) {
+              if (index == 0) return Padding(
+                padding: const EdgeInsets.all(8),
+                child: Text(
+                  '${preview.folderCount} folders · ${preview.pdfCount} PDFs (saved)',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              );
+              final item = items[index - 1];
+              return ListTile(
+                key: ValueKey('saved-preview-${index - 1}'),
+                leading: Icon(item.isFolder
+                    ? Icons.folder_outlined : Icons.picture_as_pdf_outlined),
+                title: Text(
+                  item.isFolder ? item.name : '${item.name}.pdf',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                subtitle: Text(item.isFolder
+                    ? '${item.pdfCount} PDFs'
+                    : _size(item.sizeBytes)),
+              );
+            },
+          ),
+        ),
+      ],
+    );
   }
 
   Future<void> _refresh() async {
@@ -102,6 +226,9 @@ class _FoldersScreenState extends State<FoldersScreen> {
     setState(() {
       _isReorderingFolders = false;
       _draftFolderOrder = <Folder>[];
+      final key = FolderPreviewCache.gridKey(_currentFolderId);
+      _suppressFolderPreviews.add(key);
+      _savedFolderPreviews.remove(key);
       _load();
     });
     // Wait for both sections to settle. FutureBuilder renders any errors;
@@ -1013,7 +1140,12 @@ class _FoldersScreenState extends State<FoldersScreen> {
             future: _foldersFuture,
             builder: (context, folderSnapshot) {
               if (folderSnapshot.connectionState == ConnectionState.waiting) {
-                return const Center(child: CircularProgressIndicator());
+                final preview = _searchQuery.trim().isEmpty
+                    ? _savedFolderPreviews[FolderPreviewCache.gridKey(_currentFolderId)]
+                    : null;
+                return preview != null
+                    ? _savedFolderPreview(preview)
+                    : const Center(child: CircularProgressIndicator());
               }
               if (folderSnapshot.hasError) {
                 return Center(
@@ -1030,7 +1162,12 @@ class _FoldersScreenState extends State<FoldersScreen> {
                 future: _documentsFuture,
                 builder: (context, documentSnapshot) {
                   if (documentSnapshot.connectionState == ConnectionState.waiting) {
-                    return const Center(child: CircularProgressIndicator());
+                    final preview = _searchQuery.trim().isEmpty
+                        ? _savedFolderPreviews[FolderPreviewCache.gridKey(_currentFolderId)]
+                        : null;
+                    return preview != null
+                        ? _savedFolderPreview(preview)
+                        : const Center(child: CircularProgressIndicator());
                   }
                   if (documentSnapshot.hasError) {
                     return Center(
