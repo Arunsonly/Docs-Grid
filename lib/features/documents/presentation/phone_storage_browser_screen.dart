@@ -815,6 +815,7 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
             child: RefreshIndicator(
               onRefresh: widget.onRefresh ?? () async {},
               child: ListView.builder(
+                key: ValueKey('phone-browser-${selectedPath ?? '__root__'}-${_sortField.name}-$_sortAscending-$query'),
                 physics: const AlwaysScrollableScrollPhysics(),
                 itemCount: children.length,
                 itemBuilder: (context, index) => children[index](context),
