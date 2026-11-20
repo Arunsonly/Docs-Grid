@@ -96,7 +96,8 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
   }
 
   Future<void> _restoreSelectedPreview(String path) async {
-    if (widget.cacheScope.isEmpty) return;
+    if (widget.cacheScope.isEmpty ||
+        (_directPdfFolders[path]?.isNotEmpty ?? false)) return;
     final scope = widget.cacheScope;
     final saved = await FolderPreviewCache.read(
       FolderPreviewCache.phoneKey(scope, path),
