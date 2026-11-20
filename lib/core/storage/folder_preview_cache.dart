@@ -100,6 +100,7 @@ class FolderPreviewCache {
   static const int maxItemsPerFolder = 15000;
   static const int maxFileBytes = 5 * 1024 * 1024;
   static const int maxSavedFolders = 96;
+  static const int maxTotalBytes = 32 * 1024 * 1024;
 
   static String gridKey(String? folderId) => 'grid:${folderId ?? '__root__'}';
 
@@ -164,12 +165,22 @@ class FolderPreviewCache {
           .where((entry) => entry is File && entry.path.endsWith('.json'))
           .cast<File>()
           .toList();
-      if (files.length <= maxSavedFolders) return;
-      final ages = await Future.wait(files.map((file) async =>
-          (file: file, stamp: (await file.stat()).modified)));
+      final ages = await Future.wait(files.map((file) async {
+        final stat = await file.stat();
+        return (file: file, stamp: stat.modified, bytes: stat.size);
+      }));
       ages.sort((a, b) => b.stamp.compareTo(a.stamp));
-      for (final stale in ages.skip(maxSavedFolders)) {
-        try { await stale.file.delete(); } catch (_) {}
+      var kept = 0;
+      var storedBytes = 0;
+      for (final entry in ages) {
+        if (kept < maxSavedFolders &&
+            storedBytes + entry.bytes <= maxTotalBytes) {
+          kept++;
+          storedBytes += entry.bytes;
+        } else {
+          // Only files from the dedicated hashed preview directory.
+          try { await entry.file.delete(); } catch (_) {}
+        }
       }
     } catch (_) {}
   }
