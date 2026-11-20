@@ -397,7 +397,8 @@ jobs:
         with:
           api-level: 34
           target: google_apis
-          arch: x86_64
+          # macos-latest is an ARM64 host; the Android system image must match.
+          arch: arm64-v8a
           profile: pixel_6
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -no-snapshot
