@@ -214,7 +214,7 @@ class FolderRepository {
       }
       await batch.commit(noResult: true);
     });
-    PortableSnapshotEvents.notifyDataChanged();
+    PortableSnapshotEvents.notifyDataChanged(affectedFolderIds: {parentId});
   }
 
   Future<List<FolderOption>> allFoldersWithPaths() async {
@@ -440,7 +440,7 @@ class FolderRepository {
           'updated_at': now,
         });
       });
-      PortableSnapshotEvents.notifyDataChanged();
+      PortableSnapshotEvents.notifyDataChanged(affectedFolderIds: {parentId});
     } catch (_) {
       // A pre-existing folder reused by recovery must NEVER be deleted.
       if (createdPhysicalDirectory && physicalUri != null) {
@@ -652,7 +652,9 @@ class FolderRepository {
           );
         }
       });
-      PortableSnapshotEvents.notifyDataChanged();
+      PortableSnapshotEvents.notifyDataChanged(affectedFolderIds: {
+        rows.first['parent_id'] as String?, id,
+      });
     } catch (_) {
       if (renamedUri != null) {
         try {
@@ -681,6 +683,7 @@ class FolderRepository {
     final requested = folderIds.toSet();
     if (requested.isEmpty) return;
     final db = await _database.database;
+    final affectedParents = <String?>{parentId};
     await db.transaction((txn) async {
       final placeholders = List.filled(requested.length, '?').join(',');
       final rows = await txn.query(
@@ -703,6 +706,7 @@ class FolderRepository {
         if (target.isEmpty) throw StateError('Destination folder no longer exists.');
       }
       final roots = rows.where((row) => !requested.contains(row['parent_id'] as String?)).toList();
+      affectedParents.addAll(roots.map((row) => row['parent_id'] as String?));
       final rootIds = roots.map((row) => row['id'] as String).toSet();
       var ancestorId = parentId;
       final visited = <String>{};
@@ -760,7 +764,7 @@ class FolderRepository {
       }
       await batch.commit(noResult: true);
     });
-    PortableSnapshotEvents.notifyDataChanged();
+    PortableSnapshotEvents.notifyDataChanged(affectedFolderIds: affectedParents);
   }
 
   /// Soft-deletes selected folders and all descendants. PDFs go to Recycle Bin
@@ -838,7 +842,7 @@ class FolderRepository {
         );
       }
     });
-    PortableSnapshotEvents.notifyDataChanged();
+    PortableSnapshotEvents.notifyDataChanged(); // Complex deleted subtree: safe global fallback.
     return movedPdfCount;
   }
 
@@ -890,7 +894,7 @@ class FolderRepository {
         );
       }
     });
-    PortableSnapshotEvents.notifyDataChanged();
+    PortableSnapshotEvents.notifyDataChanged(affectedFolderIds: <String?>{});
   }
 
   /// Returns one visible root per DocsGrid folder-trash operation.
@@ -1066,7 +1070,7 @@ class FolderRepository {
         'created_at': DateTime.now().toUtc().toIso8601String(),
       });
     });
-    PortableSnapshotEvents.notifyDataChanged();
+    PortableSnapshotEvents.notifyDataChanged(); // Entire restored subtree may have changed.
     return restoredPdfs;
   }
 
@@ -1232,7 +1236,7 @@ class FolderRepository {
         'created_at': DateTime.now().toUtc().toIso8601String(),
       });
     });
-    PortableSnapshotEvents.notifyDataChanged();
+    PortableSnapshotEvents.notifyDataChanged(affectedFolderIds: <String?>{});
   }
 
   /// Empty folders are sent to Grid Recycle Bin; their physical directory
@@ -1241,7 +1245,7 @@ class FolderRepository {
     await StorageMigrationGate.waitUntilReady();
     final db = await _database.database;
     final folder = await db.query(
-      'folders', columns: ['id', 'storage_uri_or_relative_path'],
+      'folders', columns: ['id', 'parent_id', 'storage_uri_or_relative_path'],
       where: 'id = ? AND deleted_at IS NULL',
       whereArgs: [id], limit: 1,
     );
@@ -1272,7 +1276,9 @@ class FolderRepository {
       }, where: 'id = ? AND deleted_at IS NULL', whereArgs: [id]);
       if (count == 0) throw StateError('Folder no longer exists.');
     });
-    PortableSnapshotEvents.notifyDataChanged();
+    PortableSnapshotEvents.notifyDataChanged(affectedFolderIds: <String?>{
+      folder.single['parent_id'] as String?, id,
+    });
   }
 
 }
