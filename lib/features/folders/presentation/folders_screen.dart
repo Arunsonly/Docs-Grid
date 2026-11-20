@@ -22,7 +22,8 @@ class FoldersScreen extends StatefulWidget {
   State<FoldersScreen> createState() => _FoldersScreenState();
 }
 
-class _FoldersScreenState extends State<FoldersScreen> {
+class _FoldersScreenState extends State<FoldersScreen>
+    with WidgetsBindingObserver {
   final FolderRepository _repository = FolderRepository();
   final DocumentRepository _documents = DocumentRepository();
   final CategoryRepository _categories = CategoryRepository();
@@ -72,18 +73,40 @@ class _FoldersScreenState extends State<FoldersScreen> {
   final Set<String> _loadingFolderPreviews = {};
   final Set<String> _suppressFolderPreviews = {};
   int _folderLoadEpoch = 0;
+  // Only prepare metadata of the first two likely child folders, and only
+  // after the current screen has loaded and the user has stopped scrolling.
+  Timer? _idleFolderPrefetchTimer;
+  List<Folder> _prefetchFolderCandidates = const [];
+  int _prefetchFolderEpoch = -1;
+  bool _prefetchingChildFolders = false;
+  bool _gridScreenForeground = true;
+  final Set<String> _attemptedChildPrefetches = {};
+  static const int _maxPrefetchChildFolders = 2;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _load();
     unawaited(_restoreSortPreference());
   }
 
   @override
   void dispose() {
+    _idleFolderPrefetchTimer?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
     _searchController.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    _gridScreenForeground = state == AppLifecycleState.resumed;
+    if (!_gridScreenForeground) {
+      _idleFolderPrefetchTimer?.cancel();
+    } else {
+      _queueIdleFolderPrefetch();
+    }
   }
 
   Future<void> _restoreSortPreference() async {
@@ -199,6 +222,9 @@ class _FoldersScreenState extends State<FoldersScreen> {
   }
 
   void _load() {
+    _idleFolderPrefetchTimer?.cancel();
+    _prefetchFolderCandidates = const [];
+    _prefetchFolderEpoch = -1;
     final folderId = _currentFolderId;
     final folderFuture = _repository.childrenOf(folderId);
     _foldersFuture = folderFuture;
@@ -347,8 +373,97 @@ class _FoldersScreenState extends State<FoldersScreen> {
       _suppressFolderPreviews.remove(key);
       // Optional, bounded app-private metadata: do not hold up navigation.
       unawaited(FolderPreviewCache.write(preview));
+      _prepareChildFolderPrefetch(folders, epoch);
     } catch (_) {
       // Errors remain visible in the existing FutureBuilder error state.
+    }
+  }
+
+  void _prepareChildFolderPrefetch(List<Folder> folders, int epoch) {
+    _prefetchFolderCandidates = folders
+        .take(_maxPrefetchChildFolders)
+        .toList(growable: false);
+    _prefetchFolderEpoch = epoch;
+    _queueIdleFolderPrefetch();
+  }
+
+  void _queueIdleFolderPrefetch() {
+    _idleFolderPrefetchTimer?.cancel();
+    if (!_gridScreenForeground || _prefetchingChildFolders ||
+        _prefetchFolderCandidates.isEmpty || _searchQuery.trim().isNotEmpty ||
+        _isReorderingFolders || _isSelectingFolders ||
+        _prefetchFolderEpoch != _folderLoadEpoch) return;
+    final epoch = _prefetchFolderEpoch;
+    final candidates = _prefetchFolderCandidates;
+    // Debounce interaction; run no speculative SAF/provider reads during
+    // an active scroll, initial navigation, or while the app is backgrounded.
+    _idleFolderPrefetchTimer = Timer(const Duration(milliseconds: 650), () {
+      if (!mounted || !_gridScreenForeground ||
+          epoch != _folderLoadEpoch) return;
+      unawaited(_prefetchChildFolderMetadata(candidates, epoch));
+    });
+  }
+
+  Future<void> _prefetchChildFolderMetadata(
+    List<Folder> candidates, int epoch,
+  ) async {
+    if (_prefetchingChildFolders || !mounted ||
+        !_gridScreenForeground || epoch != _folderLoadEpoch) return;
+    _prefetchingChildFolders = true;
+    try {
+      for (final child in candidates) {
+        if (!mounted || !_gridScreenForeground ||
+            epoch != _folderLoadEpoch || _searchQuery.trim().isNotEmpty) return;
+        final key = FolderPreviewCache.gridKey(child.id);
+        if (_savedFolderPreviews.containsKey(key) ||
+            _attemptedChildPrefetches.contains(key)) continue;
+        // Bound retry bookkeeping as well as work/memory.
+        if (_attemptedChildPrefetches.length >= 32) {
+          _attemptedChildPrefetches.remove(_attemptedChildPrefetches.first);
+        }
+        _attemptedChildPrefetches.add(key);
+        try {
+          // Use the existing provider validation, never bypass it to make a
+          // stale folder actionable. The result remains a read-only preview.
+          final subfolders = await _repository.childrenOf(child.id);
+          if (!mounted || !_gridScreenForeground ||
+              epoch != _folderLoadEpoch) return;
+          final rows = await Future.wait<Object>([
+            _documents.listInFolderPage(child.id, pageSize: _gridPageSize),
+            _documents.countInFolder(child.id),
+          ]);
+          if (!mounted || !_gridScreenForeground ||
+              epoch != _folderLoadEpoch) return;
+          final page = rows[0] as FolderDocumentPage;
+          final count = rows[1] as int;
+          final preview = FolderPreview(
+            key: key,
+            savedAt: DateTime.now().toUtc(),
+            totalPdfCount: count,
+            items: [
+              for (final folder in subfolders)
+                FolderPreviewItem(
+                  name: folder.name,
+                  isFolder: true,
+                  pdfCount: folder.pdfCount,
+                ),
+              for (final document in page.records)
+                FolderPreviewItem(
+                  name: document.name,
+                  isFolder: false,
+                  sizeBytes: document.sizeBytes,
+                ),
+            ],
+          );
+          _rememberFolderPreview(preview);
+          // Never block the user or alter Grid's SQLite/portable PDFs.
+          unawaited(FolderPreviewCache.write(preview));
+        } catch (_) {
+          // Optional prefetch failures must not alter navigation or PDFs.
+        }
+      }
+    } finally {
+      _prefetchingChildFolders = false;
     }
   }
 
@@ -1661,6 +1776,13 @@ class _FoldersScreenState extends State<FoldersScreen> {
                   }
                   return NotificationListener<ScrollNotification>(
                     onNotification: (notification) {
+                      if (notification.depth == 0) {
+                        if (notification is ScrollStartNotification) {
+                          _idleFolderPrefetchTimer?.cancel();
+                        } else if (notification is ScrollEndNotification) {
+                          _queueIdleFolderPrefetch();
+                        }
+                      }
                       _loadNextPageOnScroll(notification);
                       return false; // Keep pull-to-refresh and scrolling intact.
                     },
