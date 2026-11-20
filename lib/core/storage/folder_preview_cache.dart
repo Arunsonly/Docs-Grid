@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -64,6 +65,7 @@ class FolderPreview {
 
   Map<String, Object?> toJson() => {
     'schema': 2,
+    'namespace': key.startsWith('grid:') ? 'grid' : 'phone',
     'keyHash': _previewKeyHash(key),
     'savedAt': savedAt.toUtc().toIso8601String(),
     if (totalPdfCount != null) 'totalPdfCount': totalPdfCount,
@@ -123,6 +125,22 @@ class FolderPreviewCache {
   static const int maxSavedFolders = 96;
   static const int maxTotalBytes = 32 * 1024 * 1024;
 
+  // Serialize metadata writes with invalidations: an older pending cache
+  // write must not recreate a stale Grid preview after it was invalidated.
+  static Future<void> _operationTail = Future<void>.value();
+
+  static Future<void> _exclusive(Future<void> Function() operation) async {
+    final previous = _operationTail;
+    final finished = Completer<void>();
+    _operationTail = finished.future;
+    await previous;
+    try {
+      await operation();
+    } finally {
+      finished.complete();
+    }
+  }
+
   static String gridKey(String? folderId) => 'grid:${folderId ?? '__root__'}';
 
   /// The root signature prevents showing metadata from another mounted SAF
@@ -158,25 +176,67 @@ class FolderPreviewCache {
   static Future<void> write(FolderPreview preview) async {
     if (preview.items.length > maxItemsPerFolder ||
         preview.key.isEmpty) return;
-    File? temporary;
-    try {
-      final file = await _fileFor(preview.key);
-      final payload = await compute(_encodePreviewJson, preview.toJson());
-      if (utf8.encode(payload).length > maxFileBytes) return;
-      temporary = File('${file.path}.${DateTime.now().microsecondsSinceEpoch}.writing');
-      await temporary.writeAsString(payload, flush: true);
-      // Same-directory rename makes completed previews visible atomically.
-      await temporary.rename(file.path);
-      await _prune();
-    } catch (_) {
-      // Only optional metadata is lost. Original PDFs and DB are untouched.
-    } finally {
+    await _exclusive(() async {
+      File? temporary;
       try {
-        if (temporary != null && await temporary.exists()) {
-          await temporary.delete();
+        final file = await _fileFor(preview.key);
+        final payload = await compute(_encodePreviewJson, preview.toJson());
+        if (utf8.encode(payload).length > maxFileBytes) return;
+        temporary = File('${file.path}.${DateTime.now().microsecondsSinceEpoch}.writing');
+        await temporary.writeAsString(payload, flush: true);
+        await temporary.rename(file.path);
+        await _prune();
+      } catch (_) {
+        // Optional metadata errors must never affect real PDF bytes/DB.
+      } finally {
+        try {
+          if (temporary != null && await temporary.exists()) {
+            await temporary.delete();
+          }
+        } catch (_) {}
+      }
+    });
+  }
+
+  /// Invalidate only the specified Grid folder previews; null means the
+  /// mutation source could not prove which folders changed. For that case,
+  /// remove Grid-only preview files while retaining Phone preview metadata.
+  /// No real PDF, SAF tree, backup, or SQLite file is accessed.
+  static Future<void> invalidateGridFolders(
+      Set<String?>? affectedFolderIds) async {
+    if (affectedFolderIds != null && affectedFolderIds.isEmpty) return;
+    await _exclusive(() async {
+      try {
+        if (affectedFolderIds != null) {
+          for (final id in affectedFolderIds) {
+            final file = await _fileFor(gridKey(id));
+            try {
+              if (await file.exists()) await file.delete();
+            } catch (_) {}
+          }
+          return;
         }
-      } catch (_) {}
-    }
+        final directory = await _directory();
+        await for (final entry in directory.list(followLinks: false)) {
+          if (entry is! File || !entry.path.endsWith('.json')) continue;
+          try {
+            // Older/corrupt preview schemas are treated conservatively.
+            final decoded = await compute(
+              _decodePreviewJson, await entry.readAsString(),
+            );
+            if (decoded is Map && decoded['namespace'] == 'phone') {
+              continue;
+            }
+            await entry.delete();
+          } catch (_) {
+            // Only delete cache-owned JSON files, never user documents.
+            try { await entry.delete(); } catch (_) {}
+          }
+        }
+      } catch (_) {
+        // Cache invalidation is advisory, never a storage operation.
+      }
+    });
   }
 
   static Future<void> _prune() async {
