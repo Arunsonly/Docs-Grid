@@ -1,3 +1,6 @@
+import 'dart:async';
+
+import 'package:flutter/services.dart';
 import 'package:docs_grid/core/database/app_database.dart';
 import 'package:docs_grid/features/folders/data/folder_repository.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -67,6 +70,66 @@ void main() {
     expect(await repository.countDirectChildren(null), 55);
     expect(await repository.countDirectChildren('folder-0'), 1);
     expect(await repository.childrenOf('folder-0'), hasLength(1));
+  });
+
+  test('childrenOf validates providers in bounded parallel batches, preserving SQLite order', () async {
+    const channel = MethodChannel('docsgrid/storage');
+    final messenger = TestDefaultBinaryMessengerBinding
+        .instance.defaultBinaryMessenger;
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+    for (var i = 0; i < 8; i++) {
+      await db.update('folders', {
+        'storage_uri_or_relative_path': 'content://tree/provider/$i',
+      }, where: 'id = ?', whereArgs: ['folder-$i']);
+    }
+    var active = 0;
+    var maximumActive = 0;
+    var calls = 0;
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      if (call.method != 'listDirectory') {
+        throw PlatformException(code: 'UNEXPECTED_METHOD');
+      }
+      active++;
+      calls++;
+      if (active > maximumActive) maximumActive = active;
+      await Future<void>.delayed(const Duration(milliseconds: 8));
+      active--;
+      if (call.arguments['uri'] == 'content://tree/provider/3') {
+        throw PlatformException(code: 'NOT_FOUND', message: 'Removed outside app');
+      }
+      return <Map<String, Object?>>[];
+    });
+    final folders = await repository.childrenOf(null, previewLimit: 10);
+    expect(maximumActive, greaterThan(1));
+    expect(maximumActive, lessThanOrEqualTo(3));
+    expect(calls, 8);
+    expect(folders.map((folder) => folder.id), [
+      'folder-0', 'folder-1', 'folder-2', 'folder-4',
+      'folder-5', 'folder-6', 'folder-7', 'folder-8',
+      'folder-9',
+    ]);
+    // Read-only checks NEVER delete even a missing folder's DB record.
+    expect(await repository.countDirectChildren(null), 55);
+  });
+
+  test('provider permission errors still propagate instead of showing a false empty folder', () async {
+    const channel = MethodChannel('docsgrid/storage');
+    final messenger = TestDefaultBinaryMessengerBinding
+        .instance.defaultBinaryMessenger;
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+    await db.update('folders', {
+      'storage_uri_or_relative_path': 'content://tree/provider/0',
+    }, where: 'id = ?', whereArgs: ['folder-0']);
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      throw PlatformException(code: 'PERMISSION_DENIED', message: 'Grant revoked');
+    });
+    await expectLater(
+      repository.childrenOf(null, previewLimit: 2),
+      throwsA(isA<PlatformException>().having(
+        (error) => error.code, 'code', 'PERMISSION_DENIED',
+      )),
+    );
+    expect(await repository.countDirectChildren(null), 55);
   });
 
   test('bad prefetch bounds are rejected before any provider read', () async {
