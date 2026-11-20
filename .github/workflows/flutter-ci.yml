@@ -380,11 +380,23 @@ jobs:
     name: Release APK process-cold launch benchmark (Android emulator)
     needs: android
     if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
-    # Explicit Intel runner avoids macos-latest ARM64 nested virtualization
-    # failures and matches the x86_64 Android 34 emulator system image.
-    runs-on: macos-15-intel
+    # Linux KVM is supported on GitHub-hosted 2-vCPU runners and avoids
+    # unaccelerated macOS emulator boots/ADB stalls observed in the prior run.
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Enable and verify KVM for fast x86_64 emulation
+        run: |
+          set -euo pipefail
+          if [ ! -c /dev/kvm ]; then
+            echo 'KVM device is unavailable; refusing an unaccelerated, misleading timing run.' >&2
+            exit 1
+          fi
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          sudo chmod 666 /dev/kvm
+          test -r /dev/kvm && test -w /dev/kvm
       - name: Download verified Release APK from this exact run
         uses: actions/download-artifact@v4
         with:
@@ -400,7 +412,7 @@ jobs:
           arch: x86_64
           profile: pixel_6
           disable-animations: true
-          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -no-snapshot
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -no-snapshot -accel on
           script: >-
             python3 scripts/benchmark_android_cold_launch.py
             --apk artifacts/release/app-release.apk
