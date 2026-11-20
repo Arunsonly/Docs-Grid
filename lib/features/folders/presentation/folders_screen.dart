@@ -44,6 +44,17 @@ class _FoldersScreenState extends State<FoldersScreen> {
   late Future<List<Folder>> _foldersFuture;
   late Future<List<DocumentRecord>> _documentsFuture;
   final Map<String, FolderPreview> _savedFolderPreviews = {};
+  static const int _maxMemoryFolderPreviews = 12;
+
+  void _rememberFolderPreview(FolderPreview preview) {
+    // Keep only recently visited previews in RAM, independent of the
+    // bounded persistent on-disk index.
+    _savedFolderPreviews.remove(preview.key);
+    _savedFolderPreviews[preview.key] = preview;
+    while (_savedFolderPreviews.length > _maxMemoryFolderPreviews) {
+      _savedFolderPreviews.remove(_savedFolderPreviews.keys.first);
+    }
+  }
   final Set<String> _loadingFolderPreviews = {};
   final Set<String> _suppressFolderPreviews = {};
   int _folderLoadEpoch = 0;
@@ -125,7 +136,7 @@ class _FoldersScreenState extends State<FoldersScreen> {
       if (preview == null || !mounted ||
           _savedFolderPreviews.containsKey(key) ||
           _suppressFolderPreviews.contains(key)) return;
-      setState(() => _savedFolderPreviews[key] = preview);
+      setState(() => _rememberFolderPreview(preview));
     } finally {
       _loadingFolderPreviews.remove(key);
     }
@@ -162,7 +173,7 @@ class _FoldersScreenState extends State<FoldersScreen> {
             ),
         ],
       );
-      _savedFolderPreviews[key] = preview;
+      _rememberFolderPreview(preview);
       _suppressFolderPreviews.remove(key);
       // Optional, bounded app-private metadata: do not hold up navigation.
       unawaited(FolderPreviewCache.write(preview));
