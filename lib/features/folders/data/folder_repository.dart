@@ -108,34 +108,65 @@ class FolderRepository {
         if (previewLimit != null) previewLimit,
       ],
     );
+    final folders = rows.map(Folder.fromMap).toList(growable: false);
+    // Provider reads are independent and read-only. A small fixed worker pool
+    // prevents one slow SAF location from serially blocking every sibling,
+    // while never flooding cloud providers with hundreds of requests.
+    const maxConcurrentProviderChecks = 3;
+    final visible = List<bool>.filled(folders.length, false);
     final storage = StorageLocationService.instance;
-    final visible = <Folder>[];
-    for (final row in rows) {
-      final folder = Folder.fromMap(row);
-      final uri = folder.storageUri;
-      if (uri == null ||
-          (!uri.startsWith('content://') && !uri.startsWith('file://'))) {
-        visible.add(folder);
-        continue;
-      }
-      try {
-        // A folder can be deleted outside DocsGrid (for example in Samsung
-        // My Files). Do not keep showing its stale database row.
-        await storage.listDirectory(uri);
-        visible.add(folder);
-      } on PlatformException catch (error) {
-        final details = '${error.message ?? ''} ${error.details ?? ''}';
-        final missing = error.code == 'NOT_FOUND' ||
-            (error.code == 'STORAGE_ERROR' &&
-                (details.contains('FileNotFoundException') ||
-                 details.contains('Missing file')));
-        if (!missing) rethrow;
-        // External removal or revoked storage permission is not a user delete.
-        // Keep the database record active so it can reappear after relinking or
-        // restoring provider access; never add it to Grid Recycle Bin.
+    Object? firstError;
+    StackTrace? firstStack;
+    var cursor = 0;
+
+    Future<void> checkNext() async {
+      while (firstError == null) {
+        final index = cursor++;
+        if (index >= folders.length) return;
+        final uri = folders[index].storageUri;
+        if (uri == null ||
+            (!uri.startsWith('content://') && !uri.startsWith('file://'))) {
+          visible[index] = true;
+          continue;
+        }
+        try {
+          // Always consult the real provider. A cached folder preview cannot
+          // prove an external folder still exists or its grant is valid.
+          await storage.listDirectory(uri);
+          visible[index] = true;
+        } on PlatformException catch (error, stack) {
+          final details = '${error.message ?? ''} ${error.details ?? ''}';
+          final missing = error.code == 'NOT_FOUND' ||
+              (error.code == 'STORAGE_ERROR' &&
+                  (details.contains('FileNotFoundException') ||
+                   details.contains('Missing file')));
+          if (!missing && firstError == null) {
+            firstError = error;
+            firstStack = stack;
+          }
+          // Missing external folders stay absent from this visible listing,
+          // never marked deleted in SQLite or moved into Grid Recycle Bin.
+        } catch (error, stack) {
+          if (firstError == null) {
+            firstError = error;
+            firstStack = stack;
+          }
+        }
       }
     }
-    return visible;
+
+    await Future.wait(List.generate(
+      folders.length < maxConcurrentProviderChecks
+          ? folders.length : maxConcurrentProviderChecks,
+      (_) => checkNext(),
+    ));
+    if (firstError != null) {
+      Error.throwWithStackTrace(firstError!, firstStack!);
+    }
+    return [
+      for (var index = 0; index < folders.length; index++)
+        if (visible[index]) folders[index],
+    ];
   }
 
   /// Cheap, exact SQLite count used only for read-only previews. It must
