@@ -655,7 +655,7 @@ class DocumentRepository {
           'storage_uri': newStorageUri,
         });
       });
-      PortableSnapshotEvents.notifyDataChanged();
+      PortableSnapshotEvents.notifyDataChanged(affectedFolderIds: {document.folderId, folderId});
     } catch (_) {
       if (copiedToNewLocation && newStorageUri != sourceUri) {
         try {
@@ -838,7 +838,7 @@ class DocumentRepository {
             'to': destinationUri,
           });
         });
-        PortableSnapshotEvents.notifyDataChanged();
+        PortableSnapshotEvents.notifyDataChanged(affectedFolderIds: <String?>{});
       } catch (_) {
         if (createdDestination && destinationUri != sourceUri) {
           try { await storage.deletePdf(destinationUri); } catch (_) {}
@@ -1026,7 +1026,7 @@ class DocumentRepository {
             'storage_uri': createdUri,
           });
         });
-        PortableSnapshotEvents.notifyDataChanged();
+        PortableSnapshotEvents.notifyDataChanged(affectedFolderIds: {document.folderId});
       } catch (_) {
         try {
           if (createdUri.startsWith('content://') || createdUri.startsWith('file://')) {
@@ -1155,7 +1155,7 @@ class DocumentRepository {
             });
           }
         });
-        PortableSnapshotEvents.notifyDataChanged();
+        PortableSnapshotEvents.notifyDataChanged(); // Relinked record: unknown original folder.
         return true;
       }
       if (targetFolderId != null) {
@@ -1250,7 +1250,7 @@ class DocumentRepository {
           'folder_id': targetFolderId,
         });
       });
-      PortableSnapshotEvents.notifyDataChanged();
+      PortableSnapshotEvents.notifyDataChanged(affectedFolderIds: {targetFolderId});
       // Recovery never deletes the original source file.
       return true;
     } finally {
@@ -1356,7 +1356,7 @@ class DocumentRepository {
         });
         await _recordHistory(txn, id, sourceType == 'share' ? 'imported_from_share' : 'scanned', {'name': safeName, 'folder_id': targetFolderId});
       });
-      PortableSnapshotEvents.notifyDataChanged();
+      PortableSnapshotEvents.notifyDataChanged(affectedFolderIds: {targetFolderId});
     } catch (error) {
       try {
         if (uri.startsWith('content://') || uri.startsWith('file://')) {
@@ -1661,7 +1661,7 @@ class DocumentRepository {
           });
           await _recordHistory(txn, documentId, 'imported', {'name': storedName});
         });
-        PortableSnapshotEvents.notifyDataChanged();
+        PortableSnapshotEvents.notifyDataChanged(affectedFolderIds: {effectiveTargetFolderId});
         added++;
       } catch (error) {
         if (createdUri != null) {
@@ -1750,7 +1750,9 @@ class DocumentRepository {
         }
       }
     });
-    PortableSnapshotEvents.notifyDataChanged();
+    PortableSnapshotEvents.notifyDataChanged(affectedFolderIds: {
+      for (final document in documents) document.folderId,
+    });
     await _reconcileReminders();
   }
 
@@ -1824,7 +1826,7 @@ class DocumentRepository {
         {},
       );
     });
-    PortableSnapshotEvents.notifyDataChanged();
+    PortableSnapshotEvents.notifyDataChanged(affectedFolderIds: <String?>{});
   }
 
   Future<DocumentRecord?> getById(String id) async {
@@ -1874,7 +1876,7 @@ class DocumentRepository {
         await _recordHistory(txn, row['id'] as String, 'recent_cleared', {});
       }
     });
-    PortableSnapshotEvents.notifyDataChanged();
+    PortableSnapshotEvents.notifyDataChanged(affectedFolderIds: <String?>{});
   }
 
   Future<DocumentRecord> copyDocument(
@@ -1948,7 +1950,7 @@ class DocumentRepository {
     await db.transaction((txn) async {
       await _recordHistory(txn, newId, 'copied', {'from': document.id});
     });
-    PortableSnapshotEvents.notifyDataChanged();
+    PortableSnapshotEvents.notifyDataChanged(affectedFolderIds: {created.folderId});
     return created;
   }
 
@@ -1964,7 +1966,7 @@ class DocumentRepository {
       if (count == 0) return;
       await _recordHistory(txn, document.id, 'opened', {});
     });
-    PortableSnapshotEvents.notifyDataChanged();
+    PortableSnapshotEvents.notifyDataChanged(affectedFolderIds: <String?>{});
   }
 
   Future<List<DocumentRecord>> listTrash({String query = ''}) async {
@@ -2098,7 +2100,7 @@ class DocumentRepository {
       if (count == 0) throw StateError('PDF is no longer in the Recycle Bin.');
       await _recordHistory(txn, document.id, 'restored', {});
     });
-    PortableSnapshotEvents.notifyDataChanged();
+    PortableSnapshotEvents.notifyDataChanged(affectedFolderIds: {document.folderId});
     await _reconcileReminders();
   }
 
@@ -2252,7 +2254,7 @@ class DocumentRepository {
     // Recycle Bin entry has been removed only after a verified Phone restore.
     // Deleting the obsolete Grid archive is best-effort post-commit cleanup.
     try { await storage.deletePdf(archivedUri); } catch (_) {}
-    PortableSnapshotEvents.notifyDataChanged();
+    PortableSnapshotEvents.notifyDataChanged(); // Cross-storage restore: conservative fallback.
     await _reconcileReminders();
   }
 
@@ -2268,7 +2270,7 @@ class DocumentRepository {
       if (changed == 0) throw StateError('PDF record is already in the Recycle Bin.');
       await _recordHistory(txn, document.id, 'moved_to_recycle_bin', {});
     });
-    PortableSnapshotEvents.notifyDataChanged();
+    PortableSnapshotEvents.notifyDataChanged(affectedFolderIds: {document.folderId});
     await _reconcileReminders();
   }
 
@@ -2326,7 +2328,7 @@ class DocumentRepository {
           'to': safeBase,
         });
       });
-      PortableSnapshotEvents.notifyDataChanged();
+      PortableSnapshotEvents.notifyDataChanged(affectedFolderIds: {document.folderId});
     } catch (_) {
       try {
         if (isShared) {
@@ -2404,7 +2406,7 @@ class DocumentRepository {
         throw StateError('The document is no longer in the Recycle Bin.');
       }
     });
-    PortableSnapshotEvents.notifyDataChanged();
+    PortableSnapshotEvents.notifyDataChanged(affectedFolderIds: <String?>{});
 
     // If OS cancellation fails, startup/resume reconciliation removes the
     // orphaned pending notification because its reminder row no longer exists.
