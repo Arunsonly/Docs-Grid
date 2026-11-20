@@ -1410,7 +1410,12 @@ class _FoldersScreenState extends State<FoldersScreen> {
                       ),
                     );
                   }
-                  return RefreshIndicator(
+                  return NotificationListener<ScrollNotification>(
+                    onNotification: (notification) {
+                      _loadNextPageOnScroll(notification);
+                      return false; // Preserve RefreshIndicator & nested scrolling.
+                    },
+                    child: RefreshIndicator(
                     onRefresh: _refresh,
                     child: ListView(
                       padding: const EdgeInsets.fromLTRB(12, 8, 12, 104),
@@ -1633,7 +1638,32 @@ class _FoldersScreenState extends State<FoldersScreen> {
                               ),
                             ),
                         ],
+                        if (_pagedDocumentsMode &&
+                            (_hasMoreFolderDocuments || _loadingMoreFolderDocuments ||
+                                _pageLoadFailed))
+                          Padding(
+                            key: const ValueKey('grid-folder-next-page'),
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                            child: Center(
+                              child: _loadingMoreFolderDocuments
+                                  ? const CircularProgressIndicator()
+                                  : TextButton.icon(
+                                      icon: Icon(_pageLoadFailed
+                                          ? Icons.refresh : Icons.expand_more),
+                                      label: Text(_pageLoadFailed
+                                          ? 'Retry loading more PDFs'
+                                          : 'Load more PDFs'),
+                                      onPressed: () {
+                                        if (_pageLoadFailed) {
+                                          setState(() => _pageLoadFailed = false);
+                                        }
+                                        unawaited(_loadMoreFolderDocuments());
+                                      },
+                                    ),
+                            ),
+                          ),
                       ],
+                    ),
                     ),
                   );
                 },
