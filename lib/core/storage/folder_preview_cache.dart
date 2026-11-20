@@ -48,6 +48,7 @@ class FolderPreview {
     required this.items,
     required this.savedAt,
     this.totalPdfCount,
+    this.totalFolderCount,
   });
 
   final String key;
@@ -55,6 +56,8 @@ class FolderPreview {
   final DateTime savedAt;
   /// Total PDFs verified by SQLite, even if only a first page is previewed.
   final int? totalPdfCount;
+  /// Exact SQLite count when a speculative preview contains only a few rows.
+  final int? totalFolderCount;
 
   int get folderCount => items.where((item) => item.isFolder).length;
   int get pdfCount => items.where((item) => !item.isFolder).length;
@@ -64,6 +67,7 @@ class FolderPreview {
     'keyHash': _previewKeyHash(key),
     'savedAt': savedAt.toUtc().toIso8601String(),
     if (totalPdfCount != null) 'totalPdfCount': totalPdfCount,
+    if (totalFolderCount != null) 'totalFolderCount': totalFolderCount,
     'items': items.map((item) => item.toJson()).toList(growable: false),
   };
 
@@ -95,6 +99,11 @@ class FolderPreview {
               items.where((item) => !item.isFolder).length &&
           (raw['totalPdfCount'] as int) <= 10000000
           ? raw['totalPdfCount'] as int : null,
+      totalFolderCount: raw['totalFolderCount'] is int &&
+          (raw['totalFolderCount'] as int) >=
+              items.where((item) => item.isFolder).length &&
+          (raw['totalFolderCount'] as int) <= 10000000
+          ? raw['totalFolderCount'] as int : null,
     );
   }
 }
