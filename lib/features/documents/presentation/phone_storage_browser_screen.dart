@@ -57,6 +57,8 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
   StorageSortField? _groupedSortField;
   bool? _groupedSortAscending;
   Map<String, List<Map<String, Object?>>>? _groupedCache;
+  List<Map<String, Object?>>? _cachedPdfRows;
+  List<Map<String, Object?>>? _cachedPdfSource;
   FolderPreview? _savedSelectedPreview;
 
   @override
@@ -240,8 +242,14 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
         uri.trim().isNotEmpty;
   }
 
-  List<Map<String, Object?>> get _pdfs =>
-      widget.entries.where(_isPdfFile).toList(growable: false);
+  List<Map<String, Object?>> get _pdfs {
+    if (identical(widget.entries, _cachedPdfSource) &&
+        _cachedPdfRows != null) return _cachedPdfRows!;
+    final result = widget.entries.where(_isPdfFile).toList(growable: false);
+    _cachedPdfSource = widget.entries;
+    _cachedPdfRows = result;
+    return result;
+  }
 
   DateTime? _modifiedAt(Map<String, Object?> entry) {
     final value = entry['lastModified'];
@@ -591,15 +599,21 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
         .where((path) =>
             selectedPath != null || query.isEmpty || path.toLowerCase().contains(query))
         .toList(growable: false);
-    final matchingPdfs = _pdfs.where((entry) {
-      final name = (entry['name'] as String).toLowerCase();
-      final folderPath = _normalizedFolderPath(entry).toLowerCase();
-      final matchesQuery =
-          query.isEmpty || name.contains(query) || folderPath.contains(query);
-      return matchesQuery &&
-          (selectedPath == null ||
-              (folderPath.isEmpty ? 'Internal' : folderPath) == selectedPath);
-    }).toList(growable: false)..sort(_comparePdfs);
+    // A selected folder renders its already sorted direct children.
+    // At the root without a search, count PDFs without sorting all of them.
+    // Only real search results need a cross-folder sort.
+    final List<Map<String, Object?>> matchingPdfs;
+    if (selectedPath != null) {
+      matchingPdfs = const <Map<String, Object?>>[];
+    } else if (query.isEmpty) {
+      matchingPdfs = _pdfs;
+    } else {
+      matchingPdfs = _pdfs.where((entry) {
+        final name = (entry['name'] as String).toLowerCase();
+        final folderPath = _normalizedFolderPath(entry).toLowerCase();
+        return name.contains(query) || folderPath.contains(query);
+      }).toList(growable: false)..sort(_comparePdfs);
+    }
 
     final isSearching = query.isNotEmpty;
     var visiblePdfCount = matchingPdfs.length;
