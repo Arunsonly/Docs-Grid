@@ -144,6 +144,11 @@ void main() {
     );
     await tester.pumpAndSettle();
     expect(find.text('Policy_085.pdf'), findsOneWidget);
+    // Virtualization intentionally unmounts the off-screen header. Revisit
+    // the top to verify the accurate total was retained after prefetch.
+    tester.state<ScrollableState>(find.byType(Scrollable).last)
+        .position.jumpTo(0);
+    await tester.pumpAndSettle();
     expect(find.text('0 folders · 155 PDFs'), findsOneWidget);
     expect(documents.pageCalls, greaterThanOrEqualTo(2));
     expect(documents.fullListCalls, 0);
