@@ -36,8 +36,8 @@ class FolderPreviewItem {
     return FolderPreviewItem(
       name: name,
       isFolder: value['isFolder'] as bool,
-      pdfCount: ((value['pdfCount'] as num?)?.toInt() ?? 0).clamp(0, 10000000),
-      sizeBytes: ((value['sizeBytes'] as num?)?.toInt() ?? 0).clamp(0, 1 << 62),
+      pdfCount: ((value['pdfCount'] as num?)?.toInt() ?? 0).clamp(0, 10000000).toInt(),
+      sizeBytes: ((value['sizeBytes'] as num?)?.toInt() ?? 0).clamp(0, 1 << 62).toInt(),
     );
   }
 }
@@ -141,7 +141,7 @@ class FolderPreviewCache {
       final file = await _fileFor(preview.key);
       final payload = await compute(_encodePreviewJson, preview.toJson());
       if (utf8.encode(payload).length > maxFileBytes) return;
-      temporary = File('${file.path}.writing');
+      temporary = File('${file.path}.${DateTime.now().microsecondsSinceEpoch}.writing');
       await temporary.writeAsString(payload, flush: true);
       // Same-directory rename makes completed previews visible atomically.
       await temporary.rename(file.path);
