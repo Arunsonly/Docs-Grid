@@ -740,7 +740,7 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
           leading: Icon(Icons.history),
           title: Text('Saved folder preview · verifying PDFs'),
         ));
-        for (final item in saved.items) {
+        for (final item in saved.items.take(_visiblePdfLimit)) {
           children.add((context) => ListTile(
             leading: const Icon(Icons.picture_as_pdf_outlined),
             title: Text(item.name, maxLines: 1, overflow: TextOverflow.ellipsis),
