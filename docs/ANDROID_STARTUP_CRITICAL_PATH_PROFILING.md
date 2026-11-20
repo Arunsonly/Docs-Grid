@@ -9,19 +9,19 @@ backup/restore or storage permissions.
 
 1. The Android CI job builds and verifies the evaluation Release APK.
 2. The Linux/KVM Android 14 x86_64 emulator measures seven process-cold
-   launches **without tracing** and saves \`cold-launch.json\` (P50/P95).
+   launches **without tracing** and saves `cold-launch.json` (P50/P95).
 3. On the **same already-installed APK and emulator**, an extra
-   \`am start -S -W\` cold launch is recorded under Perfetto for 16 seconds.
+   `am start -S -W` cold launch is recorded under Perfetto for 16 seconds.
 4. The report refuses a missing/mismatched seven-run baseline, validates
    startup output, requires a nonempty binary trace, and publishes both.
 
 Artifacts (14-day retention):
-- \`docsgrid-android-cold-launch-baseline\` — raw baseline JSON (7 untraced runs).
-- \`docsgrid-android-startup-critical-path\` — \`startup-critical-path.json\`
-  and \`docsgrid-startup.perfetto-trace\`.
+- `docsgrid-android-cold-launch-baseline` — raw baseline JSON (7 untraced runs).
+- `docsgrid-android-startup-critical-path` — `startup-critical-path.json`
+  and `docsgrid-startup.perfetto-trace`.
 
 Open the trace in https://ui.perfetto.dev and inspect **Android App Startups**,
-\`bindApplication\`, \`activityStart\`, thread scheduling, Flutter UI/raster,
+`bindApplication`, `activityStart`, thread scheduling, Flutter UI/raster,
 GC and binder activity around the first Activity frame. It helps locate
 Android/system/Flutter engine stalls and lock contention **without slowing
 production users with persistent loggers**.
@@ -44,15 +44,15 @@ production users with persistent loggers**.
 The profiler never installs/uninstalls, clears storage, forces permissions,
 modifies application source or touches user PDFs. It removes only its own
 temporary Perfetto trace from the CI emulator after transfer. Stable-V1 and
-\`main\` remain unchanged.
+`main` remain unchanged.
 
 Manual reproduction on a **dedicated backed-up test emulator** after running
-\`benchmark_android_cold_launch.py\`:
+`benchmark_android_cold_launch.py`:
 
-\`\`\`bash
+```bash
 python3 scripts/profile_android_startup.py \
   --apk artifacts/release/app-release.apk \
   --baseline startup-results/cold-launch.json \
   --output-dir startup-results/critical-path \
   --trace-seconds 16
-\`\`\`
+```

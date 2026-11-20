@@ -404,7 +404,10 @@ jobs:
           path: artifacts/release
       - name: Verify TTID parser and percentile calculations
         run: python3 -m unittest discover -s scripts -p 'test_android_*.py' -v
-      - name: Measure Release APK cold launches (TTID, not TTFD)
+      # Keep the emulator alive for BOTH the untraced seven-run baseline and
+      # the one traced launch. The action terminates the emulator when its
+      # script finishes, so separate downstream jobs/steps cannot use ADB.
+      - name: Measure cold launches and capture Perfetto on the same live emulator
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 34
@@ -413,21 +416,17 @@ jobs:
           profile: pixel_6
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -no-snapshot -accel on
-          script: >-
-            python3 scripts/benchmark_android_cold_launch.py
-            --apk artifacts/release/app-release.apk
-            --output startup-results/cold-launch.json
-            --iterations 7 --warmups 1
-      # Capture one additional process-cold launch on the same already-installed
-      # Release APK. Perfetto observes Android/Flutter threads; it never edits
-      # the app, database, storage, permissions or backup/restore behavior.
-      - name: Capture startup critical path (Perfetto, read-only)
-        run: |
-          python3 scripts/profile_android_startup.py \
-            --apk artifacts/release/app-release.apk \
-            --baseline startup-results/cold-launch.json \
-            --output-dir startup-results/critical-path \
-            --trace-seconds 16
+          script: |
+            set -e
+            python3 scripts/benchmark_android_cold_launch.py \
+              --apk artifacts/release/app-release.apk \
+              --output startup-results/cold-launch.json \
+              --iterations 7 --warmups 1
+            python3 scripts/profile_android_startup.py \
+              --apk artifacts/release/app-release.apk \
+              --baseline startup-results/cold-launch.json \
+              --output-dir startup-results/critical-path \
+              --trace-seconds 16
       - name: Upload startup critical-path trace and summary
         if: always()
         uses: actions/upload-artifact@v4
