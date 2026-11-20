@@ -7,6 +7,7 @@ import 'package:open_filex/open_filex.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../data/document_repository.dart';
+import '../data/home_dashboard_cache.dart';
 import '../data/phone_recent_history.dart';
 import '../data/phone_pdf_delta.dart';
 import '../data/phone_refresh_queue.dart';
@@ -34,6 +35,7 @@ class DocumentsScreen extends StatefulWidget {
 class _DocumentsScreenState extends State<DocumentsScreen>
     with WidgetsBindingObserver {
   final _repository = DocumentRepository();
+  final _homeCache = HomeDashboardCache();
   final _categoryRepository = CategoryRepository();
   final _folderRepository = FolderRepository();
   final _tools = DocumentToolsService();
@@ -46,6 +48,10 @@ class _DocumentsScreenState extends State<DocumentsScreen>
   bool _gridView = false;
   int _totalStorageBytes = 0;
   int _totalDocumentCount = 0;
+  bool _liveHomeSummaryLoaded = false;
+  bool _showCachedHomeSummary = false;
+  bool _liveGridRecentLoaded = false;
+  List<String> _cachedGridRecentNames = const [];
   int _starredCount = 0;
   int? _phoneStorageBytes;
   bool? _phoneHasAllFilesAccess;
@@ -92,6 +98,11 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       },
     );
     if (!widget.phoneOnly) {
+      // Display last-known *non-actionable* Home metadata while SQLite
+      // independently loads the authoritative data. Never block first paint.
+      if (!widget.favoritesOnly && !widget.recentOnly) {
+        unawaited(_restoreCachedHomeSnapshot());
+      }
       _load();
       _loadViewPreference();
       _loadTrashSummary();
@@ -107,6 +118,29 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       } else if (!widget.favoritesOnly && !widget.recentOnly) {
         _scanPhoneStorage(openBrowser: false);
       }
+    });
+  }
+
+  Future<void> _restoreCachedHomeSnapshot() async {
+    // Only the actual Home dashboard may display a provisional snapshot.
+    // A completed SQLite read always wins, even if preferences finish later.
+    final summaryFuture = _homeCache.readSummary();
+    final namesFuture = _homeCache.readRecentNames();
+    final summary = await summaryFuture;
+    final names = await namesFuture;
+    if (!mounted || widget.phoneOnly || widget.favoritesOnly || widget.recentOnly) {
+      return;
+    }
+    if ((_liveHomeSummaryLoaded || summary == null) &&
+        (_liveGridRecentLoaded || names.isEmpty)) return;
+    setState(() {
+      if (!_liveHomeSummaryLoaded && summary != null) {
+        _totalDocumentCount = summary.documentCount;
+        _starredCount = summary.favoriteCount;
+        _totalStorageBytes = summary.totalBytes;
+        _showCachedHomeSummary = true;
+      }
+      if (!_liveGridRecentLoaded) _cachedGridRecentNames = names;
     });
   }
 
@@ -327,7 +361,16 @@ class _DocumentsScreenState extends State<DocumentsScreen>
           _totalStorageBytes = summary.totalBytes;
           _totalDocumentCount = summary.documentCount;
           _starredCount = summary.favoriteCount;
+          _liveHomeSummaryLoaded = true;
+          _showCachedHomeSummary = false;
         });
+        if (!widget.phoneOnly && !widget.favoritesOnly && !widget.recentOnly) {
+          unawaited(_homeCache.saveSummary(
+            documentCount: summary.documentCount,
+            favoriteCount: summary.favoriteCount,
+            totalBytes: summary.totalBytes,
+          ));
+        }
       } catch (_) {
         // A summary failure must not blank a successfully loaded PDF list.
       }
@@ -422,7 +465,16 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       _totalStorageBytes = summary.totalBytes;
       _totalDocumentCount = summary.documentCount;
       _starredCount = summary.favoriteCount;
+      _liveHomeSummaryLoaded = true;
+      _showCachedHomeSummary = false;
     });
+    if (!widget.phoneOnly) {
+      unawaited(_homeCache.saveSummary(
+        documentCount: summary.documentCount,
+        favoriteCount: summary.favoriteCount,
+        totalBytes: summary.totalBytes,
+      ));
+    }
     await _loadTrashSummary();
   }
 
@@ -1343,7 +1395,15 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       setState(() {
         _gridRecent = recentDocuments;
         _phoneRecent = phone.take(20).toList(growable: false);
+        _liveGridRecentLoaded = true;
+        _cachedGridRecentNames = const [];
       });
+      if (!widget.phoneOnly && !widget.favoritesOnly && !widget.recentOnly) {
+        // Names only. Do not persist IDs, paths, actions or raw PDF bytes.
+        unawaited(_homeCache.saveRecentNames(
+          recentDocuments.map((document) => document.name).toList(growable: false),
+        ));
+      }
     } catch (_) {
       // Recent metadata is optional and must not block the dashboard.
     }
@@ -2409,6 +2469,9 @@ class _DocumentsScreenState extends State<DocumentsScreen>
                   Text('$_totalDocumentCount PDFs', style: const TextStyle(
                     color: Color(0xFF10162C), fontSize: 32, fontWeight: FontWeight.w800,
                   )),
+                  if (_showCachedHomeSummary)
+                    const Text('Previous summary · refreshing live counts',
+                      style: TextStyle(color: Color(0xFF17203D), fontSize: 10)),
                   const SizedBox(height: 12),
                   Row(children: [
                     Expanded(child: _dashboardStorageMetric(
@@ -2517,7 +2580,20 @@ class _DocumentsScreenState extends State<DocumentsScreen>
                                       itemBuilder: (context, index) => _phoneRecentTile(_phoneRecent[index]),
                                     )
                               : _gridRecent.isEmpty
-                                  ? const Center(child: Text('No recent Grid PDFs'))
+                                  ? (!_liveGridRecentLoaded && _cachedGridRecentNames.isNotEmpty
+                                      ? ListView.builder(
+                                          primary: false,
+                                          itemCount: _cachedGridRecentNames.length,
+                                          itemBuilder: (context, index) => ListTile(
+                                            dense: true,
+                                            enabled: false,
+                                            leading: const Icon(Icons.picture_as_pdf_outlined),
+                                            title: Text('${_cachedGridRecentNames[index]}.pdf',
+                                              maxLines: 1, overflow: TextOverflow.ellipsis),
+                                            subtitle: const Text('Previous session · verifying PDFs'),
+                                          ),
+                                        )
+                                      : const Center(child: Text('No recent Grid PDFs')))
                                   : ListView.separated(
                                       primary: false,
                                       itemCount: _gridRecent.length,
