@@ -969,8 +969,11 @@ class _FoldersScreenState extends State<FoldersScreen> {
   Future<void> _shareSelectedDocuments(
     List<DocumentRecord> currentlyLoaded,
   ) async {
+    final folderId = _currentFolderId;
+    final epoch = _folderLoadEpoch;
     final all = await _allSelectableDocuments(currentlyLoaded);
-    if (!mounted) return;
+    if (!mounted || epoch != _folderLoadEpoch ||
+        folderId != _currentFolderId) return;
     final selected = all.where(
       (item) => _selectedDocumentIds.contains(item.id),
     ).toList(growable: false);
@@ -982,8 +985,11 @@ class _FoldersScreenState extends State<FoldersScreen> {
   }
 
   Future<void> _moveSelected(List<DocumentRecord> currentlyLoaded) async {
+    final folderId = _currentFolderId;
+    final epoch = _folderLoadEpoch;
     final all = await _allSelectableDocuments(currentlyLoaded);
-    if (!mounted) return;
+    if (!mounted || epoch != _folderLoadEpoch ||
+        folderId != _currentFolderId) return;
     final selected = all.where((d) => _selectedDocumentIds.contains(d.id)).toList();
     if (selected.isEmpty) return;
     final folders = await _repository.allFoldersWithPaths();
