@@ -1445,6 +1445,7 @@ class _FoldersScreenState extends State<FoldersScreen>
 
   Widget _buildGridPdfCard(DocumentRecord document) {
     return Card(
+                              key: ValueKey('grid-pdf-${document.id}'),
                               elevation: 0,
                               child: ListTile(
                                 leading: _selectedDocumentIds.isNotEmpty
