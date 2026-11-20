@@ -403,7 +403,7 @@ jobs:
           name: docsgrid-android-release-evaluation-apk
           path: artifacts/release
       - name: Verify TTID parser and percentile calculations
-        run: python3 -m unittest discover -s scripts -p 'test_android_cold_launch.py' -v
+        run: python3 -m unittest discover -s scripts -p 'test_android_*.py' -v
       - name: Measure Release APK cold launches (TTID, not TTFD)
         uses: reactivecircus/android-emulator-runner@v2
         with:
@@ -418,6 +418,24 @@ jobs:
             --apk artifacts/release/app-release.apk
             --output startup-results/cold-launch.json
             --iterations 7 --warmups 1
+      # Capture one additional process-cold launch on the same already-installed
+      # Release APK. Perfetto observes Android/Flutter threads; it never edits
+      # the app, database, storage, permissions or backup/restore behavior.
+      - name: Capture startup critical path (Perfetto, read-only)
+        run: |
+          python3 scripts/profile_android_startup.py \
+            --apk artifacts/release/app-release.apk \
+            --baseline startup-results/cold-launch.json \
+            --output-dir startup-results/critical-path \
+            --trace-seconds 16
+      - name: Upload startup critical-path trace and summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docsgrid-android-startup-critical-path
+          path: startup-results/critical-path/
+          if-no-files-found: warn
+          retention-days: 14
       - name: Upload startup timing baseline and sample data
         if: always()
         uses: actions/upload-artifact@v4
