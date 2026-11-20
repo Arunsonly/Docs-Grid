@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/services.dart';
 import 'package:docs_grid/core/database/app_database.dart';
+import 'package:docs_grid/core/storage/portable_snapshot_events.dart';
 import 'package:docs_grid/features/folders/data/folder_repository.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
@@ -131,6 +132,67 @@ void main() {
       )),
     );
     expect(await repository.countDirectChildren(null), 55);
+  });
+
+  test('a provider that refuses parallel calls gets the legacy sequential fallback', () async {
+    const channel = MethodChannel('docsgrid/storage');
+    final messenger = TestDefaultBinaryMessengerBinding
+        .instance.defaultBinaryMessenger;
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+    for (var i = 0; i < 6; i++) {
+      await db.update('folders', {
+        'storage_uri_or_relative_path': 'content://tree/limited/$i',
+      }, where: 'id = ?', whereArgs: ['folder-$i']);
+    }
+    var active = 0;
+    var attemptedInParallel = false;
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      active++;
+      final concurrent = active > 1;
+      await Future<void>.delayed(const Duration(milliseconds: 6));
+      active--;
+      if (concurrent) {
+        attemptedInParallel = true;
+        throw PlatformException(code: 'BUSY', message: 'Provider serial only');
+      }
+      return <Map<String, Object?>>[];
+    });
+    final result = await repository.childrenOf(null, previewLimit: 6);
+    expect(attemptedInParallel, isTrue);
+    expect(result.map((item) => item.id), [
+      'folder-0', 'folder-1', 'folder-2',
+      'folder-3', 'folder-4', 'folder-5',
+    ]);
+  });
+
+  test('root reorder only invalidates root preview and retains its 55 children', () async {
+    final changes = <GridFolderChange>[];
+    final sub = PortableSnapshotEvents.gridPreviewChanges.listen(changes.add);
+    addTearDown(sub.cancel);
+    final reversed = [
+      for (var i = 54; i >= 0; i--) 'folder-$i',
+    ];
+    await repository.reorderChildren(null, reversed);
+    expect(changes, hasLength(1));
+    expect(changes.single.affects(null), isTrue);
+    expect(changes.single.affects('folder-5'), isFalse);
+    expect((await repository.childrenOf(null)).first.id, 'folder-54');
+    expect(await repository.countDirectChildren(null), 55);
+  });
+
+  test('folder move invalidates only source and destination parent previews', () async {
+    final changes = <GridFolderChange>[];
+    final sub = PortableSnapshotEvents.gridPreviewChanges.listen(changes.add);
+    addTearDown(sub.cancel);
+    await repository.moveManyToParent(['folder-0'], 'folder-1');
+    expect(changes, hasLength(1));
+    final change = changes.single;
+    expect(change.invalidateAll, isFalse);
+    expect(change.affects(null), isTrue);
+    expect(change.affects('folder-1'), isTrue);
+    expect(change.affects('folder-2'), isFalse);
+    expect(await repository.countDirectChildren(null), 54);
+    expect(await repository.countDirectChildren('folder-1'), 1);
   });
 
   test('bad prefetch bounds are rejected before any provider read', () async {
