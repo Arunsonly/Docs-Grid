@@ -771,9 +771,7 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
         folderPaths.length > _visibleFolderLimit;
     _hasMorePdfRows = selectedPath == null
         ? isSearching && matchingPdfs.length > _visiblePdfLimit
-        : selectedFiles.length > _visiblePdfLimit &&
-            !isSearching || selectedPath != null && isSearching &&
-            visiblePdfCount > _visiblePdfLimit;
+        : visiblePdfCount > _visiblePdfLimit;
     if (_hasMoreFolderRows || _hasMorePdfRows) {
       children.add((context) => ListTile(
         key: const ValueKey('phone-next-page'),
