@@ -89,7 +89,11 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
 
   void _loadMoreOnScroll(ScrollNotification notification) {
     if (notification.depth != 0 ||
-        notification.metrics.extentAfter > 560 ||
+        notification.metrics.extentAfter > 1000 ||
+        (notification is ScrollUpdateNotification &&
+            (notification.scrollDelta ?? 0) <= 0) ||
+        (notification is OverscrollNotification &&
+            notification.overscroll <= 0) ||
         (!_hasMoreFolderRows && !_hasMorePdfRows) ||
         _nextRenderPageScheduled ||
         (notification is! ScrollUpdateNotification &&
