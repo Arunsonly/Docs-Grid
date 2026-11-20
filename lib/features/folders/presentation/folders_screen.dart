@@ -435,6 +435,15 @@ class _FoldersScreenState extends State<FoldersScreen>
         }
         _attemptedChildPrefetches.add(key);
         try {
+          // An existing validated preview is better than replacing it with
+          // a smaller speculative subset. Read at most two cache files.
+          final saved = await FolderPreviewCache.read(key);
+          if (!mounted || !_gridScreenForeground ||
+              epoch != _folderLoadEpoch) return;
+          if (saved != null) {
+            _rememberFolderPreview(saved);
+            continue;
+          }
           // Use the existing provider validation, never bypass it to make a
           // stale folder actionable. The result remains a read-only preview.
           final subfolders = await _repository.childrenOf(
