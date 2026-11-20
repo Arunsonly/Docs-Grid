@@ -89,6 +89,9 @@ class _FoldersScreenState extends State<FoldersScreen>
   int _folderPreviewRevision = 0;
   bool _allGridPreviewsInvalidating = false;
   final Set<String> _pendingGridPreviewInvalidations = {};
+  Timer? _gridPreviewInvalidationDebounce;
+  Set<String?>? _queuedGridPreviewIds = <String?>{};
+  bool _gridPreviewRebuildScheduled = false;
   // Only prepare metadata of the first two likely child folders, and only
   // after the current screen has loaded and the user has stopped scrolling.
   Timer? _idleFolderPrefetchTimer;
@@ -112,6 +115,11 @@ class _FoldersScreenState extends State<FoldersScreen>
   @override
   void dispose() {
     _idleFolderPrefetchTimer?.cancel();
+    if (_gridPreviewInvalidationDebounce?.isActive == true) {
+      _gridPreviewInvalidationDebounce?.cancel();
+      // Do not lose an invalidation because the user leaves this tab.
+      unawaited(FolderPreviewCache.invalidateGridFolders(_queuedGridPreviewIds));
+    }
     _gridChangesSubscription?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     _searchController.dispose();
@@ -150,9 +158,28 @@ class _FoldersScreenState extends State<FoldersScreen>
     }
     if (keys == null || keys.contains(currentKey)) {
       _suppressFolderPreviews.add(currentKey);
-      if (mounted) setState(() {});
+      if (!_gridPreviewRebuildScheduled) {
+        _gridPreviewRebuildScheduled = true;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          _gridPreviewRebuildScheduled = false;
+          if (mounted) setState(() {});
+        });
+      }
     }
-    unawaited(_invalidatePreviewMetadata(affected, revision));
+    // Group bursts of imports/moves into one disk operation per changed
+    // folder; avoid rewriting/removing the same metadata hundreds of times.
+    if (affected == null) {
+      _queuedGridPreviewIds = null;
+    } else {
+      _queuedGridPreviewIds?.addAll(affected);
+    }
+    _gridPreviewInvalidationDebounce?.cancel();
+    _gridPreviewInvalidationDebounce =
+        Timer(const Duration(milliseconds: 120), () {
+      final queued = _queuedGridPreviewIds;
+      _queuedGridPreviewIds = <String?>{};
+      unawaited(_invalidatePreviewMetadata(queued, revision));
+    });
   }
 
   Future<void> _invalidatePreviewMetadata(
