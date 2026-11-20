@@ -9,6 +9,7 @@ import '../../documents/presentation/document_thumbnail.dart';
 import '../../tools/document_tools_service.dart';
 import '../../../core/storage/storage_location_service.dart';
 import '../../../core/storage/folder_preview_cache.dart';
+import '../../../core/storage/portable_snapshot_events.dart';
 import '../../reminders/data/reminder_repository.dart';
 import '../../categories/data/category_repository.dart';
 
@@ -84,6 +85,10 @@ class _FoldersScreenState extends State<FoldersScreen>
   final Set<String> _loadingFolderPreviews = {};
   final Set<String> _suppressFolderPreviews = {};
   int _folderLoadEpoch = 0;
+  StreamSubscription<GridFolderChange>? _gridChangesSubscription;
+  int _folderPreviewRevision = 0;
+  bool _allGridPreviewsInvalidating = false;
+  final Set<String> _pendingGridPreviewInvalidations = {};
   // Only prepare metadata of the first two likely child folders, and only
   // after the current screen has loaded and the user has stopped scrolling.
   Timer? _idleFolderPrefetchTimer;
@@ -98,6 +103,8 @@ class _FoldersScreenState extends State<FoldersScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _gridChangesSubscription =
+        PortableSnapshotEvents.gridPreviewChanges.listen(_onGridFolderChange);
     _load();
     unawaited(_restoreSortPreference());
   }
@@ -105,6 +112,7 @@ class _FoldersScreenState extends State<FoldersScreen>
   @override
   void dispose() {
     _idleFolderPrefetchTimer?.cancel();
+    _gridChangesSubscription?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     _searchController.dispose();
     super.dispose();
@@ -117,6 +125,47 @@ class _FoldersScreenState extends State<FoldersScreen>
       _idleFolderPrefetchTimer?.cancel();
     } else {
       _queueIdleFolderPrefetch();
+    }
+  }
+
+  void _onGridFolderChange(GridFolderChange change) {
+    final affected = change.affectedFolderIds;
+    if (affected != null && affected.isEmpty) return;
+    final revision = ++_folderPreviewRevision;
+    final currentKey = FolderPreviewCache.gridKey(_currentFolderId);
+    final keys = affected?.map(FolderPreviewCache.gridKey).toSet();
+    _idleFolderPrefetchTimer?.cancel();
+    _prefetchFolderCandidates = const [];
+    _prefetchFolderEpoch = -1;
+    if (keys == null) {
+      _savedFolderPreviews.clear();
+      _attemptedChildPrefetches.clear();
+      _allGridPreviewsInvalidating = true;
+    } else {
+      for (final key in keys) {
+        _savedFolderPreviews.remove(key);
+        _attemptedChildPrefetches.remove(key);
+      }
+      _pendingGridPreviewInvalidations.addAll(keys);
+    }
+    if (keys == null || keys.contains(currentKey)) {
+      _suppressFolderPreviews.add(currentKey);
+      if (mounted) setState(() {});
+    }
+    unawaited(_invalidatePreviewMetadata(affected, revision));
+  }
+
+  Future<void> _invalidatePreviewMetadata(
+    Set<String?>? affected, int revision,
+  ) async {
+    try {
+      await FolderPreviewCache.invalidateGridFolders(affected);
+    } finally {
+      if (!mounted || revision != _folderPreviewRevision) return;
+      _allGridPreviewsInvalidating = false;
+      _pendingGridPreviewInvalidations.clear();
+      // Only verified SQLite/provider reads may repopulate an invalidated
+      // view. External edits do not grant stale cached PDF actions.
     }
   }
 
@@ -241,6 +290,7 @@ class _FoldersScreenState extends State<FoldersScreen>
     _foldersFuture = folderFuture;
     _reloadDocumentsOnly();
     final epoch = _folderLoadEpoch;
+    final previewRevision = _folderPreviewRevision;
     final documentFuture = _documentsFuture;
     if (_searchQuery.trim().isEmpty) {
       // A saved preview is display-only until SQLite/provider validation.
@@ -248,7 +298,7 @@ class _FoldersScreenState extends State<FoldersScreen>
         unawaited(_restoreFolderPreview(folderId));
       }
       unawaited(_saveVerifiedFolderPreview(
-        folderId, epoch, folderFuture, documentFuture,
+        folderId, epoch, previewRevision, folderFuture, documentFuture,
       ));
     }
   }
@@ -332,13 +382,19 @@ class _FoldersScreenState extends State<FoldersScreen>
 
   Future<void> _restoreFolderPreview(String? folderId) async {
     final key = FolderPreviewCache.gridKey(folderId);
-    if (_savedFolderPreviews.containsKey(key) ||
+    if (_allGridPreviewsInvalidating ||
+        _pendingGridPreviewInvalidations.contains(key) ||
+        _savedFolderPreviews.containsKey(key) ||
         _loadingFolderPreviews.contains(key) ||
         _suppressFolderPreviews.contains(key)) return;
+    final revision = _folderPreviewRevision;
     _loadingFolderPreviews.add(key);
     try {
       final preview = await FolderPreviewCache.read(key);
       if (preview == null || !mounted ||
+          revision != _folderPreviewRevision ||
+          _allGridPreviewsInvalidating ||
+          _pendingGridPreviewInvalidations.contains(key) ||
           _savedFolderPreviews.containsKey(key) ||
           _suppressFolderPreviews.contains(key)) return;
       setState(() => _rememberFolderPreview(preview));
@@ -350,6 +406,7 @@ class _FoldersScreenState extends State<FoldersScreen>
   Future<void> _saveVerifiedFolderPreview(
     String? folderId,
     int epoch,
+    int previewRevision,
     Future<List<Folder>> foldersFuture,
     Future<List<DocumentRecord>> documentsFuture,
   ) async {
@@ -357,6 +414,7 @@ class _FoldersScreenState extends State<FoldersScreen>
       final folders = await foldersFuture;
       final documents = await documentsFuture;
       if (!mounted || epoch != _folderLoadEpoch ||
+          previewRevision != _folderPreviewRevision ||
           folderId != _currentFolderId ||
           _searchQuery.trim().isNotEmpty) return;
       final key = FolderPreviewCache.gridKey(folderId);
@@ -422,10 +480,13 @@ class _FoldersScreenState extends State<FoldersScreen>
     if (_prefetchingChildFolders || !mounted ||
         !_gridScreenForeground || epoch != _folderLoadEpoch) return;
     _prefetchingChildFolders = true;
+    final previewRevision = _folderPreviewRevision;
     try {
       for (final child in candidates) {
         if (!mounted || !_gridScreenForeground ||
-            epoch != _folderLoadEpoch || _searchQuery.trim().isNotEmpty) return;
+            epoch != _folderLoadEpoch ||
+            previewRevision != _folderPreviewRevision ||
+            _searchQuery.trim().isNotEmpty) return;
         final key = FolderPreviewCache.gridKey(child.id);
         if (_savedFolderPreviews.containsKey(key) ||
             _attemptedChildPrefetches.contains(key)) continue;
@@ -439,7 +500,8 @@ class _FoldersScreenState extends State<FoldersScreen>
           // a smaller speculative subset. Read at most two cache files.
           final saved = await FolderPreviewCache.read(key);
           if (!mounted || !_gridScreenForeground ||
-              epoch != _folderLoadEpoch) return;
+              epoch != _folderLoadEpoch ||
+              previewRevision != _folderPreviewRevision) return;
           if (saved != null) {
             _rememberFolderPreview(saved);
             continue;
@@ -450,14 +512,16 @@ class _FoldersScreenState extends State<FoldersScreen>
             child.id, previewLimit: 16,
           );
           if (!mounted || !_gridScreenForeground ||
-              epoch != _folderLoadEpoch) return;
+              epoch != _folderLoadEpoch ||
+              previewRevision != _folderPreviewRevision) return;
           final rows = await Future.wait<Object>([
             _documents.listInFolderPage(child.id, pageSize: _gridPageSize),
             _documents.countInFolder(child.id),
             _repository.countDirectChildren(child.id),
           ]);
           if (!mounted || !_gridScreenForeground ||
-              epoch != _folderLoadEpoch) return;
+              epoch != _folderLoadEpoch ||
+              previewRevision != _folderPreviewRevision) return;
           final page = rows[0] as FolderDocumentPage;
           final count = rows[1] as int;
           final childCount = rows[2] as int;
