@@ -89,6 +89,23 @@ class DocumentRecord {
   }
 }
 
+/// A bounded chunk of the direct PDFs in one Grid folder.
+/// The cursor uses the exact name + ID sort order of the query, so
+/// the next page never depends on the number of earlier rows.
+class FolderDocumentPage {
+  const FolderDocumentPage({
+    required this.records,
+    required this.hasMore,
+    this.nextName,
+    this.nextId,
+  });
+
+  final List<DocumentRecord> records;
+  final bool hasMore;
+  final String? nextName;
+  final String? nextId;
+}
+
 class DocumentLibrarySummary {
   const DocumentLibrarySummary({
     required this.documentCount,
@@ -380,6 +397,69 @@ class DocumentRepository {
     return favoritesOnly
         ? documents.where((document) => document.isFavorite).toList()
         : documents;
+  }
+
+  /// Read just the next bounded chunk of PDFs; no full-folder materialization.
+  /// This uses the same case-insensitive Name order as listInFolder().
+  Future<FolderDocumentPage> listInFolderPage(
+    String? folderId, {
+    int pageSize = 60,
+    String? afterName,
+    String? afterId,
+  }) async {
+    if (pageSize < 1 || pageSize > 200) {
+      throw ArgumentError.value(pageSize, 'pageSize', 'Must be 1..200');
+    }
+    if ((afterName == null) != (afterId == null)) {
+      throw ArgumentError('Both cursor fields must be supplied together.');
+    }
+    final db = await _database.database;
+    final where = <String>[
+      'd.deleted_at IS NULL',
+      if (folderId == null) 'd.folder_id IS NULL' else 'd.folder_id = ?',
+      if (afterName != null)
+        '(d.name COLLATE NOCASE > ? OR '
+        '(d.name COLLATE NOCASE = ? AND d.id > ?))',
+    ];
+    final args = <Object?>[
+      if (folderId != null) folderId,
+      if (afterName != null) ...[afterName, afterName, afterId!],
+      pageSize + 1,
+    ];
+    final rows = await db.rawQuery(
+      '''
+      SELECT d.*, c.name AS category_name,
+        (SELECT GROUP_CONCAT(t.name, ', ') FROM document_tags dt
+          INNER JOIN tags t ON t.id = dt.tag_id WHERE dt.document_id = d.id) AS tag_names
+      FROM documents d
+      LEFT JOIN categories c ON c.id = d.category_id
+      WHERE ${where.join(' AND ')}
+      ORDER BY d.name COLLATE NOCASE ASC, d.id ASC
+      LIMIT ?
+      '''.replaceFirst('t.id = d t.document_id', 't.id = dt.tag_id'),
+      args,
+    );
+    final hasMore = rows.length > pageSize;
+    final visibleRows = hasMore ? rows.take(pageSize).toList(growable: false) : rows;
+    final records = visibleRows.map(DocumentRecord.fromMap).toList(growable: false);
+    return FolderDocumentPage(
+      records: records,
+      hasMore: hasMore,
+      nextName: hasMore && records.isNotEmpty ? records.last.name : null,
+      nextId: hasMore && records.isNotEmpty ? records.last.id : null,
+    );
+  }
+
+  /// Accurate total PDF count independent of how many pages the user viewed.
+  Future<int> countInFolder(String? folderId) async {
+    final db = await _database.database;
+    final rows = await db.rawQuery(
+      folderId == null
+          ? 'SELECT COUNT(*) AS total FROM documents WHERE deleted_at IS NULL AND folder_id IS NULL'
+          : 'SELECT COUNT(*) AS total FROM documents WHERE deleted_at IS NULL AND folder_id = ?',
+      folderId == null ? const <Object?>[] : <Object?>[folderId],
+    );
+    return (rows.first['total'] as num).toInt();
   }
 
   Future<List<DocumentRecord>> listInFolder(String? folderId) async {
