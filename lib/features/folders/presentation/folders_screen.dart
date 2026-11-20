@@ -91,6 +91,7 @@ class _FoldersScreenState extends State<FoldersScreen>
   final Set<String> _pendingGridPreviewInvalidations = {};
   Timer? _gridPreviewInvalidationDebounce;
   Set<String?>? _queuedGridPreviewIds = <String?>{};
+  Completer<void>? _gridPreviewInvalidationDone;
   bool _gridPreviewRebuildScheduled = false;
   // Only prepare metadata of the first two likely child folders, and only
   // after the current screen has loaded and the user has stopped scrolling.
@@ -118,7 +119,9 @@ class _FoldersScreenState extends State<FoldersScreen>
     if (_gridPreviewInvalidationDebounce?.isActive == true) {
       _gridPreviewInvalidationDebounce?.cancel();
       // Do not lose an invalidation because the user leaves this tab.
-      unawaited(FolderPreviewCache.invalidateGridFolders(_queuedGridPreviewIds));
+      unawaited(_flushPreviewInvalidation(
+        _queuedGridPreviewIds, _folderPreviewRevision,
+      ));
     }
     _gridChangesSubscription?.cancel();
     WidgetsBinding.instance.removeObserver(this);
@@ -173,13 +176,39 @@ class _FoldersScreenState extends State<FoldersScreen>
     } else {
       _queuedGridPreviewIds?.addAll(affected);
     }
+    _gridPreviewInvalidationDone ??= Completer<void>();
     _gridPreviewInvalidationDebounce?.cancel();
     _gridPreviewInvalidationDebounce =
         Timer(const Duration(milliseconds: 120), () {
       final queued = _queuedGridPreviewIds;
       _queuedGridPreviewIds = <String?>{};
-      unawaited(_invalidatePreviewMetadata(queued, revision));
+      unawaited(_flushPreviewInvalidation(queued, revision));
     });
+  }
+
+  Future<void> _flushPreviewInvalidation(
+    Set<String?>? affected, int revision,
+  ) async {
+    try {
+      await _invalidatePreviewMetadata(affected, revision);
+    } finally {
+      if (revision == _folderPreviewRevision) {
+        final completed = _gridPreviewInvalidationDone;
+        _gridPreviewInvalidationDone = null;
+        if (completed != null && !completed.isCompleted) completed.complete();
+      }
+    }
+  }
+
+  Future<void> _persistVerifiedPreview(
+    FolderPreview preview, int revision,
+  ) async {
+    // A fresh, verified cache write must not get deleted by an invalidation
+    // from the mutation which triggered the current folder reload.
+    final pending = _gridPreviewInvalidationDone?.future;
+    if (pending != null) await pending;
+    if (!mounted || revision != _folderPreviewRevision) return;
+    await FolderPreviewCache.write(preview);
   }
 
   Future<void> _invalidatePreviewMetadata(
@@ -469,7 +498,7 @@ class _FoldersScreenState extends State<FoldersScreen>
       _rememberFolderPreview(preview);
       _suppressFolderPreviews.remove(key);
       // Optional, bounded app-private metadata: do not hold up navigation.
-      unawaited(FolderPreviewCache.write(preview));
+      unawaited(_persistVerifiedPreview(preview, previewRevision));
       _prepareChildFolderPrefetch(folders, epoch);
     } catch (_) {
       // Errors remain visible in the existing FutureBuilder error state.
@@ -574,7 +603,7 @@ class _FoldersScreenState extends State<FoldersScreen>
           );
           _rememberFolderPreview(preview);
           // Never block the user or alter Grid's SQLite/portable PDFs.
-          unawaited(FolderPreviewCache.write(preview));
+          unawaited(_persistVerifiedPreview(preview, previewRevision));
         } catch (_) {
           // Optional prefetch failures must not alter navigation or PDFs.
         }
