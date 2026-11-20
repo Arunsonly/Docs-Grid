@@ -53,6 +53,10 @@ class _FoldersScreenState extends State<FoldersScreen> {
   bool _loadingMoreFolderDocuments = false;
   bool _pageLoadFailed = false;
   bool _morePageScheduled = false;
+  // At most one additional SQLite page is held in memory. This is metadata,
+  // not PDF data or thumbnails, and is invalidated on every folder reload.
+  Future<FolderDocumentPage?>? _nextPagePrefetch;
+  String? _nextPagePrefetchCursor;
   final Map<String, FolderPreview> _savedFolderPreviews = {};
   static const int _maxMemoryFolderPreviews = 12;
 
@@ -126,6 +130,8 @@ class _FoldersScreenState extends State<FoldersScreen> {
     _loadingMoreFolderDocuments = false;
     _pageLoadFailed = false;
     _morePageScheduled = false;
+    _nextPagePrefetch = null;
+    _nextPagePrefetchCursor = null;
   }
 
   Future<List<DocumentRecord>> _getFirstPage(
@@ -146,8 +152,36 @@ class _FoldersScreenState extends State<FoldersScreen> {
       _hasMoreFolderDocuments = page.hasMore;
       _nextDocumentName = page.nextName;
       _nextDocumentId = page.nextId;
+      _schedulePagePrefetch(epoch);
     }
     return page.records;
+  }
+
+  void _schedulePagePrefetch(int epoch) {
+    if (!_pagedDocumentsMode || !_hasMoreFolderDocuments ||
+        _nextDocumentName == null || _nextDocumentId == null) return;
+    final folderId = _currentFolderId;
+    final name = _nextDocumentName!;
+    final id = _nextDocumentId!;
+    final cursor = '$epoch:$folderId:$name:$id';
+    // Start after painting the first frame; do not make folder entry slower.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || epoch != _folderLoadEpoch ||
+          folderId != _currentFolderId || !_pagedDocumentsMode ||
+          !_hasMoreFolderDocuments || _nextDocumentName != name ||
+          _nextDocumentId != id) return;
+      if (_nextPagePrefetchCursor == cursor) return;
+      _nextPagePrefetchCursor = cursor;
+      _nextPagePrefetch = _documents.listInFolderPage(
+        folderId,
+        pageSize: _gridPageSize,
+        afterName: name,
+        afterId: id,
+      ).then<FolderDocumentPage?>(
+        (page) => page,
+        onError: (Object _, StackTrace __) => null,
+      );
+    });
   }
 
   void _reloadDocumentsOnly() {
@@ -192,14 +226,31 @@ class _FoldersScreenState extends State<FoldersScreen> {
     if (name == null || id == null) return;
     setState(() => _loadingMoreFolderDocuments = true);
     try {
-      final page = await _documents.listInFolderPage(
-        folderId,
-        pageSize: _gridPageSize,
-        afterName: name,
-        afterId: id,
-      );
+      final cursor = '$epoch:$folderId:$name:$id';
+      final inFlight = _nextPagePrefetchCursor == cursor
+          ? _nextPagePrefetch : null;
+      final page = await (inFlight != null
+          ? inFlight.then<FolderDocumentPage>(
+              (prefetched) => prefetched ??
+                  _documents.listInFolderPage(
+                    folderId,
+                    pageSize: _gridPageSize,
+                    afterName: name,
+                    afterId: id,
+                  ),
+            )
+          : _documents.listInFolderPage(
+              folderId,
+              pageSize: _gridPageSize,
+              afterName: name,
+              afterId: id,
+            ));
       if (!mounted || epoch != _folderLoadEpoch || !_pagedDocumentsMode ||
           folderId != _currentFolderId) return;
+      // The loaded page is consumed exactly once. The next cursor gets the
+      // same bounded one-page look-ahead, never a bulk read.
+      _nextPagePrefetch = null;
+      _nextPagePrefetchCursor = null;
       final seen = _pagedDocuments.map((record) => record.id).toSet();
       final appended = page.records
           .where((record) => seen.add(record.id))
@@ -212,6 +263,7 @@ class _FoldersScreenState extends State<FoldersScreen> {
         _nextDocumentName = page.nextName;
         _nextDocumentId = page.nextId;
       });
+      _schedulePagePrefetch(epoch);
     } catch (_) {
       if (mounted && epoch == _folderLoadEpoch) {
         setState(() => _pageLoadFailed = true);
@@ -225,7 +277,11 @@ class _FoldersScreenState extends State<FoldersScreen> {
 
   void _loadNextPageOnScroll(ScrollNotification notification) {
     if (notification.depth != 0 ||
-        notification.metrics.extentAfter > 640 ||
+        notification.metrics.extentAfter > 1200 ||
+        (notification is ScrollUpdateNotification &&
+            (notification.scrollDelta ?? 0) <= 0) ||
+        (notification is OverscrollNotification &&
+            notification.overscroll <= 0) ||
         !_pagedDocumentsMode || !_hasMoreFolderDocuments ||
         _loadingMoreFolderDocuments || _pageLoadFailed || _morePageScheduled ||
         notification is! ScrollUpdateNotification &&
@@ -1611,6 +1667,7 @@ class _FoldersScreenState extends State<FoldersScreen> {
                     child: RefreshIndicator(
                       onRefresh: _refresh,
                       child: CustomScrollView(
+                        cacheExtent: 360,
                         key: ValueKey('grid-folder-list-${_currentFolderId ?? '__root__'}-$_folderLoadEpoch'),
                         physics: const AlwaysScrollableScrollPhysics(),
                         slivers: [
