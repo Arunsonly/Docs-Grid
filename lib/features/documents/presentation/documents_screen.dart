@@ -9,6 +9,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../data/document_repository.dart';
 import '../data/phone_recent_history.dart';
 import '../data/phone_pdf_delta.dart';
+import '../data/phone_refresh_queue.dart';
 import '../data/phone_star_repository.dart';
 import '../data/phone_trash_origin.dart';
 import '../../../core/storage/storage_location_service.dart';
@@ -54,10 +55,9 @@ class _DocumentsScreenState extends State<DocumentsScreen>
   Timer? _phoneRefreshDebounce;
   bool _phoneScanPending = false;
   bool _phonePatchInFlight = false;
-  bool _phoneNeedsFullRefresh = false;
+  bool _phoneRefreshAfterBusy = false;
   bool _phoneMediaStoreReady = false;
-  final Set<String> _phonePendingMediaUris = <String>{};
-  final Set<String> _phonePendingLocalPaths = <String>{};
+  final PhoneRefreshQueue _phoneChangeQueue = PhoneRefreshQueue();
   List<Map<String, String>> _phoneLastRoots = const [];
   Map<String, Object?> _phoneLastMediaVolumes = const {};
   int _trashCount = 0;
@@ -152,15 +152,12 @@ class _DocumentsScreenState extends State<DocumentsScreen>
 
   void _schedulePhoneStorageRefresh([StorageChangeNotice? notice]) {
     if (!mounted || widget.favoritesOnly || widget.recentOnly) return;
-    if (notice == null || notice.requiresFullRefresh) {
-      _phoneNeedsFullRefresh = true;
-    } else {
-      _phonePendingMediaUris.addAll(notice.mediaUris);
-      _phonePendingLocalPaths.addAll(notice.paths);
-    }
-    if (_phonePendingMediaUris.length + _phonePendingLocalPaths.length > 48) {
-      _phoneNeedsFullRefresh = true;
-    }
+    _phoneChangeQueue.add(notice);
+    _queuePhoneChangeRefresh();
+  }
+
+  void _queuePhoneChangeRefresh() {
+    if (!mounted || !_phoneChangeQueue.hasPending) return;
     _phoneRefreshDebounce?.cancel();
     _phoneRefreshDebounce = Timer(const Duration(milliseconds: 450), () {
       if (mounted) unawaited(_refreshPhoneStorageFromChanges());
@@ -170,21 +167,21 @@ class _DocumentsScreenState extends State<DocumentsScreen>
   Future<void> _refreshPhoneStorageFromChanges() async {
     if (!mounted) return;
     if (_phoneScanLoading || _phonePatchInFlight) {
-      // A scan in progress will schedule one safe follow-up on completion.
-      _phoneScanPending = true;
+      // Do not convert a precise event into an unconditional full scan just
+      // because another query has the Phone index temporarily busy.
+      _phoneRefreshAfterBusy = true;
       return;
     }
-    final requiresFull = _phoneNeedsFullRefresh || !_phoneMediaStoreReady ||
+    final batch = _phoneChangeQueue.take();
+    if (!batch.hasChanges) return;
+    final requiresFull = batch.requiresFullRefresh || !_phoneMediaStoreReady ||
         !_phoneScanCompleted || _phoneLastRoots.isEmpty;
-    final changedUris = _phonePendingMediaUris.toList(growable: false);
-    final changedPaths = _phonePendingLocalPaths.toList(growable: false);
-    _phoneNeedsFullRefresh = false;
-    _phonePendingMediaUris.clear();
-    _phonePendingLocalPaths.clear();
-    if (requiresFull || changedUris.isEmpty && changedPaths.isEmpty) {
+    if (requiresFull) {
       await _scanPhoneStorage(openBrowser: false);
       return;
     }
+    final changedUris = batch.mediaUris;
+    final changedPaths = batch.paths;
 
     _phonePatchInFlight = true;
     try {
@@ -257,12 +254,11 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       if (mounted) await _scanPhoneStorage(openBrowser: false);
     } finally {
       _phonePatchInFlight = false;
-      if (mounted && (_phoneScanPending || _phoneNeedsFullRefresh ||
-          _phonePendingMediaUris.isNotEmpty ||
-          _phonePendingLocalPaths.isNotEmpty)) {
-        _phoneScanPending = false;
-        // Coalesce any events arriving during the scoped query.
-        _schedulePhoneStorageRefresh();
+      if (mounted && (_phoneRefreshAfterBusy || _phoneChangeQueue.hasPending)) {
+        _phoneRefreshAfterBusy = false;
+        // Preserve the exact queued URI/path hints; do not call the no-arg
+        // scheduler, which deliberately requests a full resume scan.
+        _queuePhoneChangeRefresh();
       }
     }
   }
@@ -873,9 +869,16 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       }
     } finally {
       if (mounted) setState(() => _phoneScanLoading = false);
-      if (_phoneScanPending && mounted) {
-        _phoneScanPending = false;
-        _schedulePhoneStorageRefresh();
+      if (mounted) {
+        if (_phoneScanPending) {
+          _phoneScanPending = false;
+          // A second explicit scan request is still a real full refresh.
+          _phoneChangeQueue.add(null);
+        }
+        if (_phoneRefreshAfterBusy || _phoneChangeQueue.hasPending) {
+          _phoneRefreshAfterBusy = false;
+          _queuePhoneChangeRefresh();
+        }
       }
     }
   }
