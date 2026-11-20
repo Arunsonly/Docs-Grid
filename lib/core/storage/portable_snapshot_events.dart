@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import 'folder_preview_cache.dart';
+
 /// A best-effort hint for *read-only* Grid folder preview metadata.
 /// null means that the affected folders cannot be proven: invalidate all
 /// previews. An empty set means a metadata-only change which does not affect
@@ -28,6 +30,28 @@ class PortableSnapshotEvents {
   static final StreamController<GridFolderChange> _gridPreviewChanges =
       StreamController<GridFolderChange>.broadcast(sync: true);
 
+  // Even if no Grid screen is mounted, persistent previews must still be
+  // invalidated after an import/move/restore. Batch rapid changes and keep
+  // backup snapshot notifications independent.
+  static Timer? _unmountedPreviewDebounce;
+  static Set<String?>? _unmountedPreviewIds = <String?>{};
+
+  static void _invalidateWhenGridIsUnmounted(Set<String?>? ids) {
+    if (ids != null && ids.isEmpty) return;
+    if (ids == null) {
+      _unmountedPreviewIds = null;
+    } else {
+      _unmountedPreviewIds?.addAll(ids);
+    }
+    _unmountedPreviewDebounce?.cancel();
+    _unmountedPreviewDebounce =
+        Timer(const Duration(milliseconds: 120), () {
+      final targets = _unmountedPreviewIds;
+      _unmountedPreviewIds = <String?>{};
+      unawaited(FolderPreviewCache.invalidateGridFolders(targets));
+    });
+  }
+
   static Stream<void> get changes => _changes.stream;
   static Stream<GridFolderChange> get gridPreviewChanges =>
       _gridPreviewChanges.stream;
@@ -39,6 +63,9 @@ class PortableSnapshotEvents {
   static void notifyDataChanged({Set<String?>? affectedFolderIds}) {
     if (!_changes.isClosed) _changes.add(null);
     if (!_gridPreviewChanges.isClosed) {
+      if (!_gridPreviewChanges.hasListener) {
+        _invalidateWhenGridIsUnmounted(affectedFolderIds);
+      }
       _gridPreviewChanges.add(GridFolderChange(affectedFolderIds));
     }
   }
