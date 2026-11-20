@@ -380,9 +380,9 @@ jobs:
     name: Release APK process-cold launch benchmark (Android emulator)
     needs: android
     if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
-    # macOS hosted runners can run Android emulators without Linux /dev/kvm.
-    # This repository's ubuntu-latest runner did not expose usable KVM.
-    runs-on: macos-latest
+    # Explicit Intel runner avoids macos-latest ARM64 nested virtualization
+    # failures and matches the x86_64 Android 34 emulator system image.
+    runs-on: macos-15-intel
     steps:
       - uses: actions/checkout@v4
       - name: Download verified Release APK from this exact run
@@ -397,8 +397,7 @@ jobs:
         with:
           api-level: 34
           target: google_apis
-          # macos-latest is an ARM64 host; the Android system image must match.
-          arch: arm64-v8a
+          arch: x86_64
           profile: pixel_6
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -no-snapshot
