@@ -82,7 +82,7 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
       unawaited(_restoreSelectedPreview(selected));
     }
     if (selected != null && oldWidget.entries != widget.entries) {
-      unawaited(_saveSelectedFolderPreview(selected));
+      _scheduleSelectedPreviewWrite(selected);
     }
   }
 
@@ -91,8 +91,21 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
       _selectedFolderPath = path;
       _savedSelectedPreview = null;
     });
-    unawaited(_saveSelectedFolderPreview(path));
-    unawaited(_restoreSelectedPreview(path));
+    // Let Flutter paint the newly selected folder before any cache work.
+    _scheduleSelectedPreviewWrite(path);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _selectedFolderPath == path) {
+        unawaited(_restoreSelectedPreview(path));
+      }
+    });
+  }
+
+  void _scheduleSelectedPreviewWrite(String path) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _selectedFolderPath == path) {
+        unawaited(_saveSelectedFolderPreview(path));
+      }
+    });
   }
 
   Future<void> _restoreSelectedPreview(String path) async {
