@@ -84,7 +84,13 @@ class FolderRepository {
     return cleaned;
   }
 
-  Future<List<Folder>> childrenOf(String? parentId) async {
+  Future<List<Folder>> childrenOf(
+    String? parentId, {
+    int? previewLimit,
+  }) async {
+    if (previewLimit != null && (previewLimit < 1 || previewLimit > 24)) {
+      throw ArgumentError.value(previewLimit, 'previewLimit', 'Must be 1..24');
+    }
     final db = await _database.database;
     final rows = await db.rawQuery(
       '''
@@ -95,8 +101,12 @@ class FolderRepository {
       WHERE ${parentId == null ? 'f.parent_id IS NULL' : 'f.parent_id = ?'}
         AND f.deleted_at IS NULL
       ORDER BY f.sort_order ASC, f.name COLLATE NOCASE ASC
+      ${previewLimit == null ? '' : 'LIMIT ?'}
       ''',
-      parentId == null ? const [] : [parentId],
+      <Object?>[
+        if (parentId != null) parentId,
+        if (previewLimit != null) previewLimit,
+      ],
     );
     final storage = StorageLocationService.instance;
     final visible = <Folder>[];
@@ -126,6 +136,19 @@ class FolderRepository {
       }
     }
     return visible;
+  }
+
+  /// Cheap, exact SQLite count used only for read-only previews. It must
+  /// never replace the normal physically validated childrenOf result.
+  Future<int> countDirectChildren(String? parentId) async {
+    final db = await _database.database;
+    final rows = await db.rawQuery(
+      parentId == null
+          ? 'SELECT COUNT(*) AS total FROM folders WHERE parent_id IS NULL AND deleted_at IS NULL'
+          : 'SELECT COUNT(*) AS total FROM folders WHERE parent_id = ? AND deleted_at IS NULL',
+      parentId == null ? const <Object?>[] : <Object?>[parentId],
+    );
+    return (rows.first['total'] as num).toInt();
   }
 
   /// Persists the visual order of the active children of one parent.
