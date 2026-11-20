@@ -1418,6 +1418,7 @@ class _FoldersScreenState extends State<FoldersScreen> {
                     child: RefreshIndicator(
                     onRefresh: _refresh,
                     child: ListView(
+                      key: ValueKey('grid-folder-list-${_currentFolderId ?? '__root__'}-$_folderLoadEpoch'),
                       padding: const EdgeInsets.fromLTRB(12, 8, 12, 104),
                       children: [
                         Padding(
