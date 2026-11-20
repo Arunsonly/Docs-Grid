@@ -116,7 +116,6 @@ class FolderRepository {
     final visible = List<bool>.filled(folders.length, false);
     final storage = StorageLocationService.instance;
     Object? firstError;
-    StackTrace? firstStack;
     var cursor = 0;
 
     Future<void> checkNext() async {
@@ -134,23 +133,17 @@ class FolderRepository {
           // prove an external folder still exists or its grant is valid.
           await storage.listDirectory(uri);
           visible[index] = true;
-        } on PlatformException catch (error, stack) {
+        } on PlatformException catch (error) {
           final details = '${error.message ?? ''} ${error.details ?? ''}';
           final missing = error.code == 'NOT_FOUND' ||
               (error.code == 'STORAGE_ERROR' &&
                   (details.contains('FileNotFoundException') ||
                    details.contains('Missing file')));
-          if (!missing && firstError == null) {
-            firstError = error;
-            firstStack = stack;
-          }
+          if (!missing && firstError == null) firstError = error;
           // Missing external folders stay absent from this visible listing,
           // never marked deleted in SQLite or moved into Grid Recycle Bin.
-        } catch (error, stack) {
-          if (firstError == null) {
-            firstError = error;
-            firstStack = stack;
-          }
+        } catch (error) {
+          firstError ??= error;
         }
       }
     }
@@ -161,7 +154,30 @@ class FolderRepository {
       (_) => checkNext(),
     ));
     if (firstError != null) {
-      Error.throwWithStackTrace(firstError!, firstStack!);
+      // Some OEM SAF/cloud providers reject even a few overlapping reads.
+      // In that case use the *original sequential verification* once,
+      // preserving its exact NOT_FOUND / permission / error behavior.
+      final sequential = <Folder>[];
+      for (final folder in folders) {
+        final uri = folder.storageUri;
+        if (uri == null ||
+            (!uri.startsWith('content://') && !uri.startsWith('file://'))) {
+          sequential.add(folder);
+          continue;
+        }
+        try {
+          await storage.listDirectory(uri);
+          sequential.add(folder);
+        } on PlatformException catch (error) {
+          final details = '${error.message ?? ''} ${error.details ?? ''}';
+          final missing = error.code == 'NOT_FOUND' ||
+              (error.code == 'STORAGE_ERROR' &&
+                  (details.contains('FileNotFoundException') ||
+                   details.contains('Missing file')));
+          if (!missing) rethrow;
+        }
+      }
+      return sequential;
     }
     return [
       for (var index = 0; index < folders.length; index++)
