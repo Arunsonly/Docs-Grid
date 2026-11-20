@@ -42,6 +42,8 @@ void main() {
         name: 'Example.pdf', isFolder: false, sizeBytes: 300,
       )],
     );
+    expect(view.toJson().toString(), isNot(contains('content://tree/first')));
+    expect(view.toJson(), isNot(contains('key')));
     expect(FolderPreview.fromJson(view.toJson(), phoneA), isNotNull);
     expect(FolderPreview.fromJson(view.toJson(), phoneB), isNull);
     expect(FolderPreview.fromJson(view.toJson(), gridChild), isNull);
@@ -73,7 +75,9 @@ void main() {
   test('Malformed count and size never turn into a negative total', () {
     const key = 'grid:folder-17';
     final parsed = FolderPreview.fromJson({
-      'schema': 1, 'key': key, 'savedAt': now.toIso8601String(),
+      'schema': 2, 'keyHash': FolderPreview(
+        key: key, savedAt: now, items: const [],
+      ).toJson()['keyHash'], 'savedAt': now.toIso8601String(),
       'items': [
         {'isFolder': true, 'name': 'Vehicle', 'pdfCount': -99, 'sizeBytes': -1},
         {'isFolder': false, 'name': 'Policy.pdf', 'sizeBytes': -100},
