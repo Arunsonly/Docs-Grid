@@ -436,7 +436,7 @@ class DocumentRepository {
       WHERE ${where.join(' AND ')}
       ORDER BY d.name COLLATE NOCASE ASC, d.id ASC
       LIMIT ?
-      '''.replaceFirst('t.id = d t.document_id', 't.id = dt.tag_id'),
+      ''',
       args,
     );
     final hasMore = rows.length > pageSize;
