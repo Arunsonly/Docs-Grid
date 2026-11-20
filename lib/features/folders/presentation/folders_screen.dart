@@ -16,7 +16,16 @@ import '../data/folder_repository.dart';
 import '../domain/folder.dart';
 
 class FoldersScreen extends StatefulWidget {
-  const FoldersScreen({super.key});
+  const FoldersScreen({
+    super.key,
+    this.folderRepository,
+    this.documentRepository,
+  });
+
+  // Optional dependencies permit complete widget regression tests without
+  // changing normal app construction or storage ownership.
+  final FolderRepository? folderRepository;
+  final DocumentRepository? documentRepository;
 
   @override
   State<FoldersScreen> createState() => _FoldersScreenState();
@@ -24,8 +33,10 @@ class FoldersScreen extends StatefulWidget {
 
 class _FoldersScreenState extends State<FoldersScreen>
     with WidgetsBindingObserver {
-  final FolderRepository _repository = FolderRepository();
-  final DocumentRepository _documents = DocumentRepository();
+  late final FolderRepository _repository =
+      widget.folderRepository ?? FolderRepository();
+  late final DocumentRepository _documents =
+      widget.documentRepository ?? DocumentRepository();
   final CategoryRepository _categories = CategoryRepository();
   final List<Folder> _ancestors = [];
   String? _currentFolderId;
