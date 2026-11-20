@@ -43,6 +43,16 @@ class _FoldersScreenState extends State<FoldersScreen> {
   List<Folder> _draftFolderOrder = <Folder>[];
   late Future<List<Folder>> _foldersFuture;
   late Future<List<DocumentRecord>> _documentsFuture;
+  static const int _gridPageSize = 60;
+  bool _pagedDocumentsMode = false;
+  List<DocumentRecord> _pagedDocuments = const [];
+  int _pagedTotalCount = 0;
+  String? _nextDocumentName;
+  String? _nextDocumentId;
+  bool _hasMoreFolderDocuments = false;
+  bool _loadingMoreFolderDocuments = false;
+  bool _pageLoadFailed = false;
+  bool _morePageScheduled = false;
   final Map<String, FolderPreview> _savedFolderPreviews = {};
   static const int _maxMemoryFolderPreviews = 12;
 
@@ -80,6 +90,8 @@ class _FoldersScreenState extends State<FoldersScreen> {
       _sortField = saved.field;
       _sortAscending = saved.ascending;
       _explicitSort = saved.explicit;
+      // A saved custom sort must see the full result set before sorting it.
+      if (saved.explicit && _pagedDocumentsMode) _reloadDocumentsOnly();
     });
   }
 
@@ -89,6 +101,7 @@ class _FoldersScreenState extends State<FoldersScreen> {
       if (field != null) _sortField = field;
       if (ascending != null) _sortAscending = ascending;
       _explicitSort = true;
+      if (_pagedDocumentsMode) _reloadDocumentsOnly();
     });
     _saveSortPreference();
   }
@@ -104,18 +117,62 @@ class _FoldersScreenState extends State<FoldersScreen> {
     }));
   }
 
+  void _resetDocumentPages() {
+    _pagedDocuments = const [];
+    _pagedTotalCount = 0;
+    _nextDocumentName = null;
+    _nextDocumentId = null;
+    _hasMoreFolderDocuments = false;
+    _loadingMoreFolderDocuments = false;
+    _pageLoadFailed = false;
+    _morePageScheduled = false;
+  }
+
+  Future<List<DocumentRecord>> _getFirstPage(
+    String? folderId, int epoch,
+  ) async {
+    // Both queries are indexed. No full-document list is ever materialized
+    // simply to determine an accurate PDF total.
+    final values = await Future.wait<Object>([
+      _documents.listInFolderPage(folderId, pageSize: _gridPageSize),
+      _documents.countInFolder(folderId),
+    ]);
+    final page = values[0] as FolderDocumentPage;
+    final count = values[1] as int;
+    if (mounted && epoch == _folderLoadEpoch &&
+        folderId == _currentFolderId && _pagedDocumentsMode) {
+      _pagedDocuments = page.records;
+      _pagedTotalCount = count;
+      _hasMoreFolderDocuments = page.hasMore;
+      _nextDocumentName = page.nextName;
+      _nextDocumentId = page.nextId;
+    }
+    return page.records;
+  }
+
+  void _reloadDocumentsOnly() {
+    final epoch = ++_folderLoadEpoch;
+    final folderId = _currentFolderId;
+    final query = _searchQuery.trim();
+    _resetDocumentPages();
+    // Preserve existing global search and exact custom Name/Date sort behavior.
+    _pagedDocumentsMode = query.isEmpty && !_explicitSort;
+    _documentsFuture = query.isNotEmpty
+        ? _documents.list(query: query)
+        : _pagedDocumentsMode
+            ? _getFirstPage(folderId, epoch)
+            : _documents.listInFolder(folderId);
+  }
+
   void _load() {
     final folderId = _currentFolderId;
-    final epoch = ++_folderLoadEpoch;
     final folderFuture = _repository.childrenOf(folderId);
-    final query = _searchQuery.trim();
-    final documentFuture = query.isEmpty
-        ? _documents.listInFolder(folderId)
-        : _documents.list(query: query);
     _foldersFuture = folderFuture;
-    _documentsFuture = documentFuture;
-    if (query.isEmpty) {
-      // Hydrate previous verified metadata without delaying the live query.
+    _reloadDocumentsOnly();
+    final epoch = _folderLoadEpoch;
+    final documentFuture = _documentsFuture;
+    if (_searchQuery.trim().isEmpty) {
+      // A saved preview is display-only until SQLite/provider validation.
       if (!_suppressFolderPreviews.contains(FolderPreviewCache.gridKey(folderId))) {
         unawaited(_restoreFolderPreview(folderId));
       }
@@ -123,6 +180,61 @@ class _FoldersScreenState extends State<FoldersScreen> {
         folderId, epoch, folderFuture, documentFuture,
       ));
     }
+  }
+
+  Future<void> _loadMoreFolderDocuments() async {
+    if (!mounted || !_pagedDocumentsMode || !_hasMoreFolderDocuments ||
+        _loadingMoreFolderDocuments || _pageLoadFailed) return;
+    final epoch = _folderLoadEpoch;
+    final folderId = _currentFolderId;
+    final name = _nextDocumentName;
+    final id = _nextDocumentId;
+    if (name == null || id == null) return;
+    setState(() => _loadingMoreFolderDocuments = true);
+    try {
+      final page = await _documents.listInFolderPage(
+        folderId,
+        pageSize: _gridPageSize,
+        afterName: name,
+        afterId: id,
+      );
+      if (!mounted || epoch != _folderLoadEpoch || !_pagedDocumentsMode ||
+          folderId != _currentFolderId) return;
+      final seen = _pagedDocuments.map((record) => record.id).toSet();
+      final appended = page.records
+          .where((record) => seen.add(record.id))
+          .toList(growable: false);
+      setState(() {
+        _pagedDocuments = List<DocumentRecord>.unmodifiable([
+          ..._pagedDocuments, ...appended,
+        ]);
+        _hasMoreFolderDocuments = page.hasMore;
+        _nextDocumentName = page.nextName;
+        _nextDocumentId = page.nextId;
+      });
+    } catch (_) {
+      if (mounted && epoch == _folderLoadEpoch) {
+        setState(() => _pageLoadFailed = true);
+      }
+    } finally {
+      if (mounted && epoch == _folderLoadEpoch) {
+        setState(() => _loadingMoreFolderDocuments = false);
+      }
+    }
+  }
+
+  void _loadNextPageOnScroll(ScrollNotification notification) {
+    if (notification.depth != 0 ||
+        notification.metrics.extentAfter > 640 ||
+        !_pagedDocumentsMode || !_hasMoreFolderDocuments ||
+        _loadingMoreFolderDocuments || _pageLoadFailed || _morePageScheduled ||
+        notification is! ScrollUpdateNotification &&
+            notification is! OverscrollNotification) return;
+    _morePageScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _morePageScheduled = false;
+      if (mounted) unawaited(_loadMoreFolderDocuments());
+    });
   }
 
   Future<void> _restoreFolderPreview(String? folderId) async {
@@ -158,6 +270,8 @@ class _FoldersScreenState extends State<FoldersScreen> {
       final preview = FolderPreview(
         key: key,
         savedAt: DateTime.now().toUtc(),
+        totalPdfCount: _pagedDocumentsMode
+            ? _pagedTotalCount : documents.length,
         items: [
           for (final folder in folders)
             FolderPreviewItem(
@@ -207,7 +321,7 @@ class _FoldersScreenState extends State<FoldersScreen> {
               if (index == 0) return Padding(
                 padding: const EdgeInsets.all(8),
                 child: Text(
-                  '${preview.folderCount} folders · ${preview.pdfCount} PDFs (saved)',
+                  '${preview.folderCount} folders · ${preview.totalPdfCount ?? preview.pdfCount} PDFs (saved preview)',
                   style: Theme.of(context).textTheme.bodySmall,
                 ),
               );
