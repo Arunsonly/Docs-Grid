@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../../../core/widgets/storage_sort_controls.dart';
+import '../../../core/storage/folder_preview_cache.dart';
 
 import 'document_thumbnail.dart';
 
@@ -22,6 +23,7 @@ class PhoneStorageBrowserScreen extends StatefulWidget {
     this.embedded = false,
     this.isLoading = false,
     this.onRefresh,
+    this.cacheScope = '',
   });
 
   final String rootName;
@@ -37,6 +39,8 @@ class PhoneStorageBrowserScreen extends StatefulWidget {
   final bool embedded;
   final bool isLoading;
   final Future<void> Function()? onRefresh;
+  /// Identifies the granted storage roots, preventing stale cross-root reuse.
+  final String cacheScope;
 
   @override
   State<PhoneStorageBrowserScreen> createState() =>
@@ -53,6 +57,7 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
   StorageSortField? _groupedSortField;
   bool? _groupedSortAscending;
   Map<String, List<Map<String, Object?>>>? _groupedCache;
+  FolderPreview? _savedSelectedPreview;
 
   @override
   void initState() {
@@ -63,6 +68,58 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
     // "Internal/" volume label; browser folder keys are root-relative.
     _selectedFolderPath =
         widget.initialPath.isEmpty ? null : _rootRelativePath(widget.initialPath);
+    if (_selectedFolderPath != null) {
+      unawaited(_restoreSelectedPreview(_selectedFolderPath!));
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant PhoneStorageBrowserScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final selected = _selectedFolderPath;
+    if (selected != null && oldWidget.entries != widget.entries) {
+      unawaited(_saveSelectedFolderPreview(selected));
+    }
+  }
+
+  void _selectFolder(String path) {
+    setState(() {
+      _selectedFolderPath = path;
+      _savedSelectedPreview = null;
+    });
+    unawaited(_saveSelectedFolderPreview(path));
+    unawaited(_restoreSelectedPreview(path));
+  }
+
+  Future<void> _restoreSelectedPreview(String path) async {
+    if (widget.cacheScope.isEmpty) return;
+    final scope = widget.cacheScope;
+    final saved = await FolderPreviewCache.read(
+      FolderPreviewCache.phoneKey(scope, path),
+    );
+    if (saved == null || !mounted ||
+        _selectedFolderPath != path || widget.cacheScope != scope) return;
+    setState(() => _savedSelectedPreview = saved);
+  }
+
+  Future<void> _saveSelectedFolderPreview(String path) async {
+    if (widget.cacheScope.isEmpty) return;
+    final files = _directPdfFolders[path];
+    if (files == null || files.isEmpty) return;
+    final preview = FolderPreview(
+      key: FolderPreviewCache.phoneKey(widget.cacheScope, path),
+      savedAt: DateTime.now().toUtc(),
+      items: [
+        for (final file in files)
+          if (_isPdfFile(file))
+            FolderPreviewItem(
+              name: file['name'] as String,
+              isFolder: false,
+              sizeBytes: (file['sizeBytes'] as num?)?.toInt() ?? 0,
+            ),
+      ],
+    );
+    await FolderPreviewCache.write(preview);
   }
 
   @override
@@ -352,8 +409,7 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
       ),
     );
     if (openFolder == true && mounted) {
-      setState(() => _selectedFolderPath =
-          folderPath.isEmpty ? 'Internal' : folderPath);
+      _selectFolder(folderPath.isEmpty ? 'Internal' : folderPath);
     }
   }
 
@@ -418,11 +474,11 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
       subtitle: Text(inRecycleBin == 0
           ? '$count PDFs · ${_formatSize(bytes)}'
           : '$count PDFs · $inRecycleBin in Recycle Bin'),
-      onTap: () => setState(() => _selectedFolderPath = path),
+      onTap: () => _selectFolder(path),
       trailing: PopupMenuButton<String>(
         tooltip: 'Folder details and actions',
         onSelected: (value) {
-          if (value == 'open') setState(() => _selectedFolderPath = path);
+          if (value == 'open') _selectFolder(path);
         },
         itemBuilder: (_) => [
           PopupMenuItem<String>(
@@ -596,21 +652,35 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
             }).toList(growable: false)
           : selectedFiles;
       visiblePdfCount = visibleFiles.length;
-      if (visibleFiles.isEmpty) {
-        children.add((context) => 
-          Padding(
-            padding: const EdgeInsets.all(28),
-            child: Center(
-              child: Text(
-                widget.isLoading
-                    ? 'Scanning this folder…'
-                    : isSearching
-                        ? 'No matching PDFs in this folder.'
-                        : 'No PDF files in this folder.',
-              ),
+      if (visibleFiles.isEmpty && widget.isLoading &&
+          _savedSelectedPreview != null && !isSearching) {
+        // Read-only cold preview: no edit/share/delete actions from stale data.
+        final saved = _savedSelectedPreview!;
+        visiblePdfCount = saved.pdfCount;
+        children.add((context) => const ListTile(
+          leading: Icon(Icons.history),
+          title: Text('Saved folder preview · verifying PDFs'),
+        ));
+        for (final item in saved.items) {
+          children.add((context) => ListTile(
+            leading: const Icon(Icons.picture_as_pdf_outlined),
+            title: Text(item.name, maxLines: 1, overflow: TextOverflow.ellipsis),
+            subtitle: Text(_formatSize(item.sizeBytes)),
+          ));
+        }
+      } else if (visibleFiles.isEmpty) {
+        children.add((context) => Padding(
+          padding: const EdgeInsets.all(28),
+          child: Center(
+            child: Text(
+              widget.isLoading
+                  ? 'Scanning this folder…'
+                  : isSearching
+                      ? 'No matching PDFs in this folder.'
+                      : 'No PDF files in this folder.',
             ),
           ),
-        );
+        ));
       } else {
         for (final entry in visibleFiles) {
           children.add((context) => _buildPdfTile(entry));
