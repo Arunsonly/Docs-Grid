@@ -828,7 +828,6 @@ class _FoldersScreenState extends State<FoldersScreen> {
     setState(() {
       _searchController.clear();
       _searchQuery = '';
-      _documentsFuture = _documents.listInFolder(_currentFolderId);
       _isReorderingFolders = true;
       // Custom drag order supersedes any user-selected alphabetic/date order.
       _sortRevision++;
@@ -836,6 +835,7 @@ class _FoldersScreenState extends State<FoldersScreen> {
       _sortField = StorageSortField.name;
       _sortAscending = true;
       _draftFolderOrder = List<Folder>.from(visibleFolders);
+      _reloadDocumentsOnly();
     });
     _saveSortPreference();
   }
@@ -942,7 +942,48 @@ class _FoldersScreenState extends State<FoldersScreen> {
     await _deleteSelectedFolders([folder]);
   }
 
-  Future<void> _moveSelected(List<DocumentRecord> all) async {
+  /// Bulk commands must address all selected PDFs, not merely the currently
+  /// rendered first page. No file operation is authorized by preview metadata.
+  Future<List<DocumentRecord>> _allSelectableDocuments(
+    List<DocumentRecord> currentlyLoaded,
+  ) async {
+    if (!_pagedDocumentsMode) return currentlyLoaded;
+    return _documents.listInFolder(_currentFolderId);
+  }
+
+  Future<void> _selectAllDocuments(
+    List<DocumentRecord> currentlyLoaded,
+  ) async {
+    final folderId = _currentFolderId;
+    final epoch = _folderLoadEpoch;
+    try {
+      final all = await _allSelectableDocuments(currentlyLoaded);
+      if (!mounted || folderId != _currentFolderId ||
+          epoch != _folderLoadEpoch) return;
+      setState(() => _selectedDocumentIds.addAll(all.map((item) => item.id)));
+    } catch (error) {
+      if (mounted) _message('Could not select all PDFs: $error');
+    }
+  }
+
+  Future<void> _shareSelectedDocuments(
+    List<DocumentRecord> currentlyLoaded,
+  ) async {
+    final all = await _allSelectableDocuments(currentlyLoaded);
+    if (!mounted) return;
+    final selected = all.where(
+      (item) => _selectedDocumentIds.contains(item.id),
+    ).toList(growable: false);
+    if (selected.isEmpty) return;
+    await DocumentToolsService().shareManyStoredPdfs(
+      selected.map((item) => item.storagePath).toList(growable: false),
+      selected.map((item) => '${item.name}.pdf').toList(growable: false),
+    );
+  }
+
+  Future<void> _moveSelected(List<DocumentRecord> currentlyLoaded) async {
+    final all = await _allSelectableDocuments(currentlyLoaded);
+    if (!mounted) return;
     final selected = all.where((d) => _selectedDocumentIds.contains(d.id)).toList();
     if (selected.isEmpty) return;
     final folders = await _repository.allFoldersWithPaths();
@@ -1115,12 +1156,12 @@ class _FoldersScreenState extends State<FoldersScreen> {
                 child: Row(children: [
                   IconButton(tooltip: 'Clear selection', onPressed: () => setState(_selectedDocumentIds.clear), icon: const Icon(Icons.close)),
                   Expanded(child: Text('${_selectedDocumentIds.length} selected')),
-                  IconButton(tooltip: 'Select all', onPressed: () => setState(() => _selectedDocumentIds.addAll(all.map((d) => d.id))), icon: const Icon(Icons.select_all)),
-                  IconButton(tooltip: 'Share selected', onPressed: () async {
-                    final selected = all.where((d) => _selectedDocumentIds.contains(d.id)).toList();
-                    if (selected.isEmpty) return;
-                    await DocumentToolsService().shareManyStoredPdfs(selected.map((d) => d.storagePath).toList(), selected.map((d) => '${d.name}.pdf').toList());
-                  }, icon: const Icon(Icons.share_outlined)),
+                  IconButton(tooltip: 'Select all',
+                    onPressed: () => unawaited(_selectAllDocuments(all)),
+                    icon: const Icon(Icons.select_all)),
+                  IconButton(tooltip: 'Share selected',
+                    onPressed: () => unawaited(_shareSelectedDocuments(all)),
+                    icon: const Icon(Icons.share_outlined)),
                   IconButton(tooltip: 'Move selected to folder', onPressed: () => _moveSelected(all), icon: const Icon(Icons.drive_file_move_outlined)),
                   IconButton(tooltip: 'Move selected to Recycle Bin', onPressed: () async {
                     final selected = all.where((d) => _selectedDocumentIds.contains(d.id)).toList();
@@ -1202,10 +1243,7 @@ class _FoldersScreenState extends State<FoldersScreen> {
                   controller: _searchController,
                   onChanged: (value) => setState(() {
                     _searchQuery = value;
-                    final query = value.trim();
-                    _documentsFuture = query.isEmpty
-                        ? _documents.listInFolder(_currentFolderId)
-                        : _documents.list(query: query);
+                    _reloadDocumentsOnly();
                   }),
                   decoration: InputDecoration(
                     hintText: 'Search folders or PDF names',
@@ -1216,7 +1254,7 @@ class _FoldersScreenState extends State<FoldersScreen> {
                       onPressed: () => setState(() {
                         _searchController.clear();
                         _searchQuery = '';
-                        _documentsFuture = _documents.listInFolder(_currentFolderId);
+                        _reloadDocumentsOnly();
                       }),
                     ),
                     filled: true,
@@ -1320,7 +1358,9 @@ class _FoldersScreenState extends State<FoldersScreen> {
                       ),
                     );
                   }
-                  final documents = documentSnapshot.data ?? const <DocumentRecord>[];
+                  final documents = _pagedDocumentsMode
+                      ? _pagedDocuments
+                      : documentSnapshot.data ?? const <DocumentRecord>[];
                   final query = _searchQuery.trim().toLowerCase();
                   final folderSource = _isReorderingFolders ? _draftFolderOrder : folders;
                   final displayedFolders = folderSource
@@ -1347,7 +1387,9 @@ class _FoldersScreenState extends State<FoldersScreen> {
                       ascending: _sortAscending,
                     ));
                   }
-                  if (folders.isEmpty && documents.isEmpty && query.isEmpty) {
+                  if (folders.isEmpty && documents.isEmpty &&
+                      (!_pagedDocumentsMode || _pagedTotalCount == 0) &&
+                      query.isEmpty) {
                     return Center(
                       child: Padding(
                         padding: const EdgeInsets.all(28),
@@ -1377,7 +1419,7 @@ class _FoldersScreenState extends State<FoldersScreen> {
                           padding: const EdgeInsets.fromLTRB(4, 4, 4, 10),
                           child: Align(
                             alignment: Alignment.centerLeft,
-                            child: Text('${folders.length} folders · ${documents.length} PDFs',
+                            child: Text('${folders.length} folders · ${_pagedDocumentsMode ? _pagedTotalCount : documents.length} PDFs',
                               style: Theme.of(context).textTheme.bodySmall),
                           ),
                         ),
