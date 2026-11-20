@@ -77,6 +77,10 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
   void didUpdateWidget(covariant PhoneStorageBrowserScreen oldWidget) {
     super.didUpdateWidget(oldWidget);
     final selected = _selectedFolderPath;
+    if (selected != null && oldWidget.cacheScope != widget.cacheScope) {
+      _savedSelectedPreview = null;
+      unawaited(_restoreSelectedPreview(selected));
+    }
     if (selected != null && oldWidget.entries != widget.entries) {
       unawaited(_saveSelectedFolderPreview(selected));
     }
