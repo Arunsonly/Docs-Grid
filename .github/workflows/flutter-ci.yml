@@ -334,6 +334,49 @@ jobs:
           retention-days: 14
 
 
+  android_release_startup:
+    name: Release APK process-cold launch benchmark (Android emulator)
+    needs: android
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download verified Release APK from this exact run
+        uses: actions/download-artifact@v4
+        with:
+          name: docsgrid-android-release-evaluation-apk
+          path: artifacts/release
+      - name: Verify TTID parser and percentile calculations
+        run: python3 -m unittest discover -s scripts -p 'test_android_cold_launch.py' -v
+      - name: Enable KVM acceleration for the Android emulator
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          test -r /dev/kvm && test -w /dev/kvm
+      - name: Measure Release APK cold launches (TTID, not TTFD)
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -no-snapshot
+          script: >-
+            python3 scripts/benchmark_android_cold_launch.py
+            --apk artifacts/release/app-release.apk
+            --output startup-results/cold-launch.json
+            --iterations 7 --warmups 1
+      - name: Upload startup timing baseline and sample data
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docsgrid-android-cold-launch-baseline
+          path: startup-results/cold-launch.json
+          if-no-files-found: warn
+          retention-days: 14
+
   ios:
     name: iOS analyze, test and unsigned build
     runs-on: macos-latest
