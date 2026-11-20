@@ -60,6 +60,48 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
   List<Map<String, Object?>>? _cachedPdfRows;
   List<Map<String, Object?>>? _cachedPdfSource;
   FolderPreview? _savedSelectedPreview;
+  // Phone's complete indexed metadata is already available. Build only the
+  // first visible rows; reveal later rows progressively on demand.
+  static const int _renderPageSize = 60;
+  int _visibleFolderLimit = _renderPageSize;
+  int _visiblePdfLimit = _renderPageSize;
+  bool _hasMoreFolderRows = false;
+  bool _hasMorePdfRows = false;
+  bool _nextRenderPageScheduled = false;
+
+  void _resetVisiblePages() {
+    _visibleFolderLimit = _renderPageSize;
+    _visiblePdfLimit = _renderPageSize;
+    _hasMoreFolderRows = false;
+    _hasMorePdfRows = false;
+  }
+
+  void _showMoreVisibleRows() {
+    if (!mounted) return;
+    setState(() {
+      if (_hasMoreFolderRows) {
+        _visibleFolderLimit += _renderPageSize;
+      } else if (_hasMorePdfRows) {
+        _visiblePdfLimit += _renderPageSize;
+      }
+    });
+  }
+
+  void _loadMoreOnScroll(ScrollNotification notification) {
+    if (notification.depth != 0 ||
+        notification.metrics.extentAfter > 560 ||
+        (!_hasMoreFolderRows && !_hasMorePdfRows) ||
+        _nextRenderPageScheduled ||
+        (notification is! ScrollUpdateNotification &&
+            notification is! OverscrollNotification)) return;
+    _nextRenderPageScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _nextRenderPageScheduled = false;
+      if (mounted && (_hasMoreFolderRows || _hasMorePdfRows)) {
+        _showMoreVisibleRows();
+      }
+    });
+  }
 
   @override
   void initState() {
@@ -79,6 +121,9 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
   void didUpdateWidget(covariant PhoneStorageBrowserScreen oldWidget) {
     super.didUpdateWidget(oldWidget);
     final selected = _selectedFolderPath;
+    if (oldWidget.cacheScope != widget.cacheScope) {
+      _resetVisiblePages();
+    }
     if (selected != null && oldWidget.cacheScope != widget.cacheScope) {
       _savedSelectedPreview = null;
       unawaited(_restoreSelectedPreview(selected));
@@ -92,6 +137,7 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
     setState(() {
       _selectedFolderPath = path;
       _savedSelectedPreview = null;
+      _resetVisiblePages();
     });
     // Let Flutter paint the newly selected folder before any cache work.
     _scheduleSelectedPreviewWrite(path);
@@ -163,6 +209,7 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
     setState(() {
       if (field != null) _sortField = field;
       if (ascending != null) _sortAscending = ascending;
+      _resetVisiblePages();
     });
     unawaited(StorageSortPreference.save(
       StorageSortPreference.phoneKey,
@@ -447,7 +494,7 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
           Expanded(
             child: TextField(
               controller: _searchController,
-              onChanged: (_) => setState(() {}),
+              onChanged: (_) => setState(_resetVisiblePages),
               decoration: InputDecoration(
                 hintText: 'Search phone folders or PDF names',
                 prefixIcon: const Icon(Icons.search),
@@ -457,7 +504,7 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
                         tooltip: 'Clear search',
                         onPressed: () {
                           _searchController.clear();
-                          setState(() {});
+                          setState(_resetVisiblePages);
                         },
                         icon: const Icon(Icons.close),
                       ),
@@ -627,7 +674,7 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
                 style: Theme.of(context).textTheme.labelLarge),
           ),
         );
-        for (final path in folderPaths) {
+        for (final path in folderPaths.take(_visibleFolderLimit)) {
           children.add((context) => _buildFolderTile(path, folders[path]!));
         }
       }
@@ -639,7 +686,7 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
                 style: Theme.of(context).textTheme.labelLarge),
           ),
         );
-        for (final entry in matchingPdfs) {
+        for (final entry in matchingPdfs.take(_visiblePdfLimit)) {
           final path = _normalizedFolderPath(entry);
           children.add((context) => _buildPdfTile(
             entry,
@@ -714,10 +761,26 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
           ),
         ));
       } else {
-        for (final entry in visibleFiles) {
+        for (final entry in visibleFiles.take(_visiblePdfLimit)) {
           children.add((context) => _buildPdfTile(entry));
         }
       }
+    }
+
+    _hasMoreFolderRows = selectedPath == null &&
+        folderPaths.length > _visibleFolderLimit;
+    _hasMorePdfRows = selectedPath == null
+        ? isSearching && matchingPdfs.length > _visiblePdfLimit
+        : selectedFiles.length > _visiblePdfLimit &&
+            !isSearching || selectedPath != null && isSearching &&
+            visiblePdfCount > _visiblePdfLimit;
+    if (_hasMoreFolderRows || _hasMorePdfRows) {
+      children.add((context) => ListTile(
+        key: const ValueKey('phone-next-page'),
+        leading: const Icon(Icons.expand_more),
+        title: const Text('Load more'),
+        onTap: _showMoreVisibleRows,
+      ));
     }
 
     return Column(
@@ -746,12 +809,18 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
         _buildSearchField(),
         if (widget.isLoading) const LinearProgressIndicator(minHeight: 2),
         Expanded(
-          child: RefreshIndicator(
-            onRefresh: widget.onRefresh ?? () async {},
-            child: ListView.builder(
-              physics: const AlwaysScrollableScrollPhysics(),
-              itemCount: children.length,
-              itemBuilder: (context, index) => children[index](context),
+          child: NotificationListener<ScrollNotification>(
+            onNotification: (notification) {
+              _loadMoreOnScroll(notification);
+              return false;
+            },
+            child: RefreshIndicator(
+              onRefresh: widget.onRefresh ?? () async {},
+              child: ListView.builder(
+                physics: const AlwaysScrollableScrollPhysics(),
+                itemCount: children.length,
+                itemBuilder: (context, index) => children[index](context),
+              ),
             ),
           ),
         ),
