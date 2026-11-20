@@ -297,6 +297,42 @@ jobs:
           path: build/app/outputs/flutter-apk/app-debug.apk
           if-no-files-found: error
           retention-days: 14
+      # Same Flutter source, same generated AndroidManifest, same launcher
+      # icon and applicationId as the debug build above. Flutter's generated
+      # Android scaffolding uses the debug keystore for internal release
+      # evaluation unless a genuine production signing key is configured.
+      - name: Build internal performance-evaluation Release APK
+        run: |
+          set -euo pipefail
+          flutter build apk --release
+          test -s build/app/outputs/flutter-apk/app-release.apk
+      - name: Validate Release APK integrity, identity and signing
+        run: |
+          set -euo pipefail
+          APK=build/app/outputs/flutter-apk/app-release.apk
+          unzip -tq "$APK" >/dev/null
+          AAPT="$(find "${ANDROID_SDK_ROOT:-$ANDROID_HOME}/build-tools" -name aapt -type f | sort -V | tail -n 1)"
+          APKSIGNER="$(find "${ANDROID_SDK_ROOT:-$ANDROID_HOME}/build-tools" -name apksigner -type f | sort -V | tail -n 1)"
+          test -x "$AAPT"
+          test -x "$APKSIGNER"
+          "$APKSIGNER" verify --verbose --print-certs "$APK"
+          "$AAPT" dump badging "$APK" > /tmp/docsgrid-release-badging.txt
+          grep -F "package: name='com.docsgrid.mobile'" /tmp/docsgrid-release-badging.txt
+          grep -F "launchable-activity: name='com.docsgrid.docs_grid.MainActivity'" /tmp/docsgrid-release-badging.txt
+          echo "DocsGrid icon source:"
+          sha256sum assets/docsgrid_icon.png
+          echo "Release APK checksum and size:"
+          sha256sum "$APK"
+          wc -c "$APK"
+          echo "Internal performance-evaluation build only; DO NOT publish to Play."
+      - name: Upload verified Release APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: docsgrid-android-release-evaluation-apk
+          path: build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
+          retention-days: 14
+
 
   ios:
     name: iOS analyze, test and unsigned build
