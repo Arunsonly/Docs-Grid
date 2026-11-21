@@ -19,7 +19,7 @@ void main() {
     expect(await OcrSearchPreferences.isEnabled(), isFalse);
   });
 
-  testWidgets('an available OCR selector does NOT automatically enter OCR mode',
+  testWidgets('OCR toggle starts off, highlights on one tap, and turns off on second tap',
       (tester) async {
     var active = false;
     Widget app() => MaterialApp(
@@ -35,19 +35,19 @@ void main() {
     await tester.pumpWidget(app());
     expect(active, isFalse);
 
+    expect(find.byType(PopupMenuButton), findsNothing);
+    expect(find.text('OCR'), findsOneWidget);
+    expect(find.byTooltip('Turn on OCR search'), findsOneWidget);
     await tester.tap(find.byKey(const ValueKey('ocr-search-mode-selector')));
     await tester.pumpAndSettle();
-    expect(find.text('File name'), findsOneWidget);
-    expect(find.text('OCR text'), findsOneWidget);
-    await tester.tap(find.text('OCR text'));
-    await tester.pumpAndSettle();
     expect(active, isTrue);
+    expect(find.byTooltip('Turn off OCR search'), findsOneWidget);
+    expect(find.byType(PopupMenuButton), findsNothing);
 
     await tester.tap(find.byKey(const ValueKey('ocr-search-mode-selector')));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('File name'));
-    await tester.pumpAndSettle();
     expect(active, isFalse);
+    expect(find.byTooltip('Turn on OCR search'), findsOneWidget);
 
     // Recreate the entire search screen; OCR is a per-screen choice, not saved.
     active = false;
