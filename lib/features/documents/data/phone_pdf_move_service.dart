@@ -27,9 +27,7 @@ class PhonePdfMoveService {
       throw ArgumentError('Select a valid PDF and Phone destination folder.');
     }
     // Do not let the new Phone action reach Grid-owned or system trash areas.
-    if (StorageLocationService.isCanonicalPortableRootUri(destinationFolderUri) ||
-        StorageLocationService.isLegacyDocsGridStorageLocation(destinationFolderUri) ||
-        StorageLocationService.isAndroidTrashPath(destinationFolderUri)) {
+    if (StorageLocationService.isRestrictedPhoneMoveDestination(destinationFolderUri)) {
       throw StateError('Choose a Phone folder outside DocsGrid and Recycle Bin.');
     }
     final sourcePath = _localPath(sourceUri);
@@ -77,6 +75,6 @@ class PhonePdfMoveService {
         'confirm removal of the Phone original: $error',
       );
     }
-    return destinationUri!;
+    return destinationUri;
   }
 }
