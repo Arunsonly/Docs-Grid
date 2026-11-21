@@ -63,6 +63,10 @@ class _DocumentsScreenState extends State<DocumentsScreen>
   int _phoneOcrTotal = 0;
   String? _phoneOcrMessage;
   bool _gridView = false;
+  // Home search tabs are view state only. Neither storage index is mutated.
+  bool _homeSearchPhoneSelected = true;
+  static const int _homePhoneSearchPageSize = 40;
+  int _homePhoneSearchVisibleCount = _homePhoneSearchPageSize;
   int _totalStorageBytes = 0;
   int _totalDocumentCount = 0;
   int _starredCount = 0;
@@ -288,6 +292,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
     _searchDebounce?.cancel();
     _searchDebounce = Timer(const Duration(milliseconds: 280), () {
       if (!mounted) return;
+      _homePhoneSearchVisibleCount = _homePhoneSearchPageSize;
       _load();
       if (_searchInsideText && widget.ocrSearchAvailable) {
         unawaited(_beginOcrIndexing());
@@ -2852,91 +2857,99 @@ class _DocumentsScreenState extends State<DocumentsScreen>
             final matches = _searchInsideText
                 ? _phoneOcrIndex.matches(_phoneEntries, _search.text)
                 : _phoneStorageSearchMatches(_search.text);
-            return Padding(
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-              child: Card(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
+            final visibleCount = matches.length < _homePhoneSearchVisibleCount
+                ? matches.length : _homePhoneSearchVisibleCount;
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 2, 16, 12),
+                  child: Row(children: [
+                    Expanded(child: _homeSearchSourceTab(
+                      phone: true,
+                      title: 'Phone Storage',
+                      count: '${matches.length}',
+                    )),
+                    const SizedBox(width: 8),
+                    Expanded(child: _homeSearchSourceTab(
+                      phone: false,
+                      title: 'Grid Storage',
+                      count: '${_documents.length}${_hasMore ? '+' : ''}',
+                    )),
+                  ]),
+                ),
+                if (_homeSearchPhoneSelected) ...[
+                  if (_searchInsideText && _phoneOcrBusy)
                     Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                      child: Text('Reading Phone PDFs locally: $_phoneOcrDone / $_phoneOcrTotal'),
+                    ),
+                  if (_searchInsideText && !_phoneOcrBusy && _phoneOcrMessage != null)
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                      child: Text(_phoneOcrMessage!),
+                    ),
+                  // Background reconciliation must never replace valid rows
+                  // with an empty "Scanning..." card.
+                  if (matches.isEmpty && _phoneScanLoading)
+                    const Padding(
+                      padding: EdgeInsets.fromLTRB(16, 12, 16, 16),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          SizedBox(width: 16, height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2)),
+                          SizedBox(width: 10),
+                          Flexible(child: Text('Scanning Phone Storage…')),
+                        ],
+                      ),
+                    )
+                  else if (matches.isEmpty && !(_searchInsideText && _phoneOcrBusy))
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
                       child: Text(
-                        '${_searchInsideText ? 'Phone OCR' : 'Phone Storage'} · ${matches.length} matches',
-                        style: Theme.of(context).textTheme.titleSmall,
+                        _searchInsideText
+                          ? 'No matching PDF text in Phone Storage.'
+                          : 'No matching PDFs in the scanned Phone Storage locations.',
+                        textAlign: TextAlign.center,
                       ),
                     ),
-                    if (_searchInsideText && _phoneOcrBusy)
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
-                        child: Text('Reading Phone PDFs locally: $_phoneOcrDone / $_phoneOcrTotal'),
+                  if (matches.isNotEmpty)
+                    ListView.separated(
+                      shrinkWrap: true,
+                      physics: const NeverScrollableScrollPhysics(),
+                      padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+                      itemCount: visibleCount,
+                      separatorBuilder: (_, _) => const SizedBox(height: 6),
+                      itemBuilder: (_, index) => _homePhoneSearchTile(matches[index]),
+                    ),
+                  if (visibleCount < matches.length)
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 18),
+                      child: TextButton(
+                        key: const ValueKey('home-phone-more-results'),
+                        onPressed: () => setState(() =>
+                            _homePhoneSearchVisibleCount += _homePhoneSearchPageSize),
+                        child: Text('Show more Phone PDFs (${matches.length - visibleCount} remaining)'),
                       ),
-                    if (_searchInsideText && !_phoneOcrBusy &&
-                        _phoneOcrMessage != null)
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(16, 4, 16, 4),
-                        child: Text(_phoneOcrMessage!),
+                    ),
+                ] else
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+                    child: Align(
+                      alignment: Alignment.centerLeft,
+                      child: Text(
+                        '${_searchInsideText ? 'Grid OCR' : 'Grid Storage'} · ${_documents.length}${_hasMore ? '+' : ''} matches',
+                        style: Theme.of(context).textTheme.labelLarge,
                       ),
-                    if (_phoneScanLoading)
-                      const Padding(
-                        padding: EdgeInsets.fromLTRB(16, 8, 16, 12),
-                        child: Row(
-                          children: [
-                            SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
-                            SizedBox(width: 10),
-                            Text('Scanning Phone Storage…'),
-                          ],
-                        ),
-                      )
-                    else if (matches.isEmpty)
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
-                        child: Text(_searchInsideText
-                            ? 'No matching PDF text in Phone Storage.'
-                            : 'No matching PDFs in the scanned Phone Storage locations.'),
-                      )
-                    else
-                      SizedBox(
-                        height: (matches.length.clamp(1, 4) * 64).toDouble(),
-                        child: ListView.builder(
-                          itemCount: matches.length,
-                          itemBuilder: (context, index) {
-                            final item = matches[index];
-                            final name = item['name'] as String? ?? 'PDF';
-                            final uri = item['uri'] as String? ?? '';
-                            final folder = item['folderPath'] as String? ?? '';
-                            final bytes = (item['sizeBytes'] as num?)?.toInt() ?? 0;
-                            return ListTile(
-                              dense: true,
-                              leading: const Icon(Icons.picture_as_pdf_outlined),
-                              title: Text(name, maxLines: 1, overflow: TextOverflow.ellipsis),
-                              subtitle: Text(
-                                'Phone Storage · ${folder.isEmpty ? 'Root' : folder} · ${_size(bytes)}',
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                              onTap: () => _openExternalStoragePdf(uri, name),
-                            );
-                          },
-                        ),
-                      ),
-                  ],
-                ),
-              ),
+                    ),
+                  ),
+              ],
             );
           }),
-        if (!widget.favoritesOnly && _search.text.trim().isNotEmpty)
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
-            child: Align(
-              alignment: Alignment.centerLeft,
-              child: Text(
-                '${_searchInsideText ? 'Grid OCR' : 'Grid Storage'} · ${_documents.length}${_hasMore ? '+' : ''} matches',
-                style: Theme.of(context).textTheme.labelLarge,
-              ),
-            ),
-          ),
         if (_importing) const LinearProgressIndicator(),
-        if (widget.favoritesOnly || widget.recentOnly || _search.text.trim().isNotEmpty)
+        if (widget.favoritesOnly || widget.recentOnly ||
+            (_search.text.trim().isNotEmpty && !_homeSearchPhoneSelected))
           if (_loading)
             const SizedBox(height: 220, child: Center(child: CircularProgressIndicator()))
         else if (_error != null)
@@ -3113,6 +3126,108 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       ),
     ),
   );
+
+  Widget _homeSearchSourceTab({
+    required bool phone,
+    required String title,
+    required String count,
+  }) {
+    final selected = _homeSearchPhoneSelected == phone;
+    final colors = Theme.of(context).colorScheme;
+    return Material(
+      color: selected ? colors.secondaryContainer : colors.surfaceContainerLow,
+      borderRadius: BorderRadius.circular(14),
+      child: InkWell(
+        key: ValueKey(phone ? 'home-search-phone-tab' : 'home-search-grid-tab'),
+        borderRadius: BorderRadius.circular(14),
+        onTap: () {
+          if (selected) return;
+          setState(() => _homeSearchPhoneSelected = phone);
+          if (_scrollController.hasClients) _scrollController.jumpTo(0);
+        },
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+          child: Row(children: [
+            Icon(phone ? Icons.phone_android_outlined : Icons.folder_outlined,
+                size: 17, color: selected ? colors.onSecondaryContainer : colors.onSurfaceVariant),
+            const SizedBox(width: 6),
+            Expanded(child: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis,
+                style: TextStyle(fontSize: 12, fontWeight: selected ? FontWeight.w700 : FontWeight.w500))),
+            const SizedBox(width: 4),
+            Text(count, style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700,
+                color: selected ? colors.onSecondaryContainer : colors.onSurfaceVariant)),
+          ]),
+        ),
+      ),
+    );
+  }
+
+  // Matches the Grid Card/ListTile/thumbnail presentation while delegating
+  // every Phone file action to the existing, checksum-safe handlers.
+  Widget _homePhoneSearchTile(Map<String, Object?> entry) {
+    final name = entry['name'] as String? ?? 'PDF';
+    final uri = entry['uri'] as String? ?? '';
+    final path = (entry['folderPath'] ?? entry['path'] ?? '').toString();
+    final bytes = (entry['sizeBytes'] as num?)?.toInt() ?? 0;
+    return Card(
+      elevation: 0,
+      child: ListTile(
+        key: ValueKey('home-phone-pdf-$uri'),
+        onTap: () => _openExternalStoragePdf(uri, name),
+        leading: DocumentThumbnail(
+          documentId: 'phone_$uri',
+          storagePath: uri,
+          sizeBytes: bytes,
+          sourceLastModifiedMillis: thumbnailModifiedMillis(entry['lastModified']),
+        ),
+        title: Text(name, maxLines: 1, overflow: TextOverflow.ellipsis),
+        subtitle: Text('${_size(bytes)} · Phone Storage · ${path.isEmpty ? 'Root' : path}',
+            maxLines: 2, overflow: TextOverflow.ellipsis),
+        trailing: PopupMenuButton<String>(
+          tooltip: 'Actions for $name',
+          onSelected: (action) async {
+            if (action == 'share') {
+              await _sharePhonePdf(uri, name);
+            } else if (action == 'favorite') {
+              await _recordExternalFavorite(uri, name);
+            } else if (action == 'rename') {
+              await _renamePhonePdf(uri, name);
+            } else if (action == 'move_phone') {
+              await _movePhonePdfWithinPhone(uri, name);
+            } else if (action == 'move_grid') {
+              await _movePhonePdfToGrid(uri, name);
+            } else if (action == 'trash') {
+              await _trashPhonePdf(uri, name);
+            } else if (action == 'location') {
+              if (!mounted) return;
+              await showDialog<void>(
+                context: context,
+                builder: (dialogContext) => AlertDialog(
+                  title: const Text('File Location'),
+                  content: SelectableText(path.isEmpty ? uri : path),
+                  actions: [TextButton(
+                    onPressed: () => Navigator.pop(dialogContext),
+                    child: const Text('Close'),
+                  )],
+                ),
+              );
+            }
+          },
+          itemBuilder: (_) => [
+            const PopupMenuItem(value: 'share', child: Text('Share PDF')),
+            PopupMenuItem(value: 'favorite',
+              child: Text(_phoneStarredUris.contains(uri)
+                  ? 'Remove from Star' : 'Add to Star')),
+            const PopupMenuItem(value: 'rename', child: Text('Rename')),
+            const PopupMenuItem(value: 'move_phone', child: Text('Move')),
+            const PopupMenuItem(value: 'move_grid', child: Text('Move to Grid')),
+            const PopupMenuItem(value: 'trash', child: Text('Delete')),
+            const PopupMenuItem(value: 'location', child: Text('File Location')),
+          ],
+        ),
+      ),
+    );
+  }
 
   Widget _documentTile(DocumentRecord document) {
     final selected = _selectedIds.contains(document.id);
