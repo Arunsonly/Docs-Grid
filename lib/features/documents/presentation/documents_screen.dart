@@ -92,6 +92,8 @@ class _DocumentsScreenState extends State<DocumentsScreen>
   List<Map<String, Object?>> _phoneStarred = [];
   final Set<String> _phoneStarredUris = <String>{};
   String _recentFilter = 'grid';
+  // Separate from Recent so switching views preserves each selected source.
+  String _starredFilter = 'phone';
   List<Map<String, Object?>> _phoneEntries = [];
   final Set<String> _selectedIds = <String>{};
   bool _selectionMode = false;
@@ -2741,17 +2743,21 @@ class _DocumentsScreenState extends State<DocumentsScreen>
                       Text(_showStarredRecent ? 'Starred' : 'Recent',
                           style: const TextStyle(fontWeight: FontWeight.w700)),
                       const Spacer(),
-                      if (!_showStarredRecent)
-                        SegmentedButton<String>(
-                          showSelectedIcon: false,
-                          segments: const [
-                            ButtonSegment(value: 'phone', label: Text('Phone')),
-                            ButtonSegment(value: 'grid', label: Text('Grid')),
-                          ],
-                          selected: {_recentFilter},
-                          onSelectionChanged: (selection) =>
-                              setState(() => _recentFilter = selection.first),
-                        ),
+                      SegmentedButton<String>(
+                        showSelectedIcon: false,
+                        segments: const [
+                          ButtonSegment(value: 'phone', label: Text('Phone')),
+                          ButtonSegment(value: 'grid', label: Text('Grid')),
+                        ],
+                        selected: {_showStarredRecent ? _starredFilter : _recentFilter},
+                        onSelectionChanged: (selection) => setState(() {
+                          if (_showStarredRecent) {
+                            _starredFilter = selection.first;
+                          } else {
+                            _recentFilter = selection.first;
+                          }
+                        }),
+                      ),
                       PopupMenuButton<String>(
                         tooltip: _showStarredRecent ? 'Starred options' : 'Recent options',
                         onSelected: (value) async {
@@ -2783,17 +2789,25 @@ class _DocumentsScreenState extends State<DocumentsScreen>
                     SizedBox(
                       height: 320,
                       child: _showStarredRecent
-                          ? _starredRecent.isEmpty && _phoneStarred.isEmpty
-                              ? const Center(child: Text('No starred PDFs'))
-                              : ListView.separated(
-                                  primary: false,
-                                  itemCount: _phoneStarred.length + _starredRecent.length,
-                                  separatorBuilder: (_, _) => const Divider(height: 1),
-                                  itemBuilder: (context, index) =>
-                                      index < _phoneStarred.length
-                                          ? _phoneStarredTile(_phoneStarred[index])
-                                          : _recentDocumentTile(_starredRecent[index - _phoneStarred.length]),
-                                )
+                          ? _starredFilter == 'phone'
+                              ? _phoneStarred.isEmpty
+                                  ? const Center(child: Text('No starred Phone PDFs'))
+                                  : ListView.separated(
+                                      primary: false,
+                                      itemCount: _phoneStarred.length,
+                                      separatorBuilder: (_, _) => const Divider(height: 1),
+                                      itemBuilder: (context, index) =>
+                                          _phoneStarredTile(_phoneStarred[index]),
+                                    )
+                              : _starredRecent.isEmpty
+                                  ? const Center(child: Text('No starred Grid PDFs'))
+                                  : ListView.separated(
+                                      primary: false,
+                                      itemCount: _starredRecent.length,
+                                      separatorBuilder: (_, _) => const Divider(height: 1),
+                                      itemBuilder: (context, index) =>
+                                          _recentDocumentTile(_starredRecent[index]),
+                                    )
                           : _recentFilter == 'phone'
                               ? _phoneRecent.isEmpty
                                   ? const Center(child: Text('No recent Phone PDFs'))
