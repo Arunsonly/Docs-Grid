@@ -374,6 +374,28 @@ jobs:
           path: build/app/outputs/flutter-apk/app-release.apk
           if-no-files-found: error
           retention-days: 14
+      - name: Build opt-in E2E profiling evaluation APK
+        if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+        run: |
+          set -euo pipefail
+          flutter build apk --release --dart-define=DOCSGRID_STARTUP_PROFILE=true
+          cp build/app/outputs/flutter-apk/app-release.apk build/app/outputs/flutter-apk/docsgrid-startup-profile.apk
+          APK=build/app/outputs/flutter-apk/docsgrid-startup-profile.apk
+          unzip -tq "$APK" >/dev/null
+          APKSIGNER="$(find "${ANDROID_SDK_ROOT:-$ANDROID_HOME}/build-tools" -name apksigner -type f | sort -V | tail -n 1)"
+          AAPT="$(find "${ANDROID_SDK_ROOT:-$ANDROID_HOME}/build-tools" -name aapt -type f | sort -V | tail -n 1)"
+          "$APKSIGNER" verify "$APK"
+          "$AAPT" dump badging "$APK" | grep -F "package: name='com.docsgrid.mobile'"
+          "$AAPT" dump badging "$APK" | grep -F "launchable-activity: name='com.docsgrid.docs_grid.MainActivity'"
+          sha256sum "$APK"
+      - name: Upload opt-in E2E profiling APK
+        if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: docsgrid-android-startup-profile-apk
+          path: build/app/outputs/flutter-apk/docsgrid-startup-profile.apk
+          if-no-files-found: error
+          retention-days: 14
 
 
   android_release_startup:
@@ -402,7 +424,12 @@ jobs:
         with:
           name: docsgrid-android-release-evaluation-apk
           path: artifacts/release
-      - name: Verify TTID parser and percentile calculations
+      - name: Download isolated E2E profiling APK
+        uses: actions/download-artifact@v4
+        with:
+          name: docsgrid-android-startup-profile-apk
+          path: artifacts/e2e-profile
+      - name: Verify TTID and E2E parsers
         run: python3 -m unittest discover -s scripts -p 'test_android_*.py' -v
       # Keep the emulator alive for BOTH the untraced seven-run baseline and
       # the one traced launch. The action terminates the emulator when its
@@ -427,6 +454,19 @@ jobs:
             --baseline startup-results/cold-launch.json
             --output-dir startup-results/critical-path
             --trace-seconds 16
+            &&
+            python3 scripts/benchmark_end_to_end_startup.py
+            --apk artifacts/e2e-profile/docsgrid-startup-profile.apk
+            --baseline startup-results/cold-launch.json
+            --output-dir startup-results/end-to-end
+      - name: Upload end-to-end diagnostics and same-run Perfetto
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docsgrid-android-end-to-end-startup
+          path: startup-results/end-to-end/
+          if-no-files-found: warn
+          retention-days: 14
       - name: Upload startup critical-path trace and summary
         if: always()
         uses: actions/upload-artifact@v4

@@ -21,6 +21,7 @@ import 'document_thumbnail.dart';
 import 'phone_storage_browser_screen.dart';
 import '../../folders/presentation/folders_screen.dart';
 import '../../reminders/data/reminder_repository.dart';
+import '../../../core/diagnostics/startup_timeline.dart';
 
 class DocumentsScreen extends StatefulWidget {
   const DocumentsScreen({super.key, this.favoritesOnly = false, this.recentOnly = false, this.phoneOnly = false});
@@ -34,6 +35,8 @@ class DocumentsScreen extends StatefulWidget {
 
 class _DocumentsScreenState extends State<DocumentsScreen>
     with WidgetsBindingObserver {
+  bool get _isStartupHome =>
+      !widget.phoneOnly && !widget.favoritesOnly && !widget.recentOnly;
   final _repository = DocumentRepository();
   final _homeCache = HomeDashboardCache();
   final _categoryRepository = CategoryRepository();
@@ -88,6 +91,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
   @override
   void initState() {
     super.initState();
+    if (_isStartupHome) StartupTimeline.mark('home_init');
     WidgetsBinding.instance.addObserver(this);
     unawaited(_loadPhoneStarred());
     _storageChangesSubscription =
@@ -112,6 +116,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
     _scrollController.addListener(_onScroll);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
+      if (_isStartupHome) StartupTimeline.mark('home_first_frame');
       if (widget.phoneOnly) {
         // Show the Phone tab in place; do not push a second page after scanning.
         _scanPhoneStorage(openBrowser: false);
@@ -122,12 +127,14 @@ class _DocumentsScreenState extends State<DocumentsScreen>
   }
 
   Future<void> _restoreCachedHomeSnapshot() async {
+    if (_isStartupHome) StartupTimeline.mark('home_cache_read_start');
     // Only the actual Home dashboard may display a provisional snapshot.
     // A completed SQLite read always wins, even if preferences finish later.
     final summaryFuture = _homeCache.readSummary();
     final namesFuture = _homeCache.readRecentNames();
     final summary = await summaryFuture;
     final names = await namesFuture;
+    if (_isStartupHome) StartupTimeline.mark('home_cache_read_done');
     if (!mounted || widget.phoneOnly || widget.favoritesOnly || widget.recentOnly) {
       return;
     }
@@ -312,11 +319,13 @@ class _DocumentsScreenState extends State<DocumentsScreen>
   }
 
   Future<void> _load() async {
+    if (_isStartupHome) StartupTimeline.mark('home_page_start');
     final generation = ++_loadGeneration;
     if (mounted) setState(() { _loading = true; _loadingMore = false; });
     // Run the small first page and dashboard aggregates concurrently. Render
     // the document rows as soon as the page is ready; never make the first
     // useful screen wait for a full-library summary query.
+    if (_isStartupHome) StartupTimeline.mark('home_summary_start');
     final summaryFuture = _repository.dashboardSummary();
     try {
       if (_searchInsideText && _search.text.trim().isNotEmpty) {
@@ -352,6 +361,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
           _error = null;
         });
       }
+      if (_isStartupHome) StartupTimeline.mark('home_page_ready');
       // Summary is secondary UI. Update it when ready without delaying the
       // first page, and ignore stale completions after a newer refresh.
       try {
@@ -364,6 +374,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
           _liveHomeSummaryLoaded = true;
           _showCachedHomeSummary = false;
         });
+        if (_isStartupHome) StartupTimeline.mark('home_summary_ready');
         if (!widget.phoneOnly && !widget.favoritesOnly && !widget.recentOnly) {
           unawaited(_homeCache.saveSummary(
             documentCount: summary.documentCount,
@@ -372,9 +383,11 @@ class _DocumentsScreenState extends State<DocumentsScreen>
           ));
         }
       } catch (_) {
+        if (_isStartupHome) StartupTimeline.mark('home_summary_failed');
         // A summary failure must not blank a successfully loaded PDF list.
       }
     } catch (error) {
+      if (_isStartupHome) StartupTimeline.mark('home_page_failed');
       if (!mounted || generation != _loadGeneration) return;
       setState(() {
         _loading = false;
@@ -440,6 +453,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
   }
 
   Future<void> _loadTrashSummary() async {
+    if (_isStartupHome) StartupTimeline.mark('home_trash_start');
     try {
       final values = await Future.wait<Object>([
         _repository.trashCount(),
@@ -452,6 +466,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         _trashCount = count;
         _trashFolderCount = folders.length;
       });
+      if (_isStartupHome) StartupTimeline.mark('home_trash_ready');
     } catch (_) {
       // Keep the dashboard usable; the Recycle Bin screen reports its own error.
     }
@@ -680,6 +695,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       _phoneScanPending = true;
       return;
     }
+    if (_isStartupHome) StartupTimeline.mark('home_phone_scan_start');
     _phoneMediaStoreReady = false;
     if (mounted) setState(() { _phoneScanLoading = true; _phoneScanCompleted = false; });
     try {
@@ -920,6 +936,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         _message('Phone Storage scan failed; inaccessible locations were not marked empty: $error');
       }
     } finally {
+      if (_isStartupHome) StartupTimeline.mark('home_phone_scan_finished');
       if (mounted) setState(() => _phoneScanLoading = false);
       if (mounted) {
         if (_phoneScanPending) {
@@ -1374,6 +1391,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
   }
 
   Future<void> _loadRecentDocuments() async {
+    if (_isStartupHome) StartupTimeline.mark('home_recent_start');
     try {
       // Include both opened documents and newly added documents. The list
       // is capped at 20 so the dashboard's Recent panel can scroll independently.
@@ -1398,6 +1416,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         _liveGridRecentLoaded = true;
         _cachedGridRecentNames = const [];
       });
+      if (_isStartupHome) StartupTimeline.mark('home_recent_ready');
       if (!widget.phoneOnly && !widget.favoritesOnly && !widget.recentOnly) {
         // Names only. Do not persist IDs, paths, actions or raw PDF bytes.
         unawaited(_homeCache.saveRecentNames(
@@ -1405,6 +1424,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         ));
       }
     } catch (_) {
+      if (_isStartupHome) StartupTimeline.mark('home_recent_failed');
       // Recent metadata is optional and must not block the dashboard.
     }
   }
