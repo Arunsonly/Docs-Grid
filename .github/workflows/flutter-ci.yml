@@ -397,9 +397,22 @@ jobs:
           set -euo pipefail
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' |
             sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
-          test -c /dev/kvm && test -r /dev/kvm && test -w /dev/kvm
+          # Hosted runner images do not always run a persistent udev daemon.
+          # These two commands may fail even when /dev/kvm exists and is usable.
+          sudo udevadm control --reload-rules || echo 'udev reload unavailable; checking device directly'
+          sudo udevadm trigger --name-match=kvm || echo 'udev trigger unavailable; checking device directly'
+          if ! test -c /dev/kvm; then
+            echo '::error::This Linux runner does not expose /dev/kvm; emulator benchmark cannot run.'
+            ls -l /dev/kvm || true
+            exit 1
+          fi
+          # Same effective permission as the udev rule, on this disposable CI VM.
+          sudo chmod 0666 /dev/kvm
+          ls -l /dev/kvm
+          if ! test -r /dev/kvm || ! test -w /dev/kvm; then
+            echo '::error::KVM exists, but the CI runner cannot read/write it.'
+            exit 1
+          fi
       - name: Confirm emulator host and APK ABI compatibility
         run: |
           set -euo pipefail
