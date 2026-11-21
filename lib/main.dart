@@ -102,7 +102,6 @@ class DocsGridHome extends StatefulWidget {
   /// tabs both use DocumentsScreen but initialize completely different data.
   /// Without distinct keys Flutter reuses the Phone State on Phone -> Home:
   /// its initState never calls _load(), leaving the Home summary at zero.
-  @visibleForTesting
   static Widget screenForTab(int index) => switch (index) {
     0 => const DocumentsScreen(
       key: ValueKey('docsgrid-phone-tab'),

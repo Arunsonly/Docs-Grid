@@ -23,7 +23,7 @@ class _IdentityProbeState extends State<_IdentityProbe> {
   }
 
   @override
-  Widget build(BuildContext context) => Text('state-\$identity');
+  Widget build(BuildContext context) => Text('state-$identity');
 }
 
 void main() {

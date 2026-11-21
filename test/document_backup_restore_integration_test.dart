@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:archive/archive.dart';
 import 'package:crypto/crypto.dart';
 import 'package:docs_grid/core/database/app_database.dart';
+import 'package:docs_grid/core/storage/storage_location_service.dart';
 import 'package:docs_grid/features/documents/data/document_repository.dart';
 import 'package:docs_grid/features/documents/data/home_dashboard_cache.dart';
 import 'package:docs_grid/features/documents/data/phone_recent_history.dart';
@@ -788,6 +789,76 @@ void main() {
     await expectLater(service.restoreBackup(backup, confirm: (_) async => true), throwsA(isA<StateError>()));
     expect((await db.query('folders')).single['deleted_at'], isNull);
     expect(await db.query('documents'), isEmpty);
+  });
+
+
+  test('Insurance Save stays physically readable after database close/reopen and one-day file age', () async {
+    final insurance = Directory('${appDocuments.path}/DocsGrid/My Files/Folders/Insurance');
+    await insurance.create(recursive: true);
+    await db.insert('folders', {
+      ..._backupRows(withFolder: true)['folders']!.single,
+      'storage_uri_or_relative_path': insurance.uri.toString(),
+    });
+    final source = File('${temp.path}/today-insurance.pdf');
+    final originalBytes = Uint8List.fromList(
+      utf8.encode('%PDF-1.7\nInsurance persistent real bytes\n%%EOF'),
+    );
+    final originalSha = sha256.convert(originalBytes).toString();
+    await source.writeAsBytes(originalBytes, flush: true);
+    messenger.setMockMethodCallHandler(
+        const MethodChannel('docsgrid/storage'), (call) async {
+      final args = Map<String, dynamic>.from(call.arguments as Map);
+      if (call.method == 'copyPdf') {
+        expect(args['parentUri'], insurance.uri.toString());
+        final incoming = File.fromUri(Uri.parse(args['sourceUri'] as String));
+        final saved = await incoming.copy('${insurance.path}/${args['name']}');
+        return saved.uri.toString();
+      }
+      if (call.method == 'sha256Pdf') {
+        final saved = File.fromUri(Uri.parse(args['uri'] as String));
+        return (await sha256.bind(saved.openRead()).first).toString();
+      }
+      throw MissingPluginException('Unexpected Android storage call: ${call.method}');
+    });
+
+    final firstSession = DocumentRepository(
+      database: AppDatabase.forTesting(() async => db));
+    final result = await firstSession.importScannedPdf(
+      source, displayName: 'Insurance policy', targetFolderId: 'folder-1');
+    expect(result.added, 1);
+    expect(result.failed, 0);
+    final firstRows = await db.query('documents',
+        where: 'name = ?', whereArgs: ['Insurance policy']);
+    expect(firstRows, hasLength(1));
+    final documentId = firstRows.single['id'] as String;
+    final savedUri = firstRows.single['storage_uri'] as String;
+    expect(StorageLocationService.gridPdfReferenceKind(savedUri),
+        GridPdfReferenceKind.possibleFile);
+    final saved = File.fromUri(Uri.parse(savedUri));
+    expect(saved.parent.path, insurance.path);
+    expect((await sha256.bind(saved.openRead()).first).toString(), originalSha);
+    // Check a file aged overnight, then discard the SQLite connection to
+    // reproduce opening a new repository session rather than reusing UI RAM.
+    await saved.setLastModified(DateTime.now().subtract(const Duration(days: 1)));
+    await db.close();
+    db = await databaseFactoryFfi.openDatabase('${temp.path}/restore.db',
+      options: OpenDatabaseOptions(
+        version: AppDatabase.schemaVersion,
+        onConfigure: (database) async =>
+          database.execute('PRAGMA foreign_keys = ON'),
+      ),
+    );
+    final reopened = DocumentRepository(
+      database: AppDatabase.forTesting(() async => db));
+    final record = await reopened.getById(documentId);
+    expect(record, isNotNull);
+    expect(record!.folderId, 'folder-1');
+    expect(record.storagePath, savedUri);
+    expect(await saved.exists(), isTrue);
+    expect(await saved.readAsBytes(), originalBytes);
+    expect((await sha256.bind(saved.openRead()).first).toString(), originalSha);
+    expect((await db.query('folders', where: 'id = ?',
+        whereArgs: ['folder-1'])).single['deleted_at'], isNull);
   });
 
   test('new PDF import after restore uses the verified original Insurance folder', () async {
