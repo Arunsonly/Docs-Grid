@@ -981,6 +981,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         rootName: rootName, entries: entries, onOpenPdf: _openExternalStoragePdf,
         onMovePdf: _movePhonePdfToGrid,
         onMoveWithinPhone: _movePhonePdfWithinPhone,
+        ocrSearchAvailable: widget.ocrSearchAvailable,
         onRenamePdf: _renamePhonePdf,
         onSharePdf: _sharePhonePdf,
         onToggleStarPdf: _recordExternalFavorite,
@@ -2491,6 +2492,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         onOpenPdf: _openExternalStoragePdf,
         onMovePdf: _movePhonePdfToGrid,
         onMoveWithinPhone: _movePhonePdfWithinPhone,
+        ocrSearchAvailable: widget.ocrSearchAvailable,
         onRenamePdf: _renamePhonePdf,
         onSharePdf: _sharePhonePdf,
         onToggleStarPdf: _recordExternalFavorite,
@@ -2593,7 +2595,8 @@ class _DocumentsScreenState extends State<DocumentsScreen>
               ],
             ),
           ),
-        if (!widget.favoritesOnly && !widget.recentOnly)
+        if (!widget.favoritesOnly && !widget.recentOnly &&
+            _search.text.trim().isEmpty)
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
             child: Container(
@@ -2647,7 +2650,8 @@ class _DocumentsScreenState extends State<DocumentsScreen>
               ),
             ),
           ),
-        if (!widget.favoritesOnly && !widget.recentOnly)
+        if (!widget.favoritesOnly && !widget.recentOnly &&
+            _search.text.trim().isEmpty)
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
             child: Card(
@@ -2736,7 +2740,8 @@ class _DocumentsScreenState extends State<DocumentsScreen>
               ),
             ),
           ),
-        if (!widget.favoritesOnly && !widget.recentOnly)
+        if (!widget.favoritesOnly && !widget.recentOnly &&
+            _search.text.trim().isEmpty)
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
             child: Card(
@@ -2773,7 +2778,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
               ),
             ),
           ),
-        if (!widget.favoritesOnly && !_searchInsideText && _search.text.trim().isNotEmpty)
+        if (!widget.favoritesOnly && _search.text.trim().isNotEmpty)
           Builder(builder: (context) {
             final matches = _phoneStorageSearchMatches(_search.text);
             return Padding(
@@ -2835,7 +2840,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
               ),
             );
           }),
-        if (!widget.favoritesOnly && !_searchInsideText && _search.text.trim().isNotEmpty)
+        if (!widget.favoritesOnly && _search.text.trim().isNotEmpty)
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
             child: Align(
