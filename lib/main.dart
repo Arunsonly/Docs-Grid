@@ -97,6 +97,22 @@ class _DocsGridAppState extends State<DocsGridApp> {
 
 class DocsGridHome extends StatefulWidget {
   const DocsGridHome({super.key, required this.darkMode, required this.onDarkModeChanged});
+
+  /// Distinct element identities are REQUIRED because the Home and Phone
+  /// tabs both use DocumentsScreen but initialize completely different data.
+  /// Without distinct keys Flutter reuses the Phone State on Phone -> Home:
+  /// its initState never calls _load(), leaving the Home summary at zero.
+  @visibleForTesting
+  static Widget screenForTab(int index) => switch (index) {
+    0 => const DocumentsScreen(
+      key: ValueKey('docsgrid-phone-tab'),
+      phoneOnly: true,
+    ),
+    1 => const DocumentsScreen(
+      key: ValueKey('docsgrid-home-tab'),
+    ),
+    _ => const FoldersScreen(),
+  };
   final bool darkMode;
   final ValueChanged<bool> onDarkModeChanged;
 
@@ -490,11 +506,7 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
             : const [],
       ),
       body: SafeArea(
-        child: switch (_selectedIndex) {
-          0 => const DocumentsScreen(phoneOnly: true),
-          1 => const DocumentsScreen(),
-          _ => const FoldersScreen(),
-        },
+        child: DocsGridHome.screenForTab(_selectedIndex),
       ),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _selectedIndex,

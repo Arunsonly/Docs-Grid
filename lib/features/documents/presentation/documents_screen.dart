@@ -3003,6 +3003,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
             const PopupMenuItem(value: 'category', child: Text('Set category')),
             const PopupMenuItem(value: 'tags', child: Text('Edit tags')),
             const PopupMenuItem(value: 'rename', child: Text('Rename')),
+            const PopupMenuItem(value: 'relink', child: Text('Relink PDF')),
             const PopupMenuItem(value: 'move', child: Text('Move to folder')),
             const PopupMenuItem(value: 'trash', child: Text('Move to Recycle Bin')),
           ],

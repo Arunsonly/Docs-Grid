@@ -1585,7 +1585,13 @@ class _FoldersScreenState extends State<FoldersScreen>
                                         sizeBytes: document.sizeBytes,
                                       ),
                                 title: Text('${document.name}.pdf', maxLines: 1, overflow: TextOverflow.ellipsis),
-                                subtitle: Text(_size(document.sizeBytes)),
+                                subtitle: Text(
+                                  StorageLocationService.gridPdfReferenceKind(
+                                        document.storagePath,
+                                      ) == GridPdfReferenceKind.possibleFile
+                                      ? _size(document.sizeBytes)
+                                      : '${_size(document.sizeBytes)} · File unavailable · Relink PDF',
+                                ),
                                 onLongPress: () {
                                   setState(() {
                                     _selectedDocumentIds.add(document.id);
@@ -1614,6 +1620,7 @@ class _FoldersScreenState extends State<FoldersScreen>
                                       if (action == 'category') await _chooseCategory(document);
                                       if (action == 'tags') await _editTags(document);
                                       if (action == 'rename') await _renamePdf(document);
+                                      if (action == 'relink') await _documents.relinkDocument(document);
                                       if (action == 'move') await _moveOne(document);
                                       if (action == 'reminder') await _addReminder(document);
                                       if (action == 'trash') await _documents.moveToTrash(document);
@@ -1628,6 +1635,7 @@ class _FoldersScreenState extends State<FoldersScreen>
                                     const PopupMenuItem(value: 'category', child: Text('Set category')),
                                     const PopupMenuItem(value: 'tags', child: Text('Edit tags')),
                                     const PopupMenuItem(value: 'rename', child: Text('Rename')),
+                                    const PopupMenuItem(value: 'relink', child: Text('Relink PDF')),
                                     const PopupMenuItem(value: 'move', child: Text('Move to folder')),
                                     const PopupMenuItem(value: 'reminder', child: Text('Add to reminder')),
                                     const PopupMenuItem(value: 'trash', child: Text('Move to Recycle Bin')),
