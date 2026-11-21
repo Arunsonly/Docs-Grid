@@ -872,6 +872,41 @@ class MainActivity : FlutterActivity() {
                             }
                             "consumeSharedPdfs" -> result.success(consumeSharedPdfs(incomingShareIntent))
                             "checkStorageAccess" -> result.success(checkStorageAccess())
+                            "resolveZipRestoreFileLocations" -> {
+                                // ZIP extraction uses dart:io. Only identify the *same*
+                                // existing user-selected primary-storage directories as
+                                // file-backed paths, without changing any saved preferences.
+                                val allowed = android.os.Build.VERSION.SDK_INT < 30 ||
+                                    android.os.Environment.isExternalStorageManager()
+                                if (!allowed) {
+                                    result.error("RESTORE_PERMISSION_REQUIRED",
+                                        "Full internal storage access is not currently granted to DocsGrid.", null)
+                                } else {
+                                    val selectedDocuments = call.argument<String>("documentsUri")
+                                    val selectedLibrary = call.argument<String>("libraryUri")
+                                    val prefs = getSharedPreferences("docsgrid_storage", MODE_PRIVATE)
+                                    val savedLibrary = prefs.getString("folders_uri", null)
+                                        ?: prefs.getString("my_files_uri", null)
+                                    if (selectedDocuments == null || selectedLibrary == null ||
+                                        selectedDocuments != prefs.getString("documents_uri", null) ||
+                                        selectedLibrary != savedLibrary) {
+                                        result.error("RESTORE_LOCATION_CHANGED",
+                                            "DocsGrid storage locations changed during restore preparation. Reopen Backup & Restore.", null)
+                                    } else {
+                                        val documents = localFileBackedRestoreDirectory(selectedDocuments)
+                                        val folders = localFileBackedRestoreDirectory(selectedLibrary)
+                                        if (documents == null || folders == null) {
+                                            result.error("RESTORE_UNSUPPORTED_PROVIDER",
+                                                "The selected DocsGrid storage folder is not a writable local primary-storage folder. No PDF or database was changed.", null)
+                                        } else {
+                                            result.success(mapOf(
+                                                "documentsUri" to documents,
+                                                "libraryUri" to folders
+                                            ))
+                                        }
+                                    }
+                                }
+                            }
                             "hasAllFilesAccess" -> result.success(
                                 android.os.Build.VERSION.SDK_INT < 30 ||
                                     android.os.Environment.isExternalStorageManager()
@@ -1174,6 +1209,33 @@ class MainActivity : FlutterActivity() {
             } catch (_: Exception) { }
         }
         return output
+    }
+
+    /**
+     * A SAF URI is not a filesystem path. Only Android's own primary shared
+     * storage DocumentsProvider has a reliable local equivalent here.
+     * Do not manufacture paths for USB, SD, cloud or arbitrary providers.
+     *
+     * This does not create, move, delete, or change any selected storage root.
+     */
+    private fun localFileBackedRestoreDirectory(rawUri: String): String? {
+        return try {
+            val uri = Uri.parse(rawUri)
+            if (uri.scheme != "content" ||
+                uri.authority != "com.android.externalstorage.documents") return null
+            val documentId = DocumentsContract.getDocumentId(uri)
+            if (!documentId.startsWith("primary:", ignoreCase = true)) return null
+            val relative = documentId.substringAfter(':').replace('\\', '/')
+            if (relative.isBlank() || relative.startsWith("/") ||
+                relative.split('/').any { it.isBlank() || it == "." || it == ".." }) return null
+            val sharedRoot = Environment.getExternalStorageDirectory().canonicalFile
+            val directory = java.io.File(sharedRoot, relative).canonicalFile
+            if (!directory.path.startsWith(sharedRoot.path + java.io.File.separator) ||
+                !directory.isDirectory || !directory.canRead() || !directory.canWrite()) return null
+            Uri.fromFile(directory).toString()
+        } catch (_: Exception) {
+            null
+        }
     }
 
     private fun checkStorageAccess(): Map<String, String> {
