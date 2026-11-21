@@ -28,6 +28,16 @@ void main() {
     expect(home, contains('_search.text.trim().isNotEmpty && _homeSearchPhoneSelected) return;'));
   });
 
+  test('Home dashboard and existing search/OCR entry points are preserved', () {
+    expect(home, contains('_search.addListener(_onSearchChanged)'));
+    expect(home, contains('OcrSearchModeControl('));
+    expect(home, contains('_setOcrSearchMode'));
+    expect(home, contains('_phoneOcrIndex.matches(_phoneEntries, _search.text)'));
+    expect(home, contains('_search.text.trim().isEmpty)'));
+    expect(home, contains('if (!widget.favoritesOnly && !widget.recentOnly &&'));
+    expect(home, contains('widget.phoneOnly'));
+  });
+
   test('Phone Home search uses matching Grid cards and existing safe actions', () {
     expect(home, contains("key: ValueKey('home-phone-pdf-"));
     expect(home, contains("documentId: 'phone_"));
