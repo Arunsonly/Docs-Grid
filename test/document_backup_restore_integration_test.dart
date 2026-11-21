@@ -224,6 +224,105 @@ void main() {
   });
 
 
+
+  test('Automatic Cleanup Isolation: automatic full and database backup retention preserves Shared Untitled user PDFs', () async {
+    final originals = [
+      File('${appDocuments.path}/DocsGrid/My Files/Shared/Untitled/Shared policy.pdf'),
+      File('${appDocuments.path}/DocsGrid/My Files/Unfiled/Unfiled policy.pdf'),
+      File('${appDocuments.path}/DocsGrid/My Files/Folders/Insurance/Insurance policy.pdf'),
+    ];
+    final expected = <String, String>{};
+    for (var i = 0; i < originals.length; i++) {
+      final file = originals[i];
+      await file.parent.create(recursive: true);
+      final bytes = utf8.encode('%PDF-1.7\nUser-owned file $i\n%%EOF');
+      await file.writeAsBytes(bytes, flush: true);
+      expected[file.path] = sha256.convert(bytes).toString();
+    }
+    await _insertExistingDocument(db, id: 'shared-original',
+        pdfFile: originals.first);
+
+    final dbBackups = Directory('${appDocuments.path}/DocsGrid/Backups/Database');
+    await dbBackups.create(recursive: true);
+    final userZip = File('${dbBackups.path}/Personal_Archive.zip');
+    final userPdf = File('${dbBackups.path}/My notes.pdf');
+    await userZip.writeAsString('Private ZIP, not a DocsGrid backup', flush: true);
+    await userPdf.writeAsString('Private user file', flush: true);
+
+    // Run the actual production ZIP creation and retention, not a simulated
+    // deletion loop. All storage is under this disposable temp test directory.
+    for (var i = 0; i < 16; i++) {
+      expect(await (await service.createBackup(includePdfs: false)).exists(), isTrue);
+    }
+    final fullBackups = Directory('${appDocuments.path}/DocsGrid/Backups/Full');
+    for (var i = 0; i < 5; i++) {
+      expect(await (await service.createBackup(includePdfs: true)).exists(), isTrue);
+    }
+    Future<int> ownedCount(Directory dir) async =>
+        (await dir.list(followLinks: false).toList())
+            .whereType<File>()
+            .where((file) => file.path.split('/').last.startsWith('DocsGrid_') &&
+                file.path.toLowerCase().endsWith('.zip'))
+            .length;
+    expect(await ownedCount(dbBackups), 14);
+    expect(await ownedCount(fullBackups), 4);
+    expect(await userZip.readAsString(), 'Private ZIP, not a DocsGrid backup');
+    expect(await userPdf.readAsString(), 'Private user file');
+    for (final file in originals) {
+      expect(await file.exists(), isTrue);
+      expect((await sha256.bind(file.openRead()).first).toString(), expected[file.path]);
+    }
+    expect((await db.query('documents', columns: ['storage_uri'],
+        where: 'id = ?', whereArgs: ['shared-original'])).single['storage_uri'],
+        originals.first.path);
+
+    // A failed full backup must NOT trigger archive or original-file cleanup.
+    await db.update('documents', {'storage_uri': '${temp.path}/missing_source.pdf'},
+        where: 'id = ?', whereArgs: ['shared-original']);
+    await expectLater(service.createBackup(includePdfs: true),
+        throwsA(isA<StateError>()));
+    expect(await ownedCount(fullBackups), 4);
+    for (final file in originals) {
+      expect((await sha256.bind(file.openRead()).first).toString(), expected[file.path]);
+    }
+  });
+
+  test('Missing vs Deleted Detection: physical disappearance is not an actual Recycle Bin action', () async {
+    final original = await _makeExistingPdf(temp);
+    await _insertExistingDocument(db, id: 'missing-vs-deleted', pdfFile: original);
+    final repo = DocumentRepository(database: AppDatabase.forTesting(() async => db));
+    final record = await repo.getById('missing-vs-deleted');
+    expect(record, isNotNull);
+    expect(await repo.listTrash(), isEmpty);
+
+    // Simulate external relocation: the file is missing but DB is active.
+    final outside = await original.rename('${temp.path}/externally_moved.pdf');
+    expect(await File(record!.storagePath).exists(), isFalse);
+    expect((await db.query('documents', where: 'id = ?',
+        whereArgs: [record.id])).single['deleted_at'], isNull);
+    expect(await repo.getById(record.id), isNotNull);
+    expect(await repo.listTrash(), isEmpty);
+    await expectLater(repo.permanentlyDelete(record), throwsA(isA<StateError>()));
+    expect(await outside.exists(), isTrue);
+
+    // Reappearance of the same bytes recovers the same active DB identity.
+    await outside.rename(original.path);
+    expect(await repo.getById(record.id), isNotNull);
+
+    // User-requested soft delete sets deleted_at but preserves bytes.
+    await repo.moveToTrash(record);
+    expect(await repo.getById(record.id), isNull);
+    expect((await repo.listTrash()).single.id, record.id);
+    expect(await original.exists(), isTrue);
+
+    // Only EXPLICIT permanent deletion may delete the disposable PDF.
+    await repo.permanentlyDelete(record);
+    expect(await original.exists(), isFalse);
+    expect(await repo.listTrash(), isEmpty);
+    expect(await db.query('documents', where: 'id = ?',
+        whereArgs: [record.id]), isEmpty);
+  });
+
   test('Phone PDF move deletes source; verified Grid copy appears in Grid Recent', () async {
     const sourceUri = 'content://media/external_primary/file/1000702003';
     final source = File('${temp.path}/10th result.pdf');
