@@ -380,9 +380,9 @@ jobs:
     name: Release APK process-cold launch benchmark (Android emulator)
     needs: android
     if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
-    # Explicit Intel macOS runner: Apple Silicon hosted VMs lack nested HVF
-    # (HV_UNSUPPORTED), whereas this job runs an x86_64 Android AVD.
-    runs-on: macos-15-intel
+    # GitHub-hosted Linux x86_64 runners expose KVM for accelerated Android tests.
+    # Avoid macOS ARM nested-HVF restrictions and slow Intel macOS emulation.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - name: Download verified Release APK from this exact run
@@ -392,10 +392,18 @@ jobs:
           path: artifacts/release
       - name: Verify TTID parser and percentile calculations
         run: python3 -m unittest discover -s scripts -p 'test_android_cold_launch.py' -v
+      - name: Enable hardware-accelerated Android virtualization
+        run: |
+          set -euo pipefail
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' |
+            sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          test -c /dev/kvm && test -r /dev/kvm && test -w /dev/kvm
       - name: Confirm emulator host and APK ABI compatibility
         run: |
           set -euo pipefail
-          echo "macOS host architecture: $(uname -m)"
+          echo "Linux host architecture: $(uname -m)"
           test "$(uname -m)" = x86_64
           unzip -Z1 artifacts/release/app-release.apk | grep -Fx 'lib/x86_64/libflutter.so'
       - name: Measure Release APK cold launches (TTID, not TTFD)
@@ -403,7 +411,7 @@ jobs:
         with:
           api-level: 34
           target: google_apis
-          # Match the explicitly pinned Intel runner.
+          # Match the x86_64 Linux KVM runner.
           arch: x86_64
           profile: pixel_6
           disable-animations: true
