@@ -134,7 +134,11 @@ class _DocumentsScreenState extends State<DocumentsScreen>
     final namesFuture = _homeCache.readRecentNames();
     final summary = await summaryFuture;
     final names = await namesFuture;
-    if (_isStartupHome) StartupTimeline.mark('home_cache_read_done');
+    if (_isStartupHome) {
+      StartupTimeline.mark('home_cache_read_done');
+      StartupTimeline.mark(summary == null
+          ? 'home_cache_summary_miss' : 'home_cache_summary_hit');
+    }
     if (!mounted || widget.phoneOnly || widget.favoritesOnly || widget.recentOnly) {
       return;
     }
@@ -146,6 +150,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         _starredCount = summary.favoriteCount;
         _totalStorageBytes = summary.totalBytes;
         _showCachedHomeSummary = true;
+        if (_isStartupHome) StartupTimeline.mark('home_cache_summary_applied');
       }
       if (!_liveGridRecentLoaded) _cachedGridRecentNames = names;
     });

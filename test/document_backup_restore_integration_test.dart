@@ -5,6 +5,7 @@ import 'package:archive/archive.dart';
 import 'package:crypto/crypto.dart';
 import 'package:docs_grid/core/database/app_database.dart';
 import 'package:docs_grid/features/documents/data/document_repository.dart';
+import 'package:docs_grid/features/documents/data/home_dashboard_cache.dart';
 import 'package:docs_grid/features/documents/data/phone_recent_history.dart';
 import 'package:docs_grid/features/documents/data/phone_trash_origin.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -839,6 +840,78 @@ void main() {
     expect(restored, 1);
     expect(await db.query('folders'), isEmpty);
     expect(await db.query('documents'), hasLength(1));
+    expect(await db.rawQuery('PRAGMA foreign_key_check'), isEmpty);
+  });
+
+
+  test('real full Backup Restore updates Home cache on relaunch and later changes', () async {
+    SharedPreferences.setMockInitialValues({});
+    final cache = HomeDashboardCache();
+    final repo = DocumentRepository(database: AppDatabase.forTesting(() async => db));
+    final emptySummary = await repo.dashboardSummary();
+    expect(emptySummary.documentCount, 0);
+    await cache.saveSummary(
+      documentCount: emptySummary.documentCount,
+      favoriteCount: emptySummary.favoriteCount,
+      totalBytes: emptySummary.totalBytes,
+    );
+    await cache.saveRecentNames([]);
+    expect((await HomeDashboardCache().readSummary())?.documentCount, 0);
+
+    // Use the same production restore service and migrated SQLite schema as
+    // the existing backup/restore integration suite (not a mocked restore).
+    final backup = await _makeBackup(temp);
+    expect(await service.restoreBackup(
+      backup, confirm: (_) async => true, mode: BackupRestoreMode.fullReplacement,
+    ), 1);
+    // Old presentation snapshot is still marked provisional; no cached
+    // document IDs/paths/actions can be executed.
+    expect((await HomeDashboardCache().readSummary())?.documentCount, 0);
+    final restored = await repo.dashboardSummary();
+    expect(restored.documentCount, 1);
+    expect(restored.favoriteCount, 0);
+    expect(restored.totalBytes, _pdfBytes.length);
+    await cache.saveSummary(
+      documentCount: restored.documentCount,
+      favoriteCount: restored.favoriteCount,
+      totalBytes: restored.totalBytes,
+    );
+    await cache.saveRecentNames(['Policy']);
+    final afterRelaunch = HomeDashboardCache();
+    expect((await afterRelaunch.readSummary())?.documentCount, 1);
+    expect(await afterRelaunch.readRecentNames(), ['Policy']);
+
+    // A real SQLite UPDATE increments the summary revision via the actual
+    // trigger; the repository may not reuse its previous cached aggregate.
+    await db.update('documents', {'is_favorite': 1},
+        where: 'id = ?', whereArgs: ['document-1']);
+    final starred = await repo.dashboardSummary();
+    expect(starred.documentCount, 1);
+    expect(starred.favoriteCount, 1);
+    await cache.saveSummary(
+      documentCount: starred.documentCount,
+      favoriteCount: starred.favoriteCount,
+      totalBytes: starred.totalBytes,
+    );
+    expect((await HomeDashboardCache().readSummary())?.favoriteCount, 1);
+
+    // A soft deletion must not leave phantom PDF counts in the next snapshot.
+    await db.update('documents', {'deleted_at': '2026-11-21T00:00:00Z'},
+        where: 'id = ?', whereArgs: ['document-1']);
+    final deleted = await repo.dashboardSummary();
+    expect(deleted.documentCount, 0);
+    expect(deleted.favoriteCount, 0);
+    expect(deleted.totalBytes, 0);
+    await cache.saveSummary(
+      documentCount: deleted.documentCount,
+      favoriteCount: deleted.favoriteCount,
+      totalBytes: deleted.totalBytes,
+    );
+    await cache.saveRecentNames([]);
+    final afterDeletionRelaunch = HomeDashboardCache();
+    expect((await afterDeletionRelaunch.readSummary())?.documentCount, 0);
+    expect((await afterDeletionRelaunch.readSummary())?.totalBytes, 0);
+    expect(await afterDeletionRelaunch.readRecentNames(), isEmpty);
     expect(await db.rawQuery('PRAGMA foreign_key_check'), isEmpty);
   });
 

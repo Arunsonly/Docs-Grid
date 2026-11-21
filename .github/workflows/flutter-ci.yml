@@ -459,6 +459,18 @@ jobs:
             --apk artifacts/e2e-profile/docsgrid-startup-profile.apk
             --baseline startup-results/cold-launch.json
             --output-dir startup-results/end-to-end
+            &&
+            python3 scripts/verify_android_home_cache_relaunch.py
+            --profile-report startup-results/end-to-end/docsgrid-end-to-end-startup.json
+            --output startup-results/home-cache-verification/relaunch.json
+      - name: Upload real-process Home Cache verification
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docsgrid-android-home-cache-verification
+          path: startup-results/home-cache-verification/
+          if-no-files-found: warn
+          retention-days: 14
       - name: Upload end-to-end diagnostics and same-run Perfetto
         if: always()
         uses: actions/upload-artifact@v4

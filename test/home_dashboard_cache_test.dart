@@ -89,4 +89,71 @@ void main() {
     await cache.saveSummary(documentCount: 1, favoriteCount: 2, totalBytes: 30);
     expect((await cache.readSummary())?.documentCount, 12);
   });
+  test('process recreation reads persistent summary and recent labels without PDF actions', () async {
+    final firstSession = HomeDashboardCache();
+    await firstSession.saveSummary(
+      documentCount: 4, favoriteCount: 1, totalBytes: 2048,
+    );
+    await firstSession.saveRecentNames(['A', 'B']);
+    // Simulates a new Dart widget/repository session, keeping the same
+    // SharedPreferences backing store exactly as an Android force-stop does.
+    final nextSession = HomeDashboardCache();
+    final summary = await nextSession.readSummary();
+    expect(summary, isNotNull);
+    expect(summary!.documentCount, 4);
+    expect(summary.favoriteCount, 1);
+    expect(summary.totalBytes, 2048);
+    expect(await nextSession.readRecentNames(), ['A', 'B']);
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(HomeDashboardCache.recentNamesKey)!;
+    expect(raw, isNot(contains('storage_uri')));
+    expect(raw, isNot(contains('documentId')));
+    expect(raw, isNot(contains('pdfBytes')));
+  });
+
+  test('newer live summary and recent values replace prior-session snapshot', () async {
+    final cache = HomeDashboardCache();
+    await cache.saveSummary(documentCount: 11, favoriteCount: 3, totalBytes: 1100);
+    await cache.saveRecentNames(['Old document']);
+    final resumed = HomeDashboardCache();
+    expect((await resumed.readSummary())?.documentCount, 11);
+    expect(await resumed.readRecentNames(), ['Old document']);
+    // These writes mirror the existing live SQLite success callbacks.
+    await resumed.saveSummary(documentCount: 12, favoriteCount: 2, totalBytes: 1300);
+    await resumed.saveRecentNames(['New document', 'Old document']);
+    final nextRelaunch = HomeDashboardCache();
+    final latest = await nextRelaunch.readSummary();
+    expect(latest?.documentCount, 12);
+    expect(latest?.favoriteCount, 2);
+    expect(latest?.totalBytes, 1300);
+    expect(await nextRelaunch.readRecentNames(), ['New document', 'Old document']);
+  });
+
+  test('overlapping summary writes serialize so late old values cannot win', () async {
+    final cache = HomeDashboardCache();
+    // The implementation queues writes. A delayed initial write must not
+    // overwrite the final real SQLite counts after a burst of mutations.
+    await Future.wait([
+      cache.saveSummary(documentCount: 1, favoriteCount: 0, totalBytes: 10),
+      cache.saveSummary(documentCount: 2, favoriteCount: 0, totalBytes: 30),
+      cache.saveSummary(documentCount: 3, favoriteCount: 1, totalBytes: 60),
+    ]);
+    final latest = await HomeDashboardCache().readSummary();
+    expect(latest?.documentCount, 3);
+    expect(latest?.favoriteCount, 1);
+    expect(latest?.totalBytes, 60);
+  });
+
+  test('a fully removed library clears prior PDF counts and recent labels', () async {
+    final cache = HomeDashboardCache();
+    await cache.saveSummary(documentCount: 3, favoriteCount: 1, totalBytes: 987);
+    await cache.saveRecentNames(['A', 'B']);
+    await cache.saveSummary(documentCount: 0, favoriteCount: 0, totalBytes: 0);
+    await cache.saveRecentNames([]);
+    final relaunched = HomeDashboardCache();
+    expect((await relaunched.readSummary())?.documentCount, 0);
+    expect((await relaunched.readSummary())?.totalBytes, 0);
+    expect(await relaunched.readRecentNames(), isEmpty);
+  });
+
 }
