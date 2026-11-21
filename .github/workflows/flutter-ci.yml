@@ -397,7 +397,8 @@ jobs:
         with:
           api-level: 34
           target: google_apis
-          arch: x86_64
+          # macos-latest is Apple Silicon (aarch64); match its QEMU system image.
+          arch: arm64-v8a
           profile: pixel_6
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -no-snapshot
