@@ -8,6 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../data/document_repository.dart';
 import '../data/phone_recent_history.dart';
+import '../data/phone_pdf_move_service.dart';
 import '../data/phone_pdf_delta.dart';
 import '../data/phone_refresh_queue.dart';
 import '../data/phone_star_repository.dart';
@@ -19,6 +20,7 @@ import '../../tools/document_tools_service.dart';
 import 'document_thumbnail.dart';
 import 'ocr_search_mode_control.dart';
 import 'phone_storage_browser_screen.dart';
+import 'phone_move_folder_picker.dart';
 import '../../folders/presentation/folders_screen.dart';
 import '../../reminders/data/reminder_repository.dart';
 
@@ -978,6 +980,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       builder: (_) => PhoneStorageBrowserScreen(
         rootName: rootName, entries: entries, onOpenPdf: _openExternalStoragePdf,
         onMovePdf: _movePhonePdfToGrid,
+        onMoveWithinPhone: _movePhonePdfWithinPhone,
         onRenamePdf: _renamePhonePdf,
         onSharePdf: _sharePhonePdf,
         onToggleStarPdf: _recordExternalFavorite,
@@ -1045,6 +1048,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
           ? 'Remove from Star' : 'Add to Star'),
     ),
     const PopupMenuItem(value: 'rename', child: Text('Rename')),
+    const PopupMenuItem(value: 'move_phone', child: Text('Move')),
     const PopupMenuItem(value: 'move', child: Text('Move to Grid')),
     const PopupMenuItem(value: 'trash', child: Text('Delete')),
     const PopupMenuItem(value: 'location', child: Text('File Location')),
@@ -1057,6 +1061,8 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       await _sharePhonePdf(uri, name);
     } else if (action == 'move') {
       await _movePhonePdfToGrid(uri, name);
+    } else if (action == 'move_phone') {
+      await _movePhonePdfWithinPhone(uri, name);
     } else if (action == 'favorite') {
       await _recordExternalFavorite(uri, name);
     } else if (action == 'trash') {
@@ -2244,6 +2250,95 @@ class _DocumentsScreenState extends State<DocumentsScreen>
     }
   }
 
+  /// The Phone three-dot Move action changes only the physical Phone file.
+  /// Grid's PDF metadata, folders and duplicate rules are never modified.
+  Future<bool> _movePhonePdfWithinPhone(String uri, String name) async {
+    final storage = StorageLocationService.instance;
+    List<Map<String, String>> roots;
+    try {
+      roots = await storage.accessibleStorageRoots();
+    } catch (error) {
+      if (mounted) _message('Could not list Phone storage locations: $error');
+      return false;
+    }
+    if (!mounted) return false;
+    if (roots.isEmpty) {
+      _message('No accessible Phone folders. Check storage access in Settings.');
+      return false;
+    }
+    final matches = <Map<String, Object?>>[
+      ..._phoneEntries.where((row) => row['uri'] == uri),
+      ..._phoneRecent.where((row) => row['uri'] == uri),
+      ..._phoneStarred.where((row) => row['uri'] == uri),
+    ];
+    final sourceFolderPath = matches.isEmpty ? ''
+        : (matches.first['folderPath'] ?? matches.first['path'] ?? '').toString();
+    final sourceSize = matches.isEmpty ? 0
+        : (matches.first['sizeBytes'] as num?)?.toInt() ?? 0;
+
+    final destination = await showModalBottomSheet<PhoneFolderDestination>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (_) => FractionallySizedBox(
+        heightFactor: 0.75,
+        child: PhoneMoveFolderPicker(
+          roots: roots,
+          sourceFolderPath: sourceFolderPath,
+          listDirectory: storage.listDirectory,
+          createDirectory: (parent, folderName) =>
+              storage.createDirectory(parentUri: parent, name: folderName),
+        ),
+      ),
+    );
+    if (destination == null || !mounted) return false;
+
+    String movedUri;
+    try {
+      movedUri = await const PhonePdfMoveService().move(
+        sourceUri: uri,
+        displayName: name,
+        destinationFolderUri: destination.uri,
+      );
+    } catch (error) {
+      if (mounted) _message('Phone PDF was not moved: $error');
+      return false;
+    }
+
+    // Preserve optional Phone Star across the URI change. This metadata
+    // cleanup must never undo a successful, checksum-verified file move.
+    try {
+      final wasStarred = _phoneStarredUris.contains(uri);
+      await PhoneStarRepository.remove(uri);
+      if (wasStarred) {
+        await PhoneStarRepository.toggle(
+          uri: movedUri, name: name,
+          folderPath: destination.path, sizeBytes: sourceSize,
+        );
+      }
+      await _loadPhoneStarred();
+    } catch (_) {}
+    try { await PhoneRecentHistory.removeMovedSource(uri); } catch (_) {}
+    if (mounted) {
+      setState(() {
+        _phoneRecent = _phoneRecent.where((row) => row['uri'] != uri)
+            .toList(growable: false);
+        _phoneEntries = _phoneEntries.where((row) => row['uri'] != uri)
+            .toList(growable: false);
+      });
+      _message('Moved $name to ${destination.path}.');
+    }
+    try {
+      if (mounted) {
+        await _scanPhoneStorage(openBrowser: false);
+        await _refreshDashboardSummary();
+      }
+    } catch (_) {
+      // The next Phone scan will reconcile the already successful move.
+    }
+    return true;
+  }
+
   Future<void> _moveToFolder(DocumentRecord document) async {
     final storage = StorageLocationService.instance;
     final gridFolders = await _folderRepository.allFoldersWithPaths();
@@ -2395,6 +2490,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         entries: _phoneEntries,
         onOpenPdf: _openExternalStoragePdf,
         onMovePdf: _movePhonePdfToGrid,
+        onMoveWithinPhone: _movePhonePdfWithinPhone,
         onRenamePdf: _renamePhonePdf,
         onSharePdf: _sharePhonePdf,
         onToggleStarPdf: _recordExternalFavorite,
