@@ -223,6 +223,95 @@ void main() {
   });
 
 
+  test('migration never deletes a canonical PDF when raw path and file URI differ', () async {
+    final root = Directory('${temp.path}/canonical');
+    await root.create(recursive: true);
+    final pdf = File('${root.path}/Existing policy.pdf');
+    await pdf.writeAsBytes(_pdfBytes, flush: true);
+    // The database has a raw /storage-style path; the platform returns file://.
+    await _insertExistingDocument(db, pdfFile: pdf);
+    var unexpectedCopies = 0;
+    var deletionCalls = 0;
+    messenger.setMockMethodCallHandler(const MethodChannel('docsgrid/storage'),
+        (call) async {
+      final args = Map<String, dynamic>.from(call.arguments as Map);
+      switch (call.method) {
+        case 'findChildUri':
+          expect(args['name'], 'Existing policy.pdf');
+          return pdf.uri.toString();
+        case 'sha256Pdf':
+          expect(args['uri'], pdf.uri.toString());
+          return _pdfHash;
+        case 'copyPdf':
+          unexpectedCopies++;
+          throw StateError('Already-present PDF must not be copied again.');
+        case 'deletePdf':
+          deletionCalls++;
+          throw StateError('Original PDF must not be deleted by migration.');
+        default:
+          throw MissingPluginException('Unexpected storage call: ${call.method}');
+      }
+    });
+    final repository = DocumentRepository(
+        database: AppDatabase.forTesting(() async => db));
+    final count = await repository.migrateExistingLibraryToSelectedStorage(
+        destinationRootUriOverride: root.uri.toString());
+    expect(count, 1);
+    expect(unexpectedCopies, 0);
+    expect(deletionCalls, 0);
+    expect(await pdf.exists(), isTrue,
+        reason: 'A different URI spelling must not delete the physical PDF.');
+    expect(await pdf.readAsBytes(), orderedEquals(_pdfBytes));
+    final updated = (await db.query('documents')).single;
+    expect(updated['storage_uri'], pdf.uri.toString());
+  });
+
+  test('migration copies and verifies a PDF without removing the legacy source', () async {
+    final sourceRoot = Directory('${temp.path}/old_storage');
+    final targetRoot = Directory('${temp.path}/new_storage');
+    await sourceRoot.create(recursive: true);
+    await targetRoot.create(recursive: true);
+    final original = File('${sourceRoot.path}/Existing policy.pdf');
+    final target = File('${targetRoot.path}/Existing policy.pdf');
+    await original.writeAsBytes(_pdfBytes, flush: true);
+    await _insertExistingDocument(db, pdfFile: original);
+    var copied = 0;
+    var deletionCalls = 0;
+    messenger.setMockMethodCallHandler(const MethodChannel('docsgrid/storage'),
+        (call) async {
+      final args = Map<String, dynamic>.from(call.arguments as Map);
+      switch (call.method) {
+        case 'findChildUri':
+          throw PlatformException(code: 'NOT_FOUND');
+        case 'copyPdf':
+          expect(args['parentUri'], targetRoot.uri.toString());
+          await original.copy(target.path);
+          copied++;
+          return target.uri.toString();
+        case 'sha256Pdf':
+          return (await sha256.bind(
+            File.fromUri(Uri.parse(args['uri'] as String)).openRead(),
+          ).first).toString();
+        case 'deletePdf':
+          deletionCalls++;
+          throw StateError('Neither original nor verified target should be deleted.');
+        default:
+          throw MissingPluginException('Unexpected storage call: ${call.method}');
+      }
+    });
+    final repository = DocumentRepository(
+        database: AppDatabase.forTesting(() async => db));
+    final count = await repository.migrateExistingLibraryToSelectedStorage(
+        destinationRootUriOverride: targetRoot.uri.toString());
+    expect(count, 1);
+    expect(copied, 1);
+    expect(deletionCalls, 0);
+    expect(await original.readAsBytes(), orderedEquals(_pdfBytes));
+    expect(await target.readAsBytes(), orderedEquals(_pdfBytes));
+    expect((await db.query('documents')).single['storage_uri'],
+        target.uri.toString());
+  });
+
   test('Phone PDF move deletes source; verified Grid copy appears in Grid Recent', () async {
     const sourceUri = 'content://media/external_primary/file/1000702003';
     final source = File('${temp.path}/10th result.pdf');
