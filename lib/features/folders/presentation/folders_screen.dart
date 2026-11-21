@@ -8,6 +8,8 @@ import '../../documents/data/document_repository.dart';
 import '../../documents/presentation/document_thumbnail.dart';
 import '../../tools/document_tools_service.dart';
 import '../../../core/storage/storage_location_service.dart';
+import '../../../core/storage/folder_preview_cache.dart';
+import '../../../core/storage/portable_snapshot_events.dart';
 import '../../reminders/data/reminder_repository.dart';
 import '../../categories/data/category_repository.dart';
 
@@ -15,15 +17,27 @@ import '../data/folder_repository.dart';
 import '../domain/folder.dart';
 
 class FoldersScreen extends StatefulWidget {
-  const FoldersScreen({super.key});
+  const FoldersScreen({
+    super.key,
+    this.folderRepository,
+    this.documentRepository,
+  });
+
+  // Optional dependencies permit complete widget regression tests without
+  // changing normal app construction or storage ownership.
+  final FolderRepository? folderRepository;
+  final DocumentRepository? documentRepository;
 
   @override
   State<FoldersScreen> createState() => _FoldersScreenState();
 }
 
-class _FoldersScreenState extends State<FoldersScreen> {
-  final FolderRepository _repository = FolderRepository();
-  final DocumentRepository _documents = DocumentRepository();
+class _FoldersScreenState extends State<FoldersScreen>
+    with WidgetsBindingObserver {
+  late final FolderRepository _repository =
+      widget.folderRepository ?? FolderRepository();
+  late final DocumentRepository _documents =
+      widget.documentRepository ?? DocumentRepository();
   final CategoryRepository _categories = CategoryRepository();
   final List<Folder> _ancestors = [];
   String? _currentFolderId;
@@ -42,18 +56,173 @@ class _FoldersScreenState extends State<FoldersScreen> {
   List<Folder> _draftFolderOrder = <Folder>[];
   late Future<List<Folder>> _foldersFuture;
   late Future<List<DocumentRecord>> _documentsFuture;
+  static const int _gridPageSize = 60;
+  bool _pagedDocumentsMode = false;
+  List<DocumentRecord> _pagedDocuments = const [];
+  int _pagedTotalCount = 0;
+  String? _nextDocumentName;
+  String? _nextDocumentId;
+  bool _hasMoreFolderDocuments = false;
+  bool _loadingMoreFolderDocuments = false;
+  bool _pageLoadFailed = false;
+  bool _morePageScheduled = false;
+  // At most one additional SQLite page is held in memory. This is metadata,
+  // not PDF data or thumbnails, and is invalidated on every folder reload.
+  Future<FolderDocumentPage?>? _nextPagePrefetch;
+  String? _nextPagePrefetchCursor;
+  final Map<String, FolderPreview> _savedFolderPreviews = {};
+  static const int _maxMemoryFolderPreviews = 12;
+
+  void _rememberFolderPreview(FolderPreview preview) {
+    // Keep only recently visited previews in RAM, independent of the
+    // bounded persistent on-disk index.
+    _savedFolderPreviews.remove(preview.key);
+    _savedFolderPreviews[preview.key] = preview;
+    while (_savedFolderPreviews.length > _maxMemoryFolderPreviews) {
+      _savedFolderPreviews.remove(_savedFolderPreviews.keys.first);
+    }
+  }
+  final Set<String> _loadingFolderPreviews = {};
+  final Set<String> _suppressFolderPreviews = {};
+  int _folderLoadEpoch = 0;
+  StreamSubscription<GridFolderChange>? _gridChangesSubscription;
+  int _folderPreviewRevision = 0;
+  bool _allGridPreviewsInvalidating = false;
+  final Set<String> _pendingGridPreviewInvalidations = {};
+  Timer? _gridPreviewInvalidationDebounce;
+  Set<String?>? _queuedGridPreviewIds = <String?>{};
+  Completer<void>? _gridPreviewInvalidationDone;
+  bool _gridPreviewRebuildScheduled = false;
+  // Only prepare metadata of the first two likely child folders, and only
+  // after the current screen has loaded and the user has stopped scrolling.
+  Timer? _idleFolderPrefetchTimer;
+  List<Folder> _prefetchFolderCandidates = const [];
+  int _prefetchFolderEpoch = -1;
+  bool _prefetchingChildFolders = false;
+  bool _gridScreenForeground = true;
+  final Set<String> _attemptedChildPrefetches = {};
+  static const int _maxPrefetchChildFolders = 2;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _gridChangesSubscription =
+        PortableSnapshotEvents.gridPreviewChanges.listen(_onGridFolderChange);
     _load();
     unawaited(_restoreSortPreference());
   }
 
   @override
   void dispose() {
+    _idleFolderPrefetchTimer?.cancel();
+    if (_gridPreviewInvalidationDebounce?.isActive == true) {
+      _gridPreviewInvalidationDebounce?.cancel();
+      // Do not lose an invalidation because the user leaves this tab.
+      unawaited(_flushPreviewInvalidation(
+        _queuedGridPreviewIds, _folderPreviewRevision,
+      ));
+    }
+    _gridChangesSubscription?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
     _searchController.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    _gridScreenForeground = state == AppLifecycleState.resumed;
+    if (!_gridScreenForeground) {
+      _idleFolderPrefetchTimer?.cancel();
+    } else {
+      _queueIdleFolderPrefetch();
+    }
+  }
+
+  void _onGridFolderChange(GridFolderChange change) {
+    final affected = change.affectedFolderIds;
+    if (affected != null && affected.isEmpty) return;
+    final revision = ++_folderPreviewRevision;
+    final currentKey = FolderPreviewCache.gridKey(_currentFolderId);
+    final keys = affected?.map(FolderPreviewCache.gridKey).toSet();
+    _idleFolderPrefetchTimer?.cancel();
+    _prefetchFolderCandidates = const [];
+    _prefetchFolderEpoch = -1;
+    if (keys == null) {
+      _savedFolderPreviews.clear();
+      _attemptedChildPrefetches.clear();
+      _allGridPreviewsInvalidating = true;
+    } else {
+      for (final key in keys) {
+        _savedFolderPreviews.remove(key);
+        _attemptedChildPrefetches.remove(key);
+      }
+      _pendingGridPreviewInvalidations.addAll(keys);
+    }
+    if (keys == null || keys.contains(currentKey)) {
+      _suppressFolderPreviews.add(currentKey);
+      if (!_gridPreviewRebuildScheduled) {
+        _gridPreviewRebuildScheduled = true;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          _gridPreviewRebuildScheduled = false;
+          if (mounted) setState(() {});
+        });
+      }
+    }
+    // Group bursts of imports/moves into one disk operation per changed
+    // folder; avoid rewriting/removing the same metadata hundreds of times.
+    if (affected == null) {
+      _queuedGridPreviewIds = null;
+    } else {
+      _queuedGridPreviewIds?.addAll(affected);
+    }
+    _gridPreviewInvalidationDone ??= Completer<void>();
+    _gridPreviewInvalidationDebounce?.cancel();
+    _gridPreviewInvalidationDebounce =
+        Timer(const Duration(milliseconds: 120), () {
+      final queued = _queuedGridPreviewIds;
+      _queuedGridPreviewIds = <String?>{};
+      unawaited(_flushPreviewInvalidation(queued, revision));
+    });
+  }
+
+  Future<void> _flushPreviewInvalidation(
+    Set<String?>? affected, int revision,
+  ) async {
+    try {
+      await _invalidatePreviewMetadata(affected, revision);
+    } finally {
+      if (revision == _folderPreviewRevision) {
+        final completed = _gridPreviewInvalidationDone;
+        _gridPreviewInvalidationDone = null;
+        if (completed != null && !completed.isCompleted) completed.complete();
+      }
+    }
+  }
+
+  Future<void> _persistVerifiedPreview(
+    FolderPreview preview, int revision,
+  ) async {
+    // A fresh, verified cache write must not get deleted by an invalidation
+    // from the mutation which triggered the current folder reload.
+    final pending = _gridPreviewInvalidationDone?.future;
+    if (pending != null) await pending;
+    if (!mounted || revision != _folderPreviewRevision) return;
+    await FolderPreviewCache.write(preview);
+  }
+
+  Future<void> _invalidatePreviewMetadata(
+    Set<String?>? affected, int revision,
+  ) async {
+    try {
+      await FolderPreviewCache.invalidateGridFolders(affected);
+    } finally {
+      if (!mounted || revision != _folderPreviewRevision) return;
+      _allGridPreviewsInvalidating = false;
+      _pendingGridPreviewInvalidations.clear();
+      // Only verified SQLite/provider reads may repopulate an invalidated
+      // view. External edits do not grant stale cached PDF actions.
+    }
   }
 
   Future<void> _restoreSortPreference() async {
@@ -64,6 +233,8 @@ class _FoldersScreenState extends State<FoldersScreen> {
       _sortField = saved.field;
       _sortAscending = saved.ascending;
       _explicitSort = saved.explicit;
+      // A saved custom sort must see the full result set before sorting it.
+      if (saved.explicit && _pagedDocumentsMode) _reloadDocumentsOnly();
     });
   }
 
@@ -73,6 +244,7 @@ class _FoldersScreenState extends State<FoldersScreen> {
       if (field != null) _sortField = field;
       if (ascending != null) _sortAscending = ascending;
       _explicitSort = true;
+      if (_pagedDocumentsMode) _reloadDocumentsOnly();
     });
     _saveSortPreference();
   }
@@ -88,13 +260,407 @@ class _FoldersScreenState extends State<FoldersScreen> {
     }));
   }
 
-  void _load() {
-    _foldersFuture = _repository.childrenOf(_currentFolderId);
+  void _resetDocumentPages() {
+    _pagedDocuments = const [];
+    _pagedTotalCount = 0;
+    _nextDocumentName = null;
+    _nextDocumentId = null;
+    _hasMoreFolderDocuments = false;
+    _loadingMoreFolderDocuments = false;
+    _pageLoadFailed = false;
+    _morePageScheduled = false;
+    _nextPagePrefetch = null;
+    _nextPagePrefetchCursor = null;
+  }
+
+  Future<List<DocumentRecord>> _getFirstPage(
+    String? folderId, int epoch,
+  ) async {
+    // Both queries are indexed. No full-document list is ever materialized
+    // simply to determine an accurate PDF total.
+    final values = await Future.wait<Object>([
+      _documents.listInFolderPage(folderId, pageSize: _gridPageSize),
+      _documents.countInFolder(folderId),
+    ]);
+    final page = values[0] as FolderDocumentPage;
+    final count = values[1] as int;
+    if (mounted && epoch == _folderLoadEpoch &&
+        folderId == _currentFolderId && _pagedDocumentsMode) {
+      _pagedDocuments = page.records;
+      _pagedTotalCount = count;
+      _hasMoreFolderDocuments = page.hasMore;
+      _nextDocumentName = page.nextName;
+      _nextDocumentId = page.nextId;
+      _schedulePagePrefetch(epoch);
+    }
+    return page.records;
+  }
+
+  void _schedulePagePrefetch(int epoch) {
+    if (!_pagedDocumentsMode || !_hasMoreFolderDocuments ||
+        _nextDocumentName == null || _nextDocumentId == null) return;
+    final folderId = _currentFolderId;
+    final name = _nextDocumentName!;
+    final id = _nextDocumentId!;
+    final cursor = '$epoch:$folderId:$name:$id';
+    // Start after painting the first frame; do not make folder entry slower.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || epoch != _folderLoadEpoch ||
+          folderId != _currentFolderId || !_pagedDocumentsMode ||
+          !_hasMoreFolderDocuments || _nextDocumentName != name ||
+          _nextDocumentId != id) return;
+      if (_nextPagePrefetchCursor == cursor) return;
+      _nextPagePrefetchCursor = cursor;
+      _nextPagePrefetch = _documents.listInFolderPage(
+        folderId,
+        pageSize: _gridPageSize,
+        afterName: name,
+        afterId: id,
+      ).then<FolderDocumentPage?>(
+        (page) => page,
+        onError: (Object _, StackTrace __) => null,
+      );
+    });
+  }
+
+  void _reloadDocumentsOnly() {
+    final epoch = ++_folderLoadEpoch;
+    final folderId = _currentFolderId;
     final query = _searchQuery.trim();
-    // Grid search is library-wide, not limited to the currently open folder.
-    _documentsFuture = query.isEmpty
-        ? _documents.listInFolder(_currentFolderId)
-        : _documents.list(query: query);
+    _resetDocumentPages();
+    // Preserve existing global search and exact custom Name/Date sort behavior.
+    _pagedDocumentsMode = query.isEmpty && !_explicitSort;
+    _documentsFuture = query.isNotEmpty
+        ? _documents.list(query: query)
+        : _pagedDocumentsMode
+            ? _getFirstPage(folderId, epoch)
+            : _documents.listInFolder(folderId);
+  }
+
+  void _load() {
+    _idleFolderPrefetchTimer?.cancel();
+    _prefetchFolderCandidates = const [];
+    _prefetchFolderEpoch = -1;
+    final folderId = _currentFolderId;
+    final folderFuture = _repository.childrenOf(folderId);
+    _foldersFuture = folderFuture;
+    _reloadDocumentsOnly();
+    final epoch = _folderLoadEpoch;
+    final previewRevision = _folderPreviewRevision;
+    final documentFuture = _documentsFuture;
+    if (_searchQuery.trim().isEmpty) {
+      // A saved preview is display-only until SQLite/provider validation.
+      if (!_suppressFolderPreviews.contains(FolderPreviewCache.gridKey(folderId))) {
+        unawaited(_restoreFolderPreview(folderId));
+      }
+      unawaited(_saveVerifiedFolderPreview(
+        folderId, epoch, previewRevision, folderFuture, documentFuture,
+      ));
+    }
+  }
+
+  Future<void> _loadMoreFolderDocuments() async {
+    if (!mounted || !_pagedDocumentsMode || !_hasMoreFolderDocuments ||
+        _loadingMoreFolderDocuments || _pageLoadFailed) return;
+    final epoch = _folderLoadEpoch;
+    final folderId = _currentFolderId;
+    final name = _nextDocumentName;
+    final id = _nextDocumentId;
+    if (name == null || id == null) return;
+    setState(() => _loadingMoreFolderDocuments = true);
+    try {
+      final cursor = '$epoch:$folderId:$name:$id';
+      final inFlight = _nextPagePrefetchCursor == cursor
+          ? _nextPagePrefetch : null;
+      final page = await (inFlight != null
+          ? inFlight.then<FolderDocumentPage>(
+              (prefetched) => prefetched ??
+                  _documents.listInFolderPage(
+                    folderId,
+                    pageSize: _gridPageSize,
+                    afterName: name,
+                    afterId: id,
+                  ),
+            )
+          : _documents.listInFolderPage(
+              folderId,
+              pageSize: _gridPageSize,
+              afterName: name,
+              afterId: id,
+            ));
+      if (!mounted || epoch != _folderLoadEpoch || !_pagedDocumentsMode ||
+          folderId != _currentFolderId) return;
+      // The loaded page is consumed exactly once. The next cursor gets the
+      // same bounded one-page look-ahead, never a bulk read.
+      _nextPagePrefetch = null;
+      _nextPagePrefetchCursor = null;
+      final seen = _pagedDocuments.map((record) => record.id).toSet();
+      final appended = page.records
+          .where((record) => seen.add(record.id))
+          .toList(growable: false);
+      setState(() {
+        _pagedDocuments = List<DocumentRecord>.unmodifiable([
+          ..._pagedDocuments, ...appended,
+        ]);
+        _hasMoreFolderDocuments = page.hasMore;
+        _nextDocumentName = page.nextName;
+        _nextDocumentId = page.nextId;
+      });
+      _schedulePagePrefetch(epoch);
+    } catch (_) {
+      if (mounted && epoch == _folderLoadEpoch) {
+        setState(() => _pageLoadFailed = true);
+      }
+    } finally {
+      if (mounted && epoch == _folderLoadEpoch) {
+        setState(() => _loadingMoreFolderDocuments = false);
+      }
+    }
+  }
+
+  void _loadNextPageOnScroll(ScrollNotification notification) {
+    if (notification.depth != 0 ||
+        notification.metrics.extentAfter > 1200 ||
+        (notification is ScrollUpdateNotification &&
+            (notification.scrollDelta ?? 0) <= 0) ||
+        (notification is OverscrollNotification &&
+            notification.overscroll <= 0) ||
+        !_pagedDocumentsMode || !_hasMoreFolderDocuments ||
+        _loadingMoreFolderDocuments || _pageLoadFailed || _morePageScheduled ||
+        notification is! ScrollUpdateNotification &&
+            notification is! OverscrollNotification) return;
+    _morePageScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _morePageScheduled = false;
+      if (mounted) unawaited(_loadMoreFolderDocuments());
+    });
+  }
+
+  Future<void> _restoreFolderPreview(String? folderId) async {
+    final key = FolderPreviewCache.gridKey(folderId);
+    if (_allGridPreviewsInvalidating ||
+        _pendingGridPreviewInvalidations.contains(key) ||
+        _savedFolderPreviews.containsKey(key) ||
+        _loadingFolderPreviews.contains(key) ||
+        _suppressFolderPreviews.contains(key)) return;
+    final revision = _folderPreviewRevision;
+    _loadingFolderPreviews.add(key);
+    try {
+      final preview = await FolderPreviewCache.read(key);
+      if (preview == null || !mounted ||
+          revision != _folderPreviewRevision ||
+          _allGridPreviewsInvalidating ||
+          _pendingGridPreviewInvalidations.contains(key) ||
+          _savedFolderPreviews.containsKey(key) ||
+          _suppressFolderPreviews.contains(key)) return;
+      setState(() => _rememberFolderPreview(preview));
+    } finally {
+      _loadingFolderPreviews.remove(key);
+    }
+  }
+
+  Future<void> _saveVerifiedFolderPreview(
+    String? folderId,
+    int epoch,
+    int previewRevision,
+    Future<List<Folder>> foldersFuture,
+    Future<List<DocumentRecord>> documentsFuture,
+  ) async {
+    try {
+      final folders = await foldersFuture;
+      final documents = await documentsFuture;
+      if (!mounted || epoch != _folderLoadEpoch ||
+          previewRevision != _folderPreviewRevision ||
+          folderId != _currentFolderId ||
+          _searchQuery.trim().isNotEmpty) return;
+      final key = FolderPreviewCache.gridKey(folderId);
+      final preview = FolderPreview(
+        key: key,
+        savedAt: DateTime.now().toUtc(),
+        totalPdfCount: _pagedDocumentsMode
+            ? _pagedTotalCount : documents.length,
+        totalFolderCount: folders.length,
+        items: [
+          for (final folder in folders)
+            FolderPreviewItem(
+              name: folder.name,
+              isFolder: true,
+              pdfCount: folder.pdfCount,
+            ),
+          for (final document in documents)
+            FolderPreviewItem(
+              name: document.name,
+              isFolder: false,
+              sizeBytes: document.sizeBytes,
+            ),
+        ],
+      );
+      _rememberFolderPreview(preview);
+      _suppressFolderPreviews.remove(key);
+      // Optional, bounded app-private metadata: do not hold up navigation.
+      unawaited(_persistVerifiedPreview(preview, previewRevision));
+      _prepareChildFolderPrefetch(folders, epoch);
+    } catch (_) {
+      // Errors remain visible in the existing FutureBuilder error state.
+    }
+  }
+
+  void _prepareChildFolderPrefetch(List<Folder> folders, int epoch) {
+    _prefetchFolderCandidates = folders
+        .take(_maxPrefetchChildFolders)
+        .toList(growable: false);
+    _prefetchFolderEpoch = epoch;
+    _queueIdleFolderPrefetch();
+  }
+
+  void _queueIdleFolderPrefetch() {
+    _idleFolderPrefetchTimer?.cancel();
+    if (!_gridScreenForeground || _prefetchingChildFolders ||
+        _prefetchFolderCandidates.isEmpty || _searchQuery.trim().isNotEmpty ||
+        _isReorderingFolders || _isSelectingFolders ||
+        _prefetchFolderEpoch != _folderLoadEpoch) return;
+    final epoch = _prefetchFolderEpoch;
+    final candidates = _prefetchFolderCandidates;
+    // Debounce interaction; run no speculative SAF/provider reads during
+    // an active scroll, initial navigation, or while the app is backgrounded.
+    _idleFolderPrefetchTimer = Timer(const Duration(milliseconds: 650), () {
+      if (!mounted || !_gridScreenForeground ||
+          epoch != _folderLoadEpoch) return;
+      unawaited(_prefetchChildFolderMetadata(candidates, epoch));
+    });
+  }
+
+  Future<void> _prefetchChildFolderMetadata(
+    List<Folder> candidates, int epoch,
+  ) async {
+    if (_prefetchingChildFolders || !mounted ||
+        !_gridScreenForeground || epoch != _folderLoadEpoch) return;
+    _prefetchingChildFolders = true;
+    final previewRevision = _folderPreviewRevision;
+    try {
+      for (final child in candidates) {
+        if (!mounted || !_gridScreenForeground ||
+            epoch != _folderLoadEpoch ||
+            previewRevision != _folderPreviewRevision ||
+            _searchQuery.trim().isNotEmpty) return;
+        final key = FolderPreviewCache.gridKey(child.id);
+        if (_savedFolderPreviews.containsKey(key) ||
+            _attemptedChildPrefetches.contains(key)) continue;
+        // Bound retry bookkeeping as well as work/memory.
+        if (_attemptedChildPrefetches.length >= 32) {
+          _attemptedChildPrefetches.remove(_attemptedChildPrefetches.first);
+        }
+        _attemptedChildPrefetches.add(key);
+        try {
+          // An existing validated preview is better than replacing it with
+          // a smaller speculative subset. Read at most two cache files.
+          final saved = await FolderPreviewCache.read(key);
+          if (!mounted || !_gridScreenForeground ||
+              epoch != _folderLoadEpoch ||
+              previewRevision != _folderPreviewRevision) return;
+          if (saved != null) {
+            _rememberFolderPreview(saved);
+            continue;
+          }
+          // Use the existing provider validation, never bypass it to make a
+          // stale folder actionable. The result remains a read-only preview.
+          final subfolders = await _repository.childrenOf(
+            child.id, previewLimit: 16,
+          );
+          if (!mounted || !_gridScreenForeground ||
+              epoch != _folderLoadEpoch ||
+              previewRevision != _folderPreviewRevision) return;
+          final rows = await Future.wait<Object>([
+            _documents.listInFolderPage(child.id, pageSize: _gridPageSize),
+            _documents.countInFolder(child.id),
+            _repository.countDirectChildren(child.id),
+          ]);
+          if (!mounted || !_gridScreenForeground ||
+              epoch != _folderLoadEpoch ||
+              previewRevision != _folderPreviewRevision) return;
+          final page = rows[0] as FolderDocumentPage;
+          final count = rows[1] as int;
+          final childCount = rows[2] as int;
+          final preview = FolderPreview(
+            key: key,
+            savedAt: DateTime.now().toUtc(),
+            totalPdfCount: count,
+            totalFolderCount: childCount,
+            items: [
+              for (final folder in subfolders)
+                FolderPreviewItem(
+                  name: folder.name,
+                  isFolder: true,
+                  pdfCount: folder.pdfCount,
+                ),
+              for (final document in page.records)
+                FolderPreviewItem(
+                  name: document.name,
+                  isFolder: false,
+                  sizeBytes: document.sizeBytes,
+                ),
+            ],
+          );
+          _rememberFolderPreview(preview);
+          // Never block the user or alter Grid's SQLite/portable PDFs.
+          unawaited(_persistVerifiedPreview(preview, previewRevision));
+        } catch (_) {
+          // Optional prefetch failures must not alter navigation or PDFs.
+        }
+      }
+    } finally {
+      _prefetchingChildFolders = false;
+    }
+  }
+
+  Widget _savedFolderPreview(FolderPreview preview) {
+    final items = preview.items;
+    return Column(
+      children: [
+        const LinearProgressIndicator(minHeight: 2),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 10, 16, 4),
+          child: Row(children: [
+            const Icon(Icons.history, size: 16),
+            const SizedBox(width: 8),
+            Expanded(child: Text(
+              'Saved preview · verifying current files',
+              style: Theme.of(context).textTheme.bodySmall,
+            )),
+          ]),
+        ),
+        Expanded(
+          child: ListView.builder(
+            key: const ValueKey('grid-folder-saved-preview'),
+            padding: const EdgeInsets.fromLTRB(12, 4, 12, 104),
+            itemCount: items.length + 1,
+            itemBuilder: (context, index) {
+              if (index == 0) return Padding(
+                padding: const EdgeInsets.all(8),
+                child: Text(
+                  '${preview.totalFolderCount ?? preview.folderCount} folders · ${preview.totalPdfCount ?? preview.pdfCount} PDFs (saved preview)',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              );
+              final item = items[index - 1];
+              return ListTile(
+                key: ValueKey('saved-preview-${index - 1}'),
+                leading: Icon(item.isFolder
+                    ? Icons.folder_outlined : Icons.picture_as_pdf_outlined),
+                title: Text(
+                  item.isFolder ? item.name : '${item.name}.pdf',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                subtitle: Text(item.isFolder
+                    ? '${item.pdfCount} PDFs'
+                    : _size(item.sizeBytes)),
+              );
+            },
+          ),
+        ),
+      ],
+    );
   }
 
   Future<void> _refresh() async {
@@ -102,6 +668,9 @@ class _FoldersScreenState extends State<FoldersScreen> {
     setState(() {
       _isReorderingFolders = false;
       _draftFolderOrder = <Folder>[];
+      final key = FolderPreviewCache.gridKey(_currentFolderId);
+      _suppressFolderPreviews.add(key);
+      _savedFolderPreviews.remove(key);
       _load();
     });
     // Wait for both sections to settle. FutureBuilder renders any errors;
@@ -576,7 +1145,6 @@ class _FoldersScreenState extends State<FoldersScreen> {
     setState(() {
       _searchController.clear();
       _searchQuery = '';
-      _documentsFuture = _documents.listInFolder(_currentFolderId);
       _isReorderingFolders = true;
       // Custom drag order supersedes any user-selected alphabetic/date order.
       _sortRevision++;
@@ -584,6 +1152,7 @@ class _FoldersScreenState extends State<FoldersScreen> {
       _sortField = StorageSortField.name;
       _sortAscending = true;
       _draftFolderOrder = List<Folder>.from(visibleFolders);
+      _reloadDocumentsOnly();
     });
     _saveSortPreference();
   }
@@ -690,7 +1259,54 @@ class _FoldersScreenState extends State<FoldersScreen> {
     await _deleteSelectedFolders([folder]);
   }
 
-  Future<void> _moveSelected(List<DocumentRecord> all) async {
+  /// Bulk commands must address all selected PDFs, not merely the currently
+  /// rendered first page. No file operation is authorized by preview metadata.
+  Future<List<DocumentRecord>> _allSelectableDocuments(
+    List<DocumentRecord> currentlyLoaded,
+  ) async {
+    if (!_pagedDocumentsMode) return currentlyLoaded;
+    return _documents.listInFolder(_currentFolderId);
+  }
+
+  Future<void> _selectAllDocuments(
+    List<DocumentRecord> currentlyLoaded,
+  ) async {
+    final folderId = _currentFolderId;
+    final epoch = _folderLoadEpoch;
+    try {
+      final all = await _allSelectableDocuments(currentlyLoaded);
+      if (!mounted || folderId != _currentFolderId ||
+          epoch != _folderLoadEpoch) return;
+      setState(() => _selectedDocumentIds.addAll(all.map((item) => item.id)));
+    } catch (error) {
+      if (mounted) _message('Could not select all PDFs: $error');
+    }
+  }
+
+  Future<void> _shareSelectedDocuments(
+    List<DocumentRecord> currentlyLoaded,
+  ) async {
+    final folderId = _currentFolderId;
+    final epoch = _folderLoadEpoch;
+    final all = await _allSelectableDocuments(currentlyLoaded);
+    if (!mounted || epoch != _folderLoadEpoch ||
+        folderId != _currentFolderId) return;
+    final selected = all.where(
+      (item) => _selectedDocumentIds.contains(item.id),
+    ).toList(growable: false);
+    if (selected.isEmpty) return;
+    await DocumentToolsService().shareManyStoredPdfs(
+      selected.map((item) => item.storagePath).toList(growable: false),
+      selected.map((item) => '${item.name}.pdf').toList(growable: false),
+    );
+  }
+
+  Future<void> _moveSelected(List<DocumentRecord> currentlyLoaded) async {
+    final folderId = _currentFolderId;
+    final epoch = _folderLoadEpoch;
+    final all = await _allSelectableDocuments(currentlyLoaded);
+    if (!mounted || epoch != _folderLoadEpoch ||
+        folderId != _currentFolderId) return;
     final selected = all.where((d) => _selectedDocumentIds.contains(d.id)).toList();
     if (selected.isEmpty) return;
     final folders = await _repository.allFoldersWithPaths();
@@ -833,318 +1449,14 @@ class _FoldersScreenState extends State<FoldersScreen> {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
   }
 
-  @override
-  Widget build(BuildContext context) {
-    final keyboardVisible = MediaQuery.viewInsetsOf(context).bottom > 0;
-    return Material(
-      color: Theme.of(context).scaffoldBackgroundColor,
-      child: PopScope(
-      canPop: _ancestors.isEmpty,
-      onPopInvokedWithResult: (didPop, result) {
-        if (!didPop && _ancestors.isNotEmpty) {
-          _goToAncestor(_ancestors.length - 2);
-        }
-      },
-      child: Stack(
-        fit: StackFit.expand,
-        children: [
-          Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        if (_selectedDocumentIds.isNotEmpty &&
-            !_isSelectingFolders &&
-            !keyboardVisible)
-          FutureBuilder<List<DocumentRecord>>(
-            future: _documentsFuture,
-            builder: (context, snapshot) {
-              final all = snapshot.data ?? const <DocumentRecord>[];
-              return Material(
-                color: Theme.of(context).colorScheme.secondaryContainer,
-                child: Row(children: [
-                  IconButton(tooltip: 'Clear selection', onPressed: () => setState(_selectedDocumentIds.clear), icon: const Icon(Icons.close)),
-                  Expanded(child: Text('${_selectedDocumentIds.length} selected')),
-                  IconButton(tooltip: 'Select all', onPressed: () => setState(() => _selectedDocumentIds.addAll(all.map((d) => d.id))), icon: const Icon(Icons.select_all)),
-                  IconButton(tooltip: 'Share selected', onPressed: () async {
-                    final selected = all.where((d) => _selectedDocumentIds.contains(d.id)).toList();
-                    if (selected.isEmpty) return;
-                    await DocumentToolsService().shareManyStoredPdfs(selected.map((d) => d.storagePath).toList(), selected.map((d) => '${d.name}.pdf').toList());
-                  }, icon: const Icon(Icons.share_outlined)),
-                  IconButton(tooltip: 'Move selected to folder', onPressed: () => _moveSelected(all), icon: const Icon(Icons.drive_file_move_outlined)),
-                  IconButton(tooltip: 'Move selected to Recycle Bin', onPressed: () async {
-                    final selected = all.where((d) => _selectedDocumentIds.contains(d.id)).toList();
-                    if (selected.isEmpty) return;
-                    await _documents.moveManyToTrash(selected);
-                    if (!mounted) return;
-                    setState(_selectedDocumentIds.clear);
-                    await _refresh();
-                  }, icon: const Icon(Icons.delete_outline)),
-                ]),
-              );
-            },
-          ),
-        if (!keyboardVisible)
-          Padding(
-          padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
-          child: Row(
-            children: [
-              Expanded(
-                child: InkWell(
-                  borderRadius: BorderRadius.circular(8),
-                  onTap: _showFolderTree,
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 8),
-                    child: Row(
-                      children: [
-                        Flexible(
-                          child: Text(_currentTitle,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700)),
-                        ),
-                        const SizedBox(width: 4),
-                        const Icon(Icons.arrow_drop_down, size: 24),
-                      ],
-                    ),
-                  ),
-                ),
-              ),
-              PopupMenuButton<String>(
-                tooltip: 'Folder selection',
-                icon: const Icon(Icons.more_vert),
-                onSelected: (action) {
-                  if (action == 'select_folders') {
-                    setState(() {
-                      _isReorderingFolders = false;
-                      _draftFolderOrder.clear();
-                      _isSelectingFolders = true;
-                      _selectedFolderIds.clear();
-                      _selectedDocumentIds.clear();
-                    });
-                  }
-                },
-                itemBuilder: (_) => const [
-                  PopupMenuItem(
-                    value: 'select_folders',
-                    child: ListTile(
-                      contentPadding: EdgeInsets.zero,
-                      leading: Icon(Icons.check_box_outlined),
-                      title: Text('Select folder'),
-                    ),
-                  ),
-                ],
-              ),
-              IconButton(
-                tooltip: 'Create folder',
-                onPressed: _createFolder,
-                icon: const Icon(Icons.create_new_folder_outlined),
-              ),
-            ],
-          ),
-        ),
-        Padding(
-          padding: EdgeInsets.fromLTRB(12, keyboardVisible ? 2 : 8, 12, keyboardVisible ? 2 : 4),
-          child: Row(
-            children: [
-              Expanded(
-                child: TextField(
-                  controller: _searchController,
-                  onChanged: (value) => setState(() {
-                    _searchQuery = value;
-                    final query = value.trim();
-                    _documentsFuture = query.isEmpty
-                        ? _documents.listInFolder(_currentFolderId)
-                        : _documents.list(query: query);
-                  }),
-                  decoration: InputDecoration(
-                    hintText: 'Search folders or PDF names',
-                    prefixIcon: const Icon(Icons.search),
-                    suffixIcon: _searchQuery.isEmpty ? null : IconButton(
-                      tooltip: 'Clear search',
-                      icon: const Icon(Icons.close),
-                      onPressed: () => setState(() {
-                        _searchController.clear();
-                        _searchQuery = '';
-                        _documentsFuture = _documents.listInFolder(_currentFolderId);
-                      }),
-                    ),
-                    filled: true,
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(18),
-                      borderSide: BorderSide.none,
-                    ),
-                  ),
-                ),
-              ),
-              StorageSortControls(
-                field: _sortField,
-                ascending: _sortAscending,
-                enabled: !_isReorderingFolders,
-                onFieldChanged: (field) => _changeSort(field: field),
-                onAscendingChanged: (value) => _changeSort(ascending: value),
-              ),
-            ],
-          ),
-        ),
-        if (_isSelectingFolders && !keyboardVisible) _buildFolderSelectionToolbar(),
-        if (_ancestors.isNotEmpty && !keyboardVisible)
-          SizedBox(
-            height: 44,
-            child: ListView(
-              scrollDirection: Axis.horizontal,
-              padding: const EdgeInsets.symmetric(horizontal: 12),
-              children: [
-                TextButton.icon(
-                  onPressed: _goToRoot,
-                  icon: const Icon(Icons.home_outlined, size: 18),
-                  label: const Text('Folders'),
-                ),
-                for (var i = 0; i < _ancestors.length; i++) ...[
-                  const Icon(Icons.chevron_right, size: 18),
-                  TextButton(
-                    onPressed: () => _goToAncestor(i),
-                    child: Text(_ancestors[i].name),
-                  ),
-                ],
-              ],
-            ),
-          ),
-        Expanded(
-          child: FutureBuilder<List<Folder>>(
-            future: _foldersFuture,
-            builder: (context, folderSnapshot) {
-              if (folderSnapshot.connectionState == ConnectionState.waiting) {
-                return const Center(child: CircularProgressIndicator());
-              }
-              if (folderSnapshot.hasError) {
-                return Center(
-                  child: Column(mainAxisSize: MainAxisSize.min, children: [
-                    const Icon(Icons.error_outline, size: 40),
-                    const SizedBox(height: 8),
-                    const Text('Could not load folders.'),
-                    TextButton(onPressed: _refresh, child: const Text('Try again')),
-                  ]),
-                );
-              }
-              final folders = folderSnapshot.data ?? const <Folder>[];
-              return FutureBuilder<List<DocumentRecord>>(
-                future: _documentsFuture,
-                builder: (context, documentSnapshot) {
-                  if (documentSnapshot.connectionState == ConnectionState.waiting) {
-                    return const Center(child: CircularProgressIndicator());
-                  }
-                  if (documentSnapshot.hasError) {
-                    return Center(
-                      child: Padding(
-                        padding: const EdgeInsets.all(24),
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            const Icon(Icons.error_outline, size: 40),
-                            const SizedBox(height: 8),
-                            const Text('Could not load PDFs.'),
-                            const SizedBox(height: 4),
-                            Text(
-                              '${documentSnapshot.error}',
-                              textAlign: TextAlign.center,
-                            ),
-                            const SizedBox(height: 8),
-                            FilledButton.icon(
-                              onPressed: _refresh,
-                              icon: const Icon(Icons.refresh),
-                              label: const Text('Try again'),
-                            ),
-                          ],
-                        ),
-                      ),
-                    );
-                  }
-                  final documents = documentSnapshot.data ?? const <DocumentRecord>[];
-                  final query = _searchQuery.trim().toLowerCase();
-                  final folderSource = _isReorderingFolders ? _draftFolderOrder : folders;
-                  final displayedFolders = folderSource
-                      .where((folder) => query.isEmpty || folder.name.toLowerCase().contains(query))
-                      .toList(growable: true);
-                  final displayedDocuments = documents
-                      .where((document) => query.isEmpty || document.name.toLowerCase().contains(query))
-                      .toList(growable: true);
-                  if (_explicitSort && !_isReorderingFolders) {
-                    displayedFolders.sort((a, b) => compareStorageItems(
-                      nameA: a.name,
-                      nameB: b.name,
-                      dateA: a.updatedAt,
-                      dateB: b.updatedAt,
-                      field: _sortField,
-                      ascending: _sortAscending,
-                    ));
-                    displayedDocuments.sort((a, b) => compareStorageItems(
-                      nameA: a.name,
-                      nameB: b.name,
-                      dateA: a.updatedAt ?? a.createdAt,
-                      dateB: b.updatedAt ?? b.createdAt,
-                      field: _sortField,
-                      ascending: _sortAscending,
-                    ));
-                  }
-                  if (folders.isEmpty && documents.isEmpty && query.isEmpty) {
-                    return Center(
-                      child: Padding(
-                        padding: const EdgeInsets.all(28),
-                        child: Column(mainAxisSize: MainAxisSize.min, children: [
-                          const Icon(Icons.folder_open_outlined, size: 52),
-                          const SizedBox(height: 12),
-                          Text(_currentFolderId == null ? 'No folders or PDFs yet' : 'This folder is empty',
-                              style: Theme.of(context).textTheme.titleMedium),
-                          const SizedBox(height: 6),
-                          const Text('Create a folder or import a PDF to get started.', textAlign: TextAlign.center),
-                          const SizedBox(height: 12),
-                          FilledButton.icon(
-                            onPressed: _createFolder,
-                            icon: const Icon(Icons.create_new_folder_outlined),
-                            label: const Text('Create folder'),
-                          ),
-                        ]),
-                      ),
-                    );
-                  }
-                  return RefreshIndicator(
-                    onRefresh: _refresh,
-                    child: ListView(
-                      padding: const EdgeInsets.fromLTRB(12, 8, 12, 104),
-                      children: [
-                        Padding(
-                          padding: const EdgeInsets.fromLTRB(4, 4, 4, 10),
-                          child: Align(
-                            alignment: Alignment.centerLeft,
-                            child: Text('${folders.length} folders · ${documents.length} PDFs',
-                              style: Theme.of(context).textTheme.bodySmall),
-                          ),
-                        ),
-                        if (query.isNotEmpty && displayedFolders.isEmpty && displayedDocuments.isEmpty)
-                          const Padding(
-                            padding: EdgeInsets.all(28),
-                            child: Center(child: Text('No matching folders or PDFs.')),
-                          ),
-                        if (displayedFolders.isNotEmpty) ...[
-                          Padding(
-                            padding: const EdgeInsets.fromLTRB(4, 8, 4, 4),
-                            child: Text('FOLDERS', style: Theme.of(context).textTheme.labelLarge),
-                          ),
-                          ReorderableListView.builder(
-                            shrinkWrap: true,
-                            physics: const NeverScrollableScrollPhysics(),
-                            buildDefaultDragHandles: false,
-                            itemCount: displayedFolders.length,
-                            onReorderItem: (oldIndex, newIndex) {
-                              setState(() {
-                                final moved = _draftFolderOrder.removeAt(oldIndex);
-                                _draftFolderOrder.insert(newIndex, moved);
-                              });
-                            },
-                            itemBuilder: (context, index) {
-                              final folder = displayedFolders[index];
-                              final isSelected = _selectedFolderIds.contains(folder.id);
-                              final scheme = Theme.of(context).colorScheme;
-                              return Card(
+  // Only visible Grid cards are constructed. The same card/action bodies are
+  // reused for normal scrolling and the existing explicit drag-reorder mode.
+  Widget _buildGridFolderCard(
+    Folder folder, int index, List<Folder> originalFolders,
+  ) {
+    final isSelected = _selectedFolderIds.contains(folder.id);
+    final scheme = Theme.of(context).colorScheme;
+    return Card(
                                 key: ValueKey('folder-${folder.id}'),
                                 margin: const EdgeInsets.symmetric(vertical: 8),
                                 elevation: 0,
@@ -1168,7 +1480,7 @@ class _FoldersScreenState extends State<FoldersScreen> {
                                           : () => _openFolder(folder),
                                   onLongPress: _isSelectingFolders || _isReorderingFolders
                                       ? null
-                                      : () => _beginFolderReorder(folders),
+                                      : () => _beginFolderReorder(originalFolders),
                                   child: Padding(
                                     padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
                                     child: Row(
@@ -1258,16 +1570,11 @@ class _FoldersScreenState extends State<FoldersScreen> {
                                   ),
                                 ),
                               );
-                            },
-                          ),
-                        ],
-                        if (displayedDocuments.isNotEmpty) ...[
-                          Padding(
-                            padding: const EdgeInsets.fromLTRB(4, 18, 4, 4),
-                            child: Text('PDF DOCUMENTS', style: Theme.of(context).textTheme.labelLarge),
-                          ),
-                          for (final document in displayedDocuments)
-                            Card(
+  }
+
+  Widget _buildGridPdfCard(DocumentRecord document) {
+    return Card(
+                              key: ValueKey('grid-pdf-${document.id}'),
                               elevation: 0,
                               child: ListTile(
                                 leading: _selectedDocumentIds.isNotEmpty
@@ -1327,9 +1634,417 @@ class _FoldersScreenState extends State<FoldersScreen> {
                                   ],
                                 ),
                               ),
-                            ),
-                        ],
+                            );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final keyboardVisible = MediaQuery.viewInsetsOf(context).bottom > 0;
+    return Material(
+      color: Theme.of(context).scaffoldBackgroundColor,
+      child: PopScope(
+      canPop: _ancestors.isEmpty,
+      onPopInvokedWithResult: (didPop, result) {
+        if (!didPop && _ancestors.isNotEmpty) {
+          _goToAncestor(_ancestors.length - 2);
+        }
+      },
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (_selectedDocumentIds.isNotEmpty &&
+            !_isSelectingFolders &&
+            !keyboardVisible)
+          FutureBuilder<List<DocumentRecord>>(
+            future: _documentsFuture,
+            builder: (context, snapshot) {
+              final all = snapshot.data ?? const <DocumentRecord>[];
+              return Material(
+                color: Theme.of(context).colorScheme.secondaryContainer,
+                child: Row(children: [
+                  IconButton(tooltip: 'Clear selection', onPressed: () => setState(_selectedDocumentIds.clear), icon: const Icon(Icons.close)),
+                  Expanded(child: Text('${_selectedDocumentIds.length} selected')),
+                  IconButton(tooltip: 'Select all',
+                    onPressed: () => unawaited(_selectAllDocuments(all)),
+                    icon: const Icon(Icons.select_all)),
+                  IconButton(tooltip: 'Share selected',
+                    onPressed: () => unawaited(_shareSelectedDocuments(all)),
+                    icon: const Icon(Icons.share_outlined)),
+                  IconButton(tooltip: 'Move selected to folder', onPressed: () => _moveSelected(all), icon: const Icon(Icons.drive_file_move_outlined)),
+                  IconButton(tooltip: 'Move selected to Recycle Bin', onPressed: () async {
+                    final selected = all.where((d) => _selectedDocumentIds.contains(d.id)).toList();
+                    if (selected.isEmpty) return;
+                    await _documents.moveManyToTrash(selected);
+                    if (!mounted) return;
+                    setState(_selectedDocumentIds.clear);
+                    await _refresh();
+                  }, icon: const Icon(Icons.delete_outline)),
+                ]),
+              );
+            },
+          ),
+        if (!keyboardVisible)
+          Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+          child: Row(
+            children: [
+              Expanded(
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(8),
+                  onTap: _showFolderTree,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 8),
+                    child: Row(
+                      children: [
+                        Flexible(
+                          child: Text(_currentTitle,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700)),
+                        ),
+                        const SizedBox(width: 4),
+                        const Icon(Icons.arrow_drop_down, size: 24),
                       ],
+                    ),
+                  ),
+                ),
+              ),
+              PopupMenuButton<String>(
+                tooltip: 'Folder selection',
+                icon: const Icon(Icons.more_vert),
+                onSelected: (action) {
+                  if (action == 'select_folders') {
+                    setState(() {
+                      _isReorderingFolders = false;
+                      _draftFolderOrder.clear();
+                      _isSelectingFolders = true;
+                      _selectedFolderIds.clear();
+                      _selectedDocumentIds.clear();
+                    });
+                  }
+                },
+                itemBuilder: (_) => const [
+                  PopupMenuItem(
+                    value: 'select_folders',
+                    child: ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      leading: Icon(Icons.check_box_outlined),
+                      title: Text('Select folder'),
+                    ),
+                  ),
+                ],
+              ),
+              IconButton(
+                tooltip: 'Create folder',
+                onPressed: _createFolder,
+                icon: const Icon(Icons.create_new_folder_outlined),
+              ),
+            ],
+          ),
+        ),
+        Padding(
+          padding: EdgeInsets.fromLTRB(12, keyboardVisible ? 2 : 8, 12, keyboardVisible ? 2 : 4),
+          child: Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _searchController,
+                  onChanged: (value) => setState(() {
+                    _searchQuery = value;
+                    _reloadDocumentsOnly();
+                  }),
+                  decoration: InputDecoration(
+                    hintText: 'Search folders or PDF names',
+                    prefixIcon: const Icon(Icons.search),
+                    suffixIcon: _searchQuery.isEmpty ? null : IconButton(
+                      tooltip: 'Clear search',
+                      icon: const Icon(Icons.close),
+                      onPressed: () => setState(() {
+                        _searchController.clear();
+                        _searchQuery = '';
+                        _reloadDocumentsOnly();
+                      }),
+                    ),
+                    filled: true,
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(18),
+                      borderSide: BorderSide.none,
+                    ),
+                  ),
+                ),
+              ),
+              StorageSortControls(
+                field: _sortField,
+                ascending: _sortAscending,
+                enabled: !_isReorderingFolders,
+                onFieldChanged: (field) => _changeSort(field: field),
+                onAscendingChanged: (value) => _changeSort(ascending: value),
+              ),
+            ],
+          ),
+        ),
+        if (_isSelectingFolders && !keyboardVisible) _buildFolderSelectionToolbar(),
+        if (_ancestors.isNotEmpty && !keyboardVisible)
+          SizedBox(
+            height: 44,
+            child: ListView(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              children: [
+                TextButton.icon(
+                  onPressed: _goToRoot,
+                  icon: const Icon(Icons.home_outlined, size: 18),
+                  label: const Text('Folders'),
+                ),
+                for (var i = 0; i < _ancestors.length; i++) ...[
+                  const Icon(Icons.chevron_right, size: 18),
+                  TextButton(
+                    onPressed: () => _goToAncestor(i),
+                    child: Text(_ancestors[i].name),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        Expanded(
+          child: FutureBuilder<List<Folder>>(
+            future: _foldersFuture,
+            builder: (context, folderSnapshot) {
+              if (folderSnapshot.connectionState == ConnectionState.waiting) {
+                final preview = _searchQuery.trim().isEmpty
+                    ? _savedFolderPreviews[FolderPreviewCache.gridKey(_currentFolderId)]
+                    : null;
+                return preview != null
+                    ? _savedFolderPreview(preview)
+                    : const Center(child: CircularProgressIndicator());
+              }
+              if (folderSnapshot.hasError) {
+                return Center(
+                  child: Column(mainAxisSize: MainAxisSize.min, children: [
+                    const Icon(Icons.error_outline, size: 40),
+                    const SizedBox(height: 8),
+                    const Text('Could not load folders.'),
+                    TextButton(onPressed: _refresh, child: const Text('Try again')),
+                  ]),
+                );
+              }
+              final folders = folderSnapshot.data ?? const <Folder>[];
+              return FutureBuilder<List<DocumentRecord>>(
+                future: _documentsFuture,
+                builder: (context, documentSnapshot) {
+                  if (documentSnapshot.connectionState == ConnectionState.waiting) {
+                    final preview = _searchQuery.trim().isEmpty
+                        ? _savedFolderPreviews[FolderPreviewCache.gridKey(_currentFolderId)]
+                        : null;
+                    return preview != null
+                        ? _savedFolderPreview(preview)
+                        : const Center(child: CircularProgressIndicator());
+                  }
+                  if (documentSnapshot.hasError) {
+                    return Center(
+                      child: Padding(
+                        padding: const EdgeInsets.all(24),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(Icons.error_outline, size: 40),
+                            const SizedBox(height: 8),
+                            const Text('Could not load PDFs.'),
+                            const SizedBox(height: 4),
+                            Text(
+                              '${documentSnapshot.error}',
+                              textAlign: TextAlign.center,
+                            ),
+                            const SizedBox(height: 8),
+                            FilledButton.icon(
+                              onPressed: _refresh,
+                              icon: const Icon(Icons.refresh),
+                              label: const Text('Try again'),
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  }
+                  final documents = _pagedDocumentsMode
+                      ? _pagedDocuments
+                      : documentSnapshot.data ?? const <DocumentRecord>[];
+                  final query = _searchQuery.trim().toLowerCase();
+                  final folderSource = _isReorderingFolders ? _draftFolderOrder : folders;
+                  final displayedFolders = folderSource
+                      .where((folder) => query.isEmpty || folder.name.toLowerCase().contains(query))
+                      .toList(growable: true);
+                  final displayedDocuments = documents
+                      .where((document) => query.isEmpty || document.name.toLowerCase().contains(query))
+                      .toList(growable: true);
+                  if (_explicitSort && !_isReorderingFolders) {
+                    displayedFolders.sort((a, b) => compareStorageItems(
+                      nameA: a.name,
+                      nameB: b.name,
+                      dateA: a.updatedAt,
+                      dateB: b.updatedAt,
+                      field: _sortField,
+                      ascending: _sortAscending,
+                    ));
+                    displayedDocuments.sort((a, b) => compareStorageItems(
+                      nameA: a.name,
+                      nameB: b.name,
+                      dateA: a.updatedAt ?? a.createdAt,
+                      dateB: b.updatedAt ?? b.createdAt,
+                      field: _sortField,
+                      ascending: _sortAscending,
+                    ));
+                  }
+                  if (folders.isEmpty && documents.isEmpty &&
+                      (!_pagedDocumentsMode || _pagedTotalCount == 0) &&
+                      query.isEmpty) {
+                    return Center(
+                      child: Padding(
+                        padding: const EdgeInsets.all(28),
+                        child: Column(mainAxisSize: MainAxisSize.min, children: [
+                          const Icon(Icons.folder_open_outlined, size: 52),
+                          const SizedBox(height: 12),
+                          Text(_currentFolderId == null ? 'No folders or PDFs yet' : 'This folder is empty',
+                              style: Theme.of(context).textTheme.titleMedium),
+                          const SizedBox(height: 6),
+                          const Text('Create a folder or import a PDF to get started.', textAlign: TextAlign.center),
+                          const SizedBox(height: 12),
+                          FilledButton.icon(
+                            onPressed: _createFolder,
+                            icon: const Icon(Icons.create_new_folder_outlined),
+                            label: const Text('Create folder'),
+                          ),
+                        ]),
+                      ),
+                    );
+                  }
+                  return NotificationListener<ScrollNotification>(
+                    onNotification: (notification) {
+                      if (notification.depth == 0) {
+                        if (notification is ScrollStartNotification) {
+                          _idleFolderPrefetchTimer?.cancel();
+                        } else if (notification is ScrollEndNotification) {
+                          _queueIdleFolderPrefetch();
+                        }
+                      }
+                      _loadNextPageOnScroll(notification);
+                      return false; // Keep pull-to-refresh and scrolling intact.
+                    },
+                    child: RefreshIndicator(
+                      onRefresh: _refresh,
+                      child: CustomScrollView(
+                        cacheExtent: 360,
+                        key: ValueKey('grid-folder-list-${_currentFolderId ?? '__root__'}-$_folderLoadEpoch'),
+                        physics: const AlwaysScrollableScrollPhysics(),
+                        slivers: [
+                          SliverToBoxAdapter(
+                            child: Padding(
+                              padding: const EdgeInsets.fromLTRB(16, 12, 16, 10),
+                              child: Text(
+                                '${folders.length} folders · ${_pagedDocumentsMode ? _pagedTotalCount : documents.length} PDFs',
+                                style: Theme.of(context).textTheme.bodySmall,
+                              ),
+                            ),
+                          ),
+                          if (query.isNotEmpty &&
+                              displayedFolders.isEmpty && displayedDocuments.isEmpty)
+                            const SliverToBoxAdapter(
+                              child: Padding(
+                                padding: EdgeInsets.all(28),
+                                child: Center(child: Text('No matching folders or PDFs.')),
+                              ),
+                            ),
+                          if (displayedFolders.isNotEmpty) ...[
+                            SliverToBoxAdapter(
+                              child: Padding(
+                                padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+                                child: Text('FOLDERS',
+                                    style: Theme.of(context).textTheme.labelLarge),
+                              ),
+                            ),
+                            if (_isReorderingFolders)
+                              SliverToBoxAdapter(
+                                child: Padding(
+                                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                                  child: ReorderableListView.builder(
+                                    shrinkWrap: true,
+                                    physics: const NeverScrollableScrollPhysics(),
+                                    buildDefaultDragHandles: false,
+                                    itemCount: displayedFolders.length,
+                                    onReorderItem: (oldIndex, newIndex) {
+                                      setState(() {
+                                        final moved = _draftFolderOrder.removeAt(oldIndex);
+                                        _draftFolderOrder.insert(newIndex, moved);
+                                      });
+                                    },
+                                    itemBuilder: (context, index) =>
+                                        _buildGridFolderCard(
+                                          displayedFolders[index], index, folders),
+                                  ),
+                                ),
+                              )
+                            else
+                              SliverPadding(
+                                padding: const EdgeInsets.symmetric(horizontal: 12),
+                                sliver: SliverList.builder(
+                                  itemCount: displayedFolders.length,
+                                  itemBuilder: (context, index) =>
+                                      _buildGridFolderCard(
+                                        displayedFolders[index], index, folders),
+                                ),
+                              ),
+                          ],
+                          if (displayedDocuments.isNotEmpty) ...[
+                            SliverToBoxAdapter(
+                              child: Padding(
+                                padding: const EdgeInsets.fromLTRB(16, 18, 16, 4),
+                                child: Text('PDF DOCUMENTS',
+                                    style: Theme.of(context).textTheme.labelLarge),
+                              ),
+                            ),
+                            SliverPadding(
+                              padding: const EdgeInsets.symmetric(horizontal: 12),
+                              sliver: SliverList.builder(
+                                itemCount: displayedDocuments.length,
+                                itemBuilder: (context, index) =>
+                                    _buildGridPdfCard(displayedDocuments[index]),
+                              ),
+                            ),
+                          ],
+                          if (_pagedDocumentsMode &&
+                              (_hasMoreFolderDocuments ||
+                                  _loadingMoreFolderDocuments || _pageLoadFailed))
+                            SliverToBoxAdapter(
+                              child: Padding(
+                                key: const ValueKey('grid-folder-next-page'),
+                                padding: const EdgeInsets.symmetric(vertical: 12),
+                                child: Center(
+                                  child: _loadingMoreFolderDocuments
+                                      ? const CircularProgressIndicator()
+                                      : TextButton.icon(
+                                          icon: Icon(_pageLoadFailed
+                                              ? Icons.refresh : Icons.expand_more),
+                                          label: Text(_pageLoadFailed
+                                              ? 'Retry loading more PDFs'
+                                              : 'Load more PDFs'),
+                                          onPressed: () {
+                                            if (_pageLoadFailed) {
+                                              setState(() => _pageLoadFailed = false);
+                                            }
+                                            unawaited(_loadMoreFolderDocuments());
+                                          },
+                                        ),
+                                ),
+                              ),
+                            ),
+                          const SliverToBoxAdapter(
+                            child: SizedBox(height: 104),
+                          ),
+                        ],
+                      ),
                     ),
                   );
                 },

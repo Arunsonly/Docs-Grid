@@ -84,7 +84,13 @@ class FolderRepository {
     return cleaned;
   }
 
-  Future<List<Folder>> childrenOf(String? parentId) async {
+  Future<List<Folder>> childrenOf(
+    String? parentId, {
+    int? previewLimit,
+  }) async {
+    if (previewLimit != null && (previewLimit < 1 || previewLimit > 24)) {
+      throw ArgumentError.value(previewLimit, 'previewLimit', 'Must be 1..24');
+    }
     final db = await _database.database;
     final rows = await db.rawQuery(
       '''
@@ -95,37 +101,101 @@ class FolderRepository {
       WHERE ${parentId == null ? 'f.parent_id IS NULL' : 'f.parent_id = ?'}
         AND f.deleted_at IS NULL
       ORDER BY f.sort_order ASC, f.name COLLATE NOCASE ASC
+      ${previewLimit == null ? '' : 'LIMIT ?'}
       ''',
-      parentId == null ? const [] : [parentId],
+      <Object?>[
+        if (parentId != null) parentId,
+        if (previewLimit != null) previewLimit,
+      ],
     );
+    final folders = rows.map(Folder.fromMap).toList(growable: false);
+    // Provider reads are independent and read-only. A small fixed worker pool
+    // prevents one slow SAF location from serially blocking every sibling,
+    // while never flooding cloud providers with hundreds of requests.
+    const maxConcurrentProviderChecks = 3;
+    final visible = List<bool>.filled(folders.length, false);
     final storage = StorageLocationService.instance;
-    final visible = <Folder>[];
-    for (final row in rows) {
-      final folder = Folder.fromMap(row);
-      final uri = folder.storageUri;
-      if (uri == null ||
-          (!uri.startsWith('content://') && !uri.startsWith('file://'))) {
-        visible.add(folder);
-        continue;
-      }
-      try {
-        // A folder can be deleted outside DocsGrid (for example in Samsung
-        // My Files). Do not keep showing its stale database row.
-        await storage.listDirectory(uri);
-        visible.add(folder);
-      } on PlatformException catch (error) {
-        final details = '${error.message ?? ''} ${error.details ?? ''}';
-        final missing = error.code == 'NOT_FOUND' ||
-            (error.code == 'STORAGE_ERROR' &&
-                (details.contains('FileNotFoundException') ||
-                 details.contains('Missing file')));
-        if (!missing) rethrow;
-        // External removal or revoked storage permission is not a user delete.
-        // Keep the database record active so it can reappear after relinking or
-        // restoring provider access; never add it to Grid Recycle Bin.
+    Object? firstError;
+    var cursor = 0;
+
+    Future<void> checkNext() async {
+      while (firstError == null) {
+        final index = cursor++;
+        if (index >= folders.length) return;
+        final uri = folders[index].storageUri;
+        if (uri == null ||
+            (!uri.startsWith('content://') && !uri.startsWith('file://'))) {
+          visible[index] = true;
+          continue;
+        }
+        try {
+          // Always consult the real provider. A cached folder preview cannot
+          // prove an external folder still exists or its grant is valid.
+          await storage.listDirectory(uri);
+          visible[index] = true;
+        } on PlatformException catch (error) {
+          final details = '${error.message ?? ''} ${error.details ?? ''}';
+          final missing = error.code == 'NOT_FOUND' ||
+              (error.code == 'STORAGE_ERROR' &&
+                  (details.contains('FileNotFoundException') ||
+                   details.contains('Missing file')));
+          if (!missing && firstError == null) firstError = error;
+          // Missing external folders stay absent from this visible listing,
+          // never marked deleted in SQLite or moved into Grid Recycle Bin.
+        } catch (error) {
+          firstError ??= error;
+        }
       }
     }
-    return visible;
+
+    await Future.wait(List.generate(
+      folders.length < maxConcurrentProviderChecks
+          ? folders.length : maxConcurrentProviderChecks,
+      (_) => checkNext(),
+    ));
+    if (firstError != null) {
+      // Some OEM SAF/cloud providers reject even a few overlapping reads.
+      // In that case use the *original sequential verification* once,
+      // preserving its exact NOT_FOUND / permission / error behavior.
+      final sequential = <Folder>[];
+      for (final folder in folders) {
+        final uri = folder.storageUri;
+        if (uri == null ||
+            (!uri.startsWith('content://') && !uri.startsWith('file://'))) {
+          sequential.add(folder);
+          continue;
+        }
+        try {
+          await storage.listDirectory(uri);
+          sequential.add(folder);
+        } on PlatformException catch (error) {
+          final details = '${error.message ?? ''} ${error.details ?? ''}';
+          final missing = error.code == 'NOT_FOUND' ||
+              (error.code == 'STORAGE_ERROR' &&
+                  (details.contains('FileNotFoundException') ||
+                   details.contains('Missing file')));
+          if (!missing) rethrow;
+        }
+      }
+      return sequential;
+    }
+    return [
+      for (var index = 0; index < folders.length; index++)
+        if (visible[index]) folders[index],
+    ];
+  }
+
+  /// Cheap, exact SQLite count used only for read-only previews. It must
+  /// never replace the normal physically validated childrenOf result.
+  Future<int> countDirectChildren(String? parentId) async {
+    final db = await _database.database;
+    final rows = await db.rawQuery(
+      parentId == null
+          ? 'SELECT COUNT(*) AS total FROM folders WHERE parent_id IS NULL AND deleted_at IS NULL'
+          : 'SELECT COUNT(*) AS total FROM folders WHERE parent_id = ? AND deleted_at IS NULL',
+      parentId == null ? const <Object?>[] : <Object?>[parentId],
+    );
+    return (rows.first['total'] as num).toInt();
   }
 
   /// Persists the visual order of the active children of one parent.
@@ -160,7 +230,7 @@ class FolderRepository {
       }
       await batch.commit(noResult: true);
     });
-    PortableSnapshotEvents.notifyDataChanged();
+    PortableSnapshotEvents.notifyDataChanged(affectedFolderIds: {parentId});
   }
 
   Future<List<FolderOption>> allFoldersWithPaths() async {
@@ -386,7 +456,7 @@ class FolderRepository {
           'updated_at': now,
         });
       });
-      PortableSnapshotEvents.notifyDataChanged();
+      PortableSnapshotEvents.notifyDataChanged(affectedFolderIds: {parentId});
     } catch (_) {
       // A pre-existing folder reused by recovery must NEVER be deleted.
       if (createdPhysicalDirectory && physicalUri != null) {
@@ -598,7 +668,9 @@ class FolderRepository {
           );
         }
       });
-      PortableSnapshotEvents.notifyDataChanged();
+      PortableSnapshotEvents.notifyDataChanged(affectedFolderIds: {
+        rows.first['parent_id'] as String?, id,
+      });
     } catch (_) {
       if (renamedUri != null) {
         try {
@@ -627,6 +699,7 @@ class FolderRepository {
     final requested = folderIds.toSet();
     if (requested.isEmpty) return;
     final db = await _database.database;
+    final affectedParents = <String?>{parentId};
     await db.transaction((txn) async {
       final placeholders = List.filled(requested.length, '?').join(',');
       final rows = await txn.query(
@@ -649,6 +722,7 @@ class FolderRepository {
         if (target.isEmpty) throw StateError('Destination folder no longer exists.');
       }
       final roots = rows.where((row) => !requested.contains(row['parent_id'] as String?)).toList();
+      affectedParents.addAll(roots.map((row) => row['parent_id'] as String?));
       final rootIds = roots.map((row) => row['id'] as String).toSet();
       var ancestorId = parentId;
       final visited = <String>{};
@@ -706,7 +780,7 @@ class FolderRepository {
       }
       await batch.commit(noResult: true);
     });
-    PortableSnapshotEvents.notifyDataChanged();
+    PortableSnapshotEvents.notifyDataChanged(affectedFolderIds: affectedParents);
   }
 
   /// Soft-deletes selected folders and all descendants. PDFs go to Recycle Bin
@@ -784,7 +858,7 @@ class FolderRepository {
         );
       }
     });
-    PortableSnapshotEvents.notifyDataChanged();
+    PortableSnapshotEvents.notifyDataChanged(); // Complex deleted subtree: safe global fallback.
     return movedPdfCount;
   }
 
@@ -836,7 +910,7 @@ class FolderRepository {
         );
       }
     });
-    PortableSnapshotEvents.notifyDataChanged();
+    PortableSnapshotEvents.notifyDataChanged(affectedFolderIds: <String?>{});
   }
 
   /// Returns one visible root per DocsGrid folder-trash operation.
@@ -1012,7 +1086,7 @@ class FolderRepository {
         'created_at': DateTime.now().toUtc().toIso8601String(),
       });
     });
-    PortableSnapshotEvents.notifyDataChanged();
+    PortableSnapshotEvents.notifyDataChanged(); // Entire restored subtree may have changed.
     return restoredPdfs;
   }
 
@@ -1178,7 +1252,7 @@ class FolderRepository {
         'created_at': DateTime.now().toUtc().toIso8601String(),
       });
     });
-    PortableSnapshotEvents.notifyDataChanged();
+    PortableSnapshotEvents.notifyDataChanged(affectedFolderIds: <String?>{});
   }
 
   /// Empty folders are sent to Grid Recycle Bin; their physical directory
@@ -1187,7 +1261,7 @@ class FolderRepository {
     await StorageMigrationGate.waitUntilReady();
     final db = await _database.database;
     final folder = await db.query(
-      'folders', columns: ['id', 'storage_uri_or_relative_path'],
+      'folders', columns: ['id', 'parent_id', 'storage_uri_or_relative_path'],
       where: 'id = ? AND deleted_at IS NULL',
       whereArgs: [id], limit: 1,
     );
@@ -1218,7 +1292,9 @@ class FolderRepository {
       }, where: 'id = ? AND deleted_at IS NULL', whereArgs: [id]);
       if (count == 0) throw StateError('Folder no longer exists.');
     });
-    PortableSnapshotEvents.notifyDataChanged();
+    PortableSnapshotEvents.notifyDataChanged(affectedFolderIds: <String?>{
+      folder.single['parent_id'] as String?, id,
+    });
   }
 
 }

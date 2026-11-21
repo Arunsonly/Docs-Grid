@@ -11,6 +11,8 @@ import android.content.ContentUris
 import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.os.Bundle
+import android.os.FileObserver
+import android.os.Environment
 import android.os.Handler
 import android.os.Looper
 import android.provider.DocumentsContract
@@ -39,7 +41,16 @@ class MainActivity : FlutterActivity() {
     private var storageChangeSink: EventChannel.EventSink? = null
     private val storageObservers = mutableListOf<ContentObserver>()
     private var storageObserversRegistered = false
+    private var storageObservationForeground = false
     private var storageChangeRunnable: Runnable? = null
+    private val pendingMediaUris = linkedSetOf<String>()
+    private val pendingLocalPaths = linkedSetOf<String>()
+    private var pendingUnscopedChange = false
+    // FileObserver complements MediaStore/SAF ContentObservers: a bounded,
+    // non-recursive, foreground-only watch on common local PDF locations.
+    private val localPdfFileObservers = mutableListOf<FileObserver>()
+    private val localPdfWatchEvents = FileObserver.CLOSE_WRITE or FileObserver.MOVED_TO or
+        FileObserver.MOVED_FROM or FileObserver.DELETE
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -101,16 +112,19 @@ class MainActivity : FlutterActivity() {
 
     override fun onResume() {
         super.onResume()
+        storageObservationForeground = true
         registerStorageChangeObservers()
     }
 
     override fun onPause() {
+        storageObservationForeground = false
         unregisterStorageChangeObservers()
         super.onPause()
     }
 
     private fun registerStorageChangeObservers() {
-        if (storageObserversRegistered || storageChangeSink == null) return
+        if (!storageObservationForeground ||
+            storageObserversRegistered || storageChangeSink == null) return
         val observedUris = linkedMapOf<String, Uri>()
         observedUris["media"] = MediaStore.Files.getContentUri("external")
         if (android.os.Build.VERSION.SDK_INT >= 29) {
@@ -140,7 +154,7 @@ class MainActivity : FlutterActivity() {
                     }
 
                     override fun onChange(selfChange: Boolean, changedUri: Uri?) {
-                        scheduleStorageChangeEvent()
+                        scheduleStorageChangeEvent(changedUri = changedUri)
                     }
                 }
                 contentResolver.registerContentObserver(uri, true, observer)
@@ -150,11 +164,16 @@ class MainActivity : FlutterActivity() {
             }
         }
         storageObserversRegistered = true
+        startLocalPdfFileObservers()
     }
 
     private fun unregisterStorageChangeObservers() {
+        stopLocalPdfFileObservers()
         storageChangeRunnable?.let { mainHandler.removeCallbacks(it) }
         storageChangeRunnable = null
+        pendingMediaUris.clear()
+        pendingLocalPaths.clear()
+        pendingUnscopedChange = false
         storageObservers.forEach { observer ->
             try { contentResolver.unregisterContentObserver(observer) } catch (_: Exception) {}
         }
@@ -162,16 +181,226 @@ class MainActivity : FlutterActivity() {
         storageObserversRegistered = false
     }
 
-    private fun scheduleStorageChangeEvent() {
+    private fun startLocalPdfFileObservers() {
+        if (localPdfFileObservers.isNotEmpty()) return
+        // Do not request any additional permission. Without access, the
+        // existing ContentObservers and resume refresh remain authoritative.
+        if (android.os.Build.VERSION.SDK_INT >= 30 &&
+            !Environment.isExternalStorageManager()) return
+
+        val root = try {
+            Environment.getExternalStorageDirectory().canonicalFile
+        } catch (_: Exception) {
+            return
+        }
+        if (!root.isDirectory || !root.canRead()) return
+
+        // Android FileObserver does not watch subdirectories recursively.
+        // Restrict its scope to known, high-value PDF download locations;
+        // MediaStore/SAF and resume reconciliation still cover other paths.
+        // Never monitor DocsGrid's own portable data or backup directories.
+        val relativeDirectories = listOf(
+            "", "Download", "Downloads", "Documents", "Bluetooth",
+            "DCIM", "Pictures",
+            "WhatsApp/Media/WhatsApp Documents",
+            "Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Documents",
+            "Android/media/com.whatsapp.w4b/WhatsApp Business/Media/WhatsApp Business Documents",
+            "Telegram/Telegram Documents",
+            "Android/media/org.telegram.messenger/Telegram/Telegram Documents"
+        )
+        val rootPrefix = root.path + java.io.File.separator
+        val seen = hashSetOf<String>()
+        for (relative in relativeDirectories) {
+            if (localPdfFileObservers.size >= 16) break
+            val directory = try {
+                java.io.File(root, relative).canonicalFile
+            } catch (_: Exception) {
+                continue
+            }
+            if ((directory != root && !directory.path.startsWith(rootPrefix)) ||
+                !directory.isDirectory || !directory.canRead() ||
+                !seen.add(directory.path)) continue
+            try {
+                // String constructor remains available on older Android
+                // releases; FileObserver(File, mask) requires API 29.
+                @Suppress("DEPRECATION")
+                val observer = object : FileObserver(directory.path, localPdfWatchEvents) {
+                    override fun onEvent(event: Int, path: String?) {
+                        if (path == null || !path.endsWith(".pdf", ignoreCase = true) ||
+                            (event and localPdfWatchEvents) == 0) return
+                        // Callbacks arrive off the UI thread. Reuse the
+                        // existing 650 ms ContentObserver debounce, never
+                        // perform a file scan or filesystem write here.
+                        mainHandler.post {
+                            if (storageObservationForeground &&
+                                storageObserversRegistered &&
+                                storageChangeSink != null) {
+                                scheduleStorageChangeEvent(
+                                    localPath = java.io.File(directory, path).absolutePath
+                                )
+                            }
+                        }
+                    }
+                }
+                observer.startWatching()
+                localPdfFileObservers.add(observer) // strong ref until stopWatching
+            } catch (_: Exception) {
+                // An inaccessible/OEM-specific directory must not break the app.
+            }
+        }
+    }
+
+    private fun stopLocalPdfFileObservers() {
+        for (observer in localPdfFileObservers) {
+            try {
+                observer.stopWatching()
+            } catch (_: Exception) {
+                // Failure to stop a single watch must not interrupt lifecycle.
+            }
+        }
+        localPdfFileObservers.clear()
+    }
+
+    private fun scheduleStorageChangeEvent(
+        changedUri: Uri? = null,
+        localPath: String? = null
+    ) {
+        // Precise MediaStore item URIs and local paths can be refreshed without
+        // querying the entire PDF library. All other events reconcile fully.
+        if (!pendingUnscopedChange) {
+            if (localPath != null) {
+                pendingLocalPaths.add(localPath)
+            } else if (changedUri != null && changedUri.authority == "media" &&
+                changedUri.pathSegments.size == 3 &&
+                changedUri.pathSegments[1] == "file" &&
+                changedUri.lastPathSegment?.toLongOrNull() != null) {
+                pendingMediaUris.add(changedUri.toString())
+            } else {
+                pendingUnscopedChange = true
+            }
+            if (pendingMediaUris.size + pendingLocalPaths.size > 48) {
+                pendingUnscopedChange = true
+            }
+            if (pendingUnscopedChange) {
+                // Never retain an unbounded burst of per-file paths/URIs.
+                // An opaque/overflowed event will get one full reconciliation.
+                pendingMediaUris.clear()
+                pendingLocalPaths.clear()
+            }
+        }
         storageChangeRunnable?.let { mainHandler.removeCallbacks(it) }
         val task = Runnable {
-            storageChangeSink?.success(mapOf("changedAt" to System.currentTimeMillis()))
+            storageChangeSink?.success(mapOf(
+                "changedAt" to System.currentTimeMillis(),
+                "mediaUris" to pendingMediaUris.toList(),
+                "paths" to pendingLocalPaths.toList(),
+                "requiresFullRefresh" to pendingUnscopedChange
+            ))
+            pendingMediaUris.clear()
+            pendingLocalPaths.clear()
+            pendingUnscopedChange = false
         }
         storageChangeRunnable = task
         mainHandler.postDelayed(task, 650L)
     }
 
-    private fun queryPhonePdfIndex(): Map<String, Any> {
+    private fun queryPhonePdfChanges(
+        mediaUris: List<String>, localPaths: List<String>
+    ): Map<String, Any> {
+        // A bounded, fail-closed fast path. Never modify the filesystem here.
+        if (android.os.Build.VERSION.SDK_INT < 29 ||
+            (android.os.Build.VERSION.SDK_INT >= 30 &&
+                !Environment.isExternalStorageManager()) ||
+            mediaUris.size + localPaths.size !in 1..48) {
+            return mapOf("complete" to false)
+        }
+        val volumeNames = MediaStore.getExternalVolumeNames(this)
+        val targets = linkedMapOf<String, MutableList<Pair<String, List<String>>>>()
+        val touchedUris = linkedSetOf<String>()
+        val touchedPaths = linkedSetOf<String>()
+        val watchedFiles = linkedMapOf<String, java.io.File>()
+
+        for (value in mediaUris) {
+            val uri = try { Uri.parse(value) }
+                catch (_: Exception) { return mapOf("complete" to false) }
+            val parts = uri.pathSegments
+            if (uri.scheme != "content" || uri.authority != "media" ||
+                parts.size != 3 || parts[1] != "file" ||
+                parts[2].toLongOrNull() == null || parts[0] !in volumeNames) {
+                return mapOf("complete" to false)
+            }
+            touchedUris.add(value)
+            targets.getOrPut(parts[0]) { mutableListOf() }
+                .add(MediaStore.MediaColumns._ID + " = ?" to listOf(parts[2]))
+        }
+
+        if (localPaths.isNotEmpty()) {
+            val root = try { Environment.getExternalStorageDirectory().canonicalFile }
+                catch (_: Exception) { return mapOf("complete" to false) }
+            val prefix = root.path + java.io.File.separator
+            if (!root.isDirectory || MediaStore.VOLUME_EXTERNAL_PRIMARY !in volumeNames) {
+                return mapOf("complete" to false)
+            }
+            for (raw in localPaths) {
+                val file = try { java.io.File(raw).canonicalFile }
+                    catch (_: Exception) { return mapOf("complete" to false) }
+                if (!file.path.startsWith(prefix) || !file.name.endsWith(".pdf", true) ||
+                    file.name.length > 255) return mapOf("complete" to false)
+                val relative = file.path.substring(prefix.length)
+                    .replace(java.io.File.separatorChar, '/')
+                val folder = relative.substringBeforeLast('/', "")
+                val relativeFolder = if (folder.isEmpty()) "" else "$folder/"
+                val key = "Internal/$relative"
+                touchedPaths.add(key)
+                watchedFiles[key] = file
+                targets.getOrPut(MediaStore.VOLUME_EXTERNAL_PRIMARY) { mutableListOf() }
+                    .add(
+                        "(" + MediaStore.MediaColumns.RELATIVE_PATH + " = ? AND " +
+                            MediaStore.MediaColumns.DISPLAY_NAME + " = ?)" to
+                            listOf(relativeFolder, file.name)
+                    )
+            }
+        }
+        if (targets.isEmpty()) return mapOf("complete" to false)
+        val scoped = targets.mapValues { (_, predicates) ->
+            Pair(predicates.joinToString(" OR ", "(", ")") { it.first },
+                predicates.flatMap { it.second })
+        }
+        val result = queryPhonePdfIndex(scoped)
+        if (result["complete"] != true) return mapOf("complete" to false)
+        @Suppress("UNCHECKED_CAST")
+        val found = result["entries"] as List<Map<String, Any>>
+
+        // MediaStore occasionally retains rows for recently deleted files.
+        // Do not re-add a row for an absent path merely because it is indexed.
+        val absentPaths = watchedFiles.filterValues { !it.isFile }.keys
+        val entries = found.filterNot { item ->
+            val folder = (item["folderPath"] as? String).orEmpty().ifEmpty { "Internal" }
+            val name = item["name"] as? String ?: ""
+            "$folder/$name" in absentPaths
+        }
+
+        // File creation may precede MediaStore indexing. An existing local
+        // PDF without a matching row is NOT proof of deletion: reconcile.
+        for ((key, file) in watchedFiles) {
+            if (file.isFile && entries.none { item ->
+                val folder = (item["folderPath"] as? String).orEmpty().ifEmpty { "Internal" }
+                "$folder/${item["name"]}" == key
+            }) return mapOf("complete" to false)
+        }
+        return mapOf(
+            "complete" to true,
+            "entries" to entries,
+            "touchedUris" to touchedUris.toList(),
+            "touchedPaths" to touchedPaths.toList(),
+            "mountedVolumes" to volumeNames.toList().sorted(),
+            "volumes" to (result["volumes"] ?: emptyMap<String, Any>())
+        )
+    }
+
+    private fun queryPhonePdfIndex(
+        scopedSelections: Map<String, Pair<String, List<String>>>? = null
+    ): Map<String, Any> {
         if (android.os.Build.VERSION.SDK_INT >= 30 &&
             !android.os.Environment.isExternalStorageManager()) {
             throw SecurityException("Allow Full internal storage access to index all shared PDF files.")
@@ -190,6 +419,7 @@ class MainActivity : FlutterActivity() {
         var complete = android.os.Build.VERSION.SDK_INT >= 29
 
         volumes.forEachIndexed { volumeIndex, volumeName ->
+            if (scopedSelections != null && volumeName !in scopedSelections) return@forEachIndexed
             try {
                 val collection = if (android.os.Build.VERSION.SDK_INT >= 29) {
                     MediaStore.Files.getContentUri(volumeName)
@@ -248,11 +478,13 @@ class MainActivity : FlutterActivity() {
                 } else {
                     "$mimeIndexName = ? OR $nameIndexName LIKE ?"
                 }
+                val scoped = scopedSelections?.get(volumeName)
                 contentResolver.query(
                     collection,
                     projection.toTypedArray(),
-                    pdfSelection,
-                    arrayOf("application/pdf", "%.pdf"),
+                    if (scoped == null) pdfSelection else "$pdfSelection AND (${scoped.first})",
+                    if (scoped == null) arrayOf("application/pdf", "%.pdf") else
+                        arrayOf("application/pdf", "%.pdf") + scoped.second.toTypedArray(),
                     "$modifiedIndexName DESC"
                 )?.use { cursor ->
                     val idIndex = cursor.getColumnIndex(idIndexName)
@@ -583,6 +815,11 @@ class MainActivity : FlutterActivity() {
                                 })
                             }
                             "queryPhonePdfIndex" -> result.success(queryPhonePdfIndex())
+                            "queryPhonePdfChanges" -> {
+                                val mediaUris = call.argument<List<String>>("mediaUris") ?: emptyList()
+                                val paths = call.argument<List<String>>("paths") ?: emptyList()
+                                result.success(queryPhonePdfChanges(mediaUris, paths))
+                            }
                             "getAccessibleScanRoots" -> {
                                 val roots = linkedMapOf<String, Map<String, String>>()
                                 val hasAllFiles = android.os.Build.VERSION.SDK_INT < 30 ||
@@ -875,6 +1112,8 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun onDestroy() {
+        storageObservationForeground = false
+        unregisterStorageChangeObservers()
         storageExecutor.shutdown()
         super.onDestroy()
     }

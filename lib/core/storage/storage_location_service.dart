@@ -9,15 +9,45 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+/// A best-effort change hint; unknown providers require full reconciliation.
+class StorageChangeNotice {
+  const StorageChangeNotice({
+    this.mediaUris = const [],
+    this.paths = const [],
+    this.requiresFullRefresh = true,
+  });
+
+  final List<String> mediaUris;
+  final List<String> paths;
+  final bool requiresFullRefresh;
+
+  static StorageChangeNotice fromPlatform(Object? raw) {
+    if (raw is! Map) return const StorageChangeNotice();
+    final uris = raw['mediaUris'] is List
+        ? (raw['mediaUris'] as List).whereType<String>().toList(growable: false)
+        : <String>[];
+    final paths = raw['paths'] is List
+        ? (raw['paths'] as List).whereType<String>().toList(growable: false)
+        : <String>[];
+    return StorageChangeNotice(
+      mediaUris: uris,
+      paths: paths,
+      requiresFullRefresh: raw['requiresFullRefresh'] != false ||
+          (uris.isEmpty && paths.isEmpty),
+    );
+  }
+}
+
 class StorageLocationService {
   StorageLocationService._();
   static final StorageLocationService instance = StorageLocationService._();
   static const MethodChannel _channel = MethodChannel('docsgrid/storage');
   static const EventChannel _changesChannel = EventChannel('docsgrid/storage_changes');
 
-  /// Foreground storage change notifications; events contain no file metadata.
-  Stream<void> get storageChanges =>
-      _changesChannel.receiveBroadcastStream().map<void>((_) {});
+  /// The event is a hint, not a deletion instruction. Unknown events reconcile.
+  Stream<StorageChangeNotice> get storageChanges =>
+      _changesChannel.receiveBroadcastStream()
+          .map<StorageChangeNotice>(StorageChangeNotice.fromPlatform);
 
   /// Only an explicit native NOT_FOUND result permits creating a provider child.
   /// Permission, provider and I/O failures must propagate without side effects.
@@ -138,6 +168,38 @@ class StorageLocationService {
       throw StateError('Android did not return a valid MediaStore PDF index.');
     }
     return normalizePhonePdfIndexResponse(value);
+  }
+
+  /// Query only precisely identified, permission-authorized MediaStore rows.
+  /// The caller must use the existing full scan if complete is false.
+  Future<Map<String, Object?>> queryPhonePdfChanges({
+    required List<String> mediaUris,
+    required List<String> paths,
+  }) async {
+    if (!Platform.isAndroid) {
+      throw UnsupportedError('Android-only incremental Phone PDF query.');
+    }
+    final raw = await _channel.invokeMapMethod<String, dynamic>(
+      'queryPhonePdfChanges', {
+        'mediaUris': mediaUris,
+        'paths': paths,
+      },
+    );
+    if (raw == null || raw['complete'] != true) {
+      return const {'complete': false};
+    }
+    final normalized = normalizePhonePdfIndexResponse(raw);
+    return {
+      'complete': true,
+      'entries': normalized['entries'],
+      'touchedMediaUris': (raw['touchedUris'] as List?)
+              ?.whereType<String>().toList(growable: false) ?? <String>[],
+      'touchedLocalPaths': (raw['touchedPaths'] as List?)
+              ?.whereType<String>().toList(growable: false) ?? <String>[],
+      'volumes': normalized['volumes'],
+      'mountedVolumes': (raw['mountedVolumes'] as List?)
+              ?.whereType<String>().toList(growable: false) ?? <String>[],
+    };
   }
 
   /// Removes the synthetic root labels added by the Phone storage browser.

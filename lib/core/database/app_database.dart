@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart';
+import '../diagnostics/startup_timeline.dart';
 
 class AppDatabase {
   AppDatabase._({this._opener});
@@ -26,13 +27,16 @@ class AppDatabase {
     final opening = _openingDatabase;
     if (opening != null) return opening;
 
+    StartupTimeline.mark('database_open_start');
     final future = _opener?.call() ?? _openDatabase();
     _openingDatabase = future;
     try {
       final opened = await future;
       _database = opened;
+      StartupTimeline.mark('database_open_ready');
       return opened;
     } catch (_) {
+      StartupTimeline.mark('database_open_failed');
       _openingDatabase = null;
       rethrow;
     }

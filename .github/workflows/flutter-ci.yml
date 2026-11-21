@@ -190,6 +190,48 @@ jobs:
           gradle.write_text(s)
           print(f'Enabled core library desugaring in {gradle}')
           PY
+      - name: Include the Devanagari OCR engine used by DocsGrid in Release builds
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          candidates = [Path('android/app/build.gradle.kts'), Path('android/app/build.gradle')]
+          gradle = next((path for path in candidates if path.exists()), None)
+          if gradle is None:
+              raise SystemExit('Generated Android app Gradle file is missing')
+          source = gradle.read_text()
+          # DocsGrid requests TextRecognitionScript.devanagiri at runtime.
+          # Unlike unused optional scripts, this ML Kit package must be
+          # installed, not silenced via -dontwarn.
+          if gradle.suffix == '.kts':
+              dependency = 'implementation("com.google.mlkit:text-recognition-devanagari:16.0.0")'
+              proguard = 'proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")'
+          else:
+              dependency = "implementation 'com.google.mlkit:text-recognition-devanagari:16.0.0'"
+              proguard = "proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'"
+          if dependency not in source:
+              match = re.search(r'dependencies\s*\{', source)
+              if match:
+                  source = source[:match.end()] + '\n    ' + dependency + source[match.end():]
+              else:
+                  source += '\ndependencies {\n    ' + dependency + '\n}\n'
+          source, count = re.subn(
+              r'(release\s*\{)',
+              lambda match: match.group(1) + '\n            ' + proguard,
+              source, count=1,
+          )
+          if count != 1:
+              raise SystemExit('Could not find the release build type')
+          gradle.write_text(source)
+          rules = Path('android/app/proguard-rules.pro')
+          rules.write_text('''# Optional ML Kit scripts never invoked by DocsGrid.
+          # DO NOT silence Devanagari: DocsGrid uses it for Hindi OCR.
+          -dontwarn com.google.mlkit.vision.text.chinese.**
+          -dontwarn com.google.mlkit.vision.text.japanese.**
+          -dontwarn com.google.mlkit.vision.text.korean.**
+          ''')
+          print('Preserved Devanagari OCR dependency; scoped optional R8 rules.')
+          PY
       - name: Configure Android camera and notification permissions
         run: |
           python3 - <<'PY'
@@ -296,6 +338,226 @@ jobs:
           name: docsgrid-android-debug-apk
           path: build/app/outputs/flutter-apk/app-debug.apk
           if-no-files-found: error
+          retention-days: 14
+      # Same Flutter source, same generated AndroidManifest, same launcher
+      # icon and applicationId as the debug build above. Flutter's generated
+      # Android scaffolding uses the debug keystore for internal release
+      # evaluation unless a genuine production signing key is configured.
+      - name: Build internal performance-evaluation Release APK
+        run: |
+          set -euo pipefail
+          flutter build apk --release
+          test -s build/app/outputs/flutter-apk/app-release.apk
+      - name: Validate Release APK integrity, identity and signing
+        run: |
+          set -euo pipefail
+          APK=build/app/outputs/flutter-apk/app-release.apk
+          unzip -tq "$APK" >/dev/null
+          AAPT="$(find "${ANDROID_SDK_ROOT:-$ANDROID_HOME}/build-tools" -name aapt -type f | sort -V | tail -n 1)"
+          APKSIGNER="$(find "${ANDROID_SDK_ROOT:-$ANDROID_HOME}/build-tools" -name apksigner -type f | sort -V | tail -n 1)"
+          test -x "$AAPT"
+          test -x "$APKSIGNER"
+          "$APKSIGNER" verify --verbose --print-certs "$APK"
+          "$AAPT" dump badging "$APK" > /tmp/docsgrid-release-badging.txt
+          grep -F "package: name='com.docsgrid.mobile'" /tmp/docsgrid-release-badging.txt
+          grep -F "launchable-activity: name='com.docsgrid.docs_grid.MainActivity'" /tmp/docsgrid-release-badging.txt
+          echo "DocsGrid icon source:"
+          sha256sum assets/docsgrid_icon.png
+          echo "Release APK checksum and size:"
+          sha256sum "$APK"
+          wc -c "$APK"
+          echo "Internal performance-evaluation build only; DO NOT publish to Play."
+      - name: Upload verified Release APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: docsgrid-android-release-evaluation-apk
+          path: build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
+          retention-days: 14
+      - name: Build pre-profiling reference Release APK (same toolchain and signer)
+        if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+        run: |
+          set -euo pipefail
+          REF_SHA=c5a17a0e0e451e40a0968156dde08fde0619dedd
+          REF_DIR="$RUNNER_TEMP/docsgrid-reference"
+          git fetch --no-tags --depth=1 origin "$REF_SHA"
+          git worktree add --detach "$REF_DIR" "$REF_SHA"
+          cmp pubspec.yaml "$REF_DIR/pubspec.yaml"
+          cmp platform/android/MainActivity.kt "$REF_DIR/platform/android/MainActivity.kt"
+          cmp assets/docsgrid_icon.png "$REF_DIR/assets/docsgrid_icon.png"
+          mkdir -p "$REF_DIR/android"
+          rsync -a --exclude=build --exclude=.gradle android/ "$REF_DIR/android/"
+          ( cd "$REF_DIR" && flutter pub get && flutter build apk --release )
+          mkdir -p build/comparison-reference
+          cp "$REF_DIR/build/app/outputs/flutter-apk/app-release.apk" build/comparison-reference/reference-release.apk
+          REF=build/comparison-reference/reference-release.apk
+          CAND=build/app/outputs/flutter-apk/app-release.apk
+          test -s "$REF" && test -s "$CAND"
+          unzip -tq "$REF" >/dev/null
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -n 1)"
+          AAPT="$(find "$ANDROID_HOME/build-tools" -name aapt -type f | sort -V | tail -n 1)"
+          "$APKSIGNER" verify "$REF"
+          "$APKSIGNER" verify "$CAND"
+          "$AAPT" dump badging "$REF" | grep -F "package: name='com.docsgrid.mobile'"
+          "$AAPT" dump badging "$REF" | grep -F "launchable-activity: name='com.docsgrid.docs_grid.MainActivity'"
+          # Current Android Build Tools prints "V2 Signer: certificate SHA-256
+          # digest" (older releases said "Signer #1 certificate ...").
+          # Compare digest VALUES, not version-specific label strings.
+          R_SIGNER="$("$APKSIGNER" verify --print-certs "$REF" | grep -m1 'certificate SHA-256 digest:' | sed 's/^.*certificate SHA-256 digest: *//')"
+          C_SIGNER="$("$APKSIGNER" verify --print-certs "$CAND" | grep -m1 'certificate SHA-256 digest:' | sed 's/^.*certificate SHA-256 digest: *//')"
+          if [ -z "$R_SIGNER" ] || [ -z "$C_SIGNER" ] || [ "$R_SIGNER" != "$C_SIGNER" ]; then
+            echo 'Reference and candidate signing identities do not match.' >&2
+            exit 1
+          fi
+          echo "Reference/candidate signer identical; no persistent Android data changed."
+          sha256sum "$REF" "$CAND"
+      - name: Upload pre-profiling Release reference APK
+        if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: docsgrid-reference-uninstrumented-release-apk
+          path: build/comparison-reference/reference-release.apk
+          if-no-files-found: error
+          retention-days: 14
+      - name: Build opt-in E2E profiling evaluation APK
+        if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+        run: |
+          set -euo pipefail
+          flutter build apk --release --dart-define=DOCSGRID_STARTUP_PROFILE=true
+          cp build/app/outputs/flutter-apk/app-release.apk build/app/outputs/flutter-apk/docsgrid-startup-profile.apk
+          APK=build/app/outputs/flutter-apk/docsgrid-startup-profile.apk
+          unzip -tq "$APK" >/dev/null
+          APKSIGNER="$(find "${ANDROID_SDK_ROOT:-$ANDROID_HOME}/build-tools" -name apksigner -type f | sort -V | tail -n 1)"
+          AAPT="$(find "${ANDROID_SDK_ROOT:-$ANDROID_HOME}/build-tools" -name aapt -type f | sort -V | tail -n 1)"
+          "$APKSIGNER" verify "$APK"
+          "$AAPT" dump badging "$APK" | grep -F "package: name='com.docsgrid.mobile'"
+          "$AAPT" dump badging "$APK" | grep -F "launchable-activity: name='com.docsgrid.docs_grid.MainActivity'"
+          sha256sum "$APK"
+      - name: Upload opt-in E2E profiling APK
+        if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: docsgrid-android-startup-profile-apk
+          path: build/app/outputs/flutter-apk/docsgrid-startup-profile.apk
+          if-no-files-found: error
+          retention-days: 14
+
+
+  android_release_startup:
+    name: Release APK process-cold launch benchmark (Android emulator)
+    needs: android
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    # Linux KVM is supported on GitHub-hosted 2-vCPU runners and avoids
+    # unaccelerated macOS emulator boots/ADB stalls observed in the prior run.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Enable and verify KVM for fast x86_64 emulation
+        run: |
+          set -euo pipefail
+          if [ ! -c /dev/kvm ]; then
+            echo 'KVM device is unavailable; refusing an unaccelerated, misleading timing run.' >&2
+            exit 1
+          fi
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          sudo chmod 666 /dev/kvm
+          test -r /dev/kvm && test -w /dev/kvm
+      - name: Download verified Release APK from this exact run
+        uses: actions/download-artifact@v4
+        with:
+          name: docsgrid-android-release-evaluation-apk
+          path: artifacts/release
+      - name: Download isolated E2E profiling APK
+        uses: actions/download-artifact@v4
+        with:
+          name: docsgrid-android-startup-profile-apk
+          path: artifacts/e2e-profile
+      - name: Download pre-profiling reference APK from same run
+        uses: actions/download-artifact@v4
+        with:
+          name: docsgrid-reference-uninstrumented-release-apk
+          path: artifacts/reference
+      - name: Verify TTID and E2E parsers
+        run: python3 -m unittest discover -s scripts -p 'test_android_*.py' -v
+      # Keep the emulator alive for BOTH the untraced seven-run baseline and
+      # the one traced launch. The action terminates the emulator when its
+      # script finishes, so separate downstream jobs/steps cannot use ADB.
+      - name: Measure cold launches and capture Perfetto on the same live emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -no-snapshot -accel on
+          script: >-
+            python3 scripts/benchmark_android_cold_launch.py
+            --apk artifacts/release/app-release.apk
+            --output startup-results/cold-launch.json
+            --iterations 7 --warmups 1
+            &&
+            python3 scripts/profile_android_startup.py
+            --apk artifacts/release/app-release.apk
+            --baseline startup-results/cold-launch.json
+            --output-dir startup-results/critical-path
+            --trace-seconds 16
+            &&
+            python3 scripts/benchmark_end_to_end_startup.py
+            --apk artifacts/e2e-profile/docsgrid-startup-profile.apk
+            --baseline startup-results/cold-launch.json
+            --output-dir startup-results/end-to-end
+            &&
+            python3 scripts/verify_android_home_cache_relaunch.py
+            --profile-report startup-results/end-to-end/docsgrid-end-to-end-startup.json
+            --output startup-results/home-cache-verification/relaunch.json
+            &&
+            python3 scripts/compare_android_final_release.py
+            --reference-apk artifacts/reference/reference-release.apk
+            --candidate-apk artifacts/release/app-release.apk
+            --initial-candidate startup-results/cold-launch.json
+            --output-dir startup-results/final-benchmark
+      - name: Upload final matched benchmark and regression report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docsgrid-final-benchmark-regression-report
+          path: startup-results/final-benchmark/
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Upload real-process Home Cache verification
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docsgrid-android-home-cache-verification
+          path: startup-results/home-cache-verification/
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Upload end-to-end diagnostics and same-run Perfetto
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docsgrid-android-end-to-end-startup
+          path: startup-results/end-to-end/
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Upload startup critical-path trace and summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docsgrid-android-startup-critical-path
+          path: startup-results/critical-path/
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Upload startup timing baseline and sample data
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docsgrid-android-cold-launch-baseline
+          path: startup-results/cold-launch.json
+          if-no-files-found: warn
           retention-days: 14
 
   ios:
