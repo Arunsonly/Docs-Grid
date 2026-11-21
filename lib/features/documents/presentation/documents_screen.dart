@@ -17,15 +17,19 @@ import '../../categories/data/category_repository.dart';
 import '../../folders/data/folder_repository.dart';
 import '../../tools/document_tools_service.dart';
 import 'document_thumbnail.dart';
+import 'ocr_search_mode_control.dart';
 import 'phone_storage_browser_screen.dart';
 import '../../folders/presentation/folders_screen.dart';
 import '../../reminders/data/reminder_repository.dart';
 
 class DocumentsScreen extends StatefulWidget {
-  const DocumentsScreen({super.key, this.favoritesOnly = false, this.recentOnly = false, this.phoneOnly = false});
+  const DocumentsScreen({super.key, this.favoritesOnly = false, this.recentOnly = false,
+    this.phoneOnly = false, this.ocrSearchAvailable = false});
   final bool favoritesOnly;
   final bool recentOnly;
   final bool phoneOnly;
+  /// The Settings permission only exposes OCR selection; default is name search.
+  final bool ocrSearchAvailable;
 
   @override
   State<DocumentsScreen> createState() => _DocumentsScreenState();
@@ -43,6 +47,12 @@ class _DocumentsScreenState extends State<DocumentsScreen>
   bool _loading = true;
   final bool _importing = false;
   bool _searchInsideText = false;
+  bool _ocrIndexing = false;
+  bool _ocrIndexStarted = false;
+  int _ocrIndexEpoch = 0;
+  int _ocrIndexed = 0;
+  int _ocrIndexTotal = 0;
+  String? _ocrIndexMessage;
   bool _gridView = false;
   int _totalStorageBytes = 0;
   int _totalDocumentCount = 0;
@@ -110,6 +120,78 @@ class _DocumentsScreenState extends State<DocumentsScreen>
     });
   }
 
+  @override
+  void didUpdateWidget(covariant DocumentsScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.ocrSearchAvailable && !widget.ocrSearchAvailable) {
+      // Globally disabling OCR immediately returns every open search to names.
+      _ocrIndexEpoch++;
+      _searchInsideText = false;
+      _ocrIndexStarted = false;
+      _ocrIndexMessage = null;
+      _load();
+    }
+  }
+
+  void _setOcrSearchMode(bool enabled) {
+    if (!widget.ocrSearchAvailable || _searchInsideText == enabled) return;
+    if (!enabled) _ocrIndexEpoch++; // Cancel any in-flight PDF/page OCR.
+    setState(() {
+      _searchInsideText = enabled;
+      _ocrIndexStarted = false;
+      _ocrIndexMessage = null;
+    });
+    _load();
+    if (enabled) unawaited(_beginOcrIndexing());
+  }
+
+  Future<void> _beginOcrIndexing() async {
+    if (!mounted || !widget.ocrSearchAvailable || !_searchInsideText ||
+        _search.text.trim().isEmpty || _ocrIndexing || _ocrIndexStarted) return;
+    final run = ++_ocrIndexEpoch;
+    _ocrIndexStarted = true;
+    setState(() {
+      _ocrIndexing = true;
+      _ocrIndexed = 0;
+      _ocrIndexTotal = 0;
+      _ocrIndexMessage = 'Preparing on-device PDF text index…';
+    });
+    try {
+      final summary = await _tools.indexPendingPdfsForSearch(
+        shouldCancel: () => !mounted || !widget.ocrSearchAvailable ||
+            !_searchInsideText || run != _ocrIndexEpoch,
+        onProgress: (completed, total) {
+          if (!mounted || run != _ocrIndexEpoch) return;
+          setState(() { _ocrIndexed = completed; _ocrIndexTotal = total; });
+          // Refresh results incrementally, not once for every single PDF.
+          if (completed % 10 == 0 || completed == total) unawaited(_load());
+        },
+      );
+      if (mounted && run == _ocrIndexEpoch) {
+        setState(() => _ocrIndexMessage =
+            'OCR indexing finished: ${summary.indexed} indexed, '
+            '${summary.failed} unavailable/failed, ${summary.skipped} skipped.');
+      }
+    } on OcrIndexCancelled {
+      // Switching back to file names or leaving the screen cancels OCR work.
+    } catch (error) {
+      if (mounted && run == _ocrIndexEpoch) {
+        setState(() => _ocrIndexMessage = 'OCR indexing unavailable: $error');
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _ocrIndexing = false);
+        if (run == _ocrIndexEpoch) {
+          unawaited(_load());
+        } else if (widget.ocrSearchAvailable && _searchInsideText &&
+            _search.text.trim().isNotEmpty) {
+          // Rapid mode toggles cannot strand an OCR query without indexing.
+          unawaited(_beginOcrIndexing());
+        }
+      }
+    }
+  }
+
   Future<void> _loadViewPreference() async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -139,7 +221,11 @@ class _DocumentsScreenState extends State<DocumentsScreen>
   void _onSearchChanged() {
     _searchDebounce?.cancel();
     _searchDebounce = Timer(const Duration(milliseconds: 280), () {
-      if (mounted) _load();
+      if (!mounted) return;
+      _load();
+      if (_searchInsideText && widget.ocrSearchAvailable) {
+        unawaited(_beginOcrIndexing());
+      }
     });
   }
 
@@ -269,6 +355,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
     _storageChangesSubscription?.cancel();
     _phoneRefreshDebounce?.cancel();
     _loadGeneration++;
+    _ocrIndexEpoch++;
     _searchDebounce?.cancel();
     _search.removeListener(_onSearchChanged);
     _scrollController.removeListener(_onScroll);
@@ -2358,21 +2445,24 @@ class _DocumentsScreenState extends State<DocumentsScreen>
                     controller: _search,
                     decoration: InputDecoration(
                       hintText: _searchInsideText ? 'Search text inside PDFs' : 'Search PDF names',
-                      prefixIcon: PopupMenuButton<String>(
-                        tooltip: 'Choose search type',
-                        icon: const Icon(Icons.search),
-                        onSelected: (value) {
-                          setState(() => _searchInsideText = value == 'text');
-                          _load();
-                        },
-                        itemBuilder: (_) => [
-                          PopupMenuItem(value: 'name', child: Row(children: [Icon(_searchInsideText ? Icons.circle_outlined : Icons.check_circle, size: 18), const SizedBox(width: 8), const Text('File name') ])),
-                          PopupMenuItem(value: 'text', child: Row(children: [Icon(_searchInsideText ? Icons.check_circle : Icons.circle_outlined, size: 18), const SizedBox(width: 8), const Text('Text inside PDF') ])),
+                      prefixIcon: const Icon(Icons.search),
+                      suffixIconConstraints: const BoxConstraints(minHeight: 48, minWidth: 0),
+                      suffixIcon: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          if (widget.ocrSearchAvailable)
+                            OcrSearchModeControl(
+                              searchInsidePdf: _searchInsideText,
+                              onChanged: _setOcrSearchMode,
+                            ),
+                          if (_search.text.isNotEmpty)
+                            IconButton(
+                              tooltip: 'Clear search',
+                              onPressed: _search.clear,
+                              icon: const Icon(Icons.close),
+                            ),
                         ],
                       ),
-                      suffixIcon: _search.text.isEmpty
-                          ? null
-                          : IconButton(tooltip: 'Clear search', onPressed: _search.clear, icon: const Icon(Icons.close)),
                       border: OutlineInputBorder(borderRadius: BorderRadius.circular(16)),
                     ),
                   ),
@@ -2384,6 +2474,24 @@ class _DocumentsScreenState extends State<DocumentsScreen>
                   icon: Icon(_gridView ? Icons.view_list_outlined : Icons.grid_view_outlined),
                 ),
 
+              ],
+            ),
+          ),
+        if (!widget.favoritesOnly && widget.ocrSearchAvailable && _searchInsideText)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (_ocrIndexing) LinearProgressIndicator(
+                  value: _ocrIndexTotal == 0 ? null : _ocrIndexed / _ocrIndexTotal,
+                ),
+                if (_ocrIndexing) const SizedBox(height: 6),
+                Text(_ocrIndexing
+                    ? 'Indexing PDF text locally: $_ocrIndexed / $_ocrIndexTotal'
+                    : _ocrIndexMessage ??
+                        'Enter a search term to index PDFs locally for OCR search.',
+                  style: Theme.of(context).textTheme.bodySmall),
               ],
             ),
           ),
