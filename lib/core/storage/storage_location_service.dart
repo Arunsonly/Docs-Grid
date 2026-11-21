@@ -268,6 +268,99 @@ class StorageLocationService {
     };
   }
 
+  /// ZIP restore stages PDF bytes with dart:io, unlike ordinary SAF imports.
+  /// Resolve the selected *existing* local folders without changing the
+  /// application's storage preference or silently choosing another library.
+  Future<Map<String, String>> zipRestoreFileLocations() async {
+    if (!Platform.isAndroid) return const <String, String>{};
+    final granted = await hasAllFilesAccess();
+    final configured = await portableDataLocationsIfAvailable();
+    final documents = configured['documentsUri'];
+    final library = configured['libraryUri'];
+    Map<String, String>? mapped;
+    if (granted &&
+        ((documents?.startsWith('content://') ?? false) ||
+         (library?.startsWith('content://') ?? false))) {
+      final raw = await _channel.invokeMapMethod<String, dynamic>(
+        'resolveZipRestoreFileLocations', {
+          'documentsUri': documents,
+          'libraryUri': library,
+        },
+      );
+      if (raw != null) {
+        mapped = <String, String>{
+          if (raw['documentsUri'] is String)
+            'documentsUri': raw['documentsUri'] as String,
+          if (raw['libraryUri'] is String)
+            'libraryUri': raw['libraryUri'] as String,
+        };
+      }
+    }
+    return validateZipRestoreFileLocations(
+      configured: configured,
+      allFilesAccess: granted,
+      localEquivalent: mapped,
+    );
+  }
+
+  /// Pure, fail-closed preflight contract, independently testable on Linux/iOS.
+  /// A URI from an unknown provider must NEVER be converted to an assumed
+  /// device path; this would restore into a different and possibly empty tree.
+  @visibleForTesting
+  static Map<String, String> validateZipRestoreFileLocations({
+    required Map<String, String> configured,
+    required bool allFilesAccess,
+    Map<String, String>? localEquivalent,
+  }) {
+    if (!allFilesAccess) {
+      throw StateError(
+        'Full internal storage access is currently disabled for DocsGrid. '
+        'Enable it in Android Settings before restoring a ZIP. '
+        'No existing PDFs or database records were changed.',
+      );
+    }
+    final documents = configured['documentsUri'];
+    final library = configured['libraryUri'];
+    if (documents == null || library == null ||
+        documents.isEmpty || library.isEmpty) {
+      throw StateError(
+        'DocsGrid restore destinations are not initialized. '
+        'Open Storage settings to verify your existing DocsGrid folders. '
+        'No existing PDFs or database records were changed.',
+      );
+    }
+    final docsFile = documents.startsWith('file://')
+        ? documents : localEquivalent?['documentsUri'];
+    final libraryFile = library.startsWith('file://')
+        ? library : localEquivalent?['libraryUri'];
+
+    bool validFileUri(String? value) {
+      if (value == null || !value.startsWith('file://')) return false;
+      try {
+        final uri = Uri.parse(value);
+        return uri.scheme == 'file' &&
+            (uri.host.isEmpty || uri.host == 'localhost') &&
+            uri.query.isEmpty && uri.fragment.isEmpty &&
+            uri.toFilePath().startsWith('/');
+      } catch (_) {
+        return false;
+      }
+    }
+    if (!validFileUri(docsFile) || !validFileUri(libraryFile)) {
+      throw StateError(
+        'Full internal storage access is allowed, but the selected DocsGrid '
+        'folders are not available as writable local file destinations. '
+        'A cloud, SD-card or unavailable document-provider folder cannot be '
+        'silently replaced with another library. Check the selected storage '
+        'location before retrying. No PDF or database was changed.',
+      );
+    }
+    return {
+      'documentsUri': docsFile!,
+      'libraryUri': libraryFile!,
+    };
+  }
+
   Future<bool> hasAllFilesAccess() async {
     if (!Platform.isAndroid) return false;
     return await _channel.invokeMethod<bool>('hasAllFilesAccess') ?? false;
