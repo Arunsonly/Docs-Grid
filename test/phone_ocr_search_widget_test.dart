@@ -15,7 +15,7 @@ void main() {
 
     var extracted = 0;
     await tester.pumpWidget(MaterialApp(
-      home: PhoneStorageBrowserScreen(
+      home: Scaffold(body: PhoneStorageBrowserScreen(
         embedded: true,
         rootName: 'Internal Storage',
         ocrSearchAvailable: true,
@@ -44,7 +44,7 @@ void main() {
               : 'Unrelated photograph';
         },
         onOpenPdf: (_, __) async {},
-      ),
+      )),
     ));
     await tester.enterText(find.byType(TextField).first, '982731');
     await tester.pumpAndSettle();
@@ -76,12 +76,12 @@ void main() {
   testWidgets('Phone OCR toggle is absent without Settings permission',
       (tester) async {
     await tester.pumpWidget(MaterialApp(
-      home: PhoneStorageBrowserScreen(
+      home: Scaffold(body: PhoneStorageBrowserScreen(
         rootName: 'Internal Storage',
         embedded: true,
         entries: const [],
         onOpenPdf: (_, __) async {},
-      ),
+      )),
     ));
     expect(find.byKey(const ValueKey('ocr-search-mode-selector')), findsNothing);
   });
