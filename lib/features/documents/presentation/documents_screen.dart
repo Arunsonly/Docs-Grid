@@ -2849,7 +2849,9 @@ class _DocumentsScreenState extends State<DocumentsScreen>
           ),
         if (!widget.favoritesOnly && _search.text.trim().isNotEmpty)
           Builder(builder: (context) {
-            final matches = _phoneStorageSearchMatches(_search.text);
+            final matches = _searchInsideText
+                ? _phoneOcrIndex.matches(_phoneEntries, _search.text)
+                : _phoneStorageSearchMatches(_search.text);
             return Padding(
               padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
               child: Card(
@@ -2859,10 +2861,15 @@ class _DocumentsScreenState extends State<DocumentsScreen>
                     Padding(
                       padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
                       child: Text(
-                        'Phone Storage · ${matches.length} matches',
+                        '${_searchInsideText ? 'Phone OCR' : 'Phone Storage'} · ${matches.length} matches',
                         style: Theme.of(context).textTheme.titleSmall,
                       ),
                     ),
+                    if (_searchInsideText && _phoneOcrBusy)
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+                        child: Text('Reading Phone PDFs locally: $_phoneOcrDone / $_phoneOcrTotal'),
+                      ),
                     if (_phoneScanLoading)
                       const Padding(
                         padding: EdgeInsets.fromLTRB(16, 8, 16, 12),
@@ -2875,9 +2882,11 @@ class _DocumentsScreenState extends State<DocumentsScreen>
                         ),
                       )
                     else if (matches.isEmpty)
-                      const Padding(
-                        padding: EdgeInsets.fromLTRB(16, 4, 16, 12),
-                        child: Text('No matching PDFs in the scanned Phone Storage locations.'),
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
+                        child: Text(_searchInsideText
+                            ? 'No matching PDF text in Phone Storage.'
+                            : 'No matching PDFs in the scanned Phone Storage locations.'),
                       )
                     else
                       SizedBox(
@@ -2915,7 +2924,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
             child: Align(
               alignment: Alignment.centerLeft,
               child: Text(
-                'Grid Storage · ${_documents.length}${_hasMore ? '+' : ''} matches',
+                '${_searchInsideText ? 'Grid OCR' : 'Grid Storage'} · ${_documents.length}${_hasMore ? '+' : ''} matches',
                 style: Theme.of(context).textTheme.labelLarge,
               ),
             ),
