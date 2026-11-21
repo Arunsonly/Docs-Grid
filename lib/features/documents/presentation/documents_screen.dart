@@ -129,7 +129,9 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       _searchInsideText = false;
       _ocrIndexStarted = false;
       _ocrIndexMessage = null;
-      _load();
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) unawaited(_load());
+      });
     }
   }
 
