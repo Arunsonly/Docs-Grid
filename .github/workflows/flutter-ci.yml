@@ -374,6 +374,45 @@ jobs:
           path: build/app/outputs/flutter-apk/app-release.apk
           if-no-files-found: error
           retention-days: 14
+      - name: Build pre-profiling reference Release APK (same toolchain and signer)
+        if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+        run: |
+          set -euo pipefail
+          REF_SHA=c5a17a0e0e451e40a0968156dde08fde0619dedd
+          REF_DIR="$RUNNER_TEMP/docsgrid-reference"
+          git fetch --no-tags --depth=1 origin "$REF_SHA"
+          git worktree add --detach "$REF_DIR" "$REF_SHA"
+          cmp pubspec.yaml "$REF_DIR/pubspec.yaml"
+          cmp platform/android/MainActivity.kt "$REF_DIR/platform/android/MainActivity.kt"
+          cmp assets/docsgrid_icon.png "$REF_DIR/assets/docsgrid_icon.png"
+          mkdir -p "$REF_DIR/android"
+          rsync -a --exclude=build --exclude=.gradle android/ "$REF_DIR/android/"
+          ( cd "$REF_DIR" && flutter pub get && flutter build apk --release )
+          mkdir -p build/comparison-reference
+          cp "$REF_DIR/build/app/outputs/flutter-apk/app-release.apk" build/comparison-reference/reference-release.apk
+          REF=build/comparison-reference/reference-release.apk
+          CAND=build/app/outputs/flutter-apk/app-release.apk
+          test -s "$REF" && test -s "$CAND"
+          unzip -tq "$REF" >/dev/null
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -n 1)"
+          AAPT="$(find "$ANDROID_HOME/build-tools" -name aapt -type f | sort -V | tail -n 1)"
+          "$APKSIGNER" verify "$REF"
+          "$APKSIGNER" verify "$CAND"
+          "$AAPT" dump badging "$REF" | grep -F "package: name='com.docsgrid.mobile'"
+          "$AAPT" dump badging "$REF" | grep -F "launchable-activity: name='com.docsgrid.docs_grid.MainActivity'"
+          R_SIGNER="$("$APKSIGNER" verify --print-certs "$REF" | grep 'Signer #1 certificate SHA-256 digest:' | head -n 1)"
+          C_SIGNER="$("$APKSIGNER" verify --print-certs "$CAND" | grep 'Signer #1 certificate SHA-256 digest:' | head -n 1)"
+          test -n "$R_SIGNER" && test "$R_SIGNER" = "$C_SIGNER"
+          echo "Reference/candidate signer identical; no persistent Android data changed."
+          sha256sum "$REF" "$CAND"
+      - name: Upload pre-profiling Release reference APK
+        if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: docsgrid-reference-uninstrumented-release-apk
+          path: build/comparison-reference/reference-release.apk
+          if-no-files-found: error
+          retention-days: 14
       - name: Build opt-in E2E profiling evaluation APK
         if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
         run: |
@@ -429,6 +468,11 @@ jobs:
         with:
           name: docsgrid-android-startup-profile-apk
           path: artifacts/e2e-profile
+      - name: Download pre-profiling reference APK from same run
+        uses: actions/download-artifact@v4
+        with:
+          name: docsgrid-reference-uninstrumented-release-apk
+          path: artifacts/reference
       - name: Verify TTID and E2E parsers
         run: python3 -m unittest discover -s scripts -p 'test_android_*.py' -v
       # Keep the emulator alive for BOTH the untraced seven-run baseline and
@@ -463,6 +507,20 @@ jobs:
             python3 scripts/verify_android_home_cache_relaunch.py
             --profile-report startup-results/end-to-end/docsgrid-end-to-end-startup.json
             --output startup-results/home-cache-verification/relaunch.json
+            &&
+            python3 scripts/compare_android_final_release.py
+            --reference-apk artifacts/reference/reference-release.apk
+            --candidate-apk artifacts/release/app-release.apk
+            --initial-candidate startup-results/cold-launch.json
+            --output-dir startup-results/final-benchmark
+      - name: Upload final matched benchmark and regression report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docsgrid-final-benchmark-regression-report
+          path: startup-results/final-benchmark/
+          if-no-files-found: warn
+          retention-days: 14
       - name: Upload real-process Home Cache verification
         if: always()
         uses: actions/upload-artifact@v4
