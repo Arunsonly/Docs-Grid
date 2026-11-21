@@ -400,9 +400,15 @@ jobs:
           "$APKSIGNER" verify "$CAND"
           "$AAPT" dump badging "$REF" | grep -F "package: name='com.docsgrid.mobile'"
           "$AAPT" dump badging "$REF" | grep -F "launchable-activity: name='com.docsgrid.docs_grid.MainActivity'"
-          R_SIGNER="$("$APKSIGNER" verify --print-certs "$REF" | grep 'Signer #1 certificate SHA-256 digest:' | head -n 1)"
-          C_SIGNER="$("$APKSIGNER" verify --print-certs "$CAND" | grep 'Signer #1 certificate SHA-256 digest:' | head -n 1)"
-          test -n "$R_SIGNER" && test "$R_SIGNER" = "$C_SIGNER"
+          # Current Android Build Tools prints "V2 Signer: certificate SHA-256
+          # digest" (older releases said "Signer #1 certificate ...").
+          # Compare digest VALUES, not version-specific label strings.
+          R_SIGNER="$("$APKSIGNER" verify --print-certs "$REF" | grep -m1 'certificate SHA-256 digest:' | sed 's/^.*certificate SHA-256 digest: *//')"
+          C_SIGNER="$("$APKSIGNER" verify --print-certs "$CAND" | grep -m1 'certificate SHA-256 digest:' | sed 's/^.*certificate SHA-256 digest: *//')"
+          if [ -z "$R_SIGNER" ] || [ -z "$C_SIGNER" ] || [ "$R_SIGNER" != "$C_SIGNER" ]; then
+            echo 'Reference and candidate signing identities do not match.' >&2
+            exit 1
+          fi
           echo "Reference/candidate signer identical; no persistent Android data changed."
           sha256sum "$REF" "$CAND"
       - name: Upload pre-profiling Release reference APK
