@@ -380,9 +380,9 @@ jobs:
     name: Release APK process-cold launch benchmark (Android emulator)
     needs: android
     if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
-    # macOS hosted runners can run Android emulators without Linux /dev/kvm.
-    # This repository's ubuntu-latest runner did not expose usable KVM.
-    runs-on: macos-latest
+    # Explicit Intel macOS runner: Apple Silicon hosted VMs lack nested HVF
+    # (HV_UNSUPPORTED), whereas this job runs an x86_64 Android AVD.
+    runs-on: macos-15-intel
     steps:
       - uses: actions/checkout@v4
       - name: Download verified Release APK from this exact run
@@ -396,15 +396,15 @@ jobs:
         run: |
           set -euo pipefail
           echo "macOS host architecture: $(uname -m)"
-          test "$(uname -m)" = arm64
-          unzip -Z1 artifacts/release/app-release.apk | grep -Fx 'lib/arm64-v8a/libflutter.so'
+          test "$(uname -m)" = x86_64
+          unzip -Z1 artifacts/release/app-release.apk | grep -Fx 'lib/x86_64/libflutter.so'
       - name: Measure Release APK cold launches (TTID, not TTFD)
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 34
           target: google_apis
-          # macos-latest is Apple Silicon (aarch64); match its QEMU system image.
-          arch: arm64-v8a
+          # Match the explicitly pinned Intel runner.
+          arch: x86_64
           profile: pixel_6
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -no-snapshot
