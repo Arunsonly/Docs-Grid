@@ -285,6 +285,9 @@ class _DocumentsScreenState extends State<DocumentsScreen>
 
   void _onScroll() {
     if (!_scrollController.hasClients || _loadingMore || !_hasMore) return;
+    // Phone-result scrolling must not fetch unrelated Grid pages.
+    if (!widget.favoritesOnly && !widget.recentOnly &&
+        _search.text.trim().isNotEmpty && _homeSearchPhoneSelected) return;
     if (_scrollController.position.extentAfter < 600) _loadMore();
   }
 
