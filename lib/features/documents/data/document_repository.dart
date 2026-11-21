@@ -1247,7 +1247,7 @@ class DocumentRepository {
     }
   }
 
-  Future<ImportSummary> importScannedPdf(File source, {String? displayName, String? targetFolderUri, String? targetFolderId, String sourceType = 'scanner'}) async {
+  Future<ImportSummary> importScannedPdf(File source, {String? displayName, String? targetFolderUri, String? targetFolderId, String sourceType = 'scanner', void Function(String)? onImportedDocumentId}) async {
     await StorageMigrationGate.waitUntilReady();
     if (!await source.exists()) throw StateError('Scanned PDF is not available.');
     final header = await source.openRead(0, 5).fold<List<int>>(<int>[], (a, b) => a..addAll(b));
@@ -1370,6 +1370,10 @@ class DocumentRepository {
       }
       rethrow;
     }
+    // Only publish the exact newly committed record ID after success. Do not
+    // re-find this row by its SHA-256: identical active Grid PDFs can coexist
+    // with Phone-owned Recycle Bin archives.
+    onImportedDocumentId?.call(id);
     return const ImportSummary(added: 1, duplicates: 0, failed: 0);
   }
 
@@ -1438,18 +1442,23 @@ class DocumentRepository {
         sourceUri: sourceUri,
         destinationPath: staged.path,
       );
+      String? archivedDocumentId;
       final imported = await importScannedPdf(
         staged,
         displayName: displayName,
         sourceType: 'phone_storage_recycle_bin',
+        onImportedDocumentId: (id) => archivedDocumentId = id,
       );
       if (imported.added != 1) return false;
+      if (archivedDocumentId == null) {
+        throw StateError('Could not identify the newly archived Phone PDF.');
+      }
       final digest = (await sha256.bind(staged.openRead()).first).toString();
       final db = await _database.database;
       final rows = await db.query(
         'documents',
-        where: 'sha256 = ? AND deleted_at IS NULL',
-        whereArgs: [digest],
+        where: 'id = ? AND sha256 = ? AND deleted_at IS NULL AND source = ?',
+        whereArgs: [archivedDocumentId, digest, 'phone_storage_recycle_bin'],
         limit: 1,
       );
       if (rows.isEmpty) {
