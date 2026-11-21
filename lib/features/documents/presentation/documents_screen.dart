@@ -10,6 +10,7 @@ import '../data/document_repository.dart';
 import '../data/phone_recent_history.dart';
 import '../data/phone_pdf_move_service.dart';
 import '../data/phone_pdf_delta.dart';
+import '../data/phone_ocr_search_index.dart';
 import '../data/phone_refresh_queue.dart';
 import '../data/phone_star_repository.dart';
 import '../data/phone_trash_origin.dart';
@@ -43,6 +44,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
   final _categoryRepository = CategoryRepository();
   final _folderRepository = FolderRepository();
   final _tools = DocumentToolsService();
+  late final PhoneOcrSearchIndex _phoneOcrIndex;
   final _search = TextEditingController();
   final _scrollController = ScrollController();
   List<DocumentRecord> _documents = [];
@@ -55,6 +57,11 @@ class _DocumentsScreenState extends State<DocumentsScreen>
   int _ocrIndexed = 0;
   int _ocrIndexTotal = 0;
   String? _ocrIndexMessage;
+  bool _phoneOcrBusy = false;
+  int _phoneOcrEpoch = 0;
+  int _phoneOcrDone = 0;
+  int _phoneOcrTotal = 0;
+  String? _phoneOcrMessage;
   bool _gridView = false;
   int _totalStorageBytes = 0;
   int _totalDocumentCount = 0;
@@ -95,6 +102,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _phoneOcrIndex = PhoneOcrSearchIndex(_tools.extractPhonePdfTextFromUri);
     unawaited(_loadPhoneStarred());
     _storageChangesSubscription =
         StorageLocationService.instance.storageChanges.listen(
@@ -128,6 +136,8 @@ class _DocumentsScreenState extends State<DocumentsScreen>
     if (oldWidget.ocrSearchAvailable && !widget.ocrSearchAvailable) {
       // Globally disabling OCR immediately returns every open search to names.
       _ocrIndexEpoch++;
+      _phoneOcrEpoch++;
+      _phoneOcrIndex.clear();
       _searchInsideText = false;
       _ocrIndexStarted = false;
       _ocrIndexMessage = null;
@@ -139,14 +149,21 @@ class _DocumentsScreenState extends State<DocumentsScreen>
 
   void _setOcrSearchMode(bool enabled) {
     if (!widget.ocrSearchAvailable || _searchInsideText == enabled) return;
-    if (!enabled) _ocrIndexEpoch++; // Cancel any in-flight PDF/page OCR.
+    if (!enabled) {
+      _ocrIndexEpoch++;
+      _phoneOcrEpoch++;
+      _phoneOcrIndex.clear();
+    } // Cancel all on-device PDF/page OCR.
     setState(() {
       _searchInsideText = enabled;
       _ocrIndexStarted = false;
       _ocrIndexMessage = null;
     });
     _load();
-    if (enabled) unawaited(_beginOcrIndexing());
+    if (enabled) {
+      unawaited(_beginOcrIndexing());
+      unawaited(_beginPhoneOcrIndexing());
+    }
   }
 
   Future<void> _beginOcrIndexing() async {
@@ -196,6 +213,51 @@ class _DocumentsScreenState extends State<DocumentsScreen>
     }
   }
 
+  Future<void> _beginPhoneOcrIndexing() async {
+    if (!mounted || !widget.ocrSearchAvailable || !_searchInsideText ||
+        _search.text.trim().isEmpty || _phoneOcrBusy || widget.phoneOnly) return;
+    final run = ++_phoneOcrEpoch;
+    setState(() {
+      _phoneOcrBusy = true;
+      _phoneOcrDone = 0;
+      _phoneOcrTotal = 0;
+      _phoneOcrMessage = null;
+    });
+    try {
+      final summary = await _phoneOcrIndex.indexEntries(
+        _phoneEntries,
+        shouldCancel: () => !mounted || !_searchInsideText ||
+            !widget.ocrSearchAvailable || run != _phoneOcrEpoch,
+        onProgress: (completed, total) {
+          if (!mounted || run != _phoneOcrEpoch) return;
+          setState(() {
+            _phoneOcrDone = completed;
+            _phoneOcrTotal = total;
+          });
+        },
+      );
+      if (mounted && run == _phoneOcrEpoch) {
+        setState(() => _phoneOcrMessage = summary.failed == 0
+            ? 'Phone OCR results ready'
+            : '${summary.failed} Phone PDFs could not be read.');
+      }
+    } on OcrIndexCancelled {
+      // Phone OCR text is temporary and never stored in the Grid database.
+    } catch (error) {
+      if (mounted && run == _phoneOcrEpoch) {
+        setState(() => _phoneOcrMessage = 'Phone OCR unavailable: $error');
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _phoneOcrBusy = false);
+        if (run != _phoneOcrEpoch && _searchInsideText &&
+            widget.ocrSearchAvailable && _search.text.trim().isNotEmpty) {
+          unawaited(_beginPhoneOcrIndexing());
+        }
+      }
+    }
+  }
+
   Future<void> _loadViewPreference() async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -229,6 +291,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       _load();
       if (_searchInsideText && widget.ocrSearchAvailable) {
         unawaited(_beginOcrIndexing());
+        unawaited(_beginPhoneOcrIndexing());
       }
     });
   }
@@ -360,6 +423,8 @@ class _DocumentsScreenState extends State<DocumentsScreen>
     _phoneRefreshDebounce?.cancel();
     _loadGeneration++;
     _ocrIndexEpoch++;
+    _phoneOcrEpoch++;
+    _phoneOcrIndex.clear();
     _searchDebounce?.cancel();
     _search.removeListener(_onSearchChanged);
     _scrollController.removeListener(_onScroll);
@@ -960,6 +1025,10 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       }
     } finally {
       if (mounted) setState(() => _phoneScanLoading = false);
+      if (mounted && widget.ocrSearchAvailable && _searchInsideText &&
+          _search.text.trim().isNotEmpty) {
+        unawaited(_beginPhoneOcrIndexing());
+      }
       if (mounted) {
         if (_phoneScanPending) {
           _phoneScanPending = false;
