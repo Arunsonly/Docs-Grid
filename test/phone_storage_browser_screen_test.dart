@@ -411,6 +411,7 @@ void main() {
   Future<void> openActionBrowser(
     WidgetTester tester, {
     Future<bool> Function(String, String)? onMove,
+    Future<bool> Function(String, String)? onMoveWithinPhone,
     Future<bool> Function(String, String)? onRename,
     Future<bool> Function(String, String)? onTrash,
     Future<void> Function(String, String)? onShare,
@@ -429,6 +430,7 @@ void main() {
                   entries: actionEntries,
                   onOpenPdf: (_, __) async {},
                   onMovePdf: onMove,
+                  onMoveWithinPhone: onMoveWithinPhone,
                   onRenamePdf: onRename,
                   onSharePdf: onShare,
                   onToggleStarPdf: onStar,
@@ -485,26 +487,52 @@ void main() {
     expect(find.text('Download'), findsOneWidget);
   });
 
-  testWidgets('Phone PDF menu has requested six options in the exact order',
+  testWidgets('Phone PDF menu adds Move above Move to Grid without changing other actions',
       (tester) async {
     await openActionBrowser(tester,
       onShare: (_, __) async {},
       onStar: (_, __) async {},
       onRename: (_, __) async => false,
       onMove: (_, __) async => false,
+      onMoveWithinPhone: (_, __) async => false,
       onTrash: (_, __) async => false,
     );
     await tester.tap(find.byType(PopupMenuButton<String>));
     await tester.pumpAndSettle();
     final expected = [
       'Share PDF', 'Add to Star', 'Rename',
-      'Move to Grid', 'Delete', 'File Location',
+      'Move', 'Move to Grid', 'Delete', 'File Location',
     ];
     for (var index = 0; index < expected.length - 1; index++) {
       expect(tester.getTopLeft(find.text(expected[index])).dy,
           lessThan(tester.getTopLeft(find.text(expected[index + 1])).dy));
     }
-    expect(find.byType(PopupMenuItem<String>), findsNWidgets(6));
+    expect(find.byType(PopupMenuItem<String>), findsNWidgets(7));
+  });
+
+  testWidgets('Phone Move callback leaves all other actions unchanged',
+      (tester) async {
+    String? moved;
+    await openActionBrowser(tester,
+      onMoveWithinPhone: (uri, name) async {
+        moved = '$uri|$name';
+        return true;
+      },
+      onMove: (_, __) => throw StateError('Move to Grid must not run'),
+    );
+    await selectAction(tester, 'Move');
+    expect(moved, 'content://document/policy|Policy.pdf');
+    expect(find.text('Open browser'), findsOneWidget);
+  });
+
+  testWidgets('cancelled Phone Move keeps browser in its current folder',
+      (tester) async {
+    await openActionBrowser(tester,
+      onMoveWithinPhone: (_, __) async => false,
+    );
+    await selectAction(tester, 'Move');
+    expect(find.text('Personal Documents'), findsOneWidget);
+    expect(find.text('Policy.pdf'), findsOneWidget);
   });
 
   testWidgets('Phone Star invokes callback and leaves source file browser open',

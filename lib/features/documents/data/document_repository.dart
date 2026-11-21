@@ -1247,7 +1247,7 @@ class DocumentRepository {
     }
   }
 
-  Future<ImportSummary> importScannedPdf(File source, {String? displayName, String? targetFolderUri, String? targetFolderId, String sourceType = 'scanner'}) async {
+  Future<ImportSummary> importScannedPdf(File source, {String? displayName, String? targetFolderUri, String? targetFolderId, String sourceType = 'scanner', void Function(String)? onImportedDocumentId}) async {
     await StorageMigrationGate.waitUntilReady();
     if (!await source.exists()) throw StateError('Scanned PDF is not available.');
     final header = await source.openRead(0, 5).fold<List<int>>(<int>[], (a, b) => a..addAll(b));
@@ -1256,10 +1256,18 @@ class DocumentRepository {
     }
     final digest = (await sha256.bind(source.openRead()).first).toString();
     final db = await _database.database;
-    final duplicate = await db.query('documents',
-      columns: ['id'], where: 'sha256 = ? AND deleted_at IS NULL',
-      whereArgs: [digest], limit: 1);
-    if (duplicate.isNotEmpty) return const ImportSummary(added: 0, duplicates: 1, failed: 0);
+    // A Phone -> Recycle Bin transfer must archive its own independent copy,
+    // even when the same bytes already belong to an ACTIVE Grid document.
+    // Normal import, scanner and Phone -> Grid duplicate prevention is unchanged.
+    final archivingPhoneOriginal = sourceType == 'phone_storage_recycle_bin';
+    if (!archivingPhoneOriginal) {
+      final duplicate = await db.query('documents',
+        columns: ['id'], where: 'sha256 = ? AND deleted_at IS NULL',
+        whereArgs: [digest], limit: 1);
+      if (duplicate.isNotEmpty) {
+        return const ImportSummary(added: 0, duplicates: 1, failed: 0);
+      }
+    }
 
     final storage = StorageLocationService.instance;
     final selected = await storage.selectedFolder();
@@ -1321,7 +1329,9 @@ class DocumentRepository {
       await db.transaction((txn) async {
         final existingNow = await txn.query('documents', columns: ['id'],
           where: 'sha256 = ? AND deleted_at IS NULL', whereArgs: [digest], limit: 1);
-        if (existingNow.isNotEmpty) throw _DuplicatePdfException();
+        if (existingNow.isNotEmpty && !archivingPhoneOriginal) {
+          throw _DuplicatePdfException();
+        }
         if (targetFolderId != null) {
           final activeFolder = await txn.query('folders', columns: ['id'],
             where: 'id = ? AND deleted_at IS NULL', whereArgs: [targetFolderId], limit: 1);
@@ -1360,6 +1370,10 @@ class DocumentRepository {
       }
       rethrow;
     }
+    // Only publish the exact newly committed record ID after success. Do not
+    // re-find this row by its SHA-256: identical active Grid PDFs can coexist
+    // with Phone-owned Recycle Bin archives.
+    onImportedDocumentId?.call(id);
     return const ImportSummary(added: 1, duplicates: 0, failed: 0);
   }
 
@@ -1428,18 +1442,23 @@ class DocumentRepository {
         sourceUri: sourceUri,
         destinationPath: staged.path,
       );
+      String? archivedDocumentId;
       final imported = await importScannedPdf(
         staged,
         displayName: displayName,
         sourceType: 'phone_storage_recycle_bin',
+        onImportedDocumentId: (id) => archivedDocumentId = id,
       );
       if (imported.added != 1) return false;
+      if (archivedDocumentId == null) {
+        throw StateError('Could not identify the newly archived Phone PDF.');
+      }
       final digest = (await sha256.bind(staged.openRead()).first).toString();
       final db = await _database.database;
       final rows = await db.query(
         'documents',
-        where: 'sha256 = ? AND deleted_at IS NULL',
-        whereArgs: [digest],
+        where: 'id = ? AND sha256 = ? AND deleted_at IS NULL AND source = ?',
+        whereArgs: [archivedDocumentId, digest, 'phone_storage_recycle_bin'],
         limit: 1,
       );
       if (rows.isEmpty) {
@@ -1464,11 +1483,34 @@ class DocumentRepository {
       if (saved != 1) {
         throw StateError('Original Phone folder metadata could not be saved; PDF kept.');
       }
-      // Delete the Phone original only after the Grid copy is verified. If
-      // Android denies deletion, keep the imported copy active and recoverable;
-      // do not leave a failed action half-hidden in Recycle Bin.
-      await storage.deletePdf(sourceUri);
+      // Move the independent archive to Recycle Bin BEFORE touching the Phone
+      // file. A failed physical deletion must leave this verified backup in
+      // Trash, never a new active PDF masquerading as a Grid import.
       await moveToTrash(archivedDocument);
+      // A physical alias must never be deleted simply because its URI differs.
+      // Check every active Grid record with matching bytes, not only names.
+      final activeMatches = await db.query(
+        'documents',
+        columns: ['id', 'storage_uri'],
+        where: 'sha256 = ? AND deleted_at IS NULL',
+        whereArgs: [digest],
+      );
+      for (final entry in activeMatches) {
+        final gridUri = entry['storage_uri'] as String?;
+        if (gridUri == null || gridUri.isEmpty) continue;
+        final same = await storage.samePhysicalPdf(
+          sourceUri: sourceUri,
+          otherUri: gridUri,
+        );
+        if (same) {
+          throw StateError(
+            'Phone and Grid point to the same physical PDF. '
+            'The source was kept; an independent archive is in Recycle Bin.',
+          );
+        }
+      }
+      // The existing Grid document never moves or changes.
+      await storage.deletePdf(sourceUri);
       return true;
     } finally {
       try {

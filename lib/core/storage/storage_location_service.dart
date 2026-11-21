@@ -235,6 +235,13 @@ class StorageLocationService {
         part == 'recycle bin');
   }
 
+  /// Public, conservative boundary for Phone Move destinations. The
+  /// pre-existing test helper remains unchanged.
+  static bool isRestrictedPhoneMoveDestination(String? uri) =>
+      isCanonicalPortableRootUri(uri) ||
+      isLegacyDocsGridStorageLocation(uri) ||
+      isAndroidTrashPath(uri);
+
   /// Normalizes the native MediaStore response separately from the Android
   /// channel guard, so the response contract can be unit-tested on every host.
   @visibleForTesting
@@ -450,6 +457,32 @@ class StorageLocationService {
     final result = await _channel.invokeMethod<String>('renamePdf', {'uri': uri, 'name': name});
     if (result == null) throw StateError('The platform did not return the renamed PDF location.');
     return result;
+  }
+
+  /// Identity, not content equality. An identical SHA-256 alone cannot prove
+  /// that deleting one URI leaves a second physical PDF untouched.
+  /// Unknown or unsupported provider identity fails closed (throws).
+  Future<bool> samePhysicalPdf({
+    required String sourceUri,
+    required String otherUri,
+  }) async {
+    if (sourceUri == otherUri) return true;
+    String? localPath(String uri) {
+      if (uri.startsWith('/')) return p.normalize(uri);
+      final parsed = Uri.tryParse(uri);
+      return parsed?.scheme == 'file' ? p.normalize(parsed!.toFilePath()) : null;
+    }
+    final first = localPath(sourceUri);
+    final second = localPath(otherUri);
+    if (first != null && first == second) return true;
+    final value = await _channel.invokeMethod<bool>('samePhysicalPdf', {
+      'sourceUri': sourceUri,
+      'otherUri': otherUri,
+    });
+    if (value == null) {
+      throw StateError('Android could not establish whether the Phone and Grid PDFs are independent.');
+    }
+    return value;
   }
 
   Future<void> deletePdf(String uri) async {
