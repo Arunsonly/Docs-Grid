@@ -159,7 +159,12 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
           ),
         );
         if (openSettings == true) {
+          if (mounted) setState(() => _message =
+              'Open Android Settings, allow DocsGrid full storage access, '
+              'then return and choose Restore again.');
           await StorageLocationService.instance.requestAllFilesAccess();
+        } else if (mounted) {
+          setState(() => _message = 'Restore cancelled. Nothing was changed.');
         }
         return;
       }
@@ -169,7 +174,10 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
       type: FileType.custom,
       allowedExtensions: ['zip'],
     );
-    if (platformFile == null) return;
+    if (platformFile == null) {
+      if (mounted) setState(() => _message = 'Restore cancelled. Nothing was changed.');
+      return;
+    }
     final temporaryCopy =
         platformFile.path == null || platformFile.path!.isEmpty;
     final temporaryDirectory =
@@ -219,7 +227,10 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
           ],
         ),
       );
-      if (restoreMode == null || !mounted) return;
+      if (restoreMode == null || !mounted) {
+        if (mounted) setState(() => _message = 'Restore cancelled. Nothing was changed.');
+        return;
+      }
       Set<BackupRestoreSection>? selection;
       if (restoreMode == BackupRestoreMode.selective) {
         final selected = <BackupRestoreSection>{
@@ -278,7 +289,10 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
             ),
           ),
         );
-        if (selection == null || selection.isEmpty || !mounted) return;
+        if (selection == null || selection.isEmpty || !mounted) {
+          if (mounted) setState(() => _message = 'Restore cancelled. Nothing was changed.');
+          return;
+        }
       }
       if (mounted) setState(() => _message = 'Waiting for the verified restore operation…');
       final restored = await _tools.restoreBackup(
@@ -317,10 +331,12 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
               false;
         },
       );
-      if (restored != null && mounted) {
-        setState(() => _message = restored == 0
-            ? 'Restore completed. No PDF payloads were included; recovered document records may need PDF relinking.'
-            : 'Restore completed: $restored PDF payload(s) restored and verified.');
+      if (mounted) {
+        setState(() => _message = restored == null
+            ? 'Restore cancelled. No PDF or database was changed.'
+            : restored == 0
+                ? 'Restore completed. No PDF payloads were included; recovered document records may need PDF relinking.'
+                : 'Restore completed: $restored PDF payload(s) restored and verified.');
       }
     } on StateError catch (error) {
       if (!error.toString().contains('contains no user PDFs') || !mounted) rethrow;
