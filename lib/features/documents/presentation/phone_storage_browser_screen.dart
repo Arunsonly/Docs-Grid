@@ -14,6 +14,7 @@ class PhoneStorageBrowserScreen extends StatefulWidget {
     required this.entries,
     required this.onOpenPdf,
     this.onMovePdf,
+    this.onMoveWithinPhone,
     this.onRenamePdf,
     this.onSharePdf,
     this.onToggleStarPdf,
@@ -30,6 +31,7 @@ class PhoneStorageBrowserScreen extends StatefulWidget {
   final List<Map<String, Object?>> entries;
   final Future<void> Function(String uri, String name) onOpenPdf;
   final Future<bool> Function(String uri, String name)? onMovePdf;
+  final Future<bool> Function(String uri, String name)? onMoveWithinPhone;
   final Future<bool> Function(String uri, String name)? onRenamePdf;
   final Future<void> Function(String uri, String name)? onSharePdf;
   final Future<void> Function(String uri, String name)? onToggleStarPdf;
@@ -441,6 +443,8 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
     var sourceChanged = false;
     if (action == 'move') {
       sourceChanged = await widget.onMovePdf?.call(uri, name) ?? false;
+    } else if (action == 'move_phone') {
+      sourceChanged = await widget.onMoveWithinPhone?.call(uri, name) ?? false;
     } else if (action == 'rename') {
       sourceChanged = await widget.onRenamePdf?.call(uri, name) ?? false;
     } else if (action == 'share') {
@@ -625,6 +629,8 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
             ),
           if (widget.onRenamePdf != null)
             const PopupMenuItem(value: 'rename', child: Text('Rename')),
+          if (widget.onMoveWithinPhone != null)
+            const PopupMenuItem(value: 'move_phone', child: Text('Move')),
           if (widget.onMovePdf != null)
             const PopupMenuItem(value: 'move', child: Text('Move to Grid')),
           if (widget.onTrashPdf != null)
