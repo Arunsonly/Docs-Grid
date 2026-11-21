@@ -18,6 +18,9 @@ class _FakeDocuments extends DocumentRepository {
   );
 
   @override
+  Future<int> countInFolder(String? folderId) async => 0;
+
+  @override
   Future<FolderDocumentPage> listInFolderPage(
     String? folderId, {
     int pageSize = 60,
