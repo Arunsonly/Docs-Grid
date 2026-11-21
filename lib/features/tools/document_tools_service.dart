@@ -1414,9 +1414,10 @@ class DocumentToolsService {
     Future<bool> Function(Map<String, int> preview)? confirmPlan,
     BackupRestoreMode mode = BackupRestoreMode.merge,
     Set<BackupRestoreSection>? selection,
+    void Function(String message)? onProgress,
   }) => _withRecoveryLock(() => _restoreBackupLocked(
     zipFile, confirm: confirm, mode: mode, selection: selection,
-    confirmPlan: confirmPlan,
+    confirmPlan: confirmPlan, onProgress: onProgress,
   ));
 
 Future<int?> _restoreBackupLocked(
@@ -1425,10 +1426,24 @@ Future<int?> _restoreBackupLocked(
     Future<bool> Function(Map<String, int> preview)? confirmPlan,
     BackupRestoreMode mode = BackupRestoreMode.merge,
     Set<BackupRestoreSection>? selection,
+    void Function(String message)? onProgress,
   }) async {
 
+    onProgress?.call('Waiting for pending storage operations…');
     await StorageMigrationGate.waitUntilReady();
-    final backup = await _decodeValidatedBackup(zipFile);
+    // Check destinations BEFORE spending time staging a large ZIP.
+    onProgress?.call('Checking the existing DocsGrid restore destinations…');
+    final restoreFileLocations = Platform.isAndroid
+        ? await StorageLocationService.instance.zipRestoreFileLocations()
+        : const <String, String>{};
+    onProgress?.call('Validating ZIP contents and PDF checksums…');
+    final backup = await _decodeValidatedBackup(zipFile,
+      onPdfStaged: (completed, total) {
+        if (completed == 1 || completed == total || completed % 10 == 0) {
+          onProgress?.call('Checking PDF integrity: $completed of $total');
+        }
+      });
+    onProgress?.call('Archive verified. Preparing restore preview…');
     try {
       final pdfCount = (backup.manifest['files'] as List<dynamic>).length;
       bool hasRows(String table) =>
@@ -1524,6 +1539,8 @@ Future<int?> _restoreBackupLocked(
           selectiveBackup,
           restoreMode: BackupRestoreMode.selective.name,
           confirmPlan: confirmPlan,
+          restoreFileLocations: restoreFileLocations,
+          onProgress: onProgress,
         );
       }
       return await _restoreValidatedBackup(
@@ -1531,6 +1548,8 @@ Future<int?> _restoreBackupLocked(
         replaceExisting: mode == BackupRestoreMode.fullReplacement,
         restoreMode: mode.name,
         confirmPlan: confirmPlan,
+        restoreFileLocations: restoreFileLocations,
+        onProgress: onProgress,
       );
     } finally {
       await backup.dispose();
@@ -1542,6 +1561,8 @@ Future<int?> _restoreBackupLocked(
     bool replaceExisting = false,
     String restoreMode = 'merge',
     Future<bool> Function(Map<String, int> preview)? confirmPlan,
+    Map<String, String> restoreFileLocations = const <String, String>{},
+    void Function(String message)? onProgress,
   }) async {
     final manifest = backup.manifest;
     final rowsByTable = backup.rowsByTable;
@@ -1694,19 +1715,13 @@ Future<int?> _restoreBackupLocked(
       rowsByTable,
       allowedExternalDocumentIds: externalDocumentIds,
     );
-    final portableLocations = Platform.isAndroid
-        ? await StorageLocationService.instance.portableDataLocationsIfAvailable()
-        : const <String, String>{};
-    final portableUnfiledUri = portableLocations['documentsUri'];
-    final portableFoldersUri = portableLocations['libraryUri'];
+    // Use only the originally selected, preflight-verified folder locations.
+    // Never silently move a SAF-based library to a new empty default root.
+    final portableUnfiledUri = restoreFileLocations['documentsUri'];
+    final portableFoldersUri = restoreFileLocations['libraryUri'];
     if (Platform.isAndroid &&
-        (portableUnfiledUri == null ||
-            !portableUnfiledUri.startsWith('file://') ||
-            portableFoldersUri == null ||
-            !portableFoldersUri.startsWith('file://'))) {
-      throw StateError(
-        'Allow Full internal storage access before restoring this ZIP backup.',
-      );
+        (portableUnfiledUri == null || portableFoldersUri == null)) {
+      throw StateError('Verified local ZIP restore destinations are unavailable.');
     }
     final fallbackRoot = p.join(
       (await getApplicationDocumentsDirectory()).path,
@@ -1912,6 +1927,17 @@ Future<int?> _restoreBackupLocked(
       throw StateError('Legacy storage reconciliation requires explicit restore-preview approval.');
     }
     if (confirmPlan != null && !await confirmPlan(preview)) return null;
+    if (Platform.isAndroid) {
+      // Settings can change while the user inspects the restore preview.
+      // Recheck before the safety checkpoint or any physical/db writes.
+      final current = await StorageLocationService.instance.zipRestoreFileLocations();
+      if (current['documentsUri'] != portableUnfiledUri ||
+          current['libraryUri'] != portableFoldersUri) {
+        throw StateError('The selected storage location changed during restore preview. '
+            'No PDF or database was changed; reopen Restore and review again.');
+      }
+    }
+    onProgress?.call('Creating a verified safety checkpoint before applying restore…');
     // Generate a verified Full safety archive only after an accepted plan.
     // A cancelled preview must not create or prune backup files. This still
     // precedes all physical library writes and the SQLite transaction.
@@ -1943,6 +1969,7 @@ Future<int?> _restoreBackupLocked(
     var databaseCommitted = false;
     var backupPayloadCopies = 0;
     try {
+      onProgress?.call('Preparing verified folders for restore…');
       for (final row in folderRows) {
         final directory = Directory(folderPath(row['id'] as String));
         if (!await directory.exists()) {
@@ -2006,8 +2033,13 @@ Future<int?> _restoreBackupLocked(
         await pendingFile.rename(destination.path);
         restoredPaths[id] = destination.path;
         backupPayloadCopies++;
+        if (backupPayloadCopies == 1 || backupPayloadCopies == fileRows.length ||
+            backupPayloadCopies % 10 == 0) {
+          onProgress?.call('Restoring verified PDFs: $backupPayloadCopies of ${fileRows.length}');
+        }
       }
 
+      onProgress?.call('Updating the DocsGrid database and document links…');
       for (final row in rowsByTable['documents']!) {
         final id = row['id'] as String;
         final uri = duplicateDocumentIds.contains(id)
@@ -3363,7 +3395,9 @@ Future<int?> _restoreBackupLocked(
     }
   }
 
-  Future<_ValidatedBackup> _decodeValidatedBackup(File zipFile) async {
+  Future<_ValidatedBackup> _decodeValidatedBackup(
+    File zipFile, {void Function(int completed, int total)? onPdfStaged,
+  }) async {
     if (!await zipFile.exists()) throw StateError('Backup file not found.');
     try {
       await BackupArchiveLimits.validate(zipFile);
@@ -3558,6 +3592,7 @@ Future<int?> _restoreBackupLocked(
           throw StateError('Backup integrity check failed.');
         }
         stagedPdfPaths[documentId] = stagedFile.path;
+        onPdfStaged?.call(stagedPdfPaths.length, rawFiles.length);
       }
       final databaseOnly = manifest['backupType'] == 'database';
       if (!databaseOnly &&
