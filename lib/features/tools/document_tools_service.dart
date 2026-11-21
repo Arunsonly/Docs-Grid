@@ -424,6 +424,108 @@ class DocumentToolsService {
   }
 
 
+  /// Reads a Phone PDF only after the user explicitly selects OCR Search.
+  /// No document row, OCR database entry or network upload is created.
+  /// Original PDF bytes remain unchanged, including on cancellation.
+  Future<String> extractPhonePdfTextFromUri(
+    String storageUri, {
+    bool Function()? shouldCancel,
+  }) async {
+    if (shouldCancel?.call() ?? false) throw const OcrIndexCancelled();
+    File source;
+    File? staged;
+    if (storageUri.startsWith('content://') ||
+        storageUri.startsWith('file://')) {
+      final temporary = await getTemporaryDirectory();
+      staged = File(p.join(temporary.path, 'phone_ocr_${_uuid.v4()}.pdf'));
+      source = staged;
+      try {
+        await StorageLocationService.instance.copyPdfToPath(
+          sourceUri: storageUri,
+          destinationPath: source.path,
+        );
+      } catch (_) {
+        try { if (await source.exists()) await source.delete(); } catch (_) {}
+        rethrow;
+      }
+    } else {
+      source = File(storageUri);
+    }
+
+    pdfx.PdfDocument? document;
+    TextRecognizer? latin;
+    TextRecognizer? devanagari;
+    final buffer = StringBuffer();
+    try {
+      if (shouldCancel?.call() ?? false) throw const OcrIndexCancelled();
+      if (!await source.exists()) {
+        throw StateError('Phone PDF is no longer accessible.');
+      }
+      final header = await source.openRead(0, 5)
+          .fold<List<int>>(<int>[], (bytes, next) => bytes..addAll(next));
+      if (header.length < 5 || String.fromCharCodes(header) != '%PDF-') {
+        throw StateError('The Phone file is not a valid PDF.');
+      }
+      document = await pdfx.PdfDocument.openFile(source.path);
+      latin = TextRecognizer(script: TextRecognitionScript.latin);
+      if (Platform.isAndroid) {
+        devanagari = TextRecognizer(script: TextRecognitionScript.devanagiri);
+      }
+      for (var number = 1; number <= document.pagesCount; number++) {
+        if (shouldCancel?.call() ?? false) throw const OcrIndexCancelled();
+        final page = await document.getPage(number);
+        try {
+          final rendered = await page.render(
+            width: (page.width * 1.5).clamp(900, 1800).toDouble(),
+            height: (page.height * 1.5).clamp(900, 2400).toDouble(),
+            format: pdfx.PdfPageImageFormat.png,
+          );
+          if (rendered == null) continue;
+          if (shouldCancel?.call() ?? false) throw const OcrIndexCancelled();
+          final tempDir = await getTemporaryDirectory();
+          final image = File(p.join(tempDir.path, 'phone_ocr_page_${_uuid.v4()}.png'));
+          try {
+            await image.writeAsBytes(rendered.bytes, flush: true);
+            final input = InputImage.fromFilePath(image.path);
+            final latinText = await latin.processImage(input);
+            if (shouldCancel?.call() ?? false) throw const OcrIndexCancelled();
+            final pieces = <String>[latinText.text];
+            if (devanagari != null) {
+              final hindiText = await devanagari.processImage(input);
+              if (shouldCancel?.call() ?? false) throw const OcrIndexCancelled();
+              if (hindiText.text.trim().isNotEmpty) pieces.add(hindiText.text);
+            }
+            buffer.write('--- Page $number ---\\n');
+            buffer.writeln(pieces.where((value) => value.trim().isNotEmpty)
+                .join('\\n'));
+          } finally {
+            try { if (await image.exists()) await image.delete(); } catch (_) {}
+          }
+        } finally {
+          await page.close();
+        }
+      }
+      if (shouldCancel?.call() ?? false) throw const OcrIndexCancelled();
+      return buffer.toString();
+    } finally {
+      try {
+        await latin?.close();
+      } finally {
+        try {
+          await devanagari?.close();
+        } finally {
+          try {
+            await document?.close();
+          } finally {
+            if (staged != null) {
+              try { if (await staged.exists()) await staged.delete(); } catch (_) {}
+            }
+          }
+        }
+      }
+    }
+  }
+
   Future<int> indexPdfTextFromUri(
     String documentId,
     String storageUri, {
