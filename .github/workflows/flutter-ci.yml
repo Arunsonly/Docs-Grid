@@ -392,6 +392,12 @@ jobs:
           path: artifacts/release
       - name: Verify TTID parser and percentile calculations
         run: python3 -m unittest discover -s scripts -p 'test_android_cold_launch.py' -v
+      - name: Confirm emulator host and APK ABI compatibility
+        run: |
+          set -euo pipefail
+          echo "macOS host architecture: $(uname -m)"
+          test "$(uname -m)" = arm64
+          unzip -Z1 artifacts/release/app-release.apk | grep -Fx 'lib/arm64-v8a/libflutter.so'
       - name: Measure Release APK cold launches (TTID, not TTFD)
         uses: reactivecircus/android-emulator-runner@v2
         with:
