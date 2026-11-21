@@ -90,6 +90,17 @@ void main() {
     }
   });
 
+  test('Documents and Folders can never target the same physical directory', () {
+    const duplicate = 'file:///storage/emulated/0/DocsGrid/Files';
+    expect(() => StorageLocationService.validateZipRestoreFileLocations(
+      configured: {
+        'documentsUri': duplicate,
+        'libraryUri': duplicate,
+      },
+      allFilesAccess: true,
+    ), throwsStateError);
+  });
+
   test('mapping must include both locations, never a partial destination', () {
     expect(() => StorageLocationService.validateZipRestoreFileLocations(
       configured: selectedPrimarySAF,
