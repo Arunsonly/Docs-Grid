@@ -15,6 +15,7 @@ import android.os.FileObserver
 import android.os.Environment
 import android.os.Handler
 import android.os.Looper
+import android.system.Os
 import android.provider.DocumentsContract
 import java.security.MessageDigest
 import io.flutter.embedding.android.FlutterActivity
@@ -972,6 +973,11 @@ class MainActivity : FlutterActivity() {
                                 val uri = Uri.parse(call.argument<String>("uri")!!)
                                 result.success(digest(uri).joinToString("") { "%02x".format(it) })
                             }
+                            "samePhysicalPdf" -> {
+                                val source = Uri.parse(call.argument<String>("sourceUri")!!)
+                                val other = Uri.parse(call.argument<String>("otherUri")!!)
+                                result.success(samePhysicalPdf(source, other))
+                            }
                             "writeTextFile" -> {
                                 val parent = Uri.parse(call.argument<String>("parentUri")!!)
                                 val name = call.argument<String>("name")!!
@@ -1676,6 +1682,28 @@ class MainActivity : FlutterActivity() {
         }
         return md.digest()
     }
+
+    // Compare actual OS file identity (device + inode), not identical content
+    // hashes or different URI spellings. If a provider cannot expose a genuine
+    // file descriptor, fail closed instead of risking a managed Grid PDF.
+    private fun pdfPhysicalIdentity(uri: Uri): Pair<Long, Long> {
+        val stat = if (uri.scheme == "file" || uri.scheme.isNullOrEmpty()) {
+            val local = if (uri.scheme == "file") fileForUri(uri)
+                else java.io.File(uri.path ?: throw IllegalStateException("Missing PDF path."))
+            Os.stat(local.canonicalPath)
+        } else {
+            contentResolver.openFileDescriptor(uri, "r")?.use { descriptor ->
+                Os.fstat(descriptor.fileDescriptor)
+            } ?: throw IllegalStateException("Provider cannot expose PDF identity.")
+        }
+        if (stat.st_ino <= 0L || stat.st_dev <= 0L) {
+            throw IllegalStateException("PDF physical identity was not available.")
+        }
+        return Pair(stat.st_dev, stat.st_ino)
+    }
+
+    private fun samePhysicalPdf(a: Uri, b: Uri): Boolean =
+        pdfPhysicalIdentity(a) == pdfPhysicalIdentity(b)
 
     // Copy and verify without deleting the source. Dart updates SQLite first,
     // then explicitly deletes the source after the metadata transaction commits.
