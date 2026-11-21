@@ -58,6 +58,15 @@ void main() {
     expect(native, contains('"RESTORE_LOCATION_CHANGED"'));
   });
 
+  test('all ZIP restore cancellation points clear stale waiting messages', () {
+    expect(ui, contains("if (platformFile == null) {"));
+    expect(ui, contains("if (restoreMode == null || !mounted) {"));
+    expect(ui, contains("if (selection == null || selection.isEmpty || !mounted) {"));
+    expect(ui, contains("restored == null"));
+    expect(ui, contains("Restore cancelled. Nothing was changed."));
+    expect(ui, contains("then return and choose Restore again."));
+  });
+
   test('UI keeps all three restore modes, file selection and selected-folder recovery', () {
     expect(ui, contains("if (source == 'folder')"));
     expect(ui, contains('await _restorePortableSnapshot()'));
