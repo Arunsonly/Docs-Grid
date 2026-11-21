@@ -20,7 +20,6 @@ import 'features/tools/document_tools_screen.dart' show DocumentToolsScreen;
 import 'features/tools/document_tools_service.dart';
 import 'core/database/app_database.dart';
 import 'core/storage/portable_snapshot_events.dart';
-import 'core/storage/storage_migration_gate.dart';
 import 'core/backup/backup_automation.dart';
 
 final GlobalKey<NavigatorState> docsGridNavigatorKey = GlobalKey<NavigatorState>();
@@ -124,27 +123,8 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
       unawaited(_openReminderDocument(documentId));
     };
     WidgetsBinding.instance.addPostFrameCallback((_) async {
-      // Paint first, then migrate older library paths. New writes wait for this task.
-      if (Platform.isAndroid) {
-        final migration = StorageMigrationGate.start(() async {
-          final migrated = await DocumentRepository()
-              .migrateLegacyStorageToCanonicalIfNeeded();
-          if (migrated > 0 && mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('$migrated PDF(s) moved to DocsGrid storage.')),
-            );
-          }
-        });
-        unawaited(migration.catchError((Object _) {
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                content: Text('Old files could not be moved. Your original files are safe. Restart DocsGrid to retry.'),
-              ),
-            );
-          }
-        }));
-      }
+      // No automatic migration on launch: moving legacy PDFs must require
+      // an explicit action in Settings and must never delete an original.
       // Initialize best-effort Android background jobs without blocking first paint.
       unawaited(BackupAutomation.initializeAndroid());
       _schedulePortableSnapshot();
@@ -546,10 +526,10 @@ class _SettingsScreenState extends State<_SettingsScreen> {
       final migrate = await showDialog<bool>(
         context: context,
         builder: (dialogContext) => AlertDialog(
-          title: const Text('Move existing PDF library?'),
+          title: const Text('Copy existing PDF library?'),
           content: Text(
-            'Use “${folder['name']}” for new imports and move your existing PDFs and folder structure there? '
-            'Every PDF is verified before its old copy is removed.',
+            'Use “${folder['name']}” for new imports and copy your existing PDFs and folder structure there? '
+            'Every PDF is verified. All original files remain untouched.',
           ),
           actions: [
             TextButton(
@@ -558,7 +538,7 @@ class _SettingsScreenState extends State<_SettingsScreen> {
             ),
             FilledButton(
               onPressed: () => Navigator.pop(dialogContext, true),
-              child: const Text('Move existing library'),
+              child: const Text('Copy existing library'),
             ),
           ],
         ),
@@ -568,14 +548,14 @@ class _SettingsScreenState extends State<_SettingsScreen> {
       if (!context.mounted) return;
       if (migrate != true) {
         messenger.showSnackBar(
-          SnackBar(content: Text('Storage folder selected: ${folder['name']}. Existing PDFs were not moved.')),
+          SnackBar(content: Text('Storage folder selected: ${folder['name']}. Existing PDFs were left unchanged.')),
         );
         return;
       }
 
       var completed = 0;
       var total = 0;
-      var current = 'Preparing migration…';
+      var current = 'Preparing verified copies…';
       StateSetter? updateProgress;
       final progressDialog = showDialog<void>(
         context: context,
@@ -585,7 +565,7 @@ class _SettingsScreenState extends State<_SettingsScreen> {
             updateProgress = setDialogState;
             final value = total == 0 ? null : completed / total;
             return AlertDialog(
-              title: const Text('Migrating PDF library'),
+              title: const Text('Copying PDF library'),
               content: Column(
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -597,7 +577,7 @@ class _SettingsScreenState extends State<_SettingsScreen> {
                   Text(current, maxLines: 2, overflow: TextOverflow.ellipsis,
                       style: Theme.of(dialogContext).textTheme.bodySmall),
                   const SizedBox(height: 8),
-                  const Text('Keep DocsGrid open. Original files are removed only after verification and database update.'),
+                  const Text('Keep DocsGrid open. Original files are never deleted during library copying.'),
                 ],
               ),
             );
@@ -618,7 +598,7 @@ class _SettingsScreenState extends State<_SettingsScreen> {
           Navigator.of(context, rootNavigator: true).pop();
           await progressDialog;
           messenger.showSnackBar(
-            SnackBar(content: Text('Migration completed: $count PDFs moved and verified.')),
+            SnackBar(content: Text('Library copy completed: $count PDFs verified. Originals retained.')),
           );
         }
       } catch (error) {
@@ -626,7 +606,7 @@ class _SettingsScreenState extends State<_SettingsScreen> {
           Navigator.of(context, rootNavigator: true).pop();
           await progressDialog;
           messenger.showSnackBar(
-            SnackBar(content: Text('Migration stopped safely: $error')),
+            SnackBar(content: Text('Library copy stopped safely: $error')),
           );
         }
       }

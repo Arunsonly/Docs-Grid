@@ -689,19 +689,23 @@ class DocumentRepository {
     }
   }
 
-  /// Moves the existing document library into the currently selected platform
-  /// folder. Each file is copied and verified, its DB reference is committed,
-  /// and only then is the old copy removed. Safe to retry after interruption.
+  /// Copies the existing library into the selected platform folder, verifying
+  /// each PDF before updating the database reference. Original PDFs are NEVER
+  /// deleted by migration, even if their URI appears different: a bare path and
+  /// file:// URI may point to the exact same physical file.
   Future<int> migrateExistingLibraryToSelectedStorage({
     void Function(int completed, int total, String current)? onProgress,
+    // Explicit root override also enables same-file alias regression tests on
+    // non-Android hosts; production callers normally use the selected root.
+    String? destinationRootUriOverride,
   }) async {
     final storage = StorageLocationService.instance;
     final selected = await storage.selectedFolder();
     final portableLocations = Platform.isAndroid
         ? await storage.portableDataLocationsIfAvailable()
         : const <String, String>{};
-    final rootUri = portableLocations['documentsUri'] ?? selected?['uri'];
-    final folderRootUri = portableLocations['libraryUri'] ?? selected?['uri'];
+    final rootUri = destinationRootUriOverride ?? portableLocations['documentsUri'] ?? selected?['uri'];
+    final folderRootUri = destinationRootUriOverride ?? portableLocations['libraryUri'] ?? selected?['uri'];
     if (rootUri == null || folderRootUri == null) {
       throw StateError('Choose a storage folder before starting migration.');
     }
@@ -846,25 +850,10 @@ class DocumentRepository {
         rethrow;
       }
 
-      if (destinationUri != sourceUri) {
-        try {
-          if (sourceUri.startsWith('content://') ||
-              (Platform.isIOS && sourceUri.startsWith('file://'))) {
-            await storage.deletePdf(sourceUri);
-          } else {
-            final oldPath = sourceUri.startsWith('file://')
-                ? Uri.parse(sourceUri).toFilePath()
-                : sourceUri;
-            final oldFile = File(oldPath);
-            if (await oldFile.exists()) await oldFile.delete();
-          }
-        } catch (_) {
-          throw StateError(
-            '"$name.pdf" was copied and verified and the library now points to the new copy, '
-            'but the old copy could not be removed. Both copies were retained.',
-          );
-        }
-      }
+      // Important: physical sources are never removed by library migration.
+      // Identical PDFs may be represented by a raw /storage/... path, a
+      // file:// URI, or different provider URIs. A string inequality does not
+      // authorize deletion. Retain both copies for explicit user review.
       migrated++;
       onProgress?.call(migrated, rows.length, '$name.pdf');
     }
@@ -889,8 +878,8 @@ class DocumentRepository {
             ));
   }
 
-  /// Moves older DocsGrid records into Android/media/com.docsgrid. Custom
-  /// SAF destinations remain untouched; old PDFs are SHA-256 verified.
+  /// Copies older DocsGrid records into the canonical location when explicitly
+  /// requested; no migration source PDFs are deleted.
   Future<int> migrateLegacyStorageToCanonicalIfNeeded() async {
     if (!Platform.isAndroid) return 0;
     final storage = StorageLocationService.instance;
