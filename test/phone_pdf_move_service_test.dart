@@ -104,7 +104,7 @@ void main() {
       displayName: 'Policy.pdf',
       destinationFolderUri: insurance.uri.toString(),
     );
-    expect(dest, contains('Policy%20%281%29.pdf'));
+    expect(File.fromUri(Uri.parse(dest)).path.endsWith('Policy (1).pdf'), isTrue);
     expect(await existing.readAsString(), '%PDF-1.7 unrelated existing policy');
     expect(await File.fromUri(Uri.parse(dest)).readAsString(),
         '%PDF-1.7 unique source');
