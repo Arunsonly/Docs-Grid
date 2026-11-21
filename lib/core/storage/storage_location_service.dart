@@ -338,10 +338,11 @@ class StorageLocationService {
       if (value == null || !value.startsWith('file://')) return false;
       try {
         final uri = Uri.parse(value);
-        return uri.scheme == 'file' &&
-            (uri.host.isEmpty || uri.host == 'localhost') &&
+        final path = uri.toFilePath();
+        return uri.scheme == 'file' && uri.host.isEmpty &&
             uri.query.isEmpty && uri.fragment.isEmpty &&
-            uri.toFilePath().startsWith('/');
+            path.startsWith('/') && path != '/' &&
+            !path.split('/').contains('..');
       } catch (_) {
         return false;
       }
