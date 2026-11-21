@@ -779,8 +779,9 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
         : folders[selectedPath] ?? const <Map<String, Object?>>[];
     final query = _searchController.text.trim().toLowerCase();
     final folderPaths = folders.keys
-        .where((path) => !_ocrSelected &&
-            (selectedPath != null || query.isEmpty || path.toLowerCase().contains(query)))
+        .where((path) => query.isEmpty ||
+            (!_ocrSelected &&
+             (selectedPath != null || path.toLowerCase().contains(query))))
         .toList(growable: false);
     // A selected folder renders its already sorted direct children.
     // At the root without a search, count PDFs without sorting all of them.
