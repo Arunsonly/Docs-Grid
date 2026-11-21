@@ -2983,7 +2983,14 @@ class _DocumentsScreenState extends State<DocumentsScreen>
             ),
           )
         else if (_documents.isEmpty)
-          _emptyState()
+          if (!widget.favoritesOnly && _search.text.trim().isNotEmpty)
+            const Padding(
+              padding: EdgeInsets.fromLTRB(16, 22, 16, 28),
+              child: Text('No matching PDFs in Grid Storage.',
+                  textAlign: TextAlign.center),
+            )
+          else
+            _emptyState()
         else
           if (_gridView)
             LayoutBuilder(
