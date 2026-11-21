@@ -498,9 +498,15 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
       ),
       body: SafeArea(
         child: switch (_selectedIndex) {
-          0 => DocumentsScreen(phoneOnly: true,
-            ocrSearchAvailable: widget.ocrSearchAvailable),
-          1 => DocumentsScreen(ocrSearchAvailable: widget.ocrSearchAvailable),
+          0 => DocumentsScreen(
+            key: const ValueKey('phone-tab'),
+            phoneOnly: true,
+            ocrSearchAvailable: widget.ocrSearchAvailable,
+          ),
+          1 => DocumentsScreen(
+            key: const ValueKey('home-tab'),
+            ocrSearchAvailable: widget.ocrSearchAvailable,
+          ),
           _ => FoldersScreen(ocrSearchAvailable: widget.ocrSearchAvailable),
         },
       ),
