@@ -7,7 +7,10 @@ import 'package:open_filex/open_filex.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../data/document_repository.dart';
+import '../data/home_dashboard_cache.dart';
 import '../data/phone_recent_history.dart';
+import '../data/phone_pdf_delta.dart';
+import '../data/phone_refresh_queue.dart';
 import '../data/phone_star_repository.dart';
 import '../data/phone_trash_origin.dart';
 import '../../../core/storage/storage_location_service.dart';
@@ -18,6 +21,7 @@ import 'document_thumbnail.dart';
 import 'phone_storage_browser_screen.dart';
 import '../../folders/presentation/folders_screen.dart';
 import '../../reminders/data/reminder_repository.dart';
+import '../../../core/diagnostics/startup_timeline.dart';
 
 class DocumentsScreen extends StatefulWidget {
   const DocumentsScreen({super.key, this.favoritesOnly = false, this.recentOnly = false, this.phoneOnly = false});
@@ -31,7 +35,10 @@ class DocumentsScreen extends StatefulWidget {
 
 class _DocumentsScreenState extends State<DocumentsScreen>
     with WidgetsBindingObserver {
+  bool get _isStartupHome =>
+      !widget.phoneOnly && !widget.favoritesOnly && !widget.recentOnly;
   final _repository = DocumentRepository();
+  final _homeCache = HomeDashboardCache();
   final _categoryRepository = CategoryRepository();
   final _folderRepository = FolderRepository();
   final _tools = DocumentToolsService();
@@ -44,14 +51,24 @@ class _DocumentsScreenState extends State<DocumentsScreen>
   bool _gridView = false;
   int _totalStorageBytes = 0;
   int _totalDocumentCount = 0;
+  bool _liveHomeSummaryLoaded = false;
+  bool _showCachedHomeSummary = false;
+  bool _liveGridRecentLoaded = false;
+  List<String> _cachedGridRecentNames = const [];
   int _starredCount = 0;
   int? _phoneStorageBytes;
   bool? _phoneHasAllFilesAccess;
   bool _phoneScanLoading = false;
   bool _phoneScanCompleted = false;
-  StreamSubscription<void>? _storageChangesSubscription;
+  StreamSubscription<StorageChangeNotice>? _storageChangesSubscription;
   Timer? _phoneRefreshDebounce;
   bool _phoneScanPending = false;
+  bool _phonePatchInFlight = false;
+  bool _phoneRefreshAfterBusy = false;
+  bool _phoneMediaStoreReady = false;
+  final PhoneRefreshQueue _phoneChangeQueue = PhoneRefreshQueue();
+  List<Map<String, String>> _phoneLastRoots = const [];
+  Map<String, Object?> _phoneLastMediaVolumes = const {};
   int _trashCount = 0;
   int _trashFolderCount = 0;
   List<Map<String, Object?>> _phoneRecent = [];
@@ -74,16 +91,22 @@ class _DocumentsScreenState extends State<DocumentsScreen>
   @override
   void initState() {
     super.initState();
+    if (_isStartupHome) StartupTimeline.mark('home_init');
     WidgetsBinding.instance.addObserver(this);
     unawaited(_loadPhoneStarred());
     _storageChangesSubscription =
         StorageLocationService.instance.storageChanges.listen(
-      (_) => _schedulePhoneStorageRefresh(),
+      (notice) => _schedulePhoneStorageRefresh(notice),
       onError: (_) {
         // Provider change events are best-effort; resume reconciliation remains.
       },
     );
     if (!widget.phoneOnly) {
+      // Display last-known *non-actionable* Home metadata while SQLite
+      // independently loads the authoritative data. Never block first paint.
+      if (!widget.favoritesOnly && !widget.recentOnly) {
+        unawaited(_restoreCachedHomeSnapshot());
+      }
       _load();
       _loadViewPreference();
       _loadTrashSummary();
@@ -93,12 +116,43 @@ class _DocumentsScreenState extends State<DocumentsScreen>
     _scrollController.addListener(_onScroll);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
+      if (_isStartupHome) StartupTimeline.mark('home_first_frame');
       if (widget.phoneOnly) {
         // Show the Phone tab in place; do not push a second page after scanning.
         _scanPhoneStorage(openBrowser: false);
       } else if (!widget.favoritesOnly && !widget.recentOnly) {
         _scanPhoneStorage(openBrowser: false);
       }
+    });
+  }
+
+  Future<void> _restoreCachedHomeSnapshot() async {
+    if (_isStartupHome) StartupTimeline.mark('home_cache_read_start');
+    // Only the actual Home dashboard may display a provisional snapshot.
+    // A completed SQLite read always wins, even if preferences finish later.
+    final summaryFuture = _homeCache.readSummary();
+    final namesFuture = _homeCache.readRecentNames();
+    final summary = await summaryFuture;
+    final names = await namesFuture;
+    if (_isStartupHome) {
+      StartupTimeline.mark('home_cache_read_done');
+      StartupTimeline.mark(summary == null
+          ? 'home_cache_summary_miss' : 'home_cache_summary_hit');
+    }
+    if (!mounted || widget.phoneOnly || widget.favoritesOnly || widget.recentOnly) {
+      return;
+    }
+    if ((_liveHomeSummaryLoaded || summary == null) &&
+        (_liveGridRecentLoaded || names.isEmpty)) return;
+    setState(() {
+      if (!_liveHomeSummaryLoaded && summary != null) {
+        _totalDocumentCount = summary.documentCount;
+        _starredCount = summary.favoriteCount;
+        _totalStorageBytes = summary.totalBytes;
+        _showCachedHomeSummary = true;
+        if (_isStartupHome) StartupTimeline.mark('home_cache_summary_applied');
+      }
+      if (!_liveGridRecentLoaded) _cachedGridRecentNames = names;
     });
   }
 
@@ -142,12 +196,117 @@ class _DocumentsScreenState extends State<DocumentsScreen>
     }
   }
 
-  void _schedulePhoneStorageRefresh() {
+  void _schedulePhoneStorageRefresh([StorageChangeNotice? notice]) {
     if (!mounted || widget.favoritesOnly || widget.recentOnly) return;
+    _phoneChangeQueue.add(notice);
+    _queuePhoneChangeRefresh();
+  }
+
+  void _queuePhoneChangeRefresh() {
+    if (!mounted || !_phoneChangeQueue.hasPending) return;
     _phoneRefreshDebounce?.cancel();
     _phoneRefreshDebounce = Timer(const Duration(milliseconds: 450), () {
-      if (mounted) unawaited(_scanPhoneStorage(openBrowser: false));
+      if (mounted) unawaited(_refreshPhoneStorageFromChanges());
     });
+  }
+
+  Future<void> _refreshPhoneStorageFromChanges() async {
+    if (!mounted) return;
+    if (_phoneScanLoading || _phonePatchInFlight) {
+      // Do not convert a precise event into an unconditional full scan just
+      // because another query has the Phone index temporarily busy.
+      _phoneRefreshAfterBusy = true;
+      return;
+    }
+    final batch = _phoneChangeQueue.take();
+    if (!batch.hasChanges) return;
+    final requiresFull = batch.requiresFullRefresh || !_phoneMediaStoreReady ||
+        !_phoneScanCompleted || _phoneLastRoots.isEmpty;
+    if (requiresFull) {
+      await _scanPhoneStorage(openBrowser: false);
+      return;
+    }
+    final changedUris = batch.mediaUris;
+    final changedPaths = batch.paths;
+
+    _phonePatchInFlight = true;
+    try {
+      final storage = StorageLocationService.instance;
+      if (!Platform.isAndroid || !await storage.hasAllFilesAccess()) {
+        await _scanPhoneStorage(openBrowser: false);
+        return;
+      }
+      final change = await storage.queryPhonePdfChanges(
+        mediaUris: changedUris,
+        paths: changedPaths,
+      );
+      if (change['complete'] != true) {
+        await _scanPhoneStorage(openBrowser: false);
+        return;
+      }
+      final observedVolumes = Map<String, Object?>.from(
+        change['volumes'] as Map,
+      );
+      final mountedVolumes = change['mountedVolumes'] as List<String>;
+      if (!PhonePdfDelta.volumesAreCompatible(
+        previous: _phoneLastMediaVolumes,
+        observed: observedVolumes,
+        mounted: mountedVolumes,
+      )) {
+        await _scanPhoneStorage(openBrowser: false);
+        return;
+      }
+      final updated = change['entries'] as List<Map<String, Object?>>;
+      final patch = PhonePdfDelta.apply(
+        existing: _phoneEntries,
+        updates: updated,
+        touchedMediaUris: change['touchedMediaUris'] as List<String>,
+        touchedLocalPaths: change['touchedLocalPaths'] as List<String>,
+      );
+      if (!mounted) return;
+      _phoneLastMediaVolumes = {
+        ..._phoneLastMediaVolumes,
+        ...observedVolumes,
+      };
+      if (!patch.changed) return;
+      setState(() => _phoneEntries = patch.entries);
+      // This is a proven complete MediaStore baseline plus scoped changes,
+      // not a partial scan; keep Recent discovery and the saved cache in sync.
+      final scopes = <String, List<Map<String, Object?>>>{
+        for (final volume in _phoneLastMediaVolumes.keys)
+          'media:$volume': <Map<String, Object?>>[],
+      };
+      for (final item in patch.entries) {
+        final volume = item['volumeName'] as String?;
+        if (volume != null && item['isDirectory'] != true) {
+          scopes['media:$volume']?.add(item);
+        }
+      }
+      try {
+        if (scopes.isNotEmpty) {
+          await PhoneRecentHistory.observeCompletedScans(scopes);
+          if (mounted && !widget.phoneOnly) await _loadRecentDocuments();
+        }
+      } catch (_) {
+        // Recent shortcuts are optional and never block the Phone index.
+      }
+      await _persistPhoneStorageIndexCache(
+        _phoneLastRoots, patch.entries,
+        mediaStoreVolumes: _phoneLastMediaVolumes,
+      );
+    } catch (_) {
+      // Permission change, provider timeout or ambiguous delta: use the
+      // established safe full index, never infer that PDFs were deleted.
+      if (mounted) await _scanPhoneStorage(openBrowser: false);
+    } finally {
+      _phonePatchInFlight = false;
+      if (mounted && (_phoneRefreshAfterBusy || _phoneChangeQueue.hasPending)) {
+        _phoneRefreshAfterBusy = false;
+        // Preserve the exact queued URI/path hints; do not call the no-arg
+        // scheduler, which deliberately requests a full resume scan.
+        _queuePhoneChangeRefresh();
+      }
+    }
   }
 
   @override
@@ -165,11 +324,13 @@ class _DocumentsScreenState extends State<DocumentsScreen>
   }
 
   Future<void> _load() async {
+    if (_isStartupHome) StartupTimeline.mark('home_page_start');
     final generation = ++_loadGeneration;
     if (mounted) setState(() { _loading = true; _loadingMore = false; });
     // Run the small first page and dashboard aggregates concurrently. Render
     // the document rows as soon as the page is ready; never make the first
     // useful screen wait for a full-library summary query.
+    if (_isStartupHome) StartupTimeline.mark('home_summary_start');
     final summaryFuture = _repository.dashboardSummary();
     try {
       if (_searchInsideText && _search.text.trim().isNotEmpty) {
@@ -205,6 +366,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
           _error = null;
         });
       }
+      if (_isStartupHome) StartupTimeline.mark('home_page_ready');
       // Summary is secondary UI. Update it when ready without delaying the
       // first page, and ignore stale completions after a newer refresh.
       try {
@@ -214,11 +376,23 @@ class _DocumentsScreenState extends State<DocumentsScreen>
           _totalStorageBytes = summary.totalBytes;
           _totalDocumentCount = summary.documentCount;
           _starredCount = summary.favoriteCount;
+          _liveHomeSummaryLoaded = true;
+          _showCachedHomeSummary = false;
         });
+        if (_isStartupHome) StartupTimeline.mark('home_summary_ready');
+        if (!widget.phoneOnly && !widget.favoritesOnly && !widget.recentOnly) {
+          unawaited(_homeCache.saveSummary(
+            documentCount: summary.documentCount,
+            favoriteCount: summary.favoriteCount,
+            totalBytes: summary.totalBytes,
+          ));
+        }
       } catch (_) {
+        if (_isStartupHome) StartupTimeline.mark('home_summary_failed');
         // A summary failure must not blank a successfully loaded PDF list.
       }
     } catch (error) {
+      if (_isStartupHome) StartupTimeline.mark('home_page_failed');
       if (!mounted || generation != _loadGeneration) return;
       setState(() {
         _loading = false;
@@ -284,6 +458,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
   }
 
   Future<void> _loadTrashSummary() async {
+    if (_isStartupHome) StartupTimeline.mark('home_trash_start');
     try {
       final values = await Future.wait<Object>([
         _repository.trashCount(),
@@ -296,6 +471,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         _trashCount = count;
         _trashFolderCount = folders.length;
       });
+      if (_isStartupHome) StartupTimeline.mark('home_trash_ready');
     } catch (_) {
       // Keep the dashboard usable; the Recycle Bin screen reports its own error.
     }
@@ -309,7 +485,16 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       _totalStorageBytes = summary.totalBytes;
       _totalDocumentCount = summary.documentCount;
       _starredCount = summary.favoriteCount;
+      _liveHomeSummaryLoaded = true;
+      _showCachedHomeSummary = false;
     });
+    if (!widget.phoneOnly) {
+      unawaited(_homeCache.saveSummary(
+        documentCount: summary.documentCount,
+        favoriteCount: summary.favoriteCount,
+        totalBytes: summary.totalBytes,
+      ));
+    }
     await _loadTrashSummary();
   }
 
@@ -386,6 +571,9 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       final signature = roots.map((root) => root['uri']!).join('|');
       if (decoded is! Map || decoded['rootSignature'] != signature ||
           decoded['entries'] is! List) return false;
+      // The cache is scoped to the currently granted roots; make that
+      // signature available to per-folder previews before the live scan ends.
+      _phoneLastRoots = roots;
       final cached = (decoded['entries'] as List).whereType<Map>()
           .map((entry) => Map<String, Object?>.from(entry)).toList(growable: false);
       if (!mounted) return false;
@@ -512,6 +700,8 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       _phoneScanPending = true;
       return;
     }
+    if (_isStartupHome) StartupTimeline.mark('home_phone_scan_start');
+    _phoneMediaStoreReady = false;
     if (mounted) setState(() { _phoneScanLoading = true; _phoneScanCompleted = false; });
     try {
       var hasAllFilesAccess = false;
@@ -731,6 +921,9 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       } else {
         await _persistPhoneStorageIndexCache(roots, entries);
       }
+      _phoneMediaStoreReady = mediaStoreComplete;
+      _phoneLastMediaVolumes = mediaStoreVolumes;
+      _phoneLastRoots = roots;
       setState(() {
         _phoneEntries=entries;
         _phoneScanCompleted = true;
@@ -748,10 +941,18 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         _message('Phone Storage scan failed; inaccessible locations were not marked empty: $error');
       }
     } finally {
+      if (_isStartupHome) StartupTimeline.mark('home_phone_scan_finished');
       if (mounted) setState(() => _phoneScanLoading = false);
-      if (_phoneScanPending && mounted) {
-        _phoneScanPending = false;
-        _schedulePhoneStorageRefresh();
+      if (mounted) {
+        if (_phoneScanPending) {
+          _phoneScanPending = false;
+          // A second explicit scan request is still a real full refresh.
+          _phoneChangeQueue.add(null);
+        }
+        if (_phoneRefreshAfterBusy || _phoneChangeQueue.hasPending) {
+          _phoneRefreshAfterBusy = false;
+          _queuePhoneChangeRefresh();
+        }
       }
     }
   }
@@ -768,6 +969,8 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         starredUris: _phoneStarredUris,
         onTrashPdf: _trashPhonePdf,
         initialPath: initialPath,
+        cacheScope: _phoneLastRoots
+            .map((root) => root['uri'] ?? '').join('|'),
       ),
     ));
   }
@@ -1193,6 +1396,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
   }
 
   Future<void> _loadRecentDocuments() async {
+    if (_isStartupHome) StartupTimeline.mark('home_recent_start');
     try {
       // Include both opened documents and newly added documents. The list
       // is capped at 20 so the dashboard's Recent panel can scroll independently.
@@ -1214,8 +1418,18 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       setState(() {
         _gridRecent = recentDocuments;
         _phoneRecent = phone.take(20).toList(growable: false);
+        _liveGridRecentLoaded = true;
+        _cachedGridRecentNames = const [];
       });
+      if (_isStartupHome) StartupTimeline.mark('home_recent_ready');
+      if (!widget.phoneOnly && !widget.favoritesOnly && !widget.recentOnly) {
+        // Names only. Do not persist IDs, paths, actions or raw PDF bytes.
+        unawaited(_homeCache.saveRecentNames(
+          recentDocuments.map((document) => document.name).toList(growable: false),
+        ));
+      }
     } catch (_) {
+      if (_isStartupHome) StartupTimeline.mark('home_recent_failed');
       // Recent metadata is optional and must not block the dashboard.
     }
   }
@@ -2183,6 +2397,8 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         starredUris: _phoneStarredUris,
         onTrashPdf: _trashPhonePdf,
         embedded: true,
+        cacheScope: _phoneLastRoots
+            .map((root) => root['uri'] ?? '').join('|'),
         // Keep the last usable index visible while refresh continues silently.
         isLoading: _phoneScanLoading && _phoneEntries.isEmpty,
         onRefresh: () => _scanPhoneStorage(openBrowser: true),
@@ -2278,6 +2494,9 @@ class _DocumentsScreenState extends State<DocumentsScreen>
                   Text('$_totalDocumentCount PDFs', style: const TextStyle(
                     color: Color(0xFF10162C), fontSize: 32, fontWeight: FontWeight.w800,
                   )),
+                  if (_showCachedHomeSummary)
+                    const Text('Previous summary · refreshing live counts',
+                      style: TextStyle(color: Color(0xFF17203D), fontSize: 10)),
                   const SizedBox(height: 12),
                   Row(children: [
                     Expanded(child: _dashboardStorageMetric(
@@ -2386,7 +2605,20 @@ class _DocumentsScreenState extends State<DocumentsScreen>
                                       itemBuilder: (context, index) => _phoneRecentTile(_phoneRecent[index]),
                                     )
                               : _gridRecent.isEmpty
-                                  ? const Center(child: Text('No recent Grid PDFs'))
+                                  ? (!_liveGridRecentLoaded && _cachedGridRecentNames.isNotEmpty
+                                      ? ListView.builder(
+                                          primary: false,
+                                          itemCount: _cachedGridRecentNames.length,
+                                          itemBuilder: (context, index) => ListTile(
+                                            dense: true,
+                                            enabled: false,
+                                            leading: const Icon(Icons.picture_as_pdf_outlined),
+                                            title: Text('${_cachedGridRecentNames[index]}.pdf',
+                                              maxLines: 1, overflow: TextOverflow.ellipsis),
+                                            subtitle: const Text('Previous session · verifying PDFs'),
+                                          ),
+                                        )
+                                      : const Center(child: Text('No recent Grid PDFs')))
                                   : ListView.separated(
                                       primary: false,
                                       itemCount: _gridRecent.length,
@@ -2771,6 +3003,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
             const PopupMenuItem(value: 'category', child: Text('Set category')),
             const PopupMenuItem(value: 'tags', child: Text('Edit tags')),
             const PopupMenuItem(value: 'rename', child: Text('Rename')),
+            const PopupMenuItem(value: 'relink', child: Text('Relink PDF')),
             const PopupMenuItem(value: 'move', child: Text('Move to folder')),
             const PopupMenuItem(value: 'trash', child: Text('Move to Recycle Bin')),
           ],
