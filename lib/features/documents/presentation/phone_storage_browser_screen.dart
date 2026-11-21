@@ -6,6 +6,9 @@ import '../../../core/widgets/storage_sort_controls.dart';
 import '../../../core/storage/folder_preview_cache.dart';
 
 import 'document_thumbnail.dart';
+import 'ocr_search_mode_control.dart';
+import '../data/phone_ocr_search_index.dart';
+import '../../tools/document_tools_service.dart';
 
 class PhoneStorageBrowserScreen extends StatefulWidget {
   const PhoneStorageBrowserScreen({
@@ -25,6 +28,8 @@ class PhoneStorageBrowserScreen extends StatefulWidget {
     this.isLoading = false,
     this.onRefresh,
     this.cacheScope = '',
+    this.ocrSearchAvailable = false,
+    this.ocrTextExtractor,
   });
 
   final String rootName;
@@ -43,6 +48,9 @@ class PhoneStorageBrowserScreen extends StatefulWidget {
   final Future<void> Function()? onRefresh;
   /// Identifies the granted storage roots, preventing stale cross-root reuse.
   final String cacheScope;
+  final bool ocrSearchAvailable;
+  /// Optional for tests; production uses the existing local OCR engine.
+  final PhonePdfTextExtractor? ocrTextExtractor;
 
   @override
   State<PhoneStorageBrowserScreen> createState() =>
@@ -52,6 +60,14 @@ class PhoneStorageBrowserScreen extends StatefulWidget {
 class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
   String? _selectedFolderPath;
   late final TextEditingController _searchController;
+  late final PhoneOcrSearchIndex _ocrIndex;
+  Timer? _ocrDebounce;
+  bool _ocrSelected = false;
+  bool _ocrIndexing = false;
+  int _ocrEpoch = 0;
+  int _ocrCompleted = 0;
+  int _ocrTotal = 0;
+  String? _ocrMessage;
   StorageSortField _sortField = StorageSortField.name;
   bool _sortAscending = true;
   int _sortRevision = 0;
@@ -113,6 +129,8 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
   void initState() {
     super.initState();
     _searchController = TextEditingController();
+    _ocrIndex = PhoneOcrSearchIndex(widget.ocrTextExtractor ??
+        DocumentToolsService().extractPhonePdfTextFromUri);
     unawaited(_restoreSortPreference());
     // Initial paths from MediaStore/Recent may include the synthetic
     // "Internal/" volume label; browser folder keys are root-relative.
@@ -127,6 +145,19 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
   void didUpdateWidget(covariant PhoneStorageBrowserScreen oldWidget) {
     super.didUpdateWidget(oldWidget);
     final selected = _selectedFolderPath;
+    if (oldWidget.ocrSearchAvailable && !widget.ocrSearchAvailable) {
+      _ocrEpoch++;
+      _ocrDebounce?.cancel();
+      _ocrSelected = false;
+      _ocrMessage = null;
+      _ocrIndex.clear();
+    }
+    if (widget.ocrSearchAvailable && _ocrSelected &&
+        oldWidget.entries != widget.entries) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) unawaited(_runPhoneOcr());
+      });
+    }
     if (oldWidget.cacheScope != widget.cacheScope) {
       _resetVisiblePages();
     }
@@ -196,6 +227,9 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
 
   @override
   void dispose() {
+    _ocrEpoch++;
+    _ocrDebounce?.cancel();
+    _ocrIndex.clear();
     _searchController.dispose();
     super.dispose();
   }
@@ -494,6 +528,80 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
     }
   }
 
+  void _setOcrSelected(bool enabled) {
+    if (!widget.ocrSearchAvailable || enabled == _ocrSelected) return;
+    _ocrDebounce?.cancel();
+    if (!enabled) {
+      _ocrEpoch++;
+      _ocrIndex.clear();
+    }
+    setState(() {
+      _ocrSelected = enabled;
+      _ocrMessage = null;
+      _resetVisiblePages();
+    });
+    if (enabled) _schedulePhoneOcr();
+  }
+
+  void _schedulePhoneOcr() {
+    _ocrDebounce?.cancel();
+    if (!widget.ocrSearchAvailable || !_ocrSelected ||
+        _searchController.text.trim().isEmpty) return;
+    _ocrDebounce = Timer(const Duration(milliseconds: 280), () {
+      if (mounted) unawaited(_runPhoneOcr());
+    });
+  }
+
+  Future<void> _runPhoneOcr() async {
+    if (!mounted || !widget.ocrSearchAvailable || !_ocrSelected ||
+        _searchController.text.trim().isEmpty || _ocrIndexing) return;
+    final run = ++_ocrEpoch;
+    setState(() {
+      _ocrIndexing = true;
+      _ocrCompleted = 0;
+      _ocrTotal = 0;
+      _ocrMessage = null;
+    });
+    try {
+      final result = await _ocrIndex.indexEntries(
+        _pdfs,
+        shouldCancel: () => !mounted || !_ocrSelected ||
+            !widget.ocrSearchAvailable || run != _ocrEpoch,
+        onProgress: (completed, total) {
+          if (!mounted || run != _ocrEpoch) return;
+          // Progress and content results are available immediately.
+          setState(() {
+            _ocrCompleted = completed;
+            _ocrTotal = total;
+            _resetVisiblePages();
+          });
+        },
+      );
+      if (mounted && run == _ocrEpoch) {
+        setState(() {
+          _ocrMessage = result.failed == 0
+              ? 'Phone OCR search ready'
+              : 'OCR completed; ${result.failed} PDFs could not be read.';
+        });
+      }
+    } on OcrIndexCancelled {
+      // User switched back to name search or left this screen.
+    } catch (error) {
+      if (mounted && run == _ocrEpoch) {
+        setState(() => _ocrMessage = 'Phone OCR unavailable: $error');
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _ocrIndexing = false);
+        if (run != _ocrEpoch && _ocrSelected &&
+            widget.ocrSearchAvailable &&
+            _searchController.text.trim().isNotEmpty) {
+          unawaited(_runPhoneOcr());
+        }
+      }
+    }
+  }
+
   Widget _buildSearchField() {
     return Padding(
       padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
@@ -502,20 +610,38 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
           Expanded(
             child: TextField(
               controller: _searchController,
-              onChanged: (_) => setState(_resetVisiblePages),
+              onChanged: (_) {
+                setState(_resetVisiblePages);
+                if (_ocrSelected) _schedulePhoneOcr();
+              },
               decoration: InputDecoration(
-                hintText: 'Search phone folders or PDF names',
+                hintText: _ocrSelected
+                    ? 'Search text inside Phone PDFs'
+                    : 'Search phone folders or PDF names',
                 prefixIcon: const Icon(Icons.search),
-                suffixIcon: _searchController.text.isEmpty
-                    ? null
-                    : IconButton(
+                suffixIconConstraints: const BoxConstraints(
+                    minHeight: 48, minWidth: 0),
+                suffixIcon: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (widget.ocrSearchAvailable)
+                      OcrSearchModeControl(
+                        searchInsidePdf: _ocrSelected,
+                        onChanged: _setOcrSelected,
+                      ),
+                    if (_searchController.text.isNotEmpty)
+                      IconButton(
                         tooltip: 'Clear search',
                         onPressed: () {
                           _searchController.clear();
+                          _ocrDebounce?.cancel();
+                          _ocrEpoch++;
                           setState(_resetVisiblePages);
                         },
                         icon: const Icon(Icons.close),
                       ),
+                  ],
+                ),
                 filled: true,
                 border: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(18),
@@ -653,8 +779,8 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
         : folders[selectedPath] ?? const <Map<String, Object?>>[];
     final query = _searchController.text.trim().toLowerCase();
     final folderPaths = folders.keys
-        .where((path) =>
-            selectedPath != null || query.isEmpty || path.toLowerCase().contains(query))
+        .where((path) => !_ocrSelected &&
+            (selectedPath != null || query.isEmpty || path.toLowerCase().contains(query)))
         .toList(growable: false);
     // A selected folder renders its already sorted direct children.
     // At the root without a search, count PDFs without sorting all of them.
@@ -664,6 +790,8 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
       matchingPdfs = const <Map<String, Object?>>[];
     } else if (query.isEmpty) {
       matchingPdfs = _pdfs;
+    } else if (_ocrSelected) {
+      matchingPdfs = _ocrIndex.matches(_pdfs, query)..sort(_comparePdfs);
     } else {
       matchingPdfs = _pdfs.where((entry) {
         final name = (entry['name'] as String).toLowerCase();
@@ -735,10 +863,12 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
       }
     } else {
       final visibleFiles = isSearching
-          ? selectedFiles.where((entry) {
-              final name = (entry['name'] as String).toLowerCase();
-              return name.contains(query);
-            }).toList(growable: false)
+          ? _ocrSelected
+              ? _ocrIndex.matches(selectedFiles, query)
+              : selectedFiles.where((entry) {
+                  final name = (entry['name'] as String).toLowerCase();
+                  return name.contains(query);
+                }).toList(growable: false)
           : selectedFiles;
       visiblePdfCount = visibleFiles.length;
       if (visibleFiles.isEmpty && widget.isLoading &&
@@ -815,6 +945,23 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
             ),
           ),
         _buildSearchField(),
+        if (widget.ocrSearchAvailable && _ocrSelected) ...[
+          if (_ocrIndexing)
+            LinearProgressIndicator(
+              value: _ocrTotal == 0 ? null : _ocrCompleted / _ocrTotal,
+              minHeight: 2,
+            ),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+            child: Text(
+              _ocrIndexing
+                  ? 'Reading Phone PDFs locally: $_ocrCompleted / $_ocrTotal'
+                  : _ocrMessage ??
+                      'Enter a term to find text inside Phone PDFs.',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ),
+        ],
         if (widget.isLoading) const LinearProgressIndicator(minHeight: 2),
         Expanded(
           child: NotificationListener<ScrollNotification>(
