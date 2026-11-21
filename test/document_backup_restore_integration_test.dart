@@ -282,6 +282,7 @@ void main() {
       final args = Map<String, dynamic>.from(call.arguments as Map);
       switch (call.method) {
         case 'findChildUri':
+          if (await target.exists()) return target.uri.toString();
           throw PlatformException(code: 'NOT_FOUND');
         case 'copyPdf':
           expect(args['parentUri'], targetRoot.uri.toString());
@@ -310,6 +311,14 @@ void main() {
     expect(await target.readAsBytes(), orderedEquals(_pdfBytes));
     expect((await db.query('documents')).single['storage_uri'],
         target.uri.toString());
+    // Retry must be idempotent: neither source is deleted and no extra copy
+    // is created when the existing destination has a matching SHA-256.
+    expect(await repository.migrateExistingLibraryToSelectedStorage(
+        destinationRootUriOverride: targetRoot.uri.toString()), 1);
+    expect(copied, 1);
+    expect(deletionCalls, 0);
+    expect(await original.readAsBytes(), orderedEquals(_pdfBytes));
+    expect(await target.readAsBytes(), orderedEquals(_pdfBytes));
   });
 
   test('Phone PDF move deletes source; verified Grid copy appears in Grid Recent', () async {
