@@ -2870,6 +2870,12 @@ class _DocumentsScreenState extends State<DocumentsScreen>
                         padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
                         child: Text('Reading Phone PDFs locally: $_phoneOcrDone / $_phoneOcrTotal'),
                       ),
+                    if (_searchInsideText && !_phoneOcrBusy &&
+                        _phoneOcrMessage != null)
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 4, 16, 4),
+                        child: Text(_phoneOcrMessage!),
+                      ),
                     if (_phoneScanLoading)
                       const Padding(
                         padding: EdgeInsets.fromLTRB(16, 8, 16, 12),
