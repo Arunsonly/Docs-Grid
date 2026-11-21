@@ -37,9 +37,7 @@ class _PhoneMoveFolderPickerState extends State<PhoneMoveFolderPicker> {
 
   bool _safeFolderUri(String uri) =>
       uri.isNotEmpty &&
-      !StorageLocationService.isCanonicalPortableRootUri(uri) &&
-      !StorageLocationService.isLegacyDocsGridStorageLocation(uri) &&
-      !StorageLocationService.isAndroidTrashPath(uri);
+      !StorageLocationService.isRestrictedPhoneMoveDestination(uri);
 
   PhoneFolderDestination? get _selected =>
       _ancestors.isEmpty ? null : _ancestors.last;
