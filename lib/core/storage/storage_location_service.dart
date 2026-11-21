@@ -235,6 +235,13 @@ class StorageLocationService {
         part == 'recycle bin');
   }
 
+  /// Public, conservative boundary for Phone Move destinations. The
+  /// pre-existing test helper remains unchanged.
+  static bool isRestrictedPhoneMoveDestination(String? uri) =>
+      isCanonicalPortableRootUri(uri) ||
+      isLegacyDocsGridStorageLocation(uri) ||
+      isAndroidTrashPath(uri);
+
   /// Normalizes the native MediaStore response separately from the Android
   /// channel guard, so the response contract can be unit-tested on every host.
   @visibleForTesting
