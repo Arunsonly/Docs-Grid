@@ -19,6 +19,7 @@ import 'core/storage/storage_location_service.dart';
 import 'features/tools/document_tools_screen.dart' show DocumentToolsScreen;
 import 'features/tools/document_tools_service.dart';
 import 'core/database/app_database.dart';
+import 'core/settings/ocr_search_preferences.dart';
 import 'core/storage/portable_snapshot_events.dart';
 import 'core/backup/backup_automation.dart';
 
@@ -38,11 +39,14 @@ class DocsGridApp extends StatefulWidget {
 
 class _DocsGridAppState extends State<DocsGridApp> {
   ThemeMode _themeMode = ThemeMode.system;
+  bool _ocrSearchAvailable = false;
+  bool _ocrPreferenceLoaded = false;
 
   @override
   void initState() {
     super.initState();
     _loadTheme();
+    _loadOcrPreference();
   }
 
   Future<void> _loadTheme() async {
@@ -51,6 +55,25 @@ class _DocsGridAppState extends State<DocsGridApp> {
     setState(() => _themeMode = prefs.getBool('dark_mode') == true
         ? ThemeMode.dark
         : ThemeMode.light);
+  }
+
+  Future<void> _loadOcrPreference() async {
+    var enabled = false;
+    try {
+      enabled = await OcrSearchPreferences.isEnabled();
+    } catch (_) {
+      // A failed preference read never silently enables access to PDF text.
+    }
+    if (!mounted) return;
+    setState(() {
+      _ocrSearchAvailable = enabled;
+      _ocrPreferenceLoaded = true;
+    });
+  }
+
+  Future<void> _setOcrSearchAvailable(bool enabled) async {
+    await OcrSearchPreferences.setEnabled(enabled);
+    if (mounted) setState(() => _ocrSearchAvailable = enabled);
   }
 
   Future<void> _setDarkMode(bool enabled) async {
@@ -83,15 +106,23 @@ class _DocsGridAppState extends State<DocsGridApp> {
       home: DocsGridHome(
         darkMode: _themeMode == ThemeMode.dark,
         onDarkModeChanged: _setDarkMode,
+        ocrSearchAvailable: _ocrSearchAvailable,
+        ocrPreferenceLoaded: _ocrPreferenceLoaded,
+        onOcrSearchChanged: _setOcrSearchAvailable,
       ),
     );
   }
 }
 
 class DocsGridHome extends StatefulWidget {
-  const DocsGridHome({super.key, required this.darkMode, required this.onDarkModeChanged});
+  const DocsGridHome({super.key, required this.darkMode, required this.onDarkModeChanged,
+    required this.ocrSearchAvailable, required this.ocrPreferenceLoaded,
+    required this.onOcrSearchChanged});
   final bool darkMode;
   final ValueChanged<bool> onDarkModeChanged;
+  final bool ocrSearchAvailable;
+  final bool ocrPreferenceLoaded;
+  final Future<void> Function(bool) onOcrSearchChanged;
 
   @override
   State<DocsGridHome> createState() => _DocsGridHomeState();
@@ -453,6 +484,9 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
                       body: _SettingsScreen(
                         darkMode: widget.darkMode,
                         onDarkModeChanged: widget.onDarkModeChanged,
+                        ocrSearchAvailable: widget.ocrSearchAvailable,
+                        ocrPreferenceLoaded: widget.ocrPreferenceLoaded,
+                        onOcrSearchChanged: widget.onOcrSearchChanged,
                       ),
                     ),
                   )),
@@ -465,7 +499,7 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
       body: SafeArea(
         child: switch (_selectedIndex) {
           0 => const DocumentsScreen(phoneOnly: true),
-          1 => const DocumentsScreen(),
+          1 => DocumentsScreen(ocrSearchAvailable: widget.ocrSearchAvailable),
           _ => const FoldersScreen(),
         },
       ),
@@ -483,9 +517,14 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
 }
 
 class _SettingsScreen extends StatefulWidget {
-  const _SettingsScreen({required this.darkMode, required this.onDarkModeChanged});
+  const _SettingsScreen({required this.darkMode, required this.onDarkModeChanged,
+    required this.ocrSearchAvailable, required this.ocrPreferenceLoaded,
+    required this.onOcrSearchChanged});
   final bool darkMode;
   final ValueChanged<bool> onDarkModeChanged;
+  final bool ocrSearchAvailable;
+  final bool ocrPreferenceLoaded;
+  final Future<void> Function(bool) onOcrSearchChanged;
 
   @override
   State<_SettingsScreen> createState() => _SettingsScreenState();
@@ -494,11 +533,36 @@ class _SettingsScreen extends StatefulWidget {
 class _SettingsScreenState extends State<_SettingsScreen> {
   Map<String, String>? _storageStatus;
   bool _checkingStorage = false;
+  late bool _ocrSearchAvailable;
+  bool _savingOcrPreference = false;
 
   @override
   void initState() {
     super.initState();
+    _ocrSearchAvailable = widget.ocrSearchAvailable;
     _refreshStorageStatus();
+  }
+
+  @override
+  void didUpdateWidget(covariant _SettingsScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.ocrSearchAvailable != widget.ocrSearchAvailable) {
+      _ocrSearchAvailable = widget.ocrSearchAvailable;
+    }
+  }
+
+  Future<void> _changeOcrPreference(bool value) async {
+    setState(() => _savingOcrPreference = true);
+    try {
+      await widget.onOcrSearchChanged(value);
+      if (mounted) setState(() => _ocrSearchAvailable = value);
+    } catch (error) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not save OCR search setting: $error')),
+      );
+    } finally {
+      if (mounted) setState(() => _savingOcrPreference = false);
+    }
   }
 
   Future<void> _refreshStorageStatus() async {
@@ -754,6 +818,16 @@ class _SettingsScreenState extends State<_SettingsScreen> {
 
         _sectionTitle('DATA'),
         _settingsCard([
+          SwitchListTile(
+            key: const ValueKey('enable-ocr-search-setting'),
+            secondary: const Icon(Icons.document_scanner_outlined),
+            title: const Text('Enable OCR Search', style: TextStyle(fontWeight: FontWeight.w600)),
+            subtitle: const Text('Show an optional OCR search mode. File-name search stays the default.'),
+            value: _ocrSearchAvailable,
+            onChanged: _savingOcrPreference || !widget.ocrPreferenceLoaded
+                ? null : _changeOcrPreference,
+          ),
+          mutedDivider,
           ListTile(
             leading: const Icon(Icons.backup_outlined),
             title: const Text('Backup & Restore', style: TextStyle(fontWeight: FontWeight.w600)),

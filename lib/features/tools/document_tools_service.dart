@@ -70,6 +70,15 @@ enum BackupRestoreSection {
   ocrIndexes,
 }
 
+/// Results of user-initiated, on-device PDF OCR indexing.
+class OcrSearchIndexSummary {
+  const OcrSearchIndexSummary({required this.indexed, required this.failed,
+    required this.skipped});
+  final int indexed;
+  final int failed;
+  final int skipped;
+}
+
 /// Local-only utilities for indexing, scanning, sharing and portable backups.
 /// This service never uploads document contents to a remote server.
 class DocumentToolsService {
@@ -227,6 +236,51 @@ class DocumentToolsService {
     // Deliberately do not delete files. User must review each duplicate and
     // use the normal Recycle Bin flow so original files remain recoverable.
     throw StateError('Use Recycle Bin to remove reviewed copies individually. No file was deleted.');
+  }
+
+  /// Only call after the user explicitly selects OCR mode and enters a query.
+  /// Merely enabling OCR in Settings must never scan or read PDF contents.
+  /// Existing successful/empty indexes are reused; unreadable PDFs are skipped.
+  Future<OcrSearchIndexSummary> indexPendingPdfsForSearch({
+    bool Function()? shouldCancel,
+    void Function(int completed, int total)? onProgress,
+  }) async {
+    final db = await _database.database;
+    final rows = await db.query(
+      'documents',
+      columns: ['id', 'storage_uri', 'extracted_text_status'],
+      where: "deleted_at IS NULL AND (extracted_text_status IS NULL OR "
+          "extracted_text_status IN ('pending', 'failed', 'indexing'))",
+      orderBy: 'created_at ASC',
+    );
+    final pending = rows.where((row) {
+      final uri = row['storage_uri'] as String?;
+      return uri != null && uri.isNotEmpty && !uri.startsWith('missing://');
+    }).toList();
+    var indexed = 0;
+    var failed = 0;
+    var skipped = 0;
+    for (var i = 0; i < pending.length; i++) {
+      if (shouldCancel?.call() ?? false) throw const OcrIndexCancelled();
+      final row = pending[i];
+      try {
+        await indexPdfTextFromUri(
+          row['id'] as String,
+          row['storage_uri'] as String,
+          shouldCancel: shouldCancel,
+        );
+        indexed++;
+      } on OcrIndexCancelled {
+        rethrow;
+      } catch (_) {
+        // A missing, revoked or damaged PDF must never interrupt other results.
+        failed++;
+      }
+      if (shouldCancel?.call() ?? false) throw const OcrIndexCancelled();
+      onProgress?.call(i + 1, pending.length);
+    }
+    skipped = rows.length - pending.length;
+    return OcrSearchIndexSummary(indexed: indexed, failed: failed, skipped: skipped);
   }
 
   Future<int> indexPdfText(
