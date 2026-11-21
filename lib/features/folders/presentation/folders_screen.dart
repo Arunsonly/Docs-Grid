@@ -6,6 +6,7 @@ import '../../../core/widgets/storage_sort_controls.dart';
 
 import '../../documents/data/document_repository.dart';
 import '../../documents/presentation/document_thumbnail.dart';
+import '../../documents/presentation/ocr_search_mode_control.dart';
 import '../../tools/document_tools_service.dart';
 import '../../../core/storage/storage_location_service.dart';
 import '../../../core/storage/folder_preview_cache.dart';
@@ -21,12 +22,16 @@ class FoldersScreen extends StatefulWidget {
     super.key,
     this.folderRepository,
     this.documentRepository,
+    this.ocrSearchAvailable = false,
+    this.ocrTools,
   });
 
   // Optional dependencies permit complete widget regression tests without
   // changing normal app construction or storage ownership.
   final FolderRepository? folderRepository;
   final DocumentRepository? documentRepository;
+  final bool ocrSearchAvailable;
+  final DocumentToolsService? ocrTools;
 
   @override
   State<FoldersScreen> createState() => _FoldersScreenState();
@@ -38,6 +43,8 @@ class _FoldersScreenState extends State<FoldersScreen>
       widget.folderRepository ?? FolderRepository();
   late final DocumentRepository _documents =
       widget.documentRepository ?? DocumentRepository();
+  late final DocumentToolsService _ocrTools =
+      widget.ocrTools ?? DocumentToolsService();
   final CategoryRepository _categories = CategoryRepository();
   final List<Folder> _ancestors = [];
   String? _currentFolderId;
@@ -46,6 +53,12 @@ class _FoldersScreenState extends State<FoldersScreen>
   final Set<String> _selectedFolderIds = <String>{};
   final TextEditingController _searchController = TextEditingController();
   String _searchQuery = '';
+  bool _ocrSelected = false;
+  bool _ocrBusy = false;
+  int _ocrEpoch = 0;
+  int _ocrDone = 0;
+  int _ocrTotal = 0;
+  String? _ocrMessage;
   StorageSortField _sortField = StorageSortField.name;
   bool _sortAscending = true;
   // Respect the existing user-defined folder order until sorting is chosen.
@@ -115,6 +128,7 @@ class _FoldersScreenState extends State<FoldersScreen>
 
   @override
   void dispose() {
+    _ocrEpoch++;
     _idleFolderPrefetchTimer?.cancel();
     if (_gridPreviewInvalidationDebounce?.isActive == true) {
       _gridPreviewInvalidationDebounce?.cancel();
@@ -323,6 +337,87 @@ class _FoldersScreenState extends State<FoldersScreen>
     });
   }
 
+  @override
+  void didUpdateWidget(covariant FoldersScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.ocrSearchAvailable && !widget.ocrSearchAvailable) {
+      _ocrEpoch++;
+      _ocrSelected = false;
+      _ocrMessage = null;
+      _reloadDocumentsOnly();
+    }
+  }
+
+  void _setOcrSelected(bool enabled) {
+    if (!widget.ocrSearchAvailable || _ocrSelected == enabled) return;
+    if (!enabled) _ocrEpoch++;
+    setState(() {
+      _ocrSelected = enabled;
+      _ocrMessage = null;
+      _reloadDocumentsOnly();
+    });
+    if (enabled) unawaited(_indexGridOcr());
+  }
+
+  Future<List<DocumentRecord>> _searchGridOcr(String query) async {
+    final matches = await _ocrTools.searchText(query);
+    final ids = matches.map((row) => row['id'] as String).toSet();
+    if (ids.isEmpty) return const <DocumentRecord>[];
+    final all = await _documents.list();
+    return all.where((document) => ids.contains(document.id))
+        .toList(growable: false);
+  }
+
+  Future<void> _indexGridOcr() async {
+    if (!mounted || !widget.ocrSearchAvailable || !_ocrSelected ||
+        _ocrBusy || _searchQuery.trim().isEmpty) return;
+    final run = ++_ocrEpoch;
+    setState(() {
+      _ocrBusy = true;
+      _ocrDone = 0;
+      _ocrTotal = 0;
+      _ocrMessage = null;
+    });
+    try {
+      final summary = await _ocrTools.indexPendingPdfsForSearch(
+        shouldCancel: () => !mounted || !widget.ocrSearchAvailable ||
+            !_ocrSelected || run != _ocrEpoch,
+        onProgress: (done, total) {
+          if (!mounted || run != _ocrEpoch) return;
+          if (done % 10 == 0 || done == total) {
+            setState(() {
+              _ocrDone = done;
+              _ocrTotal = total;
+              _reloadDocumentsOnly();
+            });
+          }
+        },
+      );
+      if (mounted && run == _ocrEpoch) {
+        setState(() => _ocrMessage = summary.failed == 0
+            ? 'Grid OCR search ready'
+            : '${summary.failed} Grid PDFs could not be read.');
+      }
+    } on OcrIndexCancelled {
+      // User turned off content search.
+    } catch (error) {
+      if (mounted && run == _ocrEpoch) {
+        setState(() => _ocrMessage = 'Grid OCR unavailable: $error');
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _ocrBusy = false;
+          _reloadDocumentsOnly();
+        });
+        if (run != _ocrEpoch && _ocrSelected &&
+            widget.ocrSearchAvailable && _searchQuery.trim().isNotEmpty) {
+          unawaited(_indexGridOcr());
+        }
+      }
+    }
+  }
+
   void _reloadDocumentsOnly() {
     final epoch = ++_folderLoadEpoch;
     final folderId = _currentFolderId;
@@ -331,7 +426,7 @@ class _FoldersScreenState extends State<FoldersScreen>
     // Preserve existing global search and exact custom Name/Date sort behavior.
     _pagedDocumentsMode = query.isEmpty && !_explicitSort;
     _documentsFuture = query.isNotEmpty
-        ? _documents.list(query: query)
+        ? _ocrSelected ? _searchGridOcr(query) : _documents.list(query: query)
         : _pagedDocumentsMode
             ? _getFirstPage(folderId, epoch)
             : _documents.listInFolder(folderId);
@@ -1752,21 +1847,43 @@ class _FoldersScreenState extends State<FoldersScreen>
               Expanded(
                 child: TextField(
                   controller: _searchController,
-                  onChanged: (value) => setState(() {
-                    _searchQuery = value;
-                    _reloadDocumentsOnly();
-                  }),
+                  onChanged: (value) {
+                    setState(() {
+                      _searchQuery = value;
+                      if (value.trim().isEmpty) _ocrEpoch++;
+                      _reloadDocumentsOnly();
+                    });
+                    if (_ocrSelected && value.trim().isNotEmpty) {
+                      unawaited(_indexGridOcr());
+                    }
+                  },
                   decoration: InputDecoration(
-                    hintText: 'Search folders or PDF names',
+                    hintText: _ocrSelected
+                        ? 'Search text inside Grid PDFs'
+                        : 'Search folders or PDF names',
                     prefixIcon: const Icon(Icons.search),
-                    suffixIcon: _searchQuery.isEmpty ? null : IconButton(
-                      tooltip: 'Clear search',
-                      icon: const Icon(Icons.close),
-                      onPressed: () => setState(() {
-                        _searchController.clear();
-                        _searchQuery = '';
-                        _reloadDocumentsOnly();
-                      }),
+                    suffixIconConstraints: const BoxConstraints(
+                        minHeight: 48, minWidth: 0),
+                    suffixIcon: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (widget.ocrSearchAvailable)
+                          OcrSearchModeControl(
+                            searchInsidePdf: _ocrSelected,
+                            onChanged: _setOcrSelected,
+                          ),
+                        if (_searchQuery.isNotEmpty)
+                          IconButton(
+                            tooltip: 'Clear search',
+                            icon: const Icon(Icons.close),
+                            onPressed: () => setState(() {
+                              _searchController.clear();
+                              _searchQuery = '';
+                              _ocrEpoch++;
+                              _reloadDocumentsOnly();
+                            }),
+                          ),
+                      ],
                     ),
                     filled: true,
                     border: OutlineInputBorder(
@@ -1786,6 +1903,25 @@ class _FoldersScreenState extends State<FoldersScreen>
             ],
           ),
         ),
+        if (widget.ocrSearchAvailable && _ocrSelected)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (_ocrBusy)
+                  LinearProgressIndicator(
+                    value: _ocrTotal == 0 ? null : _ocrDone / _ocrTotal,
+                    minHeight: 2,
+                  ),
+                Text(_ocrBusy
+                    ? 'Indexing Grid PDF text locally: $_ocrDone / $_ocrTotal'
+                    : _ocrMessage ??
+                        'Enter a term to search text inside Grid PDFs.',
+                  style: Theme.of(context).textTheme.bodySmall),
+              ],
+            ),
+          ),
         if (_isSelectingFolders && !keyboardVisible) _buildFolderSelectionToolbar(),
         if (_ancestors.isNotEmpty && !keyboardVisible)
           SizedBox(
@@ -1875,10 +2011,12 @@ class _FoldersScreenState extends State<FoldersScreen>
                   final query = _searchQuery.trim().toLowerCase();
                   final folderSource = _isReorderingFolders ? _draftFolderOrder : folders;
                   final displayedFolders = folderSource
-                      .where((folder) => query.isEmpty || folder.name.toLowerCase().contains(query))
+                      .where((folder) => query.isEmpty ||
+                          (!_ocrSelected && folder.name.toLowerCase().contains(query)))
                       .toList(growable: true);
                   final displayedDocuments = documents
-                      .where((document) => query.isEmpty || document.name.toLowerCase().contains(query))
+                      .where((document) => query.isEmpty || _ocrSelected ||
+                          document.name.toLowerCase().contains(query))
                       .toList(growable: true);
                   if (_explicitSort && !_isReorderingFolders) {
                     displayedFolders.sort((a, b) => compareStorageItems(
