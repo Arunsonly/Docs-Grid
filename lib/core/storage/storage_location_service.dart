@@ -356,9 +356,17 @@ class StorageLocationService {
         'location before retrying. No PDF or database was changed.',
       );
     }
+    if (Uri.parse(docsFile!).toFilePath() ==
+        Uri.parse(libraryFile!).toFilePath()) {
+      throw StateError(
+        'DocsGrid cannot restore PDFs when the selected Documents and '
+        'Folders destinations are the same directory. '
+        'No PDF or database was changed.',
+      );
+    }
     return {
-      'documentsUri': docsFile!,
-      'libraryUri': libraryFile!,
+      'documentsUri': docsFile,
+      'libraryUri': libraryFile,
     };
   }
 
