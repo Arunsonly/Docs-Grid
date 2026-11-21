@@ -1132,6 +1132,155 @@ void main() {
     expect(await repository.list(), isEmpty);
   });
 
+
+  test('Phone Delete archives duplicate independently; Grid survives and Phone Restore works',
+      () async {
+    final phoneRoot = Directory('${temp.path}/phone-dup-root');
+    final phoneFolder = Directory('${phoneRoot.path}/Work');
+    await phoneFolder.create(recursive: true);
+    final original = File('${phoneFolder.path}/Policy.pdf');
+    await original.writeAsBytes(_pdfBytes, flush: true);
+    final grid = File('${appDocuments.path}/GridPolicy.pdf');
+    await grid.writeAsBytes(_pdfBytes, flush: true);
+    await _insertExistingDocument(db, id: 'grid-policy', pdfFile: grid);
+    final uri = Uri.file(original.path).toString();
+    final rootUri = Uri.file(phoneRoot.path).toString();
+    final roots = <Map<String, String>>[
+      {'uri': rootUri, 'name': 'Internal storage'},
+    ];
+    String local(String value) {
+      final parsed = Uri.tryParse(value);
+      return parsed?.scheme == 'file' ? parsed!.toFilePath() : value;
+    }
+    var originalDeleteCount = 0;
+    messenger.setMockMethodCallHandler(const MethodChannel('docsgrid/storage'),
+        (call) async {
+      final args = Map<String, dynamic>.from(call.arguments as Map);
+      switch (call.method) {
+        case 'getSelectedFolder':
+          return null;
+        case 'copyPdfToPath':
+          await File(local(args['sourceUri'] as String))
+              .copy(args['destinationPath'] as String);
+          return true;
+        case 'samePhysicalPdf':
+          return local(args['sourceUri'] as String) ==
+              local(args['otherUri'] as String);
+        case 'sha256Pdf':
+          return (await sha256.bind(
+            File(local(args['uri'] as String)).openRead()).first).toString();
+        case 'findChildUri':
+          final child = '${local(args['parentUri'] as String)}/${args['name']}';
+          if (await File(child).exists() || await Directory(child).exists()) {
+            return Uri.file(child).toString();
+          }
+          throw PlatformException(code: 'NOT_FOUND');
+        case 'createDirectory':
+          final directory = Directory(
+            '${local(args['parentUri'] as String)}/${args['name']}');
+          await directory.create(recursive: false);
+          return directory.uri.toString();
+        case 'copyFileToStorage':
+          final destination = File(
+            '${local(args['parentUri'] as String)}/${args['name']}');
+          if (await destination.exists()) throw StateError('Overwrite refused');
+          await File(args['sourcePath'] as String).copy(destination.path);
+          return destination.uri.toString();
+        case 'deletePdf':
+          final target = File(local(args['uri'] as String));
+          if (target.path == original.path) originalDeleteCount++;
+          return target.exists().then((exists) async {
+            if (exists) await target.delete();
+            return exists;
+          });
+        default:
+          throw MissingPluginException('Unexpected storage call ${call.method}');
+      }
+    });
+    final repository = DocumentRepository(
+      database: AppDatabase.forTesting(() async => db),
+      phoneRootsForTesting: () async => roots,
+    );
+    final archived = await repository.moveExternalPdfToTrash(
+      sourceUri: uri,
+      displayName: 'Policy.pdf',
+      origin: PhoneTrashOrigin(
+        sourceUri: uri,
+        rootUri: rootUri,
+        folderPath: 'Internal/Work',
+        displayName: 'Policy.pdf',
+      ),
+    );
+    expect(archived, isTrue);
+    expect(originalDeleteCount, 1);
+    expect(await original.exists(), isFalse);
+    expect(await grid.readAsBytes(), orderedEquals(_pdfBytes));
+    final active = await db.query('documents', where: 'deleted_at IS NULL');
+    expect(active, hasLength(1));
+    expect(active.single['id'], 'grid-policy');
+    final trash = await repository.listTrash();
+    expect(trash, hasLength(1));
+    expect(trash.single.storagePath, isNot(grid.path));
+    expect(await File(trash.single.storagePath).readAsBytes(),
+        orderedEquals(_pdfBytes));
+
+    await repository.restoreFromTrash(trash.single);
+    expect(await original.readAsBytes(), orderedEquals(_pdfBytes));
+    expect(await grid.readAsBytes(), orderedEquals(_pdfBytes));
+    expect(await repository.listTrash(), isEmpty);
+    expect((await db.query('documents', where: 'deleted_at IS NULL')),
+        hasLength(1));
+  });
+
+  test('Phone Delete refuses a file URI alias of the active Grid original',
+      () async {
+    final root = Directory('${temp.path}/phone-alias-root');
+    final folder = Directory('${root.path}/Work');
+    await folder.create(recursive: true);
+    final shared = File('${folder.path}/Policy.pdf');
+    await shared.writeAsBytes(_pdfBytes, flush: true);
+    await _insertExistingDocument(db, id: 'grid-same-physical', pdfFile: shared);
+    final uri = Uri.file(shared.path).toString();
+    var originalDeleted = false;
+    messenger.setMockMethodCallHandler(const MethodChannel('docsgrid/storage'),
+        (call) async {
+      final args = Map<String, dynamic>.from(call.arguments as Map);
+      final method = call.method;
+      if (method == 'getSelectedFolder') return null;
+      if (method == 'copyPdfToPath') {
+        await shared.copy(args['destinationPath'] as String);
+        return true;
+      }
+      if (method == 'deletePdf') {
+        final value = args['uri'] as String;
+        if (value == uri) originalDeleted = true;
+        return false;
+      }
+      throw MissingPluginException('Unexpected storage call $method');
+    });
+    final repository = DocumentRepository(
+      database: AppDatabase.forTesting(() async => db));
+    await expectLater(
+      repository.moveExternalPdfToTrash(
+        sourceUri: uri,
+        displayName: 'Policy.pdf',
+        origin: PhoneTrashOrigin(
+          sourceUri: uri,
+          rootUri: Uri.file(root.path).toString(),
+          folderPath: 'Internal/Work',
+          displayName: 'Policy.pdf',
+        ),
+      ),
+      throwsStateError,
+    );
+    expect(originalDeleted, isFalse);
+    expect(await shared.readAsBytes(), orderedEquals(_pdfBytes));
+    expect((await db.query('documents', where: 'deleted_at IS NULL')),
+        hasLength(1));
+    expect(await repository.listTrash(), hasLength(1),
+        reason: 'A verified duplicate is recoverable without touching the active Grid file.');
+  });
+
   test('legacy Phone archive without origin is held in Trash, not sent to Grid',
       () async {
     final archive = File('${temp.path}/archive.pdf');
