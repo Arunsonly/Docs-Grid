@@ -20,6 +20,9 @@ class PhoneStorageBrowserScreen extends StatefulWidget {
     this.onMoveWithinPhone,
     this.onRenamePdf,
     this.onSharePdf,
+    this.onShareSelectedPdfs,
+    this.onMoveSelectedWithinPhone,
+    this.onTrashSelectedPdfs,
     this.onToggleStarPdf,
     this.starredUris = const <String>{},
     this.onTrashPdf,
@@ -39,6 +42,15 @@ class PhoneStorageBrowserScreen extends StatefulWidget {
   final Future<bool> Function(String uri, String name)? onMoveWithinPhone;
   final Future<bool> Function(String uri, String name)? onRenamePdf;
   final Future<void> Function(String uri, String name)? onSharePdf;
+  /// One native share sheet for all selected source PDFs.
+  final Future<void> Function(List<Map<String, Object?>> selected)?
+      onShareSelectedPdfs;
+  /// Batch handlers choose a destination/confirm once and preserve per-file
+  /// verification. Returning true means at least one source changed.
+  final Future<bool> Function(List<Map<String, Object?>> selected)?
+      onMoveSelectedWithinPhone;
+  final Future<bool> Function(List<Map<String, Object?>> selected)?
+      onTrashSelectedPdfs;
   final Future<void> Function(String uri, String name)? onToggleStarPdf;
   final Set<String> starredUris;
   final Future<bool> Function(String uri, String name)? onTrashPdf;
@@ -59,6 +71,9 @@ class PhoneStorageBrowserScreen extends StatefulWidget {
 
 class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
   String? _selectedFolderPath;
+  final Set<String> _selectedPdfUris = <String>{};
+  bool _isSelectingPdfs = false;
+  bool _selectionBusy = false;
   late final TextEditingController _searchController;
   late final PhoneOcrSearchIndex _ocrIndex;
   Timer? _ocrDebounce;
@@ -160,6 +175,13 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
     }
     if (oldWidget.cacheScope != widget.cacheScope) {
       _resetVisiblePages();
+      _selectedPdfUris.clear();
+      _isSelectingPdfs = false;
+    } else if (oldWidget.entries != widget.entries) {
+      // Selection must never act on stale URIs after a Phone refresh/move.
+      final existing = widget.entries.where(_isPdfFile)
+          .map((entry) => entry['uri'] as String).toSet();
+      _selectedPdfUris.removeWhere((uri) => !existing.contains(uri));
     }
     if (selected != null && oldWidget.cacheScope != widget.cacheScope) {
       _savedSelectedPreview = null;
@@ -173,6 +195,8 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
   void _selectFolder(String path) {
     setState(() {
       _selectedFolderPath = path;
+      _selectedPdfUris.clear();
+      _isSelectingPdfs = false;
       _savedSelectedPreview = null;
       _resetVisiblePages();
     });
@@ -466,6 +490,223 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
     final hour = value.hour.toString().padLeft(2, '0');
     final minute = value.minute.toString().padLeft(2, '0');
     return '$day-${months[value.month - 1]}-${value.year} $hour:$minute';
+  }
+
+
+  void _startPdfSelection(Map<String, Object?> entry) {
+    final uri = entry['uri'] as String;
+    setState(() {
+      _isSelectingPdfs = true;
+      _selectedPdfUris.add(uri);
+    });
+  }
+
+  void _togglePdfSelection(Map<String, Object?> entry) {
+    final uri = entry['uri'] as String;
+    setState(() {
+      _isSelectingPdfs = true;
+      if (!_selectedPdfUris.add(uri)) _selectedPdfUris.remove(uri);
+    });
+  }
+
+  void _clearPdfSelection() {
+    if (!_isSelectingPdfs) return;
+    setState(() {
+      _isSelectingPdfs = false;
+      _selectedPdfUris.clear();
+    });
+  }
+
+  List<Map<String, Object?>> _selectionScopePdfs() {
+    final query = _searchController.text.trim().toLowerCase();
+    final folder = _selectedFolderPath;
+    if (folder == null && query.isEmpty) return const <Map<String, Object?>>[];
+    final source = folder == null
+        ? _pdfs
+        : (_directPdfFolders[folder] ?? const <Map<String, Object?>>[]);
+    if (query.isEmpty) return source;
+    if (_ocrSelected) return _ocrIndex.matches(source, query);
+    return source.where((entry) {
+      final name = (entry['name'] as String).toLowerCase();
+      if (folder != null) return name.contains(query);
+      return name.contains(query) ||
+          _normalizedFolderPath(entry).toLowerCase().contains(query);
+    }).toList(growable: false);
+  }
+
+  List<Map<String, Object?>> _selectedPdfRows() =>
+      _pdfs.where((entry) => _selectedPdfUris.contains(entry['uri']))
+          .toList(growable: false);
+
+  void _selectAllVisiblePdfs() {
+    final ids = _selectionScopePdfs().map((row) => row['uri'] as String).toSet();
+    if (ids.isEmpty) return;
+    setState(() {
+      if (_selectedPdfUris.containsAll(ids)) {
+        _selectedPdfUris.removeAll(ids);
+      } else {
+        _selectedPdfUris.addAll(ids);
+      }
+    });
+  }
+
+  Future<void> _showSelectedPdfDetails() async {
+    final chosen = _selectedPdfRows();
+    if (chosen.isEmpty) return;
+    var total = 0;
+    for (final entry in chosen) {
+      final bytes = (entry['sizeBytes'] as num?)?.toInt() ??
+          (entry['size'] as num?)?.toInt() ?? 0;
+      if (bytes > 0) total += bytes;
+    }
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Selection Details'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Selected PDFs: ${chosen.length}'),
+            const SizedBox(height: 8),
+            Text('Total PDF size: ${_formatSize(total)}'),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx),
+              child: const Text('Close')),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _runSelectedPdfAction(String action) async {
+    if (_selectionBusy) return;
+    final chosen = _selectedPdfRows();
+    if (chosen.isEmpty) return;
+    setState(() => _selectionBusy = true);
+    var changed = false;
+    try {
+      if (action == 'share') {
+        if (widget.onShareSelectedPdfs != null) {
+          await widget.onShareSelectedPdfs!(chosen);
+        } else if (chosen.length == 1) {
+          await widget.onSharePdf?.call(
+              chosen.single['uri'] as String, chosen.single['name'] as String);
+        }
+      } else if (action == 'move') {
+        changed = await widget.onMoveSelectedWithinPhone?.call(chosen) ??
+            (chosen.length == 1
+                ? await widget.onMoveWithinPhone?.call(
+                      chosen.single['uri'] as String,
+                      chosen.single['name'] as String) ?? false
+                : false);
+      } else if (action == 'trash') {
+        changed = await widget.onTrashSelectedPdfs?.call(chosen) ??
+            (chosen.length == 1
+                ? await widget.onTrashPdf?.call(
+                      chosen.single['uri'] as String,
+                      chosen.single['name'] as String) ?? false
+                : false);
+      }
+      if (!mounted) return;
+      if (changed) {
+        _clearPdfSelection();
+        await widget.onRefresh?.call();
+      }
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Selected PDF action failed: $error')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _selectionBusy = false);
+    }
+  }
+
+  Widget _buildPdfSelectionToolbar() {
+    final colors = Theme.of(context).colorScheme;
+    return Material(
+      key: const ValueKey('phone-pdf-floating-selection-bar'),
+      elevation: 7,
+      shadowColor: colors.shadow.withValues(alpha: 0.25),
+      color: colors.secondaryContainer,
+      borderRadius: BorderRadius.circular(24),
+      clipBehavior: Clip.antiAlias,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 4),
+        child: Row(children: [
+          IconButton(
+            key: const ValueKey('phone-pdf-select-all'),
+            tooltip: 'Select all PDFs',
+            onPressed: _selectionBusy ? null : _selectAllVisiblePdfs,
+            icon: const Icon(Icons.select_all),
+            visualDensity: VisualDensity.compact,
+          ),
+          Expanded(
+            child: Text(
+              '${_selectedPdfUris.length} selected',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontWeight: FontWeight.w700),
+            ),
+          ),
+          IconButton(
+            key: const ValueKey('phone-pdf-share-selected'),
+            tooltip: 'Share selected PDFs',
+            onPressed: _selectionBusy || _selectedPdfUris.isEmpty ||
+                    (widget.onShareSelectedPdfs == null &&
+                        widget.onSharePdf == null)
+                ? null : () => unawaited(_runSelectedPdfAction('share')),
+            icon: const Icon(Icons.share_outlined),
+            visualDensity: VisualDensity.compact,
+          ),
+          IconButton(
+            key: const ValueKey('phone-pdf-move-selected'),
+            tooltip: 'Move selected PDFs',
+            onPressed: _selectionBusy || _selectedPdfUris.isEmpty ||
+                    (widget.onMoveSelectedWithinPhone == null &&
+                        widget.onMoveWithinPhone == null)
+                ? null : () => unawaited(_runSelectedPdfAction('move')),
+            icon: const Icon(Icons.drive_file_move_outlined),
+            visualDensity: VisualDensity.compact,
+          ),
+          IconButton(
+            key: const ValueKey('phone-pdf-delete-selected'),
+            tooltip: 'Move selected PDFs to Recycle Bin',
+            onPressed: _selectionBusy || _selectedPdfUris.isEmpty ||
+                    (widget.onTrashSelectedPdfs == null &&
+                        widget.onTrashPdf == null)
+                ? null : () => unawaited(_runSelectedPdfAction('trash')),
+            icon: const Icon(Icons.delete_outline),
+            visualDensity: VisualDensity.compact,
+          ),
+          PopupMenuButton<String>(
+            key: const ValueKey('phone-pdf-selected-more'),
+            tooltip: 'PDF selection actions',
+            enabled: !_selectionBusy,
+            icon: const Icon(Icons.more_vert),
+            onSelected: (action) {
+              if (action == 'details') {
+                unawaited(_showSelectedPdfDetails());
+              }
+            },
+            itemBuilder: (_) => [
+              PopupMenuItem<String>(
+                value: 'details',
+                enabled: _selectedPdfUris.isNotEmpty,
+                child: const ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: Icon(Icons.info_outline),
+                  title: Text('Details'),
+                ),
+              ),
+            ],
+          ),
+        ]),
+      ),
+    );
   }
 
   Future<void> _runPdfAction(
