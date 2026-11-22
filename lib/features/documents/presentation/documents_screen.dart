@@ -16,6 +16,7 @@ import '../data/phone_refresh_queue.dart';
 import '../data/phone_star_repository.dart';
 import '../data/phone_trash_origin.dart';
 import '../../../core/storage/storage_location_service.dart';
+import '../../../core/storage/portable_snapshot_events.dart';
 import '../../categories/data/category_repository.dart';
 import '../../folders/data/folder_repository.dart';
 import '../../tools/document_tools_service.dart';
@@ -137,6 +138,9 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       _loadViewPreference();
       _loadTrashSummary();
       _loadRecentDocuments();
+      _libraryChangesSubscription = PortableSnapshotEvents.changes.listen((_) {
+        _scheduleLibraryRefresh();
+      });
     }
     _search.addListener(_onSearchChanged);
     _scrollController.addListener(_onScroll);
@@ -323,6 +327,41 @@ class _DocumentsScreenState extends State<DocumentsScreen>
   }
 
   @override
+  void didUpdateWidget(covariant DocumentsScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!oldWidget.active && widget.active &&
+        _phoneRefreshPendingWhileHidden) {
+      _phoneRefreshPendingWhileHidden = false;
+      _schedulePhoneStorageRefresh();
+    }
+    if (!oldWidget.active && widget.active &&
+        _libraryRefreshPendingWhileHidden) {
+      _libraryRefreshPendingWhileHidden = false;
+      _scheduleLibraryRefresh();
+    }
+  }
+
+  void _scheduleLibraryRefresh() {
+    if (!mounted || widget.phoneOnly || widget.favoritesOnly ||
+        widget.recentOnly) return;
+    if (!widget.active) {
+      _libraryRefreshPendingWhileHidden = true;
+      return;
+    }
+    _libraryRefreshDebounce?.cancel();
+    _libraryRefreshDebounce = Timer(const Duration(milliseconds: 240), () {
+      if (!mounted) return;
+      if (!widget.active) {
+        _libraryRefreshPendingWhileHidden = true;
+        return;
+      }
+      unawaited(_load());
+      unawaited(_loadRecentDocuments());
+      unawaited(_loadTrashSummary());
+    });
+  }
+
+  @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       _schedulePhoneStorageRefresh();
@@ -446,6 +485,8 @@ class _DocumentsScreenState extends State<DocumentsScreen>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _storageChangesSubscription?.cancel();
+    _libraryChangesSubscription?.cancel();
+    _libraryRefreshDebounce?.cancel();
     _phoneRefreshDebounce?.cancel();
     _loadGeneration++;
     _ocrIndexEpoch++;
@@ -1070,11 +1111,10 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       if(inaccessibleRoots>0 && mounted) _message('$inaccessibleRoots granted location(s) could not be read; they were not marked empty.');
     } catch(error) {
       if (mounted) {
-        setState(() {
-          _phoneEntries = [];
-          _phoneScanCompleted = false;
-        });
-        _message('Phone Storage scan failed; inaccessible locations were not marked empty: $error');
+        // An index-refresh failure must not erase the last usable listing.
+        // Opening a cached PDF still goes through the real storage provider.
+        setState(() => _phoneScanCompleted = _phoneEntries.isNotEmpty);
+        _message('Phone Storage refresh failed; the last index is still shown: $error');
       }
     } finally {
       if (_isStartupHome) StartupTimeline.mark('home_phone_scan_finished');
@@ -2823,10 +2863,14 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       );
     }
     return PopScope<void>(
-      canPop: !_selectionMode,
+      canPop: !widget.active ||
+          (!_selectionMode && widget.onBackAtRoot == null),
       onPopInvokedWithResult: (didPop, result) {
-        if (!didPop && _selectionMode && mounted) {
+        if (didPop || !widget.active || !mounted) return;
+        if (_selectionMode) {
           _clearSelection();
+        } else {
+          widget.onBackAtRoot?.call();
         }
       },
       child: RefreshIndicator(

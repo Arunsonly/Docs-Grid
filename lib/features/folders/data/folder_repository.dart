@@ -109,12 +109,14 @@ class FolderRepository {
     final db = await _database.database;
     final rows = await db.rawQuery(
       '''
-      SELECT f.*,
-        (SELECT COUNT(*) FROM documents d
-          WHERE d.folder_id = f.id AND d.deleted_at IS NULL) AS pdf_count
+      SELECT f.*, COUNT(d.id) AS pdf_count,
+        COALESCE(SUM(d.size_bytes), 0) AS pdf_bytes
       FROM folders f
+      LEFT JOIN documents d
+        ON d.folder_id = f.id AND d.deleted_at IS NULL
       WHERE ${parentId == null ? 'f.parent_id IS NULL' : 'f.parent_id = ?'}
         AND f.deleted_at IS NULL
+      GROUP BY f.id
       ORDER BY f.sort_order ASC, f.name COLLATE NOCASE ASC
       ${previewLimit == null ? '' : 'LIMIT ?'}
       ''',

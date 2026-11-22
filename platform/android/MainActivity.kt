@@ -55,6 +55,18 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "docsgrid/app_lifecycle")
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "moveTaskToBack" -> {
+                        // Match the Android Home gesture at DocsGrid's tab root.
+                        // This keeps the Activity, SQLite handle and tab state
+                        // available for an instant warm resume.
+                        result.success(moveTaskToBack(true))
+                    }
+                    else -> result.notImplemented()
+                }
+            }
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "docsgrid/notifications")
             .setMethodCallHandler { call, result ->
                 when (call.method) {

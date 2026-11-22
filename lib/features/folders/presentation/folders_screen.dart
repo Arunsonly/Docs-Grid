@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../../core/widgets/storage_sort_controls.dart';
+import '../../../core/storage/portable_snapshot_events.dart';
 
 import '../../documents/data/document_repository.dart';
 import '../../documents/presentation/document_thumbnail.dart';
@@ -799,6 +800,7 @@ class _FoldersScreenState extends State<FoldersScreen>
   Future<void> _refresh() async {
     if (!mounted) return;
     setState(() {
+      _invalidateSnapshots();
       _isReorderingFolders = false;
       _draftFolderOrder = <Folder>[];
       final key = FolderPreviewCache.gridKey(_currentFolderId);
@@ -2142,6 +2144,8 @@ class _FoldersScreenState extends State<FoldersScreen>
           _clearDocumentSelection();
         } else if (_ancestors.isNotEmpty) {
           _goToAncestor(_ancestors.length - 2);
+        } else {
+          widget.onBackAtRoot?.call();
         }
       },
       child: Stack(
@@ -2334,6 +2338,7 @@ class _FoldersScreenState extends State<FoldersScreen>
         Expanded(
           child: FutureBuilder<List<Folder>>(
             future: _foldersFuture,
+            initialData: _folderSnapshots[_currentFolderId ?? ''],
             builder: (context, folderSnapshot) {
               if (folderSnapshot.connectionState == ConnectionState.waiting) {
                 final preview = _searchQuery.trim().isEmpty
@@ -2356,6 +2361,8 @@ class _FoldersScreenState extends State<FoldersScreen>
               final folders = folderSnapshot.data ?? const <Folder>[];
               return FutureBuilder<List<DocumentRecord>>(
                 future: _documentsFuture,
+                initialData: _documentSnapshots[
+                    '${_currentFolderId ?? ''}|${_searchQuery.trim()}'],
                 builder: (context, documentSnapshot) {
                   if (documentSnapshot.connectionState == ConnectionState.waiting) {
                     final preview = _searchQuery.trim().isEmpty

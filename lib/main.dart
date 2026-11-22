@@ -120,6 +120,11 @@ class DocsGridHome extends StatefulWidget {
 
 class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver {
   int _selectedIndex = 1;
+  // Lazily mount each tab once. Preserve its scroll, folder and loaded data
+  // while the user switches between Phone, Home and Grid.
+  final Set<int> _visitedTabs = <int>{1};
+  static const MethodChannel _appLifecycleChannel =
+      MethodChannel('docsgrid/app_lifecycle');
   bool _checkingIncomingShare = false;
   static const MethodChannel _storageChannel = MethodChannel('docsgrid/storage');
   StreamSubscription<void>? _snapshotChangesSubscription;
@@ -169,6 +174,22 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
       _schedulePortableSnapshot();
       unawaited(BackupAutomation.runDueForegroundBackups());
     }
+  }
+
+  void _backgroundApp() {
+    if (!Platform.isAndroid) return;
+    // At a tab root, Back behaves like Home: background the Android task
+    // instead of destroying the Flutter Activity and its in-memory indexes.
+    unawaited(() async {
+      try {
+        final moved = await _appLifecycleChannel
+            .invokeMethod<bool>('moveTaskToBack');
+        if (moved != true) await SystemNavigator.pop();
+      } catch (_) {
+        // A missing native channel should still allow the user to exit.
+        await SystemNavigator.pop();
+      }
+    }());
   }
 
   Future<void> _openReminderDocument(String documentId) async {
@@ -504,7 +525,13 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
       ),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _selectedIndex,
-        onDestinationSelected: (index) => setState(() => _selectedIndex = index),
+        onDestinationSelected: (index) {
+          if (index == _selectedIndex) return;
+          setState(() {
+            _visitedTabs.add(index);
+            _selectedIndex = index;
+          });
+        },
         destinations: const [
           NavigationDestination(icon: Icon(Icons.phone_android_outlined), label: 'Phone'),
           NavigationDestination(icon: Icon(Icons.dashboard_outlined), label: 'Home'),

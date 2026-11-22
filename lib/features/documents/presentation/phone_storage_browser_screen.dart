@@ -1282,6 +1282,8 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
             _clearPdfSelection();
           } else if (_selectedFolderPath != null) {
             setState(() => _selectedFolderPath = null);
+          } else {
+            widget.onBackAtRoot?.call();
           }
         },
         child: _buildBrowserContent(),
