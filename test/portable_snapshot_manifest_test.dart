@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:docs_grid/core/database/app_database.dart';
 import 'package:docs_grid/features/tools/portable_snapshot_manifest.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -74,14 +75,17 @@ void main() {
   });
 
   test('accepts the current database schema version', () {
-    final value = validManifest()..['databaseSchemaVersion'] = 11;
+    final value = validManifest()
+      ..['databaseSchemaVersion'] = AppDatabase.schemaVersion;
     final manifest = PortableSnapshotManifest.parse(jsonEncode(value));
-    expect(manifest.databaseSchemaVersion, 11);
+    expect(manifest.databaseSchemaVersion, AppDatabase.schemaVersion);
   });
 
   test('rejects a schema version newer than the app supports', () {
-    final value = validManifest()..['databaseSchemaVersion'] = 12;
-    expect(() => PortableSnapshotManifest.parse(jsonEncode(value)), throwsFormatException);
+    final value = validManifest()
+      ..['databaseSchemaVersion'] = AppDatabase.schemaVersion + 1;
+    expect(() => PortableSnapshotManifest.parse(jsonEncode(value)),
+      throwsFormatException);
   });
 
   test('durable snapshot tables exclude derived indexes and caches', () {

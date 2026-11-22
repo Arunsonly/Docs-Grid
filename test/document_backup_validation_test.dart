@@ -34,6 +34,7 @@ Future<File> _makeBackup(
   String? shaOverride,
   bool includeFileRecord = true,
   bool databaseOnly = false,
+  bool rescueOnly = false,
   bool corruptMetadataChecksum = false,
   bool malformedMetadataChecksum = false,
 }) async {
@@ -53,19 +54,23 @@ Future<File> _makeBackup(
                 : sha256.convert(json).toString(),
           });
   }
-  if (!databaseOnly) {
+  if (!databaseOnly && !rescueOnly) {
     archive.addFile(ArchiveFile(entry, bytes.length, Uint8List.fromList(bytes)));
   }
   final manifest = <String, Object?>{
     'format': 'DocsGridBackup',
     'version': 1,
     if (databaseOnly) 'backupType': 'database',
+    if (rescueOnly) 'backupType': 'rescue',
+    if (rescueOnly) 'missingPdfs': [
+      {'documentId': 'document-1', 'reason': 'unavailable_or_unreadable'}
+    ],
     'createdAt': '2026-01-01T00:00:00Z',
     'tables': <String, int>{
       for (final table in _validRows(databaseOnly: databaseOnly).entries) table.key: table.value.length,
     },
     'metadataFiles': metadataFiles,
-    'files': includeFileRecord && !databaseOnly ? [{
+    'files': includeFileRecord && !databaseOnly && !rescueOnly ? [{
       'documentId': 'document-1',
       'entry': entry,
       'sha256': shaOverride ?? sha256.convert(bytes).toString(),
@@ -91,6 +96,19 @@ void main() {
 
   tearDown(() async {
     if (await temp.exists()) await temp.delete(recursive: true);
+  });
+
+  test('a verified rescue ledger accepts a missing PDF without claiming Full', () async {
+    final partial = await _makeBackup(temp, rescueOnly: true);
+    expect(await service.validateBackup(partial), 0);
+  });
+
+  test('partial rescue archives may not replace healthy files', () async {
+    final partial = await _makeBackup(temp, rescueOnly: true);
+    await expectLater(
+      service.restoreBackup(partial, mode: BackupRestoreMode.fullReplacement),
+      throwsStateError,
+    );
   });
 
   test('accepts a valid backup and verifies its PDF payload', () async {

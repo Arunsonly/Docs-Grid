@@ -19,6 +19,7 @@ import '../../core/database/app_database.dart';
 import '../../core/storage/storage_location_service.dart';
 import '../../core/storage/storage_migration_gate.dart';
 import '../documents/data/document_repository.dart';
+import '../documents/data/phone_portable_state.dart';
 import '../folders/data/folder_repository.dart';
 import '../reminders/data/reminder_notifications.dart';
 import 'backup_archive_limits.dart';
@@ -653,10 +654,26 @@ class DocumentToolsService {
     await SharePlus.instance.share(ShareParams(files: [XFile(path)], text: text));
   }
 
+  /// Serialize public backup publication and retention with restore.
+  /// A restore creates its own private rescue checkpoint under the already
+  /// held recovery lock, avoiding lock recursion.
   Future<File> createBackup({
     void Function(int, int)? onProgress,
     bool includePdfs = true,
     bool backgroundSafe = false,
+    bool rescueCheckpoint = false,
+  }) => _withRecoveryLock(() => _createBackupLocked(
+    onProgress: onProgress,
+    includePdfs: includePdfs,
+    backgroundSafe: backgroundSafe,
+    rescueCheckpoint: rescueCheckpoint,
+  ));
+
+  Future<File> _createBackupLocked({
+    void Function(int, int)? onProgress,
+    bool includePdfs = true,
+    bool backgroundSafe = false,
+    bool rescueCheckpoint = false,
   }) async {
     await StorageMigrationGate.waitUntilReady();
     final storage = StorageLocationService.instance;
@@ -665,10 +682,10 @@ class DocumentToolsService {
             ? await storage.cachedPortableDataLocations()
             : await storage.portableDataLocationsIfAvailable())
         : const <String, String>{};
-    final destinationUri = includePdfs
+    final destinationUri = rescueCheckpoint ? null : includePdfs
         ? (portableLocations['fullBackupsUri'] ?? portableLocations['backupsUri'])
         : (portableLocations['databaseBackupsUri'] ?? portableLocations['backupsUri']);
-    if (Platform.isAndroid && destinationUri == null) {
+    if (Platform.isAndroid && destinationUri == null && !rescueCheckpoint) {
       throw StateError(
         'Set up DocsGrid storage before creating a backup.',
       );
@@ -688,7 +705,8 @@ class DocumentToolsService {
     final manifest = <String, Object?>{
       'format': 'DocsGridBackup',
       'version': 1,
-      'backupType': includePdfs ? 'full' : 'database',
+      'backupType': rescueCheckpoint ? 'rescue' : includePdfs ? 'full' : 'database',
+      if (rescueCheckpoint) 'missingPdfs': <Map<String, Object?>>[],
       'backupId': _uuid.v4(),
       'app': 'DocsGrid',
       'databaseSchemaVersion': databaseSchemaVersion,
@@ -703,12 +721,14 @@ class DocumentToolsService {
     // a second app-private DocsGrid backup library.
     final temporaryBase = await getTemporaryDirectory();
     final appDocuments = await getApplicationDocumentsDirectory();
-    final portableBackupsUri = includePdfs
+    final portableBackupsUri = rescueCheckpoint ? null : includePdfs
         ? (portableLocations['fullBackupsUri'] ?? portableLocations['backupsUri'])
         : (portableLocations['databaseBackupsUri'] ?? portableLocations['backupsUri']);
-    final fallbackBackupPath = Platform.isAndroid
-        ? p.join(temporaryBase.path, 'docsgrid_backup_staging', includePdfs ? 'Full' : 'Database')
-        : p.join(appDocuments.path, 'DocsGrid', 'Backups', includePdfs ? 'Full' : 'Database');
+    final fallbackBackupPath = rescueCheckpoint
+        ? p.join(temporaryBase.path, 'docsgrid_rescue_staging')
+        : Platform.isAndroid
+            ? p.join(temporaryBase.path, 'docsgrid_backup_staging', includePdfs ? 'Full' : 'Database')
+            : p.join(appDocuments.path, 'DocsGrid', 'Backups', includePdfs ? 'Full' : 'Database');
     final backups = Directory(
       portableBackupsUri != null && portableBackupsUri.startsWith('file://')
           ? Uri.parse(portableBackupsUri).toFilePath()
@@ -741,6 +761,18 @@ class DocumentToolsService {
       encoder.create(output.path);
       encoderOpened = true;
 
+      // User choices are exported separately from scanned Phone inventory.
+      // A portable reference is not a transferable Android/iOS URI grant.
+      final phoneState = await PhonePortableState.capture();
+      final phoneStateFile = File(p.join(staging.path, 'phone-state.json'));
+      await phoneStateFile.writeAsString(jsonEncode(phoneState), flush: true);
+      (manifest['metadataFiles'] as List).add({
+        'entry': 'phone-state.json',
+        'sizeBytes': await phoneStateFile.length(),
+        'sha256': (await sha256.bind(phoneStateFile.openRead()).first).toString(),
+      });
+      await addStoredFile(phoneStateFile, 'phone-state.json');
+
       // Page database rows into JSON files so a large history/documents table
       // does not have to be materialized as one giant List in memory.
       const orderBy = <String, String>{
@@ -755,9 +787,20 @@ class DocumentToolsService {
         'document_text_index': 'document_id',
         'smart_collections': 'name COLLATE NOCASE, id',
       };
-      // Hold a read transaction across metadata and PDF enumeration so
-      // the archive represents one consistent database state.
+      // Keep SQLite's read transaction limited to metadata capture. Do not
+      // hold it while hashing/copying multi-gigabyte PDF content from SAF.
+      // A post-capture revision check rejects an internally inconsistent
+      // backup if the library changed during the external file I/O.
+      int? capturedRevision;
       await db.transaction((txn) async {
+        final revisions = await txn.query(
+          'portable_snapshot_state', columns: ['revision'],
+          where: 'id = 1', limit: 1,
+        );
+        if (revisions.length != 1) {
+          throw StateError('Backup cannot establish a database revision.');
+        }
+        capturedRevision = (revisions.single['revision'] as num).toInt();
         for (final table in tables) {
           final metadataFile = File(p.join(staging.path, '$table.json'));
           final outputFile = await metadataFile.open(mode: FileMode.write);
@@ -804,15 +847,16 @@ class DocumentToolsService {
           });
           await addStoredFile(metadataFile, '$table.json');
         }
-  
+      });
+
         if (includePdfs) {
           final totalDocs = Sqflite.firstIntValue(
-            await txn.rawQuery('SELECT COUNT(*) FROM documents'),
+            await db.rawQuery('SELECT COUNT(*) FROM documents'),
           ) ?? 0;
           var completed = 0;
           var documentOffset = 0;
           while (true) {
-            final docs = await txn.query(
+            final docs = await db.query(
               'documents',
               columns: ['id', 'name', 'storage_uri', 'sha256'],
               limit: 250,
@@ -821,8 +865,14 @@ class DocumentToolsService {
             );
             if (docs.isEmpty) break;
             for (final row in docs) {
+            // Only confirmed source-file problems may be written to a
+            // rescue ledger. Never disguise ZIP-write, low-disk or coding
+            // errors as missing PDFs: those must abort the rescue checkpoint.
+            var sourceUnavailable = false;
+            try {
             final uri = row['storage_uri'] as String?;
             if (uri == null || uri.isEmpty) {
+              sourceUnavailable = true;
               throw StateError('Backup cannot be complete: "${row['name']}" has no storage reference.');
             }
             File? stagedProviderFile;
@@ -832,6 +882,18 @@ class DocumentToolsService {
                 throw StateError(
                   'Background full backup cannot read a SAF content URI in a headless worker. Open DocsGrid to create a verified foreground full backup.',
                 );
+              }
+              // Probe the *source* separately for rescue. A provider's
+              // source-access error can be logged as missing/unreadable, but
+              // a later temporary-storage or ZIP-write failure must abort
+              // the entire rescue rather than masquerading as missing PDF.
+              if (rescueCheckpoint) {
+                try {
+                  await StorageLocationService.instance.sha256Pdf(uri);
+                } catch (_) {
+                  sourceUnavailable = true;
+                  rethrow;
+                }
               }
               stagedProviderFile = File(p.join(staging.path, 'source_${_uuid.v4()}.pdf'));
               await StorageLocationService.instance.copyPdfToPath(
@@ -844,11 +906,19 @@ class DocumentToolsService {
             }
             try {
               if (!await file.exists()) {
+                sourceUnavailable = true;
                 throw StateError('Backup cannot be complete: "${row['name']}" is unavailable. Repair storage access and retry.');
               }
-              final digest = (await sha256.bind(file.openRead()).first).toString();
+              late final String digest;
+              try {
+                digest = (await sha256.bind(file.openRead()).first).toString();
+              } on FileSystemException {
+                sourceUnavailable = true;
+                rethrow;
+              }
               final expected = row['sha256'] as String?;
               if (expected != null && expected.isNotEmpty && digest != expected) {
+                sourceUnavailable = true;
                 throw StateError('Backup stopped: "${row['name']}" failed SHA-256 verification.');
               }
               // Never place imported database IDs in archive paths.
@@ -865,20 +935,36 @@ class DocumentToolsService {
                 await stagedProviderFile.delete();
               }
             }
+            } catch (error) {
+              if (!rescueCheckpoint || !sourceUnavailable) rethrow;
+              (manifest['missingPdfs'] as List).add({
+                'documentId': row['id'],
+                'reason': error is FileSystemException ? 'unavailable_or_unreadable'
+                    : 'missing_or_integrity_mismatch',
+              });
+            }
               completed++;
               onProgress?.call(completed, totalDocs);
             }
             documentOffset += docs.length;
           }
         }
-  
-      });
+
+      final currentRevision = await _database.portableSnapshotRevision();
+      if (currentRevision != capturedRevision) {
+        throw StateError(
+          'The DocsGrid library changed during backup capture. '
+          'Discard this attempt and retry with a new consistent snapshot.',
+        );
+      }
       final manifestFile = File(p.join(staging.path, 'manifest.json'));
       await manifestFile.writeAsString(jsonEncode(manifest), encoding: utf8, flush: true);
       await addStoredFile(manifestFile, 'manifest.json');
       await encoder.close();
       encoderOpened = false;
-      await BackupArchiveLimits.validate(output);
+      // Structural ZIP checks alone do not prove that the archived bytes
+      // match the manifest. Read back the complete output before pruning.
+      await validateBackup(output);
       // SAF locations use opaque content:// URIs rather than filesystem paths.
       // Publish the validated archive only after ZIP and manifest checks pass.
       if (!backgroundSafe &&
@@ -891,11 +977,13 @@ class DocumentToolsService {
           mimeType: 'application/zip',
         );
       }
-      await _pruneBackupArchives(
-        backups,
-        keep: includePdfs ? 4 : 14,
-        newestPath: output.path,
-      );
+      if (!rescueCheckpoint) {
+        await _pruneBackupArchives(
+          backups,
+          keep: includePdfs ? 4 : 14,
+          newestPath: output.path,
+        );
+      }
       return output;
     } catch (_) {
       if (encoderOpened) {
@@ -1367,42 +1455,90 @@ class DocumentToolsService {
     required BackupRestoreMode mode,
     required String sourceBackupId,
   }) async {
-    final checkpointArchive = await createBackup(includePdfs: true);
-    final digest = await sha256.bind(checkpointArchive.openRead()).first;
-    final record = <String, Object?>{
-      'format': 'DocsGridRestoreCheckpoint',
-      'version': 1,
-      'status': 'verified',
-      'restoreMode': mode.name,
-      'sourceBackupId': sourceBackupId,
-      'createdAtUtc': DateTime.now().toUtc().toIso8601String(),
-      'archiveName': p.basename(checkpointArchive.path),
-      'archiveBytes': await checkpointArchive.length(),
-      'archiveSha256': digest.toString(),
-      'archiveBackupType': 'full',
-    };
-
+    // A normal Full archive lives in a keep-four directory. A JSON pointer
+    // there is not sufficient: the actual restore checkpoint must be copied
+    // outside that directory before it is advertised as durable.
+    final checkpointArchive = await _createBackupLocked(
+      includePdfs: true, rescueCheckpoint: true,
+    );
+    try {
+    // The source can contain missing PDFs. Only this pre-restore checkpoint
+    // may be partial; ordinary Full backups remain complete by contract.
+    final checkpointContents = await _decodeValidatedBackup(checkpointArchive);
+    final missingPdfs = (checkpointContents.manifest['missingPdfs'] as List).length;
+    await checkpointContents.dispose();
+    final digest = (await sha256.bind(checkpointArchive.openRead()).first).toString();
+    final stamp = '${DateTime.now().toUtc().millisecondsSinceEpoch}_${_uuid.v4()}';
+    final archiveName = 'checkpoint_$stamp.zip';
     final locations = Platform.isAndroid
         ? await StorageLocationService.instance.portableDataLocationsIfAvailable()
         : const <String, String>{};
-    final checkpointUri = locations['restoreCheckpointsUri'];
-    if (checkpointUri != null) {
+    final checkpointRoot = locations['restoreCheckpointsUri'];
+    String durableArchiveUri;
+    Directory? localDirectory;
+    if (checkpointRoot != null) {
+      durableArchiveUri = await StorageLocationService.instance.copyFileToStorage(
+        sourcePath: checkpointArchive.path,
+        parentUri: checkpointRoot,
+        name: archiveName,
+        mimeType: 'application/zip',
+      );
+      // A published checkpoint must match the independent full archive, not
+      // merely its copied filename. Native digest reads in bounded chunks.
+      final restoredDigest =
+          await StorageLocationService.instance.sha256Pdf(durableArchiveUri);
+      if (restoredDigest != digest) {
+        throw StateError('Protected restore checkpoint copy failed SHA-256 verification.');
+      }
+    } else {
+      final support = await getApplicationSupportDirectory();
+      localDirectory = Directory(p.join(
+        support.path, 'docsgrid', 'recovery', 'checkpoints',
+      ));
+      await localDirectory.create(recursive: true);
+      final protectedCopy = await checkpointArchive.copy(
+        p.join(localDirectory.path, archiveName),
+      );
+      final actual = (await sha256.bind(protectedCopy.openRead()).first).toString();
+      if (actual != digest) {
+        throw StateError('Local restore checkpoint copy failed SHA-256 verification.');
+      }
+      durableArchiveUri = protectedCopy.uri.toString();
+    }
+    final record = <String, Object?>{
+      'format': 'DocsGridRestoreCheckpoint',
+      'version': 1,
+      'status': missingPdfs == 0 ? 'verified_rescue' : 'partial_rescue',
+      'missingPdfCount': missingPdfs,
+      'restoreMode': mode.name,
+      'sourceBackupId': sourceBackupId,
+      'createdAtUtc': DateTime.now().toUtc().toIso8601String(),
+      'archiveName': archiveName,
+      'archiveUri': durableArchiveUri,
+      'archiveBytes': await checkpointArchive.length(),
+      'archiveSha256': digest,
+      'archiveBackupType': 'rescue',
+    };
+    final recordName = 'checkpoint_$stamp.json';
+    if (checkpointRoot != null) {
       await StorageLocationService.instance.writeTextFile(
-        parentUri: checkpointUri,
-        name: 'checkpoint_${DateTime.now().toUtc().millisecondsSinceEpoch}_${_uuid.v4()}.json',
+        parentUri: checkpointRoot,
+        name: recordName,
         contents: jsonEncode(record),
       );
     } else {
-      final support = await getApplicationSupportDirectory();
-      final directory = Directory(p.join(
-        support.path, 'docsgrid', 'recovery', 'checkpoints',
-      ));
-      await directory.create(recursive: true);
-      final file = File(p.join(
-        directory.path,
-        'checkpoint_${DateTime.now().toUtc().millisecondsSinceEpoch}_${_uuid.v4()}.json',
-      ));
-      await file.writeAsString(jsonEncode(record), flush: true);
+      await File(p.join(localDirectory!.path, recordName))
+          .writeAsString(jsonEncode(record), flush: true);
+    }
+    } finally {
+      // Only the temporary rescue ZIP created by this attempt is removed.
+      // The independently verified protected checkpoint is never pruned here.
+      try {
+        if (await checkpointArchive.exists()) await checkpointArchive.delete();
+      } catch (_) {
+        // Best effort; a failure must not convert a committed checkpoint to
+        // an unsuccessful restore preflight.
+      }
     }
   }
 
@@ -1534,6 +1670,8 @@ Future<int?> _restoreBackupLocked(
           rowsByTable: rows,
           stagedPdfPaths: includeDocuments ? backup.stagedPdfPaths : const <String, String>{},
           stagingDirectory: backup.stagingDirectory,
+          phoneState: selection.contains(BackupRestoreSection.settings)
+              ? backup.phoneState : null,
         );
         return await _restoreValidatedBackup(
           selectiveBackup,
@@ -1565,6 +1703,9 @@ Future<int?> _restoreBackupLocked(
     void Function(String message)? onProgress,
   }) async {
     final manifest = backup.manifest;
+    if (replaceExisting && manifest['backupType'] == 'rescue') {
+      throw StateError('A partial rescue archive cannot replace healthy documents.');
+    }
     final rowsByTable = backup.rowsByTable;
     final folderRows = rowsByTable['folders']!;
     final documentsById = <String, Map<String, Object?>>{
@@ -2183,8 +2324,9 @@ Future<int?> _restoreBackupLocked(
           final oldCategoryId = row['category_id'] as String?;
           copy['category_id'] = oldCategoryId == null ? null : categoryIdMap[oldCategoryId];
           final restored = restoredPaths[oldId];
-          final isDatabaseOnly = manifest['backupType'] == 'database';
-          if (restored == null && !isDatabaseOnly) {
+          final permitsMissing = manifest['backupType'] == 'database' ||
+              manifest['backupType'] == 'rescue';
+          if (restored == null && !permitsMissing) {
             throw StateError('Backup is missing PDF bytes for "${row['name']}".');
           }
           // Database-only restores recover document metadata and relationships
@@ -2327,6 +2469,11 @@ Future<int?> _restoreBackupLocked(
       });
       databaseCommitted = true;
       try { await writeJournal('committed'); } catch (_) { /* DB is authoritative. */ }
+      // Keep imported Phone URIs unlinked: a different device never inherits
+      // Android SAF/MediaStore grants or iOS security-scoped bookmarks.
+      if (backup.phoneState != null) {
+        await PhonePortableState.restoreAsPending(backup.phoneState!);
+      }
       for (final row in restoredReminderRows) {
         if ((row['enabled'] as int? ?? 0) != 1 || row['status'] == 'completed') continue;
         try {
@@ -3409,7 +3556,19 @@ Future<int?> _restoreBackupLocked(
     try {
       final decoded = ZipDecoder().decodeStream(input);
       final archiveNames = <String>{};
+      var expandedMetadataBytes = 0;
       for (final entry in decoded.files) {
+        if (entry.name.endsWith('.json')) {
+          // JSON is decoded into Dart maps/lists after decompression. ZIP
+          // expansion ceilings alone are not adequate memory protection.
+          const maxMetadataEntry = 64 * 1024 * 1024;
+          const maxCombinedMetadata = 192 * 1024 * 1024;
+          if (entry.size > maxMetadataEntry ||
+              expandedMetadataBytes > maxCombinedMetadata - entry.size) {
+            throw StateError('Backup JSON metadata exceeds safe memory limits.');
+          }
+          expandedMetadataBytes += entry.size;
+        }
         final name = entry.name;
         final segments = name.split('/');
         if (!entry.isFile || entry.isSymbolicLink || name.isEmpty ||
@@ -3493,6 +3652,16 @@ Future<int?> _restoreBackupLocked(
             !declaredMetadataEntries.containsAll(seenMetadata)) {
           throw StateError('Backup is missing a metadata checksum or contains an unreferenced metadata checksum.');
         }
+      }
+      Map<String, Object?>? phoneState;
+      final phoneStateEntry = decoded.findFile('phone-state.json');
+      if (phoneStateEntry != null) {
+        if (!phoneStateEntry.isFile || phoneStateEntry.size > 4 * 1024 * 1024) {
+          throw StateError('Phone reference backup has an unsafe size or entry type.');
+        }
+        phoneState = PhonePortableState.validate(jsonDecode(
+          utf8.decode(phoneStateEntry.content as List<int>),
+        ));
       }
       const tableNames = <String>[
         'folders', 'documents', 'categories', 'tags', 'document_tags',
@@ -3594,8 +3763,34 @@ Future<int?> _restoreBackupLocked(
         stagedPdfPaths[documentId] = stagedFile.path;
         onPdfStaged?.call(stagedPdfPaths.length, rawFiles.length);
       }
-      final databaseOnly = manifest['backupType'] == 'database';
-      if (!databaseOnly &&
+      // Original v1 DocsGridBackup archives did not declare backupType.
+      // In that exact known legacy format, absent means a full archive;
+      // any unknown explicit type is still rejected.
+      final backupType = manifest['backupType'] ?? 'full';
+      final databaseOnly = backupType == 'database';
+      final rescue = backupType == 'rescue';
+      if (backupType != 'full' && !databaseOnly && !rescue) {
+        throw StateError('Unsupported backup payload type.');
+      }
+      if (rescue) {
+        final missingRecords = manifest['missingPdfs'];
+        if (missingRecords is! List) {
+          throw StateError('Rescue checkpoint needs a missing-PDF ledger.');
+        }
+        final missingIds = <String>{};
+        for (final record in missingRecords) {
+          if (record is! Map || record['documentId'] is! String ||
+              record['reason'] is! String ||
+              !documentIds.contains(record['documentId']) ||
+              !missingIds.add(record['documentId'] as String)) {
+            throw StateError('Rescue checkpoint has an invalid missing-PDF ledger.');
+          }
+        }
+        if (missingIds.intersection(seenDocuments).isNotEmpty ||
+            missingIds.length + seenDocuments.length != documentIds.length) {
+          throw StateError('Rescue checkpoint does not account for every PDF.');
+        }
+      } else if (!databaseOnly &&
           (seenDocuments.length != documentIds.length ||
            !seenDocuments.containsAll(documentIds))) {
         throw StateError('Backup contains orphaned PDF entries: every document must have exactly one PDF entry.');
@@ -3607,6 +3802,7 @@ Future<int?> _restoreBackupLocked(
         'manifest.json',
         for (final table in tableNames)
           if (archiveNames.contains('$table.json')) '$table.json',
+        if (phoneState != null) 'phone-state.json',
         for (final raw in rawFiles) (raw as Map)['entry'] as String,
       };
       if (archiveNames.length != expectedEntries.length ||
@@ -3619,6 +3815,7 @@ Future<int?> _restoreBackupLocked(
         rowsByTable: rowsByTable,
         stagedPdfPaths: stagedPdfPaths,
         stagingDirectory: staging,
+        phoneState: phoneState,
       );
     } catch (_) {
       try { input.closeSync(); } catch (_) {}
@@ -3636,12 +3833,14 @@ class _ValidatedBackup {
     required this.rowsByTable,
     required this.stagedPdfPaths,
     required this.stagingDirectory,
+    this.phoneState,
   });
 
   final Map<String, dynamic> manifest;
   final Map<String, List<Map<String, Object?>>> rowsByTable;
   final Map<String, String> stagedPdfPaths;
   final Directory stagingDirectory;
+  final Map<String, Object?>? phoneState;
 
   Future<void> dispose() async {
     try {

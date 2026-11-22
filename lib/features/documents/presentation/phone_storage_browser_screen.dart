@@ -399,9 +399,17 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
     final lastModifiedByFolder = <String, DateTime>{};
     for (final pdf in _pdfs) {
       final rawPath = _normalizedFolderPath(pdf);
-      // Files directly under the storage root belong in a virtual Internal
-      // folder instead of being silently omitted.
-      final path = rawPath.isEmpty ? 'Internal' : rawPath;
+      // Root-level MediaStore PDFs retain the volume's identity: an SD root
+      // is never silently relabelled as Internal.
+      final volume = pdf['volumeName'] as String?;
+      final rootLabel = _normalizePath(widget.rootName);
+      final group = volume == 'external_primary'
+          ? 'Internal'
+          : volume != null && volume.isNotEmpty
+              ? 'External storage $volume'
+              : (rootLabel.toLowerCase().contains('internal')
+                  ? 'Internal' : (rootLabel.isEmpty ? 'Storage root' : rootLabel));
+      final path = rawPath.isEmpty ? group : rawPath;
       (grouped[path] ??= <Map<String, Object?>>[]).add(pdf);
       final date = _modifiedAt(pdf);
       final previous = lastModifiedByFolder[path];

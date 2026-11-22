@@ -454,15 +454,25 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
         await WidgetsBinding.instance.endOfFrame;
         nameController.dispose();
         if (!mounted) return;
-        if (config == null) { await file.delete(); continue; }
+        if (config == null) {
+          await _storageChannel.invokeMethod<bool>('finishSharedPdf', {
+            'path': file.path, 'outcome': 'cancelled',
+          });
+          continue;
+        }
         final chosenName = (config['name'] as String?)?.trim();
+        final stageId = RegExp(r'^([0-9a-fA-F-]{36})_')
+            .firstMatch(file.uri.pathSegments.last)?.group(1);
         final result = await DocumentRepository().importScannedPdf(
           file,
           displayName: chosenName == null || chosenName.isEmpty ? originalName : chosenName,
           targetFolderId: config['folderId'] as String?,
           sourceType: 'share',
+          shareImportId: stageId,
         );
-        await file.delete();
+        await _storageChannel.invokeMethod<bool>('finishSharedPdf', {
+          'path': file.path, 'outcome': 'committed',
+        });
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(
             result.added == 1 ? 'Saved in DocsGrid.' : 'This PDF already exists in your library.',
