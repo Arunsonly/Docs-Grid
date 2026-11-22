@@ -130,6 +130,8 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
   StreamSubscription<void>? _snapshotChangesSubscription;
   Timer? _snapshotDebounce;
   Timer? _snapshotPoll;
+  Timer? _snapshotCleanupPoll;
+  DateTime? _lastSnapshotCleanup;
   bool _snapshotWriteInFlight = false;
 
   @override
@@ -145,6 +147,11 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
     _snapshotPoll = Timer.periodic(
       const Duration(minutes: 15),
       (_) => _schedulePortableSnapshot(),
+    );
+    // Expired metadata snapshots also need cleanup when no files are edited.
+    _snapshotCleanupPoll = Timer.periodic(
+      const Duration(hours: 6),
+      (_) => unawaited(_maintainPortableSnapshots()),
     );
     ReminderNotifications.onDocumentNotificationTap = (documentId) {
       unawaited(_openReminderDocument(documentId));
@@ -163,6 +170,7 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
       await _consumeSharedPdfs();
       await _offerRestoreOnFirstLaunch();
       unawaited(BackupAutomation.runDueForegroundBackups());
+      unawaited(_maintainPortableSnapshots());
     });
   }
 
@@ -173,6 +181,7 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
       unawaited(_consumeSharedPdfs());
       _schedulePortableSnapshot();
       unawaited(BackupAutomation.runDueForegroundBackups());
+      unawaited(_maintainPortableSnapshots());
     }
   }
 
@@ -227,6 +236,21 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
     }
   }
 
+  Future<void> _maintainPortableSnapshots() async {
+    final now = DateTime.now().toUtc();
+    if (_lastSnapshotCleanup != null &&
+        now.difference(_lastSnapshotCleanup!) < const Duration(hours: 6)) {
+      return;
+    }
+    _lastSnapshotCleanup = now;
+    try {
+      await DocumentToolsService().cleanExpiredPortableSnapshots();
+    } catch (_) {
+      // Permission/provider failure must never block the PDF library.
+      _lastSnapshotCleanup = null;
+    }
+  }
+
   void _schedulePortableSnapshot() {
     _snapshotDebounce?.cancel();
     _snapshotDebounce = Timer(const Duration(seconds: 2), () {
@@ -272,6 +296,7 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
     _snapshotChangesSubscription?.cancel();
     _snapshotDebounce?.cancel();
     _snapshotPoll?.cancel();
+    _snapshotCleanupPoll?.cancel();
     super.dispose();
   }
 
