@@ -1449,7 +1449,6 @@ class _FoldersScreenState extends State<FoldersScreen>
         _selectedFolderIds.clear();
       });
       await _refresh();
-      _message('Moved ${selected.length} folder(s).');
     } catch (error) {
       if (mounted) _message('Could not move folders: $error');
     }
@@ -1472,7 +1471,7 @@ class _FoldersScreenState extends State<FoldersScreen>
     );
     if (confirmed != true) return;
     try {
-      final pdfCount = await _repository.moveManyToRecycleBin(
+      await _repository.moveManyToRecycleBin(
         selected.map((folder) => folder.id).toList(),
       );
       if (!mounted) return;
@@ -1481,7 +1480,6 @@ class _FoldersScreenState extends State<FoldersScreen>
         _selectedFolderIds.clear();
       });
       await _refresh();
-      _message('Moved ${selected.length} folder(s) and $pdfCount PDF(s) to Recycle Bin.');
     } catch (error) {
       if (mounted) _message('Could not delete folders: $error');
     }
