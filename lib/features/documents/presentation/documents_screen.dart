@@ -1526,12 +1526,10 @@ class _DocumentsScreenState extends State<DocumentsScreen>
   }
 
   Future<void> _bulkCopyDocuments(List<DocumentRecord> selected) async {
-    var copied = 0;
     final failures = <String>[];
     for (final document in selected) {
       try {
         await _repository.copyDocument(document, targetFolderId: document.folderId);
-        copied++;
       } catch (error) {
         failures.add('${document.name}: $error');
       }
