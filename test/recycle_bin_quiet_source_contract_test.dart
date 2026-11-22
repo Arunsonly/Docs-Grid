@@ -7,9 +7,9 @@ void main() {
     final grid = File('lib/features/folders/presentation/folders_screen.dart')
         .readAsStringSync();
 
-    expect(grid, isNot(contains("Moved ${selected.length} folder(s) and "
+    expect(grid, isNot(contains("Moved \${selected.length} folder(s) and "
         "\$pdfCount PDF(s) to Recycle Bin.")));
-    expect(grid, isNot(contains("_message('Moved ${selected.length} folder(s).')")));
+    expect(grid, isNot(contains("_message('Moved \${selected.length} folder(s).')")));
     expect(grid, contains("if (mounted) _message('Could not delete folders: \$error')"));
     expect(grid, contains("if (mounted) _message('Could not move folders: \$error')"));
   });
