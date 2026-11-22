@@ -14,7 +14,8 @@ void main() {
     expect(main, isNot(contains('OcrSearchPreferences')));
     expect(main, isNot(contains('ocrSearchAvailable:')));
     expect(main, contains('phoneOnly: true,'));
-    expect(main, contains('_ => FoldersScreen('));
+    expect(main, contains('IndexedStack('));
+    expect(main, contains('? FoldersScreen('));
     expect(screen, contains("hintText: _searchInsideText ? 'Search text inside PDFs' : 'Search PDF names'"));
     // Internal compatibility remains, but production never enables the mode.
     expect(screen, contains('if (widget.ocrSearchAvailable)'));
