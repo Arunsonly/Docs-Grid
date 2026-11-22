@@ -124,9 +124,16 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
   });
 
   Future<void> _exportBackupSeries(String id) => _run(() async {
-    await _tools.shareManualBackupSeries(id);
+    final selected = await StorageLocationService.instance
+        .chooseBackupExportFolder();
+    if (selected == null) return;
     if (mounted) setState(() => _message =
-        'Export the complete ' + id + ' series to a safe external location.');
+        'Exporting verified ' + id + ' backup to external storage…');
+    final bytes = await _tools.exportManualBackupSeries(
+        id, selected['uri']!);
+    if (mounted) setState(() => _message =
+        'Exported ' + id + ' successfully (' + _formatSize(bytes) +
+        '). The original backup remains unchanged.');
   });
 
   Future<void> _cleanBackupSeries(String id) async {
