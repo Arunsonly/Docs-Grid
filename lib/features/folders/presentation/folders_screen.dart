@@ -52,6 +52,7 @@ class _FoldersScreenState extends State<FoldersScreen>
   String? _currentFolderId;
   String _currentTitle = 'Folders';
   final Set<String> _selectedDocumentIds = <String>{};
+  bool _isSelectingDocuments = false;
   final Set<String> _selectedFolderIds = <String>{};
   final TextEditingController _searchController = TextEditingController();
   String _searchQuery = '';
@@ -783,6 +784,8 @@ class _FoldersScreenState extends State<FoldersScreen>
     setState(() {
       _isSelectingFolders = false;
       _selectedFolderIds.clear();
+      _isSelectingDocuments = false;
+      _selectedDocumentIds.clear();
       _ancestors.add(folder);
       _currentFolderId = folder.id;
       _currentTitle = folder.name;
@@ -794,6 +797,8 @@ class _FoldersScreenState extends State<FoldersScreen>
     setState(() {
       _isSelectingFolders = false;
       _selectedFolderIds.clear();
+      _isSelectingDocuments = false;
+      _selectedDocumentIds.clear();
       _ancestors.clear();
       _currentFolderId = null;
       _currentTitle = 'Folders';
@@ -805,6 +810,8 @@ class _FoldersScreenState extends State<FoldersScreen>
     setState(() {
       _isSelectingFolders = false;
       _selectedFolderIds.clear();
+      _isSelectingDocuments = false;
+      _selectedDocumentIds.clear();
       if (index < 0) {
         _ancestors.clear();
         _currentFolderId = null;
@@ -1176,6 +1183,7 @@ class _FoldersScreenState extends State<FoldersScreen>
     if (_isReorderingFolders) return;
     setState(() {
       _isSelectingFolders = true;
+      _isSelectingDocuments = false;
       _selectedDocumentIds.clear();
       _selectedFolderIds.add(folder.id); // Long press selects immediately.
     });
@@ -1463,6 +1471,13 @@ class _FoldersScreenState extends State<FoldersScreen>
     return _documents.listInFolder(_currentFolderId);
   }
 
+  void _clearDocumentSelection() {
+    setState(() {
+      _isSelectingDocuments = false;
+      _selectedDocumentIds.clear();
+    });
+  }
+
   Future<void> _selectAllDocuments(
     List<DocumentRecord> currentlyLoaded,
   ) async {
@@ -1470,12 +1485,162 @@ class _FoldersScreenState extends State<FoldersScreen>
     final epoch = _folderLoadEpoch;
     try {
       final all = await _allSelectableDocuments(currentlyLoaded);
-      if (!mounted || folderId != _currentFolderId ||
-          epoch != _folderLoadEpoch) return;
-      setState(() => _selectedDocumentIds.addAll(all.map((item) => item.id)));
+      if (!mounted || !_isSelectingDocuments ||
+          folderId != _currentFolderId || epoch != _folderLoadEpoch) return;
+      final allIds = all.map((item) => item.id).toSet();
+      if (allIds.isEmpty) return;
+      setState(() {
+        if (_selectedDocumentIds.containsAll(allIds)) {
+          _selectedDocumentIds.removeAll(allIds);
+        } else {
+          _selectedDocumentIds.addAll(allIds);
+        }
+      });
     } catch (error) {
       if (mounted) _message('Could not select all PDFs: $error');
     }
+  }
+
+  Future<void> _showSelectedPdfDetails() async {
+    if (_selectedDocumentIds.isEmpty) return;
+    final folderId = _currentFolderId;
+    final epoch = _folderLoadEpoch;
+    final selectedIds = Set<String>.of(_selectedDocumentIds);
+    try {
+      final loaded = await _documentsFuture;
+      final all = await _allSelectableDocuments(loaded);
+      if (!mounted || epoch != _folderLoadEpoch ||
+          folderId != _currentFolderId) return;
+      final selected = all.where((doc) => selectedIds.contains(doc.id));
+      var count = 0;
+      var sizeBytes = 0;
+      for (final doc in selected) {
+        count++;
+        if (doc.sizeBytes > 0) sizeBytes += doc.sizeBytes;
+      }
+      if (!mounted) return;
+      await showDialog<void>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('Selection Details'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Selected PDFs: $count'),
+              const SizedBox(height: 8),
+              Text('Total PDF size: ${_size(sizeBytes)}'),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Close'),
+            ),
+          ],
+        ),
+      );
+    } catch (error) {
+      if (mounted) _message('Could not calculate PDF details: $error');
+    }
+  }
+
+  Widget _buildPdfSelectionToolbar() {
+    final scheme = Theme.of(context).colorScheme;
+    return FutureBuilder<List<DocumentRecord>>(
+      future: _documentsFuture,
+      builder: (context, snapshot) {
+        final loaded = snapshot.data ?? const <DocumentRecord>[];
+        return Material(
+          key: const ValueKey('grid-pdf-selection-header'),
+          color: scheme.secondaryContainer,
+          borderRadius: BorderRadius.circular(22),
+          clipBehavior: Clip.antiAlias,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 5),
+            child: Row(children: [
+              IconButton(
+                key: const ValueKey('grid-pdf-select-all'),
+                tooltip: 'Select all',
+                onPressed: () => unawaited(_selectAllDocuments(loaded)),
+                icon: const Icon(Icons.select_all),
+                visualDensity: VisualDensity.compact,
+              ),
+              Expanded(
+                child: Text(
+                  '${_selectedDocumentIds.length} selected',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontWeight: FontWeight.w700),
+                ),
+              ),
+              IconButton(
+                key: const ValueKey('grid-pdf-share-selected'),
+                tooltip: 'Share selected',
+                onPressed: _selectedDocumentIds.isEmpty
+                    ? null : () => unawaited(_shareSelectedDocuments(loaded)),
+                icon: const Icon(Icons.share_outlined),
+                visualDensity: VisualDensity.compact,
+              ),
+              IconButton(
+                key: const ValueKey('grid-pdf-move-selected'),
+                tooltip: 'Move selected to folder',
+                onPressed: _selectedDocumentIds.isEmpty
+                    ? null : () => _moveSelected(loaded),
+                icon: const Icon(Icons.drive_file_move_outlined),
+                visualDensity: VisualDensity.compact,
+              ),
+              IconButton(
+                key: const ValueKey('grid-pdf-delete-selected'),
+                tooltip: 'Move selected to Recycle Bin',
+                onPressed: _selectedDocumentIds.isEmpty
+                    ? null : () => unawaited(_deleteSelectedDocuments(loaded)),
+                icon: const Icon(Icons.delete_outline),
+                visualDensity: VisualDensity.compact,
+              ),
+              PopupMenuButton<String>(
+                key: const ValueKey('grid-pdf-selected-more'),
+                tooltip: 'PDF selection actions',
+                icon: const Icon(Icons.more_vert),
+                onSelected: (action) {
+                  if (action == 'details') {
+                    unawaited(_showSelectedPdfDetails());
+                  }
+                },
+                itemBuilder: (_) => [
+                  PopupMenuItem<String>(
+                    value: 'details',
+                    enabled: _selectedDocumentIds.isNotEmpty,
+                    child: const ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      leading: Icon(Icons.info_outline),
+                      title: Text('Details'),
+                    ),
+                  ),
+                ],
+              ),
+            ]),
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _deleteSelectedDocuments(
+    List<DocumentRecord> currentlyLoaded,
+  ) async {
+    final folderId = _currentFolderId;
+    final epoch = _folderLoadEpoch;
+    final all = await _allSelectableDocuments(currentlyLoaded);
+    if (!mounted || epoch != _folderLoadEpoch ||
+        folderId != _currentFolderId) return;
+    final selected = all.where((d) => _selectedDocumentIds.contains(d.id))
+        .toList();
+    if (selected.isEmpty) return;
+    await _documents.moveManyToTrash(selected);
+    if (!mounted) return;
+    _clearDocumentSelection();
+    await _refresh();
   }
 
   Future<void> _shareSelectedDocuments(
@@ -1518,7 +1683,7 @@ class _FoldersScreenState extends State<FoldersScreen>
     if (destination == null) return;
     final result = await _documents.moveManyToFolder(selected, destination.isEmpty ? null : destination);
     if (!mounted) return;
-    setState(_selectedDocumentIds.clear);
+    _clearDocumentSelection();
     await _refresh();
     final failures = result['failures'] as List<String>;
     _message('Moved ${result['moved']} PDF(s). ${failures.length} failed.');
@@ -1840,11 +2005,14 @@ class _FoldersScreenState extends State<FoldersScreen>
     return Material(
       color: Theme.of(context).scaffoldBackgroundColor,
       child: PopScope(
-      canPop: !_isSelectingFolders && _ancestors.isEmpty,
+      canPop: !_isSelectingFolders &&
+          !_isSelectingDocuments && _ancestors.isEmpty,
       onPopInvokedWithResult: (didPop, result) {
         if (didPop) return;
         if (_isSelectingFolders) {
           _clearFolderSelection();
+        } else if (_isSelectingDocuments) {
+          _clearDocumentSelection();
         } else if (_ancestors.isNotEmpty) {
           _goToAncestor(_ancestors.length - 2);
         }
@@ -1855,43 +2023,14 @@ class _FoldersScreenState extends State<FoldersScreen>
           Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        if (_selectedDocumentIds.isNotEmpty &&
-            !_isSelectingFolders &&
-            !keyboardVisible)
-          FutureBuilder<List<DocumentRecord>>(
-            future: _documentsFuture,
-            builder: (context, snapshot) {
-              final all = snapshot.data ?? const <DocumentRecord>[];
-              return Material(
-                color: Theme.of(context).colorScheme.secondaryContainer,
-                child: Row(children: [
-                  IconButton(tooltip: 'Clear selection', onPressed: () => setState(_selectedDocumentIds.clear), icon: const Icon(Icons.close)),
-                  Expanded(child: Text('${_selectedDocumentIds.length} selected')),
-                  IconButton(tooltip: 'Select all',
-                    onPressed: () => unawaited(_selectAllDocuments(all)),
-                    icon: const Icon(Icons.select_all)),
-                  IconButton(tooltip: 'Share selected',
-                    onPressed: () => unawaited(_shareSelectedDocuments(all)),
-                    icon: const Icon(Icons.share_outlined)),
-                  IconButton(tooltip: 'Move selected to folder', onPressed: () => _moveSelected(all), icon: const Icon(Icons.drive_file_move_outlined)),
-                  IconButton(tooltip: 'Move selected to Recycle Bin', onPressed: () async {
-                    final selected = all.where((d) => _selectedDocumentIds.contains(d.id)).toList();
-                    if (selected.isEmpty) return;
-                    await _documents.moveManyToTrash(selected);
-                    if (!mounted) return;
-                    setState(_selectedDocumentIds.clear);
-                    await _refresh();
-                  }, icon: const Icon(Icons.delete_outline)),
-                ]),
-              );
-            },
-          ),
         if (!keyboardVisible)
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
             child: _isSelectingFolders
                 ? _buildFolderSelectionToolbar()
-                : Row(
+                : _isSelectingDocuments
+                    ? _buildPdfSelectionToolbar()
+                    : Row(
                     children: [
                       Expanded(
                         child: InkWell(
@@ -2348,7 +2487,8 @@ class _FoldersScreenState extends State<FoldersScreen>
           ),
           if (!keyboardVisible &&
               !_isReorderingFolders &&
-              !_isSelectingFolders)
+              !_isSelectingFolders &&
+              !_isSelectingDocuments)
             Positioned(
               right: 18,
               bottom: 18,
