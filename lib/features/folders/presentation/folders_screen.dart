@@ -2146,14 +2146,13 @@ class _FoldersScreenState extends State<FoldersScreen>
           Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        if (!keyboardVisible)
+        // Selection keeps this entire normal header row hidden; its
+        // actions now float above the bottom tab navigation instead.
+        if (!keyboardVisible &&
+            !_isSelectingFolders && !_isSelectingDocuments)
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
-            child: _isSelectingFolders
-                ? _buildFolderSelectionToolbar()
-                : _isSelectingDocuments
-                    ? _buildPdfSelectionToolbar()
-                    : Row(
+            child: Row(
                     children: [
                       Expanded(
                         child: InkWell(
@@ -2647,6 +2646,20 @@ class _FoldersScreenState extends State<FoldersScreen>
           ),
       ],
           ),
+          if (!keyboardVisible &&
+              (_isSelectingFolders || _isSelectingDocuments))
+            Positioned(
+              key: const ValueKey('grid-floating-selection-position'),
+              left: 12,
+              right: 12,
+              bottom: 12,
+              child: SafeArea(
+                top: false,
+                child: _isSelectingFolders
+                    ? _buildFolderSelectionToolbar()
+                    : _buildPdfSelectionToolbar(),
+              ),
+            ),
           if (!keyboardVisible &&
               !_isReorderingFolders &&
               !_isSelectingFolders &&
