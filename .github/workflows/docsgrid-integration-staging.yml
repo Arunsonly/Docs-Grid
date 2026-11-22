@@ -41,6 +41,13 @@ jobs:
             echo "Merging $source" | tee -a merge-report.txt
             git merge --no-ff -X ours -m "Stage earlier work: $source" "origin/$source" 2>&1 | tee -a merge-report.txt
           done
+          # Preserve the current, audited CI workflow exactly. An old PR's
+          # workflow changes are not required for product functionality, and
+          # this app token cannot push workflow modifications.
+          git checkout origin/feat/floating-grid-phone-selection-20261122 -- .github/workflows/flutter-ci.yml
+          if ! git diff --cached --quiet; then
+            git commit -m 'Keep latest verified Flutter CI workflow unchanged'
+          fi
           git diff --check origin/feat/floating-grid-phone-selection-20261122
           echo "Staging commit: $(git rev-parse HEAD)" | tee -a merge-report.txt
           echo "Merged paths:" | tee -a merge-report.txt
