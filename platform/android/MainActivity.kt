@@ -50,6 +50,7 @@ class MainActivity : FlutterActivity() {
     private var pendingRecoverySelection = false
     private var pendingPdfRecoverySelection = false
     private var pendingBackupChainSelection = false
+    private var pendingBackupExportSelection = false
     private var storageChangeSink: EventChannel.EventSink? = null
     private val storageObservers = mutableListOf<ContentObserver>()
     private var storageObserversRegistered = false
@@ -116,7 +117,8 @@ class MainActivity : FlutterActivity() {
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName)
             .setMethodCallHandler { call, result ->
                 val mainThreadOnly = call.method == "chooseFolder" || call.method == "chooseRecoveryFolder" ||
-                    call.method == "choosePdfRecoveryFolder" || call.method == "chooseBackupChainFolder" || call.method == "openPdf"
+                    call.method == "choosePdfRecoveryFolder" || call.method == "chooseBackupChainFolder" ||
+                    call.method == "chooseBackupExportFolder" || call.method == "openPdf"
                 if (mainThreadOnly) {
                     handleStorageCall(call, result)
                 } else if (call.method == "consumeSharedPdfs") {
@@ -637,7 +639,7 @@ class MainActivity : FlutterActivity() {
     ) {
                     try {
                         when (call.method) {
-                            "chooseFolder", "chooseRecoveryFolder", "choosePdfRecoveryFolder", "chooseBackupChainFolder" -> {
+                            "chooseFolder", "chooseRecoveryFolder", "choosePdfRecoveryFolder", "chooseBackupChainFolder", "chooseBackupExportFolder" -> {
                                 if (pendingFolderResult != null) {
                                     result.error("BUSY", "Folder picker is already open.", null)
                                 } else {
@@ -645,6 +647,7 @@ class MainActivity : FlutterActivity() {
                                     pendingRecoverySelection = call.method == "chooseRecoveryFolder"
                                     pendingPdfRecoverySelection = call.method == "choosePdfRecoveryFolder"
                                     pendingBackupChainSelection = call.method == "chooseBackupChainFolder"
+                                    pendingBackupExportSelection = call.method == "chooseBackupExportFolder"
                                     val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)
                                     intent.addFlags(
                                         Intent.FLAG_GRANT_READ_URI_PERMISSION or
@@ -2050,9 +2053,11 @@ class MainActivity : FlutterActivity() {
         val recoveryOnly = pendingRecoverySelection
         val pdfFolderOnly = pendingPdfRecoverySelection
         val backupChainOnly = pendingBackupChainSelection
+        val backupExportOnly = pendingBackupExportSelection
         pendingRecoverySelection = false
         pendingPdfRecoverySelection = false
         pendingBackupChainSelection = false
+        pendingBackupExportSelection = false
         if (resultCode != Activity.RESULT_OK || data?.data == null) {
             callback?.success(null)
             return
@@ -2078,6 +2083,15 @@ class MainActivity : FlutterActivity() {
             val selectedRoot = DocumentsContract.buildDocumentUriUsingTree(
                 uri, DocumentsContract.getTreeDocumentId(uri)
             )
+            if (backupExportOnly) {
+                // Only this user-granted SAF tree is an export destination.
+                // Do not change DocsGrid's managed storage preferences.
+                callback?.success(mapOf(
+                    "uri" to selectedRoot.toString(),
+                    "name" to "Selected export folder",
+                ))
+                return
+            }
             if (backupChainOnly) {
                 // A user-selected A-series source must not change the active
                 // DocsGrid storage root or create folders at the source.
