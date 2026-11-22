@@ -18,16 +18,11 @@ void main() {
   late FolderRepository repository;
 
   setUp(() async {
-    db = await databaseFactoryFfi.openDatabase(inMemoryDatabasePath);
-    await db.execute('''
-      CREATE TABLE folders (
-        id TEXT PRIMARY KEY, name TEXT NOT NULL,
-        parent_id TEXT, storage_uri_or_relative_path TEXT,
-        created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
-        deleted_at TEXT, sort_order INTEGER NOT NULL DEFAULT 0
-      )
-    ''');
-    await db.execute('CREATE TABLE documents (id TEXT, folder_id TEXT, deleted_at TEXT)');
+    // Use the real v12 schema: partial fixtures omit summary columns and
+    // durable operation tables used by production folder queries.
+    db = await AppDatabase.forTesting(
+      () async => throw StateError('Test schema opener is not used'),
+    ).openProductionSchemaForTesting(inMemoryDatabasePath);
     repository = FolderRepository(database: AppDatabase.forTesting(() async => db));
 
     final batch = db.batch();
