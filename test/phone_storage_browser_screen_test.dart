@@ -709,7 +709,7 @@ void main() {
           onOpenPdf: (_, __) async { opened++; },
           onShareSelectedPdfs: (chosen) async { shared = chosen; },
         ),
-        bottomNavigationBar: const BottomNavigationBar(
+        bottomNavigationBar: BottomNavigationBar(
           items: [
             BottomNavigationBarItem(icon: Icon(Icons.phone_android), label: 'Phone'),
             BottomNavigationBarItem(icon: Icon(Icons.home), label: 'Home'),
