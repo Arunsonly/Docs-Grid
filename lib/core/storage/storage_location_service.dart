@@ -89,7 +89,11 @@ class StorageLocationService {
     final normalized = decoded.replaceAll('\\', '/').toLowerCase();
     // SAF tree document IDs use the form "primary:Android/media/DocsGrid",
     // so Android's segment may follow a colon rather than a slash.
-    return normalized.contains('android/media/docsgrid') ||
+    // The previous package-less media folder is legacy; the new
+    // com.docsgrid.mobile folder must never be treated as legacy.
+    return RegExp(r'(?:^|[:/])android/media/com\.docsgrid(?:/|$)')
+            .hasMatch(normalized) ||
+        normalized.contains('android/media/docsgrid') ||
         normalized.contains('/docsgrid/pdfs');
   }
 
@@ -98,7 +102,10 @@ class StorageLocationService {
     String decoded;
     try { decoded = Uri.decodeComponent(value); } catch (_) { decoded = value; }
     final normalized = decoded.replaceAll('\\', '/').toLowerCase();
-    return normalized.contains('/android/media/com.docsgrid');
+    // Match the full installed-package segment, not its shorter old prefix.
+    // Both local file paths and decoded SAF document IDs are supported.
+    return RegExp(r'(?:^|[:/])android/media/com\.docsgrid\.mobile(?:/|$)')
+        .hasMatch(normalized);
   }
 
   Future<Map<String, String>> portableDataLocations() async {
@@ -893,7 +900,11 @@ class StorageLocationService {
             final path = current.path.isEmpty ? name : '${current.path}/$name';
             if (isExcludedStorageDirectoryPath(path)) continue;
             allFolders.add(path);
-            if (path == 'Android/media/com.docsgrid' ||
+            // Never show DocsGrid-managed Grid PDFs in the Phone browser.
+            // Retain the previous path exclusion for recovery compatibility.
+            if (path == 'Android/media/com.docsgrid.mobile' ||
+                path.startsWith('Android/media/com.docsgrid.mobile/') ||
+                path == 'Android/media/com.docsgrid' ||
                 path.startsWith('Android/media/com.docsgrid/')) {
               continue;
             }
