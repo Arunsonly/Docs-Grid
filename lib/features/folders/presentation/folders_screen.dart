@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../../core/widgets/storage_sort_controls.dart';
 
@@ -69,6 +70,10 @@ class _FoldersScreenState extends State<FoldersScreen>
   int _sortRevision = 0;
   bool _isSelectingFolders = false;
   bool _isReorderingFolders = false;
+  // Presentation only: folder and PDF repositories keep identical queries.
+  bool _showGridTiles = false;
+  int _viewPreferenceRevision = 0;
+  static const String _viewPreferenceKey = 'docsgrid_grid_tab_tiles_v1';
   List<Folder> _draftFolderOrder = <Folder>[];
   late Future<List<Folder>> _foldersFuture;
   late Future<List<DocumentRecord>> _documentsFuture;
@@ -127,6 +132,7 @@ class _FoldersScreenState extends State<FoldersScreen>
         PortableSnapshotEvents.gridPreviewChanges.listen(_onGridFolderChange);
     _load();
     unawaited(_restoreSortPreference());
+    unawaited(_restoreViewPreference());
   }
 
   @override
@@ -274,6 +280,35 @@ class _FoldersScreenState extends State<FoldersScreen>
       explicit: _explicitSort,
     ).catchError((Object _) {
       // Only optional UI preference persistence failed; list remains usable.
+    }));
+  }
+
+  Future<void> _restoreViewPreference() async {
+    final revision = _viewPreferenceRevision;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final enabled = prefs.getBool(_viewPreferenceKey) ?? false;
+      if (!mounted || revision != _viewPreferenceRevision) return;
+      if (_showGridTiles != enabled) {
+        setState(() => _showGridTiles = enabled);
+      }
+    } catch (_) {
+      // Preferences are optional. The existing list remains fully usable.
+    }
+  }
+
+  void _toggleGridListView() {
+    if (_isReorderingFolders || _isSelectingFolders ||
+        _isSelectingDocuments) return;
+    setState(() {
+      _viewPreferenceRevision++;
+      _showGridTiles = !_showGridTiles;
+    });
+    final enabled = _showGridTiles;
+    unawaited(SharedPreferences.getInstance().then((prefs) async {
+      await prefs.setBool(_viewPreferenceKey, enabled);
+    }).catchError((Object _) {
+      // No data operation depends on the visual layout preference.
     }));
   }
 
@@ -2085,6 +2120,13 @@ class _FoldersScreenState extends State<FoldersScreen>
                             ),
                           ),
                         ],
+                      ),
+                      IconButton(
+                        key: const ValueKey('grid-view-mode-toggle'),
+                        tooltip: _showGridTiles ? 'List view' : 'Grid view',
+                        onPressed: _isReorderingFolders ? null : _toggleGridListView,
+                        icon: Icon(_showGridTiles
+                            ? Icons.view_list_outlined : Icons.grid_view_outlined),
                       ),
                       IconButton(
                         tooltip: 'Create folder',
