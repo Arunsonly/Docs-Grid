@@ -11,13 +11,13 @@ Use a hybrid model:
 - The live SQLite database, indexes, app preferences, and operational metadata remain in app-private storage.
 - Portable backup archives and recovery artifacts live in the DocsGrid shared-storage root.
 - The database is the source of truth for document metadata; there must not be two independently writable live databases.
-- The Android root directory name is `Android/media/com.docsgrid/`. This is a chosen storage-directory name and must not be assumed to equal Android's applicationId.
+- The Android managed media root is `Android/media/com.docsgrid.mobile/`, derived from the installed Android applicationId. The former `Android/media/com.docsgrid/` is a legacy location usable only through explicit recovery; do not automatically move or delete prior files.
 - Before implementation, verify the actual applicationId and Android storage APIs in the project.
 
 ## 2. Final Android directory layout
 
 ```text
-Android/media/com.docsgrid/
+Android/media/com.docsgrid.mobile/
 ├── My Files/
 │   ├── Unfiled/
 │   ├── Folders/
@@ -109,7 +109,7 @@ Allow the user to select supported groups such as PDFs, folders, categories, tag
 
 After uninstall/reinstall on Android:
 
-- Scan for `Android/media/com.docsgrid/` and discover the expected My Files and System locations.
+- Identify the current `Android/media/com.docsgrid.mobile/` root for fresh installs; if the user selects a former `Android/media/com.docsgrid/` or `Android/media/DocsGrid/` recovery tree, validate it without silently migrating or deleting its files.
 - Discover candidate backup archives under `System/Backups/`; validate them rather than trusting filenames or timestamps alone.
 - If a valid Full Backup is found, offer it as the recommended restore source. Do not restore without user consent.
 - If several valid backups exist, recommend the newest valid Full Backup and let the user choose another.
