@@ -473,10 +473,22 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
         await _storageChannel.invokeMethod<bool>('finishSharedPdf', {
           'path': file.path, 'outcome': 'committed',
         });
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(
-            result.added == 1 ? 'Saved in DocsGrid.' : 'This PDF already exists in your library.',
-          )));
+        // A successful share import already appears in the library.
+        // Duplicate detection must remain visible without a bottom snackbar.
+        if (mounted && result.duplicates > 0) {
+          await showDialog<void>(
+            context: context,
+            builder: (ctx) => AlertDialog(
+              title: const Text('Already in DocsGrid'),
+              content: const Text('This PDF already exists in your library. No duplicate was added.'),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  child: const Text('OK'),
+                ),
+              ],
+            ),
+          );
         }
       }
     } catch (error) {
@@ -630,12 +642,7 @@ class _SettingsScreenState extends State<_SettingsScreen> {
       if (!context.mounted) return;
       await _refreshStorageStatus();
       if (!context.mounted) return;
-      if (migrate != true) {
-        messenger.showSnackBar(
-          SnackBar(content: Text('Storage folder selected: ${folder['name']}. Existing PDFs were left unchanged.')),
-        );
-        return;
-      }
+      if (migrate != true) return;
 
       var completed = 0;
       var total = 0;
@@ -670,7 +677,7 @@ class _SettingsScreenState extends State<_SettingsScreen> {
       );
       await Future<void>.delayed(Duration.zero);
       try {
-        final count = await DocumentRepository().migrateExistingLibraryToSelectedStorage(
+        await DocumentRepository().migrateExistingLibraryToSelectedStorage(
           onProgress: (done, all, name) {
             completed = done;
             total = all;
@@ -681,9 +688,6 @@ class _SettingsScreenState extends State<_SettingsScreen> {
         if (context.mounted) {
           Navigator.of(context, rootNavigator: true).pop();
           await progressDialog;
-          messenger.showSnackBar(
-            SnackBar(content: Text('Library copy completed: $count PDFs verified. Originals retained.')),
-          );
         }
       } catch (error) {
         if (context.mounted) {
