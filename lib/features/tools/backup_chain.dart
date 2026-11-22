@@ -12,11 +12,12 @@ import 'backup_archive_limits.dart';
 /// In the UI: A001, A001/I001, A001/I002.
 class BackupChainPlan {
   const BackupChainPlan(this.directory, this.series, this.name, this.parent,
-      this.previous);
+      this.parentBackupId, this.previous);
   final Directory directory;
   final String series;
   final String name;
   final String? parent;
+  final String? parentBackupId;
   final Map<String, Map<String, Object?>> previous;
   bool get isFull => parent == null;
   String get label => isFull ? series : series + '/' + name;
@@ -117,6 +118,7 @@ class BackupChain {
       throw StateError('Original Full Backup is missing.');
     }
     var parent = '';
+    String? parentBackupId;
     for (var index = 0; index < items.length; index++) {
       final name = p.basenameWithoutExtension(items[index].path);
       if (name != (index == 0 ? series : serial('I', index))) {
@@ -125,11 +127,15 @@ class BackupChain {
       final m = await manifest(items[index]);
       if (m['seriesId'] != series || m['backupName'] != name ||
           m['backupType'] != (index == 0 ? 'full' : 'incremental') ||
-          m['parentName'] != (index == 0 ? null : parent)) {
+          m['parentName'] != (index == 0 ? null : parent) ||
+          m['parentBackupId'] != (index == 0 ? null : parentBackupId) ||
+          m['backupId'] is! String ||
+          (m['backupId'] as String).isEmpty) {
         throw StateError('Backup parent relationship is invalid.');
       }
       fingerprints(m);
       parent = name;
+      parentBackupId = m['backupId'] as String;
     }
     return items;
   }
@@ -142,14 +148,15 @@ class BackupChain {
           ? 1 : int.parse(p.basename(current.last.path).substring(1)) + 1;
       final series = serial('A', number);
       return BackupChainPlan(Directory(p.join(root.path, series)),
-          series, series, null, const {});
+          series, series, null, null, const {});
     }
     final latest = current.last;
     final members = await verified(latest);
     final previous = await manifest(members.last);
     return BackupChainPlan(
       latest, p.basename(latest.path), serial('I', members.length),
-      p.basenameWithoutExtension(members.last.path), fingerprints(previous),
+      p.basenameWithoutExtension(members.last.path),
+      previous['backupId'] as String, fingerprints(previous),
     );
   }
 
