@@ -49,6 +49,7 @@ class MainActivity : FlutterActivity() {
     private var pendingFolderResult: MethodChannel.Result? = null
     private var pendingRecoverySelection = false
     private var pendingPdfRecoverySelection = false
+    private var pendingBackupChainSelection = false
     private var storageChangeSink: EventChannel.EventSink? = null
     private val storageObservers = mutableListOf<ContentObserver>()
     private var storageObserversRegistered = false
@@ -115,7 +116,7 @@ class MainActivity : FlutterActivity() {
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName)
             .setMethodCallHandler { call, result ->
                 val mainThreadOnly = call.method == "chooseFolder" || call.method == "chooseRecoveryFolder" ||
-                    call.method == "choosePdfRecoveryFolder" || call.method == "openPdf"
+                    call.method == "choosePdfRecoveryFolder" || call.method == "chooseBackupChainFolder" || call.method == "openPdf"
                 if (mainThreadOnly) {
                     handleStorageCall(call, result)
                 } else if (call.method == "consumeSharedPdfs") {
@@ -636,13 +637,14 @@ class MainActivity : FlutterActivity() {
     ) {
                     try {
                         when (call.method) {
-                            "chooseFolder", "chooseRecoveryFolder", "choosePdfRecoveryFolder" -> {
+                            "chooseFolder", "chooseRecoveryFolder", "choosePdfRecoveryFolder", "chooseBackupChainFolder" -> {
                                 if (pendingFolderResult != null) {
                                     result.error("BUSY", "Folder picker is already open.", null)
                                 } else {
                                     pendingFolderResult = result
                                     pendingRecoverySelection = call.method == "chooseRecoveryFolder"
                                     pendingPdfRecoverySelection = call.method == "choosePdfRecoveryFolder"
+                                    pendingBackupChainSelection = call.method == "chooseBackupChainFolder"
                                     val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)
                                     intent.addFlags(
                                         Intent.FLAG_GRANT_READ_URI_PERMISSION or
@@ -2047,21 +2049,23 @@ class MainActivity : FlutterActivity() {
         pendingFolderResult = null
         val recoveryOnly = pendingRecoverySelection
         val pdfFolderOnly = pendingPdfRecoverySelection
+        val backupChainOnly = pendingBackupChainSelection
         pendingRecoverySelection = false
         pendingPdfRecoverySelection = false
+        pendingBackupChainSelection = false
         if (resultCode != Activity.RESULT_OK || data?.data == null) {
             callback?.success(null)
             return
         }
         val uri = data.data!!
-        val requiredFlags = if (pdfFolderOnly) {
+        val requiredFlags = if (pdfFolderOnly || backupChainOnly) {
             Intent.FLAG_GRANT_READ_URI_PERMISSION
         } else {
             Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
         }
         val flags = data.flags and requiredFlags
         if (flags != requiredFlags) {
-            callback?.error("PERMISSION", "The selected folder did not grant both read and write access.", null)
+            callback?.error("PERMISSION", "The selected folder did not grant the required storage access.", null)
             return
         }
         try {
@@ -2074,6 +2078,23 @@ class MainActivity : FlutterActivity() {
             val selectedRoot = DocumentsContract.buildDocumentUriUsingTree(
                 uri, DocumentsContract.getTreeDocumentId(uri)
             )
+            if (backupChainOnly) {
+                // A user-selected A-series source must not change the active
+                // DocsGrid storage root or create folders at the source.
+                val children = listDirectory(selectedRoot)
+                val bases = children.filter {
+                    it["isDirectory"] != true &&
+                        Regex("^A[0-9]{3,}\\.zip$").matches(it["name"] as? String ?: "")
+                }
+                if (bases.size != 1) {
+                    throw IllegalStateException("Select a folder containing one A-series Full ZIP.")
+                }
+                callback?.success(mapOf(
+                    "uri" to selectedRoot.toString(),
+                    "name" to "Backup series",
+                ))
+                return
+            }
             if (pdfFolderOnly) {
                 // Read-only recovery does not alter DocsGrid storage preferences
                 // or create folders inside the user's source location.
