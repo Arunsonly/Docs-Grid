@@ -254,6 +254,24 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
     )) ?? false;
   }
 
+  Future<void> _recoverSelectedPdfFolder() => _run(() async {
+    final selected = await StorageLocationService.instance
+        .choosePdfRecoveryFolder();
+    if (selected == null) return;
+    final result = await _tools.recoverLoosePortablePdfs(
+      additionalFolderUri: selected['uri'],
+      onProgress: (completed, total) {
+        if (mounted) setState(() => _message =
+            'Finding PDFs: $completed of $total');
+      },
+    );
+    if (mounted) setState(() => _message =
+        'Recovered ' + (result['added'] ?? 0).toString() +
+        ' PDFs, relinked ' + (result['relinked'] ?? 0).toString() +
+        ', skipped ' + (result['duplicates'] ?? 0).toString() +
+        ' existing PDFs. Failed: ' + (result['failed'] ?? 0).toString() + '.');
+  });
+
   Future<void> _restoreBackup() => _run(() async {
     final source = await showModalBottomSheet<String>(
       context: context, showDragHandle: true,
@@ -263,12 +281,19 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
           subtitle: const Text('From this phone, SD card, USB or cloud storage.'),
           onTap: () => Navigator.pop(ctx, 'zip')),
         ListTile(leading: const Icon(Icons.folder_open_outlined), title: const Text('Existing DocsGrid folder'),
-          subtitle: const Text('Recover from a DocsGrid folder copied from another phone.'),
+          subtitle: const Text('Recover metadata and PDFs from an old DocsGrid folder.'),
           onTap: () => Navigator.pop(ctx, 'folder')),
+        ListTile(leading: const Icon(Icons.picture_as_pdf_outlined), title: const Text('PDF folder'),
+          subtitle: const Text('Find PDFs in any readable folder without moving originals.'),
+          onTap: () => Navigator.pop(ctx, 'pdf_folder')),
       ])),
     );
     if (source == 'folder') {
       await _restorePortableSnapshot();
+      return;
+    }
+    if (source == 'pdf_folder') {
+      await _recoverSelectedPdfFolder();
       return;
     }
     if (source != 'zip') return;
@@ -472,12 +497,26 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
               false;
         },
       );
+      Map<String, int>? relink;
+      if (restored == 0 && Platform.isAndroid) {
+        // Database-only restore must reconnect surviving PDF bytes to their
+        // original tags, reminders, and category records automatically.
+        relink = await _tools.recoverLoosePortablePdfs(
+          onProgress: (completed, total) {
+            if (mounted) setState(() => _message =
+                'Reconnecting PDFs: $completed of $total');
+          },
+        );
+      }
       if (mounted) {
         setState(() => _message = restored == null
-            ? 'Restore cancelled. No PDF or database was changed.'
-            : restored == 0
-                ? 'Restore completed. No PDF payloads were included; recovered document records may need PDF relinking.'
-                : 'Restore completed: $restored PDF payload(s) restored and verified.');
+            ? 'Restore cancelled. Nothing was changed.'
+            : relink != null
+                ? 'Database restored; linked ' + (relink['relinked'] ?? 0).toString() +
+                    ' surviving PDFs. Additional PDFs: ' +
+                    ((relink['added'] ?? 0) - (relink['relinked'] ?? 0)).toString() +
+                    '. Needs attention: ' + (relink['failed'] ?? 0).toString() + '.'
+                : 'Restore completed: $restored verified PDF payloads.');
       }
     } on StateError catch (error) {
       if (!error.toString().contains('contains no user PDFs') || !mounted) rethrow;
