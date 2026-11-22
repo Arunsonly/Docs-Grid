@@ -1292,6 +1292,10 @@ class DocumentRepository {
   }
 
   Future<ImportSummary> importScannedPdf(File source, {String? displayName, String? targetFolderUri, String? targetFolderId, String sourceType = 'scanner', void Function(String)? onImportedDocumentId, String? shareImportId}) async {
+    if (shareImportId != null && (sourceType != 'share' ||
+        !RegExp(r'^[0-9a-fA-F-]{36}$').hasMatch(shareImportId))) {
+      throw ArgumentError('Share job requires a valid accepted import identity.');
+    }
     await StorageMigrationGate.waitUntilReady();
     if (!await source.exists()) throw StateError('Scanned PDF is not available.');
     final header = await source.openRead(0, 5).fold<List<int>>(<int>[], (a, b) => a..addAll(b));
@@ -1300,6 +1304,11 @@ class DocumentRepository {
     }
     final digest = (await sha256.bind(source.openRead()).first).toString();
     final db = await _database.database;
+    if (shareImportId != null &&
+        await ShareImportReceipts.isCommitted(
+            db, id: shareImportId, sha256: digest)) {
+      return const ImportSummary(added: 0, duplicates: 1, failed: 0);
+    }
     // A Phone -> Recycle Bin transfer must archive its own independent copy,
     // even when the same bytes already belong to an ACTIVE Grid document.
     // Normal import, scanner and Phone -> Grid duplicate prevention is unchanged.
@@ -1371,6 +1380,11 @@ class DocumentRepository {
     final now = DateTime.now().toUtc().toIso8601String();
     try {
       await db.transaction((txn) async {
+        if (shareImportId != null &&
+            await ShareImportReceipts.isCommitted(
+                txn, id: shareImportId, sha256: digest)) {
+          throw _DuplicatePdfException();
+        }
         final existingNow = await txn.query('documents', columns: ['id'],
           where: 'sha256 = ? AND deleted_at IS NULL', whereArgs: [digest], limit: 1);
         if (existingNow.isNotEmpty && !archivingPhoneOriginal) {
