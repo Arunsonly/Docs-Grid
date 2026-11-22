@@ -1844,194 +1844,282 @@ class _FoldersScreenState extends State<FoldersScreen>
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
   }
 
-  // Only visible Grid cards are constructed. The same card/action bodies are
-  // reused for normal scrolling and the existing explicit drag-reorder mode.
-  Widget _buildGridFolderCard(
-    Folder folder, int index,
-  ) {
-    final isSelected = _selectedFolderIds.contains(folder.id);
+  // Grid and List share the same data, selection state, and action handlers.
+  // Both sliver builders remain lazy: no full-list widget or PDF prefetch.
+  Widget _folderActions(Folder folder) => PopupMenuButton<String>(
+        tooltip: 'Folder actions',
+        onSelected: (value) {
+          if (value == 'rename') _renameFolder(folder);
+          if (value == 'move') _moveFolders([folder]);
+          if (value == 'delete') _deleteFolder(folder);
+        },
+        itemBuilder: (_) => const [
+          PopupMenuItem(value: 'rename', child: Text('Rename')),
+          PopupMenuItem(value: 'move', child: Text('Move')),
+          PopupMenuItem(value: 'delete', child: Text('Delete')),
+        ],
+      );
+
+  Widget _buildGridFolderCard(Folder folder, int index) {
+    final selected = _selectedFolderIds.contains(folder.id);
     final scheme = Theme.of(context).colorScheme;
+    final tiled = _showGridTiles && !_isReorderingFolders;
+    Widget checkbox() => Checkbox(
+          value: selected,
+          onChanged: (_) => _toggleFolderSelection(folder),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(4),
+          ),
+        );
+    Widget folderIcon({double diameter = 56}) => Container(
+          width: diameter,
+          height: diameter,
+          decoration: BoxDecoration(
+            color: selected ? const Color(0xFFC9D4FF) : const Color(0xFFE2E7FF),
+            shape: BoxShape.circle,
+          ),
+          alignment: Alignment.center,
+          child: Icon(
+            Icons.folder_outlined,
+            color: const Color(0xFF405582),
+            size: tiled ? 36 : 30,
+          ),
+        );
+
     return Card(
-                                key: ValueKey('folder-${folder.id}'),
-                                margin: const EdgeInsets.symmetric(vertical: 8),
-                                elevation: 0,
-                                color: isSelected ? const Color(0xFFDDE4FF) : scheme.surface,
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(26),
-                                  side: BorderSide(
-                                    color: isSelected
-                                        ? const Color(0xFF687BC6)
-                                        : scheme.outlineVariant.withValues(alpha: 0.55),
-                                    width: isSelected ? 2 : 1,
-                                  ),
-                                ),
-                                clipBehavior: Clip.antiAlias,
-                                child: InkWell(
-                                  borderRadius: BorderRadius.circular(26),
-                                  onTap: _isSelectingFolders
-                                      ? () => _toggleFolderSelection(folder)
-                                      : _isReorderingFolders
-                                          ? null
-                                          : () => _openFolder(folder),
-                                  onLongPress: _isReorderingFolders
-                                      ? null
-                                      : () => _startFolderSelection(folder),
-                                  child: Padding(
-                                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
-                                    child: Row(
-                                      children: [
-                                        if (_isSelectingFolders) ...[
-                                          SizedBox(
-                                            width: 40,
-                                            child: Checkbox(
-                                              value: isSelected,
-                                              onChanged: _isReorderingFolders
-                                                  ? null
-                                                  : (_) => _toggleFolderSelection(folder),
-                                              shape: RoundedRectangleBorder(
-                                                borderRadius: BorderRadius.circular(4),
-                                              ),
-                                            ),
-                                          ),
-                                          const SizedBox(width: 10),
-                                        ],
-                                        Container(
-                                          width: 56,
-                                          height: 56,
-                                          decoration: BoxDecoration(
-                                            color: isSelected
-                                                ? const Color(0xFFC9D4FF)
-                                                : const Color(0xFFE2E7FF),
-                                            shape: BoxShape.circle,
-                                          ),
-                                          alignment: Alignment.center,
-                                          child: const Icon(
-                                            Icons.folder_outlined,
-                                            color: Color(0xFF405582),
-                                            size: 30,
-                                          ),
-                                        ),
-                                        const SizedBox(width: 16),
-                                        Expanded(
-                                          child: Column(
-                                            crossAxisAlignment: CrossAxisAlignment.start,
-                                            mainAxisSize: MainAxisSize.min,
-                                            children: [
-                                              Text(
-                                                folder.name,
-                                                maxLines: 1,
-                                                overflow: TextOverflow.ellipsis,
-                                                style: const TextStyle(
-                                                  fontSize: 18,
-                                                  fontWeight: FontWeight.w700,
-                                                ),
-                                              ),
-                                              const SizedBox(height: 4),
-                                              Text(
-                                                'Folder · ${folder.pdfCount} PDFs',
-                                                style: TextStyle(
-                                                  fontSize: 15,
-                                                  color: scheme.onSurfaceVariant,
-                                                  fontWeight: FontWeight.w500,
-                                                ),
-                                              ),
-                                            ],
-                                          ),
-                                        ),
-                                        if (_isSelectingFolders)
-                                          const SizedBox.shrink()
-                                        else if (_isReorderingFolders)
-                                          ReorderableDelayedDragStartListener(
-                                            index: index,
-                                            child: const Padding(
-                                              padding: EdgeInsets.all(10),
-                                              child: Icon(Icons.drag_indicator, color: Colors.grey),
-                                            ),
-                                          )
-                                        else
-                                          PopupMenuButton<String>(
-                                            tooltip: 'Folder actions',
-                                            onSelected: (value) {
-                                              if (value == 'rename') _renameFolder(folder);
-                                              if (value == 'move') _moveFolders([folder]);
-                                              if (value == 'delete') _deleteFolder(folder);
-                                            },
-                                            itemBuilder: (_) => const [
-                                              PopupMenuItem(value: 'rename', child: Text('Rename')),
-                                              PopupMenuItem(value: 'move', child: Text('Move')),
-                                              PopupMenuItem(value: 'delete', child: Text('Delete')),
-                                            ],
-                                          ),
-                                      ],
-                                    ),
-                                  ),
-                                ),
-                              );
+      key: ValueKey('folder-${folder.id}'),
+      margin: EdgeInsets.symmetric(vertical: tiled ? 4 : 8, horizontal: tiled ? 4 : 0),
+      elevation: 0,
+      color: selected ? const Color(0xFFDDE4FF) : scheme.surface,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(26),
+        side: BorderSide(
+          color: selected
+              ? const Color(0xFF687BC6)
+              : scheme.outlineVariant.withValues(alpha: 0.55),
+          width: selected ? 2 : 1,
+        ),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(26),
+        onTap: _isSelectingFolders
+            ? () => _toggleFolderSelection(folder)
+            : _isReorderingFolders ? null : () => _openFolder(folder),
+        onLongPress: _isReorderingFolders
+            ? null : () => _startFolderSelection(folder),
+        child: tiled
+            ? Padding(
+                padding: const EdgeInsets.fromLTRB(10, 6, 10, 10),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    SizedBox(
+                      height: 42,
+                      child: Row(children: [
+                        if (_isSelectingFolders) checkbox(),
+                        const Spacer(),
+                        if (!_isSelectingFolders) _folderActions(folder),
+                      ]),
+                    ),
+                    Expanded(child: Center(child: folderIcon(diameter: 58))),
+                    Text(
+                      folder.name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      'Folder · ${folder.pdfCount} PDFs',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
+                    ),
+                  ],
+                ),
+              )
+            : Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+                child: Row(children: [
+                  if (_isSelectingFolders) ...[
+                    SizedBox(width: 40, child: checkbox()),
+                    const SizedBox(width: 10),
+                  ],
+                  folderIcon(),
+                  const SizedBox(width: 16),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          folder.name,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontSize: 18, fontWeight: FontWeight.w700),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          'Folder · ${folder.pdfCount} PDFs',
+                          style: TextStyle(
+                            fontSize: 15,
+                            color: scheme.onSurfaceVariant,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  if (_isSelectingFolders)
+                    const SizedBox.shrink()
+                  else if (_isReorderingFolders)
+                    ReorderableDelayedDragStartListener(
+                      index: index,
+                      child: const Padding(
+                        padding: EdgeInsets.all(10),
+                        child: Icon(Icons.drag_indicator, color: Colors.grey),
+                      ),
+                    )
+                  else
+                    _folderActions(folder),
+                ]),
+              ),
+      ),
+    );
   }
 
+  void _toggleDocumentSelection(DocumentRecord document) {
+    setState(() {
+      _isSelectingDocuments = true;
+      if (!_selectedDocumentIds.add(document.id)) {
+        _selectedDocumentIds.remove(document.id);
+      }
+    });
+  }
+
+  void _onDocumentLongPress(DocumentRecord document) {
+    if (_isSelectingFolders || _isReorderingFolders) return;
+    setState(() {
+      _isSelectingDocuments = true;
+      _selectedDocumentIds.add(document.id);
+    });
+  }
+
+  Future<void> _onDocumentTap(DocumentRecord document) async {
+    if (_isSelectingFolders) return;
+    if (_isSelectingDocuments) {
+      _toggleDocumentSelection(document);
+      return;
+    }
+    try {
+      await StorageLocationService.instance.openPdf(
+        document.storagePath, gridPdf: true,
+      );
+      await _documents.markOpened(document);
+    } catch (error) {
+      if (mounted) _message('Could not open PDF: $error');
+    }
+  }
+
+  Widget _pdfActions(DocumentRecord document) => PopupMenuButton<String>(
+        tooltip: 'PDF actions',
+        onSelected: (action) async {
+          try {
+            if (action == 'share') {
+              await DocumentToolsService().shareStoredPdf(
+                document.storagePath, '${document.name}.pdf',
+              );
+            }
+            if (action == 'favorite') {
+              await _documents.setFavorite(document, !document.isFavorite);
+            }
+            if (action == 'category') await _chooseCategory(document);
+            if (action == 'tags') await _editTags(document);
+            if (action == 'rename') await _renamePdf(document);
+            if (action == 'move') await _moveOne(document);
+            if (action == 'reminder') await _addReminder(document);
+            if (action == 'trash') await _documents.moveToTrash(document);
+            if (mounted) await _refresh();
+          } catch (error) {
+            if (mounted) _message('Action failed: $error');
+          }
+        },
+        itemBuilder: (_) => [
+          const PopupMenuItem(value: 'share', child: Text('Share PDF')),
+          PopupMenuItem(value: 'favorite',
+              child: Text(document.isFavorite ? 'Remove from Star' : 'Add to Star')),
+          const PopupMenuItem(value: 'category', child: Text('Set category')),
+          const PopupMenuItem(value: 'tags', child: Text('Edit tags')),
+          const PopupMenuItem(value: 'rename', child: Text('Rename')),
+          const PopupMenuItem(value: 'move', child: Text('Move to folder')),
+          const PopupMenuItem(value: 'reminder', child: Text('Add to reminder')),
+          const PopupMenuItem(value: 'trash', child: Text('Move to Recycle Bin')),
+        ],
+      );
+
   Widget _buildGridPdfCard(DocumentRecord document) {
+    final selected = _selectedDocumentIds.contains(document.id);
+    Widget checkbox() => Checkbox(
+          value: selected,
+          onChanged: (_) => _toggleDocumentSelection(document),
+        );
+    Widget thumbnail() => DocumentThumbnail(
+          documentId: document.id,
+          storagePath: document.storagePath,
+          sizeBytes: document.sizeBytes,
+        );
     return Card(
-                              key: ValueKey('grid-pdf-${document.id}'),
-                              elevation: 0,
-                              child: ListTile(
-                                leading: _selectedDocumentIds.isNotEmpty
-                                    ? Checkbox(value: _selectedDocumentIds.contains(document.id), onChanged: (_) => setState(() { if (!_selectedDocumentIds.add(document.id)) _selectedDocumentIds.remove(document.id); }))
-                                    : DocumentThumbnail(
-                                        documentId: document.id,
-                                        storagePath: document.storagePath,
-                                        sizeBytes: document.sizeBytes,
-                                      ),
-                                title: Text('${document.name}.pdf', maxLines: 1, overflow: TextOverflow.ellipsis),
-                                subtitle: Text(_size(document.sizeBytes)),
-                                onLongPress: () {
-                                  setState(() {
-                                    _selectedDocumentIds.add(document.id);
-                                  });
-                                },
-                                onTap: () async {
-                                  if (_selectedDocumentIds.isNotEmpty) {
-                                    setState(() { if (!_selectedDocumentIds.add(document.id)) _selectedDocumentIds.remove(document.id); });
-                                    return;
-                                  }
-                                  try {
-                                    await StorageLocationService.instance.openPdf(
-                                      document.storagePath, gridPdf: true,
-                                    );
-                                    await _documents.markOpened(document);
-                                  } catch (error) {
-                                    if (mounted) _message('Could not open PDF: $error');
-                                  }
-                                },
-                                trailing: PopupMenuButton<String>(
-                                  tooltip: 'PDF actions',
-                                  onSelected: (action) async {
-                                    try {
-                                      if (action == 'share') await DocumentToolsService().shareStoredPdf(document.storagePath, '${document.name}.pdf');
-                                      if (action == 'favorite') await _documents.setFavorite(document, !document.isFavorite);
-                                      if (action == 'category') await _chooseCategory(document);
-                                      if (action == 'tags') await _editTags(document);
-                                      if (action == 'rename') await _renamePdf(document);
-                                      if (action == 'move') await _moveOne(document);
-                                      if (action == 'reminder') await _addReminder(document);
-                                      if (action == 'trash') await _documents.moveToTrash(document);
-                                      if (mounted) await _refresh();
-                                    } catch (error) {
-                                      if (mounted) _message('Action failed: $error');
-                                    }
-                                  },
-                                  itemBuilder: (_) => [
-                                    const PopupMenuItem(value: 'share', child: Text('Share PDF')),
-                                    PopupMenuItem(value: 'favorite', child: Text(document.isFavorite ? 'Remove from Star' : 'Add to Star')),
-                                    const PopupMenuItem(value: 'category', child: Text('Set category')),
-                                    const PopupMenuItem(value: 'tags', child: Text('Edit tags')),
-                                    const PopupMenuItem(value: 'rename', child: Text('Rename')),
-                                    const PopupMenuItem(value: 'move', child: Text('Move to folder')),
-                                    const PopupMenuItem(value: 'reminder', child: Text('Add to reminder')),
-                                    const PopupMenuItem(value: 'trash', child: Text('Move to Recycle Bin')),
-                                  ],
-                                ),
-                              ),
-                            );
+      key: ValueKey('grid-pdf-${document.id}'),
+      margin: EdgeInsets.all(_showGridTiles ? 4 : 4),
+      elevation: 0,
+      clipBehavior: Clip.antiAlias,
+      child: _showGridTiles
+          ? InkWell(
+              onTap: () => unawaited(_onDocumentTap(document)),
+              onLongPress: () => _onDocumentLongPress(document),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(10, 6, 10, 10),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    SizedBox(
+                      height: 42,
+                      child: Row(children: [
+                        if (_isSelectingDocuments) checkbox(),
+                        const Spacer(),
+                        if (!_isSelectingDocuments) _pdfActions(document),
+                      ]),
+                    ),
+                    Expanded(child: Center(child: thumbnail())),
+                    Text(
+                      '${document.name}.pdf',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      _size(document.sizeBytes),
+                      maxLines: 1,
+                      style: TextStyle(
+                        fontSize: 12, color: Theme.of(context).colorScheme.onSurfaceVariant),
+                    ),
+                  ],
+                ),
+              ),
+            )
+          : ListTile(
+              leading: _isSelectingDocuments ? checkbox() : thumbnail(),
+              title: Text('${document.name}.pdf',
+                  maxLines: 1, overflow: TextOverflow.ellipsis),
+              subtitle: Text(_size(document.sizeBytes)),
+              onLongPress: () => _onDocumentLongPress(document),
+              onTap: () => unawaited(_onDocumentTap(document)),
+              trailing: _isSelectingDocuments ? null : _pdfActions(document),
+            ),
+    );
   }
 
   @override
