@@ -55,6 +55,7 @@ Future<File> makeArchive(Directory folder, String series, String name, {
     'backupType': parent == null ? 'full' : 'incremental',
     'backupId': series + '-' + name,
     'seriesId': series, 'backupName': name, 'parentName': parent,
+    'parentBackupId': parent == null ? null : series + '-' + parent,
     'metadataFiles': metadata, 'files': payloads,
     'documentFingerprints': [
       for (final id in documents) {
@@ -119,6 +120,28 @@ void main() {
     expect(restored['backupType'], 'full');
     expect(restored['files'], hasLength(2));
     expect(await composed.exists(), true);
+  });
+
+  test('parent UUID mismatch blocks an otherwise correctly named chain', () async {
+    final folder = Directory(p.join(full.path, 'A001'));
+    await makeArchive(folder, 'A001', 'A001',
+        parent: null, documents: ['one'], payloadDocuments: ['one']);
+    final increment = await makeArchive(folder, 'A001', 'I001',
+        parent: 'A001', documents: ['one', 'two'], payloadDocuments: ['two']);
+    final originalBytes = await increment.readAsBytes();
+    // A named parent without a matching immutable backup UUID is not trusted.
+    // Use a direct manifest mutation and re-encode, retaining valid ZIP bytes.
+    final decoded = ZipDecoder().decodeBytes(originalBytes);
+    final entry = decoded.findFile('manifest.json')!;
+    final data = jsonDecode(utf8.decode(entry.content as List<int>))
+        as Map<String, dynamic>;
+    data['parentBackupId'] = 'different-parent-id';
+    decoded.files.remove(entry);
+    final bytes = utf8.encode(jsonEncode(data));
+    decoded.addFile(ArchiveFile('manifest.json', bytes.length, bytes));
+    await increment.writeAsBytes(ZipEncoder().encode(decoded), flush: true);
+    await expectLater(BackupChain.verified(folder), throwsStateError);
+    expect(await File(p.join(folder.path, 'A001.zip')).exists(), true);
   });
 
   test('missing parent prevents both restore and automatic cleanup', () async {
