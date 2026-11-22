@@ -34,12 +34,18 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
   String? _message;
   bool _hasSearched = false;
   bool _awaitingAllFilesPermission = false;
+  List<BackupChainUsage> _manualBackupSets = const [];
+  bool _backupUsageReady = false;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _tools = widget.service ?? DocumentToolsService();
+    if (widget.section == 'backup' || widget.section == 'restore' ||
+        widget.section == 'backup_restore') {
+      unawaited(_refreshBackupUsage());
+    }
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       switch (widget.quickAction) {
@@ -62,22 +68,156 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
     }
   }
 
+  Future<void> _refreshBackupUsage() async {
+    try {
+      final sets = await _tools.manualBackupUsage();
+      if (mounted) setState(() {
+        _manualBackupSets = sets;
+        _backupUsageReady = true;
+      });
+    } catch (_) {
+      if (mounted) setState(() => _backupUsageReady = false);
+    }
+  }
+
   Future<void> _backup() => _run(() async {
-    final archive = await _tools.createBackup(
+    final sets = await _tools.manualBackupUsage();
+    var newFull = false;
+    final series = sets.where((s) => s.name.startsWith('A') &&
+        !s.name.endsWith('.zip')).toList();
+    if (series.isNotEmpty) {
+      if (!mounted) return;
+      final choice = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Create PDF backup'),
+          content: const Text('Continue the latest A-series using only new '
+              'or changed PDFs, or start a new independent Full series?'),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx),
+                child: const Text('Cancel')),
+            TextButton(onPressed: () => Navigator.pop(ctx, true),
+                child: const Text('New Full')),
+            FilledButton(onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('Incremental')),
+          ],
+        ),
+      );
+      if (choice == null) return;
+      newFull = choice;
+    }
+    final archive = await _tools.createManualBackup(
+      newFull: newFull,
       onProgress: (completed, total) {
         if (!mounted) return;
-        setState(() => _message =
-            total == 0 ? 'Preparing backup archive…' : 'Backing up PDFs: $completed of $total');
+        setState(() => _message = total == 0
+            ? 'Preparing backup…'
+            : 'Checking PDFs: $completed of $total');
       },
     );
-    if (mounted) setState(() => _message = 'Verifying completed backup archive…');
-    // Share only after ZIP validation succeeds. share_plus supplies a secure
-    // content URI through Android's Sharesheet instead of exposing a raw path.
-    await _tools.shareFile(archive.path, text: 'DocsGrid backup');
-    if (mounted) {
-      setState(() => _message = 'Backup verified and created. Use the share sheet to save a copy somewhere safe.');
-    }
+    await _refreshBackupUsage();
+    if (mounted) setState(() => _message =
+        'Verified backup created: ' + p.basename(archive.parent.path) +
+        '/' + p.basename(archive.path) +
+        '. Keep the complete A-series together when exporting.');
   });
+
+  Future<void> _exportBackupSeries(String id) => _run(() async {
+    await _tools.shareManualBackupSeries(id);
+    if (mounted) setState(() => _message =
+        'Export the complete ' + id + ' series to a safe external location.');
+  });
+
+  Future<void> _cleanBackupSeries(String id) async {
+    final usage = _manualBackupSets.where((item) => item.name == id);
+    if (usage.isEmpty || !mounted) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('Delete entire ' + id + ' series?'),
+        content: Text('This permanently removes the Full ZIP and all '
+            'dependent Incremental ZIPs in ' + id + '.\n\n'
+            'Storage to free: ' + _formatSize(usage.single.bytes) +
+            '.\n\nYour original PDFs in My Files will NOT be touched. '
+            'Deleted backups cannot be restored from this location.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Delete series')),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    await _run(() async {
+      await _tools.deleteManualBackupSeries(id);
+      await _refreshBackupUsage();
+      if (mounted) setState(() => _message =
+          'Backup series ' + id + ' deleted. My Files was not changed.');
+    });
+  }
+
+  Future<void> _showCleanBackups() async {
+    await _refreshBackupUsage();
+    if (!mounted) return;
+    final series = _manualBackupSets.where((e) =>
+        e.name.startsWith('A') && !e.name.endsWith('.zip')).toList();
+    await showModalBottomSheet<void>(
+      context: context, isScrollControlled: true,
+      builder: (ctx) => SafeArea(child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          const ListTile(title: Text('Clean Backups'),
+              subtitle: Text('Delete an entire series safely; parents are never left orphaned.')),
+          if (series.isEmpty)
+            const ListTile(title: Text('No A-series backups to clean')),
+          ...series.map((item) => ListTile(
+            leading: const Icon(Icons.folder_zip_outlined),
+            title: Text(item.name),
+            subtitle: Text(_formatSize(item.bytes) +
+                ' · ' + item.files.toString() + ' ZIP files'),
+            trailing: const Icon(Icons.delete_outline),
+            onTap: () {
+              Navigator.pop(ctx);
+              unawaited(_cleanBackupSeries(item.name));
+            },
+          )),
+          TextButton(onPressed: () => Navigator.pop(ctx),
+              child: const Text('Close')),
+        ]),
+      )),
+    );
+  }
+
+  Future<void> _showExportBackups() async {
+    await _refreshBackupUsage();
+    if (!mounted) return;
+    final series = _manualBackupSets.where((e) =>
+        e.name.startsWith('A') && !e.name.endsWith('.zip')).toList();
+    await showModalBottomSheet<void>(
+      context: context,
+      builder: (ctx) => SafeArea(child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const ListTile(title: Text('Export a backup series'),
+            subtitle: Text('Keep all Parent and Incremental ZIPs together.')),
+          ...series.map((item) => ListTile(
+            leading: const Icon(Icons.ios_share_outlined),
+            title: Text(item.name),
+            subtitle: Text(_formatSize(item.bytes)),
+            onTap: () {
+              Navigator.pop(ctx);
+              unawaited(_exportBackupSeries(item.name));
+            },
+          )),
+          if (series.isEmpty)
+            const ListTile(title: Text('No A-series backup available')),
+          TextButton(onPressed: () => Navigator.pop(ctx),
+              child: const Text('Close')),
+        ],
+      )),
+    );
+  }
 
   Future<void> _databaseBackup() => _run(() async {
     final archive = await _tools.createBackup(includePdfs: false);
@@ -755,7 +895,10 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
   String _formatSize(int bytes) {
     if (bytes < 1024) return '$bytes B';
     if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
-    return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+    if (bytes < 1024 * 1024 * 1024) {
+      return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+    }
+    return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
   }
 
   Future<void> _showDuplicates() async {
@@ -880,9 +1023,36 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
           ),
         ),
         const Divider(height: 1),
-        ListTile(leading: const Icon(Icons.backup_outlined), title: const Text('Create full backup'),
-          subtitle: const Text('Save PDFs, folders, reminders, tags and settings into one ZIP file.'),
-          trailing: const Icon(Icons.chevron_right), onTap: _busy ? null : _backup),
+        const ListTile(
+          leading: Icon(Icons.shield_outlined),
+          title: Text('Backup & Recovery'),
+          subtitle: Text('Automatic metadata protection · manual PDF backups'),
+        ),
+        const Divider(height: 1),
+        ListTile(
+          leading: const Icon(Icons.archive_outlined),
+          title: const Text('Full Backup'),
+          subtitle: Text(_backupUsageReady
+              ? 'Storage used: ' + _formatSize(
+                    _manualBackupSets.fold<int>(0, (n, e) => n + e.bytes)) +
+                  ' · ' + _manualBackupSets.fold<int>(
+                    0, (n, e) => n + e.files).toString() + ' ZIP files'
+              : 'Backup storage: checking availability…'),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+          child: Wrap(spacing: 8, runSpacing: 4, children: [
+            FilledButton.icon(onPressed: _busy ? null : _backup,
+              icon: const Icon(Icons.add_circle_outline),
+              label: const Text('Create Backup')),
+            OutlinedButton.icon(onPressed: _busy ? null : _showCleanBackups,
+              icon: const Icon(Icons.delete_outline),
+              label: const Text('Clean')),
+            TextButton.icon(onPressed: _busy ? null : _showExportBackups,
+              icon: const Icon(Icons.ios_share_outlined),
+              label: const Text('Export')),
+          ]),
+        ),
         const Divider(height: 1),
         ListTile(leading: const Icon(Icons.storage_outlined), title: const Text('Create database backup'),
           subtitle: const Text('Save database and metadata only; PDF contents are excluded.'),
