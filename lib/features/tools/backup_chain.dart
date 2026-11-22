@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:archive/archive.dart';
 import 'package:archive/archive_io.dart';
 import 'package:path/path.dart' as p;
+import 'package:crypto/crypto.dart';
 
 import 'backup_archive_limits.dart';
 
@@ -188,5 +189,185 @@ class BackupChain {
     }
     await folder.delete();
     return freed;
+  }
+
+  /// Rebuild the *selected point in time* as a temporary, bounded Full ZIP.
+  /// Existing restore safety checks then process this archive unchanged.
+  /// No original series file or user's live PDF is modified.
+  static Future<File> compose(File selected, Directory tempRoot) async {
+    final name = p.basenameWithoutExtension(selected.path);
+    if (!_increment.hasMatch(name)) {
+      throw StateError('Select an incremental backup (I001, I002, ...).');
+    }
+    final chain = await verified(selected.parent);
+    final index = chain.indexWhere((item) =>
+        p.normalize(item.path) == p.normalize(selected.path));
+    if (index < 1) {
+      throw StateError('Restore needs the original A-series folder and parents.');
+    }
+
+    final working = await tempRoot.createTemp('docsgrid_chain_restore_');
+    final payloads = <String, File>{};
+    final checksums = <String, String>{};
+    final displayNames = <String, String>{};
+    final metadata = <String, File>{};
+    Map<String, dynamic>? latest;
+    try {
+      for (final file in chain.take(index + 1)) {
+        final input = InputFileStream(file.path);
+        try {
+          final archive = ZipDecoder().decodeStream(input);
+          final manifestEntry = archive.findFile('manifest.json');
+          if (manifestEntry == null || manifestEntry.size > 1024 * 1024) {
+            throw StateError('The incremental manifest is missing.');
+          }
+          final m = jsonDecode(utf8.decode(manifestEntry.content as List<int>))
+              as Map<String, dynamic>;
+          latest = m;
+          final pdfRecords = m['files'];
+          final metadataRecords = m['metadataFiles'];
+          if (pdfRecords is! List || metadataRecords is! List) {
+            throw StateError('The incremental archive is incomplete.');
+          }
+          final seen = <String>{};
+          for (final record in pdfRecords) {
+            if (record is! Map ||
+                record['documentId'] is! String ||
+                record['entry'] is! String ||
+                record['sha256'] is! String ||
+                !RegExp(r'^[a-fA-F0-9]{64}$').hasMatch(record['sha256'] as String)) {
+              throw StateError('Invalid incremental PDF manifest.');
+            }
+            final id = record['documentId'] as String;
+            final entryName = record['entry'] as String;
+            if (!seen.add(id) || !entryName.startsWith('pdfs/') ||
+                entryName.split('/').any((part) =>
+                    part.isEmpty || part == '.' || part == '..')) {
+              throw StateError('Unsafe or duplicate incremental entry.');
+            }
+            final entry = archive.findFile(entryName);
+            if (entry == null || !entry.isFile || entry.isSymbolicLink) {
+              throw StateError('An incremental PDF payload is missing.');
+            }
+            final token = sha256.convert(utf8.encode(id)).toString();
+            final target = File(p.join(working.path, token + '.pdf'));
+            final output = OutputFileStream(target.path);
+            try {
+              entry.writeContent(output);
+            } finally {
+              output.closeSync();
+            }
+            final digest = (await sha256.bind(target.openRead()).first).toString();
+            if (digest != (record['sha256'] as String).toLowerCase()) {
+              throw StateError('An incremental PDF failed SHA-256 verification.');
+            }
+            payloads[id] = target;
+            checksums[id] = digest;
+            displayNames[id] = record['originalName'] as String? ?? id + '.pdf';
+          }
+          // Each Incremental contains a complete *metadata* snapshot, but only
+          // new or modified PDF bytes. The latest snapshot governs restore.
+          for (final record in metadataRecords) {
+            if (record is! Map || record['entry'] is! String ||
+                record['sizeBytes'] is! int || record['sha256'] is! String) {
+              throw StateError('Invalid incremental metadata record.');
+            }
+            final name = record['entry'] as String;
+            if (name.contains('/') || !name.endsWith('.json')) {
+              throw StateError('Unsafe incremental metadata filename.');
+            }
+            final entry = archive.findFile(name);
+            if (entry == null || !entry.isFile || entry.isSymbolicLink ||
+                entry.size > 64 * 1024 * 1024) {
+              throw StateError('Missing or oversized incremental metadata.');
+            }
+            final target = File(p.join(working.path, name));
+            await target.writeAsBytes(entry.content as List<int>, flush: true);
+            if (await target.length() != record['sizeBytes'] ||
+                (await sha256.bind(target.openRead()).first).toString() !=
+                    (record['sha256'] as String).toLowerCase()) {
+              throw StateError('Incremental metadata checksum mismatch.');
+            }
+            metadata[name] = target;
+          }
+        } finally {
+          input.closeSync();
+        }
+      }
+
+      final docFile = metadata['documents.json'];
+      if (docFile == null) throw StateError('Missing document metadata.');
+      final decodedDocs = jsonDecode(await docFile.readAsString());
+      if (decodedDocs is! List) throw StateError('Invalid document metadata.');
+      final composedFiles = <Map<String, Object?>>[];
+      final seenIds = <String>{};
+      for (final row in decodedDocs) {
+        if (row is! Map || row['id'] is! String ||
+            !seenIds.add(row['id'] as String) ||
+            row['sha256'] is! String) {
+          throw StateError('Invalid or duplicate document record.');
+        }
+        final id = row['id'] as String;
+        if (payloads[id] == null ||
+            checksums[id] != (row['sha256'] as String).toLowerCase()) {
+          throw StateError('A PDF or parent backup is missing for document ' + id);
+        }
+        composedFiles.add({
+          'documentId': id,
+          'entry': 'pdfs/' + sha256.convert(utf8.encode(id)).toString() + '.pdf',
+          'sha256': checksums[id],
+          'originalName': displayNames[id],
+        });
+      }
+      // Prevent writing an archive larger than the agreed 2 GB policy.
+      var expectedSize = 0;
+      for (final entry in composedFiles) {
+        expectedSize += await payloads[entry['documentId']]!.length();
+      }
+      for (final file in metadata.values) {
+        expectedSize += await file.length();
+      }
+      if (expectedSize >= BackupArchiveLimits.maxArchiveBytes) {
+        throw StateError('The reconstructed Full Backup exceeds 2 GB.');
+      }
+
+      final outputFile = File(p.join(working.path, 'composed_full.zip'));
+      final encoder = ZipFileEncoder();
+      encoder.create(outputFile.path);
+      Future<void> add(File source, String entry) async {
+        final input = InputFileStream(source.path);
+        try {
+          encoder.addArchiveFile(ArchiveFile.stream(entry, input)
+            ..compression = CompressionType.none);
+        } finally {
+          await input.close();
+        }
+      }
+      try {
+        for (final entry in metadata.entries) {
+          await add(entry.value, entry.key);
+        }
+        for (final entry in composedFiles) {
+          await add(payloads[entry['documentId']]!, entry['entry'] as String);
+        }
+        final m = <String, dynamic>{
+          ...latest!,
+          'backupType': 'full',
+          'backupId': latest['backupId'],
+          'files': composedFiles,
+          'parentName': null,
+        };
+        final manifestFile = File(p.join(working.path, 'manifest.json'));
+        await manifestFile.writeAsString(jsonEncode(m), flush: true);
+        await add(manifestFile, 'manifest.json');
+      } finally {
+        await encoder.close();
+      }
+      await BackupArchiveLimits.validate(outputFile);
+      return outputFile;
+    } catch (_) {
+      try { await working.delete(recursive: true); } catch (_) {}
+      rethrow;
+    }
   }
 }
