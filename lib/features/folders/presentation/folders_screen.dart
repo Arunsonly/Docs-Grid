@@ -12,7 +12,6 @@ import '../../documents/presentation/ocr_search_mode_control.dart';
 import '../../tools/document_tools_service.dart';
 import '../../../core/storage/storage_location_service.dart';
 import '../../../core/storage/folder_preview_cache.dart';
-import '../../../core/storage/portable_snapshot_events.dart';
 import '../../reminders/data/reminder_repository.dart';
 import '../../categories/data/category_repository.dart';
 
@@ -27,6 +26,8 @@ class FoldersScreen extends StatefulWidget {
     this.ocrSearchAvailable = false,
     this.ocrTools,
     this.onOpenSettings,
+    this.active = true,
+    this.onBackAtRoot,
   });
 
   // Optional dependencies permit complete widget regression tests without
@@ -36,6 +37,8 @@ class FoldersScreen extends StatefulWidget {
   final bool ocrSearchAvailable;
   final DocumentToolsService? ocrTools;
   final VoidCallback? onOpenSettings;
+  final bool active;
+  final VoidCallback? onBackAtRoot;
 
   @override
   State<FoldersScreen> createState() => _FoldersScreenState();
@@ -800,7 +803,8 @@ class _FoldersScreenState extends State<FoldersScreen>
   Future<void> _refresh() async {
     if (!mounted) return;
     setState(() {
-      _invalidateSnapshots();
+      // Bounded persistent/in-memory Grid previews are invalidated below;
+      // do not reintroduce the old unbounded folder snapshot maps.
       _isReorderingFolders = false;
       _draftFolderOrder = <Folder>[];
       final key = FolderPreviewCache.gridKey(_currentFolderId);
@@ -2134,10 +2138,11 @@ class _FoldersScreenState extends State<FoldersScreen>
     return Material(
       color: Theme.of(context).scaffoldBackgroundColor,
       child: PopScope(
-      canPop: !_isSelectingFolders &&
-          !_isSelectingDocuments && _ancestors.isEmpty,
+      canPop: !widget.active ||
+          (!_isSelectingFolders && !_isSelectingDocuments &&
+              _ancestors.isEmpty && widget.onBackAtRoot == null),
       onPopInvokedWithResult: (didPop, result) {
-        if (didPop) return;
+        if (didPop || !widget.active) return;
         if (_isSelectingFolders) {
           _clearFolderSelection();
         } else if (_isSelectingDocuments) {
@@ -2338,7 +2343,6 @@ class _FoldersScreenState extends State<FoldersScreen>
         Expanded(
           child: FutureBuilder<List<Folder>>(
             future: _foldersFuture,
-            initialData: _folderSnapshots[_currentFolderId ?? ''],
             builder: (context, folderSnapshot) {
               if (folderSnapshot.connectionState == ConnectionState.waiting) {
                 final preview = _searchQuery.trim().isEmpty
@@ -2361,8 +2365,6 @@ class _FoldersScreenState extends State<FoldersScreen>
               final folders = folderSnapshot.data ?? const <Folder>[];
               return FutureBuilder<List<DocumentRecord>>(
                 future: _documentsFuture,
-                initialData: _documentSnapshots[
-                    '${_currentFolderId ?? ''}|${_searchQuery.trim()}'],
                 builder: (context, documentSnapshot) {
                   if (documentSnapshot.connectionState == ConnectionState.waiting) {
                     final preview = _searchQuery.trim().isEmpty
