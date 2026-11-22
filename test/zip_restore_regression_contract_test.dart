@@ -59,7 +59,7 @@ void main() {
   });
 
   test('all ZIP restore cancellation points clear stale waiting messages', () {
-    expect(ui, contains("if (platformFile == null) {"));
+    expect(ui, contains("if (source == 'zip' && platformFile == null) {"));
     expect(ui, contains("if (restoreMode == null || !mounted) {"));
     expect(ui, contains("if (selection == null || selection.isEmpty || !mounted) {"));
     expect(ui, contains("restored == null"));
