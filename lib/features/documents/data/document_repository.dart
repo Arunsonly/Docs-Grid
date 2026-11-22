@@ -1291,7 +1291,7 @@ class DocumentRepository {
     }
   }
 
-  Future<ImportSummary> importScannedPdf(File source, {String? displayName, String? targetFolderUri, String? targetFolderId, String sourceType = 'scanner', void Function(String)? onImportedDocumentId}) async {
+  Future<ImportSummary> importScannedPdf(File source, {String? displayName, String? targetFolderUri, String? targetFolderId, String sourceType = 'scanner', void Function(String)? onImportedDocumentId, String? shareImportId}) async {
     await StorageMigrationGate.waitUntilReady();
     if (!await source.exists()) throw StateError('Scanned PDF is not available.');
     final header = await source.openRead(0, 5).fold<List<int>>(<int>[], (a, b) => a..addAll(b));
