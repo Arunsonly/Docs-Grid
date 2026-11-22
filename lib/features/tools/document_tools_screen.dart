@@ -82,6 +82,15 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
   }
 
   Future<void> _backup() => _run(() async {
+    // Keep the pre-existing iOS standalone Full Backup behaviour intact.
+    // A-series incremental storage currently targets Android's file root.
+    if (!Platform.isAndroid) {
+      final archive = await _tools.createBackup(includePdfs: true);
+      await _tools.shareFile(archive.path, text: 'DocsGrid Full backup');
+      if (mounted) setState(() => _message =
+          'Full backup verified. Save the shared archive somewhere safe.');
+      return;
+    }
     final sets = await _tools.manualBackupUsage();
     var newFull = false;
     final series = sets.where((s) => s.name.startsWith('A') &&
@@ -285,13 +294,15 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
         ListTile(leading: const Icon(Icons.archive_outlined), title: const Text('Backup ZIP file'),
           subtitle: const Text('Standalone Full or Database ZIP.'),
           onTap: () => Navigator.pop(ctx, 'zip')),
-        ListTile(leading: const Icon(Icons.folder_zip_outlined), title: const Text('Incremental series folder'),
+        if (Platform.isAndroid)
+          ListTile(leading: const Icon(Icons.folder_zip_outlined), title: const Text('Incremental series folder'),
           subtitle: const Text('Select an A001 folder containing its parent and I-series ZIP files.'),
           onTap: () => Navigator.pop(ctx, 'series')),
         ListTile(leading: const Icon(Icons.folder_open_outlined), title: const Text('Existing DocsGrid folder'),
           subtitle: const Text('Recover metadata and PDFs from an old DocsGrid folder.'),
           onTap: () => Navigator.pop(ctx, 'folder')),
-        ListTile(leading: const Icon(Icons.picture_as_pdf_outlined), title: const Text('PDF folder'),
+        if (Platform.isAndroid)
+          ListTile(leading: const Icon(Icons.picture_as_pdf_outlined), title: const Text('PDF folder'),
           subtitle: const Text('Find PDFs in any readable folder without moving originals.'),
           onTap: () => Navigator.pop(ctx, 'pdf_folder')),
       ])),
