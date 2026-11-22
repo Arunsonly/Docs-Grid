@@ -11,8 +11,8 @@ void main() {
       'Folder renamed.',
       'Folder order saved.',
       'Reminder saved for this PDF.',
-      'Moved ${selected.length} folder(s).',
-      'Moved ${selected.length} folder(s) and',
+      r'Moved ${selected.length} folder(s).',
+      r'Moved ${selected.length} folder(s) and',
     ]) {
       expect(source, isNot(contains(message)), reason: 'Unexpected routine status: $message');
     }
