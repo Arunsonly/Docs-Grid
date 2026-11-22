@@ -1314,6 +1314,8 @@ class _FoldersScreenState extends State<FoldersScreen>
         final scheme = Theme.of(context).colorScheme;
         return Material(
           key: const ValueKey('grid-folder-selection-header'),
+          elevation: 7,
+          shadowColor: scheme.shadow.withValues(alpha: 0.25),
           color: scheme.secondaryContainer,
           borderRadius: BorderRadius.circular(22),
           clipBehavior: Clip.antiAlias,
@@ -1588,6 +1590,8 @@ class _FoldersScreenState extends State<FoldersScreen>
         final loaded = snapshot.data ?? const <DocumentRecord>[];
         return Material(
           key: const ValueKey('grid-pdf-selection-header'),
+          elevation: 7,
+          shadowColor: scheme.shadow.withValues(alpha: 0.25),
           color: scheme.secondaryContainer,
           borderRadius: BorderRadius.circular(22),
           clipBehavior: Clip.antiAlias,
