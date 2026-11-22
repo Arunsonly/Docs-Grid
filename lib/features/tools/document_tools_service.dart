@@ -913,6 +913,7 @@ class DocumentToolsService {
       if (seriesPlan != null) 'seriesId': seriesPlan.series,
       if (seriesPlan != null) 'backupName': seriesPlan.name,
       if (seriesPlan != null) 'parentName': seriesPlan.parent,
+      if (seriesPlan != null) 'parentBackupId': seriesPlan.parentBackupId,
       if (seriesPlan != null) 'documentFingerprints': <Map<String, Object?>>[],
       if (seriesPlan != null) 'deletedDocumentIds': <String>[],
       if (rescueCheckpoint) 'missingPdfs': <Map<String, Object?>>[],
