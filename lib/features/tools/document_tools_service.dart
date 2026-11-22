@@ -3057,6 +3057,17 @@ Future<int?> _restoreBackupLocked(
   /// Internal diagnostics; no additional dashboard or snapshot format change.
   static Map<String, Object?> snapshotDiagnostics = {};
 
+  /// Periodic maintenance also runs when metadata has not changed. Only
+  /// application-owned, fully verified and expired snapshots are eligible.
+  Future<void> cleanExpiredPortableSnapshots() => _withRecoveryLock(() async {
+    await StorageMigrationGate.waitUntilReady();
+    final locations = await StorageLocationService.instance
+        .portableDataLocationsIfAvailable();
+    final databaseUri = locations['databaseUri'];
+    if (databaseUri == null) return;
+    await _prunePortableSnapshots(databaseUri, '');
+  });
+
   Future<void> _prunePortableSnapshots(String databaseUri, String publishedUri) async {
     final storage = StorageLocationService.instance;
     final entries = await storage.listDirectory(databaseUri);
