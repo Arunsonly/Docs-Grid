@@ -136,10 +136,15 @@ void main() {
     final data = jsonDecode(utf8.decode(entry.content as List<int>))
         as Map<String, dynamic>;
     data['parentBackupId'] = 'different-parent-id';
-    decoded.files.remove(entry);
+    // ZipDecoder returns an immutable file list. Construct a new Archive
+    // instead of mutating it so this test reaches the parent UUID assertion.
+    final rebuilt = Archive();
+    for (final file in decoded.files) {
+      if (file.name != 'manifest.json') rebuilt.addFile(file);
+    }
     final bytes = utf8.encode(jsonEncode(data));
-    decoded.addFile(ArchiveFile('manifest.json', bytes.length, bytes));
-    await increment.writeAsBytes(ZipEncoder().encode(decoded), flush: true);
+    rebuilt.addFile(ArchiveFile('manifest.json', bytes.length, bytes));
+    await increment.writeAsBytes(ZipEncoder().encode(rebuilt), flush: true);
     await expectLater(BackupChain.verified(folder), throwsStateError);
     expect(await File(p.join(folder.path, 'A001.zip')).exists(), true);
   });
