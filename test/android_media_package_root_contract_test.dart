@@ -28,7 +28,7 @@ void main() {
 
   test('Phone MediaStore and recursive browsing never duplicate new Grid files', () {
     expect(native, contains('val activeManagedRoot = "android/media/'));
-    expect(native, contains('normalized.startsWith("$activeManagedRoot/")'));
+    expect(native, contains(r'normalized.startsWith("$activeManagedRoot/")'));
     expect(native, contains('normalized == activeManagedRoot'));
     expect(storage, contains("path == 'Android/media/com.docsgrid.mobile'"));
     expect(storage, contains("path.startsWith('Android/media/com.docsgrid.mobile/')"));
