@@ -15,7 +15,7 @@ void main() {
   });
 
   test('the automatic Android/media folder always uses installed package ID', () {
-    expect(workflow, contains('applicationId = \\"com.docsgrid.mobile\\"'));
+    expect(workflow, contains('applicationId = "com.docsgrid.mobile"'));
     expect(native, contains('val root = java.io.File(mediaRoot, packageName)'));
     expect(native, contains('val myFiles = java.io.File(root, "My Files")'));
     expect(native, contains('val unfiled = java.io.File(myFiles, "Unfiled")'));
