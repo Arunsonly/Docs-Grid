@@ -924,7 +924,8 @@ class DocumentToolsService {
           while (true) {
             final docs = await db.query(
               'documents',
-              columns: ['id', 'name', 'storage_uri', 'sha256'],
+              columns: ['id', 'name', 'storage_uri', 'sha256',
+                'size_bytes', 'deleted_at'],
               limit: 250,
               offset: documentOffset,
               orderBy: 'id',
@@ -1223,6 +1224,19 @@ class DocumentToolsService {
           .toList();
       for (final file in entries) {
         files[file.path] = file;
+      }
+      // Manual A-series archives sit exactly one directory below Full/.
+      if (p.basename(directory.path).toLowerCase() == 'full') {
+        await for (final child in directory.list(followLinks: false)) {
+          if (child is! Directory ||
+              !BackupChain.validSeriesName(p.basename(child.path))) continue;
+          await for (final member in child.list(followLinks: false)) {
+            if (member is File &&
+                p.extension(member.path).toLowerCase() == '.zip') {
+              files[member.path] = member;
+            }
+          }
+        }
       }
     }
 
@@ -1541,7 +1555,7 @@ class DocumentToolsService {
                 : await _readPortableBackupType(candidate);
         classified.add((
           file: candidate,
-          priority: type == 'full' ? 0 : 1,
+          priority: type == 'full' || type == 'incremental' ? 0 : 1,
           modified: await candidate.lastModified(),
         ));
       } catch (_) {
@@ -1679,10 +1693,27 @@ class DocumentToolsService {
     BackupRestoreMode mode = BackupRestoreMode.merge,
     Set<BackupRestoreSection>? selection,
     void Function(String message)? onProgress,
-  }) => _withRecoveryLock(() => _restoreBackupLocked(
-    zipFile, confirm: confirm, mode: mode, selection: selection,
-    confirmPlan: confirmPlan, onProgress: onProgress,
-  ));
+  }) => _withRecoveryLock(() async {
+    File? temporaryFull;
+    try {
+      // No Incremental may be applied without its verified original and
+      // every required parent. The existing Full restore is reused unchanged.
+      final m = await BackupChain.manifest(zipFile);
+      if (m['backupType'] == 'incremental') {
+        temporaryFull = await BackupChain.compose(
+            zipFile, await getTemporaryDirectory());
+      }
+      return await _restoreBackupLocked(
+        temporaryFull ?? zipFile,
+        confirm: confirm, mode: mode, selection: selection,
+        confirmPlan: confirmPlan, onProgress: onProgress,
+      );
+    } finally {
+      if (temporaryFull != null) {
+        try { await temporaryFull.parent.delete(recursive: true); } catch (_) {}
+      }
+    }
+  });
 
 Future<int?> _restoreBackupLocked(
     File zipFile, {
@@ -3897,8 +3928,32 @@ Future<int?> _restoreBackupLocked(
       final backupType = manifest['backupType'] ?? 'full';
       final databaseOnly = backupType == 'database';
       final rescue = backupType == 'rescue';
-      if (backupType != 'full' && !databaseOnly && !rescue) {
+      final incremental = backupType == 'incremental';
+      if (backupType != 'full' && !databaseOnly && !rescue && !incremental) {
         throw StateError('Unsupported backup payload type.');
+      }
+      if (incremental) {
+        if (manifest['seriesId'] is! String ||
+            manifest['backupName'] is! String ||
+            manifest['parentName'] is! String ||
+            !(manifest['backupName'] as String).startsWith('I')) {
+          throw StateError('Incremental backup parent is invalid.');
+        }
+        final ledger = BackupChain.fingerprints(manifest);
+        if (ledger.length != documentIds.length ||
+            !ledger.keys.toSet().containsAll(documentIds)) {
+          throw StateError('Incomplete incremental document ledger.');
+        }
+        final deleted = manifest['deletedDocumentIds'];
+        if (deleted is! List || deleted.any((id) =>
+            id is! String || documentIds.contains(id))) {
+          throw StateError('Incremental deletion ledger is invalid.');
+        }
+        for (final row in rowsByTable['documents']!) {
+          if (ledger[row['id']]?['sha256'] != row['sha256']) {
+            throw StateError('Incremental fingerprint does not match metadata.');
+          }
+        }
       }
       if (rescue) {
         final missingRecords = manifest['missingPdfs'];
@@ -3918,7 +3973,7 @@ Future<int?> _restoreBackupLocked(
             missingIds.length + seenDocuments.length != documentIds.length) {
           throw StateError('Rescue checkpoint does not account for every PDF.');
         }
-      } else if (!databaseOnly &&
+      } else if (!databaseOnly && !incremental &&
           (seenDocuments.length != documentIds.length ||
            !seenDocuments.containsAll(documentIds))) {
         throw StateError('Backup contains orphaned PDF entries: every document must have exactly one PDF entry.');
