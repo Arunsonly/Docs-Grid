@@ -1,0 +1,63 @@
+name: DocsGrid integration staging preparation
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/docsgrid-integration-staging.yml'
+permissions:
+  contents: write
+jobs:
+  stage:
+    name: Stage all open PR branches (never push main)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Construct candidate from latest source, retaining older non-conflicting improvements
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_HEAD_REF" = 'tool/prepare-open-pr-merge-20261122'
+          stage='integration/open-prs-20261122'
+          if git ls-remote --exit-code --heads origin "$stage"; then
+            echo 'Integration branch already exists. Refusing overwrite.'
+            exit 1
+          fi
+          git config user.name 'DocsGrid Staging Bot'
+          git config user.email 'staging@users.noreply.github.com'
+          git fetch origin '+refs/heads/*:refs/remotes/origin/*'
+          git checkout -B "$stage" origin/feat/floating-grid-phone-selection-20261122
+          test "$(git rev-parse HEAD)" = '5102c34615f82a7700302197584c348b93fdaa4f'
+          echo "Base: $(git rev-parse HEAD)" | tee merge-report.txt
+          # PR #36 contains PR #35. PR #48 contains #37 through #47.
+          # -X ours chooses the current, newer user-approved behavior only
+          # for conflicting text hunks, retaining non-conflicting old changes.
+          for source in \
+            fix/home-phone-state-pdf-relink-20261121 \
+            perf/instagram-like-resume-pr34-20261119 \
+            fix/audit-dg01-dg03-20261118; do
+            echo "Merging $source" | tee -a merge-report.txt
+            git merge --no-ff -X ours -m "Stage earlier work: $source" "origin/$source" 2>&1 | tee -a merge-report.txt
+          done
+          git diff --check origin/feat/floating-grid-phone-selection-20261122
+          echo "Staging commit: $(git rev-parse HEAD)" | tee -a merge-report.txt
+          echo "Merged paths:" | tee -a merge-report.txt
+          git diff --name-status origin/feat/floating-grid-phone-selection-20261122 HEAD | tee -a merge-report.txt
+          echo "Safety contract checks:"
+          ! grep -q "enable-ocr-search-setting" lib/main.dart
+          ! grep -q "ocrSearchAvailable:" lib/main.dart
+          grep -q "schemaVersion = 12" lib/core/database/app_database.dart
+          grep -q "grid-floating-selection-position" lib/features/folders/presentation/folders_screen.dart
+          grep -q "phone-pdf-floating-selection-bar" lib/features/documents/presentation/phone_storage_browser_screen.dart
+          grep -q "docsgrid_phone_recent_v1" lib/features/documents/presentation/documents_screen.dart
+          echo 'Safety marker verification passed.' | tee -a merge-report.txt
+          git push origin HEAD:"refs/heads/$stage"
+      - name: Upload staging report (even when merge is blocked)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docsgrid-integration-staging-report
+          path: merge-report.txt
+          if-no-files-found: ignore
