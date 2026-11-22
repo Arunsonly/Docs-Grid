@@ -31,11 +31,15 @@ import '../../../core/diagnostics/startup_timeline.dart';
 
 class DocumentsScreen extends StatefulWidget {
   const DocumentsScreen({super.key, this.favoritesOnly = false, this.recentOnly = false,
-    this.phoneOnly = false, this.ocrSearchAvailable = false});
+    this.phoneOnly = false, this.ocrSearchAvailable = false,
+    this.active = true, this.onBackAtRoot});
   final bool favoritesOnly;
   final bool recentOnly;
   final bool phoneOnly;
-  /// The Settings permission only exposes OCR selection; default is name search.
+  /// Offstage tabs retain their state, but must not intercept Back or poll storage.
+  final bool active;
+  final VoidCallback? onBackAtRoot;
+  /// OCR remains internally compatible with prior indexes but is disabled by the app shell.
   final bool ocrSearchAvailable;
 
   @override
@@ -92,6 +96,10 @@ class _DocumentsScreenState extends State<DocumentsScreen>
   bool _phoneRefreshAfterBusy = false;
   bool _phoneMediaStoreReady = false;
   final PhoneRefreshQueue _phoneChangeQueue = PhoneRefreshQueue();
+  StreamSubscription<void>? _libraryChangesSubscription;
+  Timer? _libraryRefreshDebounce;
+  bool _libraryRefreshPendingWhileHidden = false;
+  bool _phoneRefreshPendingWhileHidden = false;
   List<Map<String, String>> _phoneLastRoots = const [];
   Map<String, Object?> _phoneLastMediaVolumes = const {};
   int _trashCount = 0;
@@ -171,6 +179,16 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) unawaited(_load());
       });
+    }
+    if (!oldWidget.active && widget.active &&
+        _phoneRefreshPendingWhileHidden) {
+      _phoneRefreshPendingWhileHidden = false;
+      _queuePhoneChangeRefresh();
+    }
+    if (!oldWidget.active && widget.active &&
+        _libraryRefreshPendingWhileHidden) {
+      _libraryRefreshPendingWhileHidden = false;
+      _scheduleLibraryRefresh();
     }
   }
 
@@ -285,6 +303,34 @@ class _DocumentsScreenState extends State<DocumentsScreen>
     }
   }
 
+  Future<void> _restoreCachedHomeSnapshot() async {
+    if (_isStartupHome) StartupTimeline.mark('home_cache_read_start');
+    final summaryFuture = _homeCache.readSummary();
+    final namesFuture = _homeCache.readRecentNames();
+    final summary = await summaryFuture;
+    final names = await namesFuture;
+    if (_isStartupHome) {
+      StartupTimeline.mark('home_cache_read_done');
+      StartupTimeline.mark(summary == null
+          ? 'home_cache_summary_miss' : 'home_cache_summary_hit');
+    }
+    if (!mounted || widget.phoneOnly || widget.favoritesOnly ||
+        widget.recentOnly) return;
+    // Live database values always supersede optional cached placeholders.
+    if ((_liveHomeSummaryLoaded || summary == null) &&
+        (_liveGridRecentLoaded || names.isEmpty)) return;
+    setState(() {
+      if (!_liveHomeSummaryLoaded && summary != null) {
+        _totalDocumentCount = summary.documentCount;
+        _starredCount = summary.favoriteCount;
+        _totalStorageBytes = summary.totalBytes;
+        _showCachedHomeSummary = true;
+        if (_isStartupHome) StartupTimeline.mark('home_cache_summary_applied');
+      }
+      if (!_liveGridRecentLoaded) _cachedGridRecentNames = names;
+    });
+  }
+
   Future<void> _loadViewPreference() async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -327,21 +373,6 @@ class _DocumentsScreenState extends State<DocumentsScreen>
     });
   }
 
-  @override
-  void didUpdateWidget(covariant DocumentsScreen oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (!oldWidget.active && widget.active &&
-        _phoneRefreshPendingWhileHidden) {
-      _phoneRefreshPendingWhileHidden = false;
-      _schedulePhoneStorageRefresh();
-    }
-    if (!oldWidget.active && widget.active &&
-        _libraryRefreshPendingWhileHidden) {
-      _libraryRefreshPendingWhileHidden = false;
-      _scheduleLibraryRefresh();
-    }
-  }
-
   void _scheduleLibraryRefresh() {
     if (!mounted || widget.phoneOnly || widget.favoritesOnly ||
         widget.recentOnly) return;
@@ -372,6 +403,10 @@ class _DocumentsScreenState extends State<DocumentsScreen>
   void _schedulePhoneStorageRefresh([StorageChangeNotice? notice]) {
     if (!mounted || widget.favoritesOnly || widget.recentOnly) return;
     _phoneChangeQueue.add(notice);
+    if (!widget.active) {
+      _phoneRefreshPendingWhileHidden = true;
+      return;
+    }
     _queuePhoneChangeRefresh();
   }
 
