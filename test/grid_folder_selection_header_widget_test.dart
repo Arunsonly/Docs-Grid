@@ -92,6 +92,10 @@ void main() {
     await tester.longPress(find.text('Arun'));
     await tester.pumpAndSettle();
     expect(find.byKey(const ValueKey('grid-folder-selection-header')), findsOneWidget);
+    expect(find.byKey(const ValueKey('grid-floating-selection-position')), findsOneWidget);
+    expect(tester.getBottomRight(
+        find.byKey(const ValueKey('grid-folder-selection-header'))).dy,
+        greaterThan(1300), reason: 'Folder actions float near the bottom.');
     expect(find.byKey(const ValueKey('grid-folder-normal-more')), findsNothing);
     expect(find.byTooltip('Create folder'), findsNothing);
     expect(find.text('DocsGrid'), findsOneWidget); // AppBar never replaced.
