@@ -36,6 +36,7 @@ class BackupChain {
   static final _increment = RegExp(r'^I[0-9]{3,}$');
   static String serial(String prefix, int number) =>
       prefix + number.toString().padLeft(3, '0');
+  static bool validSeriesName(String value) => _series.hasMatch(value);
 
   static Future<Map<String, dynamic>> manifest(File file) async {
     await BackupArchiveLimits.validate(file);
