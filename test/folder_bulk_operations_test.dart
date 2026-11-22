@@ -6,45 +6,12 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
-Future<Database> _database() async {
-  final db = await databaseFactoryFfi.openDatabase(inMemoryDatabasePath);
-  await db.execute('''
-    CREATE TABLE folders (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      parent_id TEXT,
-      sort_order INTEGER NOT NULL DEFAULT 0,
-      storage_uri_or_relative_path TEXT,
-      created_at TEXT NOT NULL DEFAULT '2026-01-01T00:00:00Z',
-      updated_at TEXT NOT NULL DEFAULT '2026-01-01T00:00:00Z',
-      deleted_at TEXT,
-      trash_operation_id TEXT
-    )
-  ''');
-  await db.execute('''
-    CREATE TABLE documents (
-      id TEXT PRIMARY KEY,
-      name TEXT,
-      folder_id TEXT,
-      storage_uri TEXT,
-      sha256 TEXT,
-      size_bytes INTEGER NOT NULL DEFAULT 0,
-      deleted_at TEXT,
-      updated_at TEXT,
-      trash_operation_id TEXT
-    )
-  ''');
-  await db.execute('''
-    CREATE TABLE history (
-      id TEXT PRIMARY KEY,
-      document_id TEXT,
-      action TEXT NOT NULL,
-      details_json TEXT NOT NULL,
-      created_at TEXT NOT NULL
-    )
-  ''');
-  return db;
-}
+// The real database schema (v12, foreign keys and durable operation journal)
+// is required to test folder safety. A partial hand-written mock can hide
+// incorrect production behavior or fail on unrelated missing columns.
+Future<Database> _database() => AppDatabase.forTesting(
+      () async => throw StateError('Test schema opener is not used'),
+    ).openProductionSchemaForTesting(inMemoryDatabasePath);
 
 Future<void> _insertFolder(Database db, String id, String name,
     {String? parentId}) async {
