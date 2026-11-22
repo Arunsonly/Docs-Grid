@@ -230,6 +230,8 @@ void main() {
     final count = await PhoneRecentHistory.observeCompletedScans({
       scope: [
         scannedPdf('file:///root/real.pdf', 'Real.pdf'),
+        scannedPdf('file:///root/grid-new.pdf', 'GridNew.pdf',
+            folder: 'Android/media/com.docsgrid.mobile/My Files/Folders/Insurance'),
         scannedPdf('file:///root/grid.pdf', 'Grid.pdf',
             folder: 'Android/media/com.docsgrid/My Files/Folders/Insurance'),
         scannedPdf('file:///root/recycle.pdf', 'Old.pdf',
