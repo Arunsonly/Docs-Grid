@@ -99,6 +99,10 @@ void main() {
     await tester.longPress(find.text('Policy_A.pdf'));
     await tester.pumpAndSettle();
     expect(find.byKey(const ValueKey('grid-pdf-selection-header')), findsOneWidget);
+    expect(find.byKey(const ValueKey('grid-floating-selection-position')), findsOneWidget);
+    expect(tester.getBottomRight(
+        find.byKey(const ValueKey('grid-pdf-selection-header'))).dy,
+        greaterThan(1300), reason: 'PDF actions float near the bottom.');
     expect(find.byKey(const ValueKey('grid-folder-normal-more')), findsNothing);
     expect(find.byTooltip('Create folder'), findsNothing);
     expect(find.text('DocsGrid'), findsOneWidget);
