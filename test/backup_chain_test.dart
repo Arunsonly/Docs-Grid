@@ -69,7 +69,7 @@ Future<File> makeArchive(Directory folder, String series, String name, {
   final bytes = utf8.encode(jsonEncode(manifest));
   archive.addFile(ArchiveFile('manifest.json', bytes.length, bytes));
   final file = File(p.join(folder.path, name + '.zip'));
-  await file.writeAsBytes(ZipEncoder().encode(archive)!, flush: true);
+  await file.writeAsBytes(ZipEncoder().encode(archive), flush: true);
   return file;
 }
 
