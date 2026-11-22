@@ -1729,7 +1729,8 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       if (!mounted) return;
       setState(() {
         _gridRecent = recentDocuments;
-        _phoneRecent = phone.take(20).toList(growable: false);
+        _phoneRecent = [...unlinkedRecent, ...phone]
+            .take(20).toList(growable: false);
         _liveGridRecentLoaded = true;
         _cachedGridRecentNames = const [];
       });
