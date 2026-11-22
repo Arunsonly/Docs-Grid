@@ -990,6 +990,19 @@ class DocumentToolsService {
               final id = row['id'] as String;
               final expected = row['sha256'] as String?;
               final previous = seriesPlan.previous[id];
+              // A soft-deleted document already preserved by a parent does
+              // not need to be read again from Recycle Bin. Its deletion is
+              // carried by current metadata and the explicit tombstone list.
+              if (row['deleted_at'] != null && previous != null &&
+                  previous['sha256'] == expected) {
+                (manifest['documentFingerprints'] as List).add({
+                  ...previous,
+                  'deletedAt': row['deleted_at'],
+                });
+                completed++;
+                onProgress?.call(completed, totalDocs);
+                continue;
+              }
               if (uri != null && expected != null &&
                   previous?['sha256'] == expected) {
                 var sameBytes = false;
@@ -1125,8 +1138,15 @@ class DocumentToolsService {
       if (seriesPlan != null && !seriesPlan.isFull) {
         final currentIds = (manifest['documentFingerprints'] as List)
             .map((row) => (row as Map)['id'] as String).toSet();
+        final currentFingerprints = <String, Map>{
+          for (final row in manifest['documentFingerprints'] as List)
+            (row as Map)['id'] as String: row,
+        };
         (manifest['deletedDocumentIds'] as List).addAll(
-            seriesPlan.previous.keys.where((id) => !currentIds.contains(id)));
+            seriesPlan.previous.keys.where((id) =>
+                !currentIds.contains(id) ||
+                (seriesPlan.previous[id]?['deletedAt'] == null &&
+                    currentFingerprints[id]?['deletedAt'] != null)));
       }
       final currentRevision = await _database.portableSnapshotRevision();
       if (currentRevision != capturedRevision) {
@@ -4061,7 +4081,10 @@ Future<int?> _restoreBackupLocked(
         }
         final deleted = manifest['deletedDocumentIds'];
         if (deleted is! List || deleted.any((id) =>
-            id is! String || documentIds.contains(id))) {
+            id is! String ||
+            (documentIds.contains(id) &&
+                rowsByTable['documents']!.any((row) =>
+                    row['id'] == id && row['deleted_at'] == null)))) {
           throw StateError('Incremental deletion ledger is invalid.');
         }
         for (final row in rowsByTable['documents']!) {
