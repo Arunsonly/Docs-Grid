@@ -503,6 +503,22 @@ class StorageLocationService {
   /// Selects an existing DocsGrid backup tree without creating missing folders.
   /// Android validates Documents/Folders/Database/Recovery and at least one
   /// snapshot before updating the active portable-storage preferences.
+  /// Select any readable PDF folder for recovery without changing the
+  /// application's managed storage root or creating a destination folder.
+  Future<Map<String, String>?> choosePdfRecoveryFolder() async {
+    if (!Platform.isAndroid) {
+      throw UnsupportedError('PDF folder recovery is Android-only.');
+    }
+    final result = await _channel.invokeMapMethod<String, dynamic>(
+        'choosePdfRecoveryFolder');
+    if (result == null || result['uri'] is! String) return null;
+    return {
+      'uri': result['uri'] as String,
+      'name': result['name'] is String
+          ? result['name'] as String : 'Selected PDF folder',
+    };
+  }
+
   Future<Map<String, String>?> chooseRecoveryFolder() async {
     if (!Platform.isAndroid) {
       throw UnsupportedError('Selecting an existing portable recovery tree is currently supported on Android only. Existing data has not been changed.');
