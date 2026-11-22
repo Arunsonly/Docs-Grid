@@ -377,7 +377,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
       if (temporaryCopy) {
         // Backup ZIPs may contain many large PDFs. Stage provider data as a
         // stream rather than materializing the entire archive in RAM.
-        await writeByteStreamToFile(platformFile!.readAsByteStream(), file);
+        await writeByteStreamToFile(platformFile.readAsByteStream(), file);
       }
       if (!mounted) return;
       final restoreMode = await showDialog<BackupRestoreMode>(
@@ -647,11 +647,11 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
         if (mounted) {
           setState(() => _message = scanned != null
             ? 'Database restored. Linked existing PDFs: ' +
-                (scanned!['relinked'] ?? 0).toString() +
+                (scanned['relinked'] ?? 0).toString() +
                 '. Needs attention: ' + (scanned['failed'] ?? 0).toString() + '.'
             : scanProblem != null
                 ? 'Database restored. PDF relinking needs storage access: ' +
-                    scanProblem!
+                    scanProblem
                 : 'Recovery completed: $restored PDF payload(s) verified.');
         }
       }
