@@ -1641,7 +1641,7 @@ class _FoldersScreenState extends State<FoldersScreen>
   // Only visible Grid cards are constructed. The same card/action bodies are
   // reused for normal scrolling and the existing explicit drag-reorder mode.
   Widget _buildGridFolderCard(
-    Folder folder, int index, List<Folder> originalFolders,
+    Folder folder, int index,
   ) {
     final isSelected = _selectedFolderIds.contains(folder.id);
     final scheme = Theme.of(context).colorScheme;
@@ -2239,7 +2239,7 @@ class _FoldersScreenState extends State<FoldersScreen>
                                     },
                                     itemBuilder: (context, index) =>
                                         _buildGridFolderCard(
-                                          displayedFolders[index], index, folders),
+                                          displayedFolders[index], index),
                                   ),
                                 ),
                               )
@@ -2250,7 +2250,7 @@ class _FoldersScreenState extends State<FoldersScreen>
                                   itemCount: displayedFolders.length,
                                   itemBuilder: (context, index) =>
                                       _buildGridFolderCard(
-                                        displayedFolders[index], index, folders),
+                                        displayedFolders[index], index),
                                 ),
                               ),
                           ],
