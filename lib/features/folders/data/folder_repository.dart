@@ -287,7 +287,7 @@ class FolderRepository {
     final folderCount = (row['folder_count'] as num).toInt();
     return FolderSelectionDetails(
       selectedFolderCount: selectedIds.length,
-      nestedFolderCount: (folderCount - selectedIds.length).clamp(0, folderCount),
+      nestedFolderCount: (folderCount - selectedIds.length).clamp(0, folderCount).toInt(),
       pdfCount: (row['pdf_count'] as num).toInt(),
       totalPdfSizeBytes: (row['total_size_bytes'] as num).toInt(),
     );
