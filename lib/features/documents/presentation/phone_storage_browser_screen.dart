@@ -970,20 +970,26 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
     ].join(' · ');
     return ListTile(
       key: ValueKey('phone-pdf-$uri'),
-      leading: DocumentThumbnail(
-        key: ValueKey('phone-thumbnail-$uri'),
-        documentId: 'phone_$uri',
-        storagePath: uri,
-        sizeBytes: sizeBytes,
-        sourceLastModifiedMillis: thumbnailModifiedMillis(entry['lastModified']),
-      ),
+      leading: _isSelectingPdfs
+          ? Checkbox(
+              key: ValueKey('phone-pdf-checkbox-$uri'),
+              value: _selectedPdfUris.contains(uri),
+              onChanged: (_) => _togglePdfSelection(entry),
+            )
+          : DocumentThumbnail(
+              key: ValueKey('phone-thumbnail-$uri'),
+              documentId: 'phone_$uri',
+              storagePath: uri,
+              sizeBytes: sizeBytes,
+              sourceLastModifiedMillis: thumbnailModifiedMillis(entry['lastModified']),
+            ),
       title: Text(
         entry['name'] as String,
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
       ),
       subtitle: Text(details, maxLines: 1, overflow: TextOverflow.ellipsis),
-      trailing: PopupMenuButton<String>(
+      trailing: _isSelectingPdfs ? null : PopupMenuButton<String>(
         onSelected: (action) => _runPdfAction(action, entry),
         itemBuilder: (_) => [
           if (widget.onSharePdf != null)
@@ -1005,10 +1011,13 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
           const PopupMenuItem(value: 'location', child: Text('File Location')),
         ],
       ),
-      onTap: () => widget.onOpenPdf(
-        entry['uri'] as String,
-        entry['name'] as String,
-      ),
+      onLongPress: () => _startPdfSelection(entry),
+      onTap: () => _isSelectingPdfs
+          ? _togglePdfSelection(entry)
+          : widget.onOpenPdf(
+              entry['uri'] as String,
+              entry['name'] as String,
+            ),
     );
   }
 
@@ -1163,7 +1172,11 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
       ));
     }
 
-    return Column(
+    final keyboardVisible = MediaQuery.viewInsetsOf(context).bottom > 0;
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        Column(
       children: [
         if (widget.embedded && selectedPath != null)
           Padding(
@@ -1172,7 +1185,11 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
               children: [
                 IconButton(
                   tooltip: 'Back to folders',
-                  onPressed: () => setState(() => _selectedFolderPath = null),
+                  onPressed: () => setState(() {
+                    _selectedFolderPath = null;
+                    _isSelectingPdfs = false;
+                    _selectedPdfUris.clear();
+                  }),
                   icon: const Icon(Icons.arrow_back),
                 ),
                 Expanded(
@@ -1234,6 +1251,21 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
             ),
           ),
         ),
+        // The reserved area protects the last PDF and the count footer.
+        if (_isSelectingPdfs && !keyboardVisible)
+          const SizedBox(height: 72),
+      ],
+        ),
+        if (_isSelectingPdfs && !keyboardVisible)
+          Positioned(
+            left: 12,
+            right: 12,
+            bottom: 12,
+            child: SafeArea(
+              top: false,
+              child: _buildPdfSelectionToolbar(),
+            ),
+          ),
       ],
     );
   }
@@ -1243,9 +1275,12 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
     final selectedPath = _selectedFolderPath;
     if (widget.embedded) {
       return PopScope<void>(
-        canPop: selectedPath == null,
+        canPop: !_isSelectingPdfs && selectedPath == null,
         onPopInvokedWithResult: (didPop, result) {
-          if (!didPop && _selectedFolderPath != null && mounted) {
+          if (didPop || !mounted) return;
+          if (_isSelectingPdfs) {
+            _clearPdfSelection();
+          } else if (_selectedFolderPath != null) {
             setState(() => _selectedFolderPath = null);
           }
         },
@@ -1254,9 +1289,12 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
     }
 
     return PopScope<void>(
-      canPop: selectedPath == null,
+      canPop: !_isSelectingPdfs && selectedPath == null,
       onPopInvokedWithResult: (didPop, result) {
-        if (!didPop && _selectedFolderPath != null && mounted) {
+        if (didPop || !mounted) return;
+        if (_isSelectingPdfs) {
+          _clearPdfSelection();
+        } else if (_selectedFolderPath != null) {
           setState(() => _selectedFolderPath = null);
         }
       },
@@ -1266,7 +1304,11 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
             ? null
             : IconButton(
                 tooltip: 'Back to folders',
-                onPressed: () => setState(() => _selectedFolderPath = null),
+                onPressed: () => setState(() {
+                  _selectedFolderPath = null;
+                  _isSelectingPdfs = false;
+                  _selectedPdfUris.clear();
+                }),
                 icon: const Icon(Icons.arrow_back),
               ),
         title: Text(
