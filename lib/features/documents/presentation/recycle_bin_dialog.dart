@@ -28,8 +28,15 @@ class RecycleBinDialog extends StatefulWidget {
 }
 
 class _RecycleBinDialogState extends State<RecycleBinDialog> {
-  late final List<Map<String, Object?>> _folders = [...widget.folders];
-  late final List<DocumentRecord> _pdfs = [...widget.pdfs];
+  late final List<Map<String, Object?>> _folders;
+  late final List<DocumentRecord> _pdfs;
+
+  @override
+  void initState() {
+    super.initState();
+    _folders = [...widget.folders];
+    _pdfs = [...widget.pdfs];
+  }
   final Set<String> _selectedFolders = {};
   final Set<String> _selectedPdfs = {};
   bool _selecting = false;
