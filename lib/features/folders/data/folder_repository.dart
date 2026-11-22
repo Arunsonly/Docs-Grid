@@ -20,6 +20,21 @@ class FolderOption {
   final String path;
 }
 
+/// Read-only metadata for all selected Grid folder subtrees.
+class FolderSelectionDetails {
+  const FolderSelectionDetails({
+    required this.selectedFolderCount,
+    required this.nestedFolderCount,
+    required this.pdfCount,
+    required this.totalPdfSizeBytes,
+  });
+
+  final int selectedFolderCount;
+  final int nestedFolderCount;
+  final int pdfCount;
+  final int totalPdfSizeBytes;
+}
+
 class FolderRepository {
   FolderRepository({AppDatabase? database})
       : _database = database ?? AppDatabase.instance;
@@ -231,6 +246,51 @@ class FolderRepository {
       await batch.commit(noResult: true);
     });
     PortableSnapshotEvents.notifyDataChanged(affectedFolderIds: {parentId});
+  }
+
+  /// Count every nested folder and active PDF exactly once, even for
+  /// overlapping selected parent/child roots. This reads SQLite metadata only:
+  /// it never scans, moves, opens or deletes the physical PDF payloads.
+  Future<FolderSelectionDetails> selectionDetails(Set<String> folderIds) async {
+    if (folderIds.isEmpty) {
+      return const FolderSelectionDetails(
+        selectedFolderCount: 0,
+        nestedFolderCount: 0,
+        pdfCount: 0,
+        totalPdfSizeBytes: 0,
+      );
+    }
+    final db = await _database.database;
+    final selectedIds = folderIds.toList(growable: false);
+    final placeholders = List.filled(selectedIds.length, '?').join(', ');
+    final rows = await db.rawQuery('''
+      WITH RECURSIVE selected_tree(id) AS (
+        SELECT id FROM folders
+          WHERE id IN ($placeholders) AND deleted_at IS NULL
+        UNION
+        SELECT child.id FROM folders child
+        JOIN selected_tree parent ON child.parent_id = parent.id
+          WHERE child.deleted_at IS NULL
+      )
+      SELECT
+        (SELECT COUNT(*) FROM selected_tree) AS folder_count,
+        (SELECT COUNT(*) FROM documents d
+           WHERE d.folder_id IN (SELECT id FROM selected_tree)
+             AND d.deleted_at IS NULL) AS pdf_count,
+        (SELECT COALESCE(SUM(
+            CASE WHEN d.size_bytes > 0 THEN d.size_bytes ELSE 0 END
+          ), 0) FROM documents d
+           WHERE d.folder_id IN (SELECT id FROM selected_tree)
+             AND d.deleted_at IS NULL) AS total_size_bytes
+    ''', selectedIds);
+    final row = rows.single;
+    final folderCount = (row['folder_count'] as num).toInt();
+    return FolderSelectionDetails(
+      selectedFolderCount: selectedIds.length,
+      nestedFolderCount: (folderCount - selectedIds.length).clamp(0, folderCount),
+      pdfCount: (row['pdf_count'] as num).toInt(),
+      totalPdfSizeBytes: (row['total_size_bytes'] as num).toInt(),
+    );
   }
 
   Future<List<FolderOption>> allFoldersWithPaths() async {
