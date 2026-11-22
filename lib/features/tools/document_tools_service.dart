@@ -702,6 +702,23 @@ class DocumentToolsService {
     return BackupChain.usage(Directory(Uri.parse(uri).toFilePath()));
   }
 
+  Future<void> shareManualBackupSeries(String seriesId) async {
+    final locations = await StorageLocationService.instance
+        .portableDataLocationsIfAvailable();
+    final uri = locations['fullBackupsUri'];
+    if (uri == null || !uri.startsWith('file://') ||
+        !BackupChain.validSeriesName(seriesId)) {
+      throw StateError('Select a readable DocsGrid backup series.');
+    }
+    final folder = Directory(p.join(Uri.parse(uri).toFilePath(), seriesId));
+    final files = await BackupChain.verified(folder);
+    await SharePlus.instance.share(ShareParams(
+      files: files.map((file) => XFile(file.path)).toList(),
+      text: 'DocsGrid backup series $seriesId — keep every ZIP together in '
+          'one folder named $seriesId. An Incremental alone cannot restore.',
+    ));
+  }
+
   Future<int> deleteManualBackupSeries(String seriesId) =>
       _withRecoveryLock(() async {
     final locations = await StorageLocationService.instance
