@@ -1383,6 +1383,30 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    /** Only terminal outcomes may delete an app-owned staged PDF. */
+    private fun finishSharedPdf(path: String, outcome: String): Boolean {
+        if (outcome != "committed" && outcome != "cancelled") {
+            throw IllegalArgumentException("Unsupported staged import outcome")
+        }
+        val root = java.io.File(filesDir, "incoming_docs").canonicalFile
+        val candidate = java.io.File(path).canonicalFile
+        if (candidate.parentFile != root || !candidate.name.endsWith(".pdf")) {
+            throw SecurityException("Not a DocsGrid staged import")
+        }
+        val id = candidate.name.substringBefore('_')
+        if (!Regex("^[0-9a-fA-F-]{36}$").matches(id)) {
+            throw SecurityException("Invalid DocsGrid staged import identity")
+        }
+        if (candidate.exists() && !candidate.delete()) {
+            throw IllegalStateException("Could not clear completed staged PDF")
+        }
+        val sidecar = java.io.File(root, "$id.json")
+        if (sidecar.exists() && !sidecar.delete()) {
+            throw IllegalStateException("Could not clear completed import ledger")
+        }
+        return true
+    }
+
     private fun checkStorageAccess(): Map<String, String> {
         val saved = getSharedPreferences("docsgrid_storage", MODE_PRIVATE)
             .getString("tree_uri", null)
