@@ -521,7 +521,12 @@ class MainActivity : FlutterActivity() {
                                 it == "recycle_bin" || it == "recycle bin"
                         }) continue
                         // DocsGrid-managed files belong to the Grid library, not Phone storage.
-                        if (normalized.startsWith("android/media/com.docsgrid/") ||
+                        // Match the installed applicationId, not the Kotlin namespace.
+                        // Keep former managed roots excluded from Phone results too.
+                        val activeManagedRoot = "android/media/${packageName.lowercase(java.util.Locale.ROOT)}"
+                        if (normalized.startsWith("$activeManagedRoot/") ||
+                            normalized == activeManagedRoot ||
+                            normalized.startsWith("android/media/com.docsgrid/") ||
                             normalized == "android/media/com.docsgrid" ||
                             normalized.startsWith("android/media/docsgrid/") ||
                             normalized == "android/media/docsgrid") {
@@ -718,7 +723,7 @@ class MainActivity : FlutterActivity() {
                                     "Android/media"
                                 )
                                 val legacyRoot = java.io.File(mediaRoot, "DocsGrid")
-                                val root = java.io.File(mediaRoot, "com.docsgrid")
+                                val root = java.io.File(mediaRoot, packageName)
                                 val myFiles = java.io.File(root, "My Files")
                                 val unfiled = java.io.File(myFiles, "Unfiled")
                                 val folders = java.io.File(myFiles, "Folders")
@@ -1884,19 +1889,23 @@ class MainActivity : FlutterActivity() {
                         if (index >= 0) cursor.getString(index) else null
                     } else null
                 } ?: throw IllegalStateException("Could not read the selected folder name.")
-                // Accept both the current Android/media/com.docsgrid layout and
-                // older user-selected DocsGrid trees. When the parent is selected,
-                // prefer the current canonical root and fall back to the legacy name.
+                // Recovery is read-only: accept this app's package-named root,
+                // plus both previous managed names, without moving or creating data.
                 val docsGrid = if (
-                    selectedName.equals("DocsGrid", ignoreCase = true) ||
-                    selectedName.equals("com.docsgrid", ignoreCase = true)
+                    selectedName.equals(packageName, ignoreCase = true) ||
+                    selectedName.equals("com.docsgrid", ignoreCase = true) ||
+                    selectedName.equals("DocsGrid", ignoreCase = true)
                 ) {
                     selectedRoot
                 } else {
                     try {
-                        findChildUri(uri, "com.docsgrid")
+                        findChildUri(uri, packageName)
                     } catch (_: MissingStorageChildException) {
-                        findChildUri(uri, "DocsGrid")
+                        try {
+                            findChildUri(uri, "com.docsgrid")
+                        } catch (_: MissingStorageChildException) {
+                            findChildUri(uri, "DocsGrid")
+                        }
                     }
                 }
 
