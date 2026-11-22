@@ -748,6 +748,67 @@ class DocumentToolsService {
     }
   }
 
+  /// User-controlled external export. A-series ZIP files are written to a
+  /// real A001 folder (not separate undifferentiated share attachments).
+  /// Never overwrite a previously exported series or alter the live Grid.
+  Future<int> exportManualBackupSeries(
+      String id, String destinationTreeUri) =>
+      _withRecoveryLock(() async {
+    if (!destinationTreeUri.startsWith('content://')) {
+      throw ArgumentError('Choose a writable external folder.');
+    }
+    final storage = StorageLocationService.instance;
+    final locations = await storage.portableDataLocationsIfAvailable();
+    final rootUri = locations['fullBackupsUri'];
+    if (rootUri == null || !rootUri.startsWith('file://')) {
+      throw StateError('The local Full Backup folder is not available.');
+    }
+    final root = Directory(Uri.parse(rootUri).toFilePath());
+    final legacy = id.startsWith('DocsGrid_') && id.endsWith('.zip') &&
+        p.basename(id) == id;
+    final List<File> files;
+    if (legacy) {
+      final file = File(p.join(root.path, id));
+      final manifest = await BackupChain.manifest(file);
+      if (manifest['backupType'] != 'full') {
+        throw StateError('Selected archive is not a standalone Full backup.');
+      }
+      files = [file];
+    } else {
+      if (!BackupChain.validSeriesName(id)) {
+        throw ArgumentError('Invalid backup series.');
+      }
+      files = await BackupChain.verified(Directory(p.join(root.path, id)));
+    }
+
+    // Never mix a partial export with an existing series of the same name.
+    final children = await storage.listDirectory(destinationTreeUri);
+    final exportName = legacy ? id : id;
+    if (children.any((entry) => entry['name'] == exportName)) {
+      throw StateError('This destination already contains ' + exportName +
+          '. Select another folder; no existing backup will be overwritten.');
+    }
+    final destination = legacy ? destinationTreeUri :
+        await storage.createDirectory(
+            parentUri: destinationTreeUri, name: id);
+    var copiedBytes = 0;
+    for (final file in files) {
+      final copied = await storage.copyFileToStorage(
+        sourcePath: file.path,
+        parentUri: destination,
+        name: p.basename(file.path),
+        mimeType: 'application/zip',
+      );
+      final originalDigest = (await sha256.bind(file.openRead()).first).toString();
+      final copiedDigest = await storage.sha256Pdf(copied);
+      if (originalDigest != copiedDigest) {
+        throw StateError('Export verification failed. Original backup is safe.');
+      }
+      copiedBytes += await file.length();
+    }
+    return copiedBytes;
+  });
+
   Future<void> shareManualBackupSeries(String seriesId) async {
     final locations = await StorageLocationService.instance
         .portableDataLocationsIfAvailable();
