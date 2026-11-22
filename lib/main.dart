@@ -520,18 +520,32 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
             : const [],
       ),
       body: SafeArea(
-        child: switch (_selectedIndex) {
-          0 => DocumentsScreen(
-            key: const ValueKey('phone-tab'),
-            phoneOnly: true,
-          ),
-          1 => DocumentsScreen(
-            key: const ValueKey('home-tab'),
-          ),
-          _ => FoldersScreen(
-            onOpenSettings: _openSettings,
-          ),
-        },
+        child: IndexedStack(
+          index: _selectedIndex,
+          children: [
+            _visitedTabs.contains(0)
+                ? DocumentsScreen(
+                    key: const ValueKey('phone-tab'),
+                    phoneOnly: true,
+                    active: _selectedIndex == 0,
+                    onBackAtRoot: _backgroundApp,
+                  )
+                : const SizedBox.shrink(),
+            DocumentsScreen(
+              key: const ValueKey('home-tab'),
+              active: _selectedIndex == 1,
+              onBackAtRoot: _backgroundApp,
+            ),
+            _visitedTabs.contains(2)
+                ? FoldersScreen(
+                    key: const ValueKey('grid-tab'),
+                    active: _selectedIndex == 2,
+                    onBackAtRoot: _backgroundApp,
+                    onOpenSettings: _openSettings,
+                  )
+                : const SizedBox.shrink(),
+          ],
+        ),
       ),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _selectedIndex,
