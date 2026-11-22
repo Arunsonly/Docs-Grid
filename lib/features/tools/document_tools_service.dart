@@ -1342,6 +1342,7 @@ class DocumentToolsService {
 
   Future<Map<String, int>> recoverLoosePortablePdfs({
     void Function(int completed, int total)? onProgress,
+    String? additionalFolderUri,
   }) async {
     await StorageMigrationGate.waitUntilReady();
     if (!Platform.isAndroid) {
@@ -1387,6 +1388,14 @@ class DocumentToolsService {
           ));
         }
       }
+    }
+
+    if (additionalFolderUri != null) {
+      if (!additionalFolderUri.startsWith('content://') &&
+          !additionalFolderUri.startsWith('file://')) {
+        throw ArgumentError('Recovery folder must be an authorized storage URI.');
+      }
+      roots.add((uri: additionalFolderUri, preserveFolders: true));
     }
 
     final candidates = <Map<String, Object?>>[];
