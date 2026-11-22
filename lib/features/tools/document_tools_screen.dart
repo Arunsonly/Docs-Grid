@@ -135,9 +135,9 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: Text('Delete entire ' + id + ' series?'),
-        content: Text('This permanently removes the Full ZIP and all '
-            'dependent Incremental ZIPs in ' + id + '.\n\n'
+        title: Text('Delete backup ' + id + '?'),
+        content: Text('This permanently removes the selected backup. '
+            'For A-series, every dependent Incremental ZIP is included.\n\n'
             'Storage to free: ' + _formatSize(usage.single.bytes) +
             '.\n\nYour original PDFs in My Files will NOT be touched. '
             'Deleted backups cannot be restored from this location.'),
@@ -161,8 +161,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
   Future<void> _showCleanBackups() async {
     await _refreshBackupUsage();
     if (!mounted) return;
-    final series = _manualBackupSets.where((e) =>
-        e.name.startsWith('A') && !e.name.endsWith('.zip')).toList();
+    final series = _manualBackupSets;
     await showModalBottomSheet<void>(
       context: context, isScrollControlled: true,
       builder: (ctx) => SafeArea(child: Padding(
@@ -171,7 +170,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
           const ListTile(title: Text('Clean Backups'),
               subtitle: Text('Delete an entire series safely; parents are never left orphaned.')),
           if (series.isEmpty)
-            const ListTile(title: Text('No A-series backups to clean')),
+            const ListTile(title: Text('No manual backups to clean')),
           ...series.map((item) => ListTile(
             leading: const Icon(Icons.folder_zip_outlined),
             title: Text(item.name),
@@ -193,8 +192,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
   Future<void> _showExportBackups() async {
     await _refreshBackupUsage();
     if (!mounted) return;
-    final series = _manualBackupSets.where((e) =>
-        e.name.startsWith('A') && !e.name.endsWith('.zip')).toList();
+    final series = _manualBackupSets;
     await showModalBottomSheet<void>(
       context: context,
       builder: (ctx) => SafeArea(child: Column(
@@ -212,7 +210,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
             },
           )),
           if (series.isEmpty)
-            const ListTile(title: Text('No A-series backup available')),
+            const ListTile(title: Text('No manual backups available')),
           TextButton(onPressed: () => Navigator.pop(ctx),
               child: const Text('Close')),
         ],
