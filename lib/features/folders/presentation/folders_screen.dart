@@ -1190,7 +1190,6 @@ class _FoldersScreenState extends State<FoldersScreen>
       await _repository.create(name: name, parentId: parentId);
       if (!mounted) return;
       setState(_load);
-      _message('Folder created.');
     } catch (error) {
       if (!mounted) return;
       _message(error.toString().replaceFirst('Invalid argument(s): ', ''));
@@ -1206,8 +1205,12 @@ class _FoldersScreenState extends State<FoldersScreen>
       if (!mounted) return;
       await _refresh();
       if (!mounted) return;
-      final details = result.errors.isEmpty ? '' : '\n${result.errors.first}';
-      _message('Added ${result.added} · Duplicates ${result.duplicates} · Failed ${result.failed}$details');
+      // Successful imports are visible in Grid without a blocking snackbar.
+      // Keep duplicate/failure information, which explains why a file was not added.
+      if (result.duplicates > 0 || result.failed > 0) {
+        final details = result.errors.isEmpty ? '' : '\n${result.errors.first}';
+        _message('Duplicates ${result.duplicates} · Failed ${result.failed}$details');
+      }
     } catch (error) {
       if (mounted) _message('PDF import failed: $error');
     }
@@ -1493,7 +1496,6 @@ class _FoldersScreenState extends State<FoldersScreen>
       if (!mounted) return;
       if (_currentFolderId == folder.id) _currentTitle = name.trim();
       setState(_load);
-      _message('Folder renamed.');
     } catch (error) {
       _message(error.toString().replaceFirst('Invalid argument(s): ', ''));
     }
@@ -1729,7 +1731,9 @@ class _FoldersScreenState extends State<FoldersScreen>
     _clearDocumentSelection();
     await _refresh();
     final failures = result['failures'] as List<String>;
-    _message('Moved ${result['moved']} PDF(s). ${failures.length} failed.');
+    if (failures.isNotEmpty) {
+      _message('${failures.length} selected PDF(s) could not be moved. ${failures.first}');
+    }
   }
 
   Future<void> _addReminder(DocumentRecord document) async {
@@ -1763,7 +1767,6 @@ class _FoldersScreenState extends State<FoldersScreen>
     title.dispose(); note.dispose();
     if (saved != true) return;
     await ReminderRepository().create(title: reminderTitle, note: reminderNote, remindAt: selected, documentId: document.id);
-    if (mounted) _message('Reminder saved for this PDF.');
   }
 
   Future<void> _chooseCategory(DocumentRecord document) async {
@@ -2646,7 +2649,6 @@ class _FoldersScreenState extends State<FoldersScreen>
                       if (!mounted) return;
                       setState(() => _isReorderingFolders = false);
                       await _refresh();
-                      _message('Folder order saved.');
                     } catch (error) {
                       if (mounted) _message('Could not save folder order: $error');
                     }
