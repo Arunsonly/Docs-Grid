@@ -48,6 +48,7 @@ class MainActivity : FlutterActivity() {
     private var pendingMediaRename: PendingMediaRename? = null
     private var pendingFolderResult: MethodChannel.Result? = null
     private var pendingRecoverySelection = false
+    private var pendingPdfRecoverySelection = false
     private var storageChangeSink: EventChannel.EventSink? = null
     private val storageObservers = mutableListOf<ContentObserver>()
     private var storageObserversRegistered = false
@@ -113,7 +114,8 @@ class MainActivity : FlutterActivity() {
             })
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName)
             .setMethodCallHandler { call, result ->
-                val mainThreadOnly = call.method == "chooseFolder" || call.method == "chooseRecoveryFolder" || call.method == "openPdf"
+                val mainThreadOnly = call.method == "chooseFolder" || call.method == "chooseRecoveryFolder" ||
+                    call.method == "choosePdfRecoveryFolder" || call.method == "openPdf"
                 if (mainThreadOnly) {
                     handleStorageCall(call, result)
                 } else if (call.method == "consumeSharedPdfs") {
@@ -634,12 +636,13 @@ class MainActivity : FlutterActivity() {
     ) {
                     try {
                         when (call.method) {
-                            "chooseFolder", "chooseRecoveryFolder" -> {
+                            "chooseFolder", "chooseRecoveryFolder", "choosePdfRecoveryFolder" -> {
                                 if (pendingFolderResult != null) {
                                     result.error("BUSY", "Folder picker is already open.", null)
                                 } else {
                                     pendingFolderResult = result
                                     pendingRecoverySelection = call.method == "chooseRecoveryFolder"
+                                    pendingPdfRecoverySelection = call.method == "choosePdfRecoveryFolder"
                                     val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)
                                     intent.addFlags(
                                         Intent.FLAG_GRANT_READ_URI_PERMISSION or
@@ -2043,14 +2046,19 @@ class MainActivity : FlutterActivity() {
         val callback = pendingFolderResult
         pendingFolderResult = null
         val recoveryOnly = pendingRecoverySelection
+        val pdfFolderOnly = pendingPdfRecoverySelection
         pendingRecoverySelection = false
+        pendingPdfRecoverySelection = false
         if (resultCode != Activity.RESULT_OK || data?.data == null) {
             callback?.success(null)
             return
         }
         val uri = data.data!!
-        val requiredFlags = Intent.FLAG_GRANT_READ_URI_PERMISSION or
-            Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+        val requiredFlags = if (pdfFolderOnly) {
+            Intent.FLAG_GRANT_READ_URI_PERMISSION
+        } else {
+            Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+        }
         val flags = data.flags and requiredFlags
         if (flags != requiredFlags) {
             callback?.error("PERMISSION", "The selected folder did not grant both read and write access.", null)
@@ -2066,6 +2074,17 @@ class MainActivity : FlutterActivity() {
             val selectedRoot = DocumentsContract.buildDocumentUriUsingTree(
                 uri, DocumentsContract.getTreeDocumentId(uri)
             )
+            if (pdfFolderOnly) {
+                // Read-only recovery does not alter DocsGrid storage preferences
+                // or create folders inside the user's source location.
+                val children = listDirectory(selectedRoot)
+                callback?.success(mapOf(
+                    "uri" to selectedRoot.toString(),
+                    "name" to "Selected PDF folder",
+                    "entries" to children.size,
+                ))
+                return
+            }
             if (recoveryOnly) {
                 val selectedName = contentResolver.query(
                     selectedRoot,
