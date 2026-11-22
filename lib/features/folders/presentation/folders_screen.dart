@@ -1915,7 +1915,7 @@ class _FoldersScreenState extends State<FoldersScreen>
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     SizedBox(
-                      height: 42,
+                      height: 48,
                       child: Row(children: [
                         if (_isSelectingFolders) checkbox(),
                         const Spacer(),
@@ -2072,7 +2072,7 @@ class _FoldersScreenState extends State<FoldersScreen>
         );
     return Card(
       key: ValueKey('grid-pdf-${document.id}'),
-      margin: EdgeInsets.all(_showGridTiles ? 4 : 4),
+      margin: const EdgeInsets.all(4),
       elevation: 0,
       clipBehavior: Clip.antiAlias,
       child: _showGridTiles
@@ -2085,7 +2085,7 @@ class _FoldersScreenState extends State<FoldersScreen>
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     SizedBox(
-                      height: 42,
+                      height: 48,
                       child: Row(children: [
                         if (_isSelectingDocuments) checkbox(),
                         const Spacer(),
@@ -2518,10 +2518,28 @@ class _FoldersScreenState extends State<FoldersScreen>
                                   ),
                                 ),
                               )
+                            else if (_showGridTiles)
+                              SliverPadding(
+                                padding: const EdgeInsets.symmetric(horizontal: 12),
+                                sliver: SliverGrid.builder(
+                                  key: const ValueKey('grid-folder-tiles'),
+                                  itemCount: displayedFolders.length,
+                                  gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+                                    maxCrossAxisExtent: 220,
+                                    mainAxisExtent: 192,
+                                    mainAxisSpacing: 8,
+                                    crossAxisSpacing: 8,
+                                  ),
+                                  itemBuilder: (context, index) =>
+                                      _buildGridFolderCard(
+                                        displayedFolders[index], index),
+                                ),
+                              )
                             else
                               SliverPadding(
                                 padding: const EdgeInsets.symmetric(horizontal: 12),
                                 sliver: SliverList.builder(
+                                  key: const ValueKey('grid-folder-rows'),
                                   itemCount: displayedFolders.length,
                                   itemBuilder: (context, index) =>
                                       _buildGridFolderCard(
@@ -2539,11 +2557,25 @@ class _FoldersScreenState extends State<FoldersScreen>
                             ),
                             SliverPadding(
                               padding: const EdgeInsets.symmetric(horizontal: 12),
-                              sliver: SliverList.builder(
-                                itemCount: displayedDocuments.length,
-                                itemBuilder: (context, index) =>
-                                    _buildGridPdfCard(displayedDocuments[index]),
-                              ),
+                              sliver: _showGridTiles
+                                  ? SliverGrid.builder(
+                                      key: const ValueKey('grid-pdf-tiles'),
+                                      itemCount: displayedDocuments.length,
+                                      gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+                                        maxCrossAxisExtent: 220,
+                                        mainAxisExtent: 192,
+                                        mainAxisSpacing: 8,
+                                        crossAxisSpacing: 8,
+                                      ),
+                                      itemBuilder: (context, index) =>
+                                          _buildGridPdfCard(displayedDocuments[index]),
+                                    )
+                                  : SliverList.builder(
+                                      key: const ValueKey('grid-pdf-rows'),
+                                      itemCount: displayedDocuments.length,
+                                      itemBuilder: (context, index) =>
+                                          _buildGridPdfCard(displayedDocuments[index]),
+                                    ),
                             ),
                           ],
                           if (_pagedDocumentsMode &&
