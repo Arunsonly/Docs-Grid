@@ -44,7 +44,7 @@ void main() {
     expect(native, contains('findChildUri(uri, packageName)'));
     expect(native, contains('findChildUri(uri, "com.docsgrid")'));
     expect(native, contains('findChildUri(uri, "DocsGrid")'));
-    expect(native, contains('Recovery selection is read-only'));
+    expect(native, contains('Recovery is read-only'));
   });
 
   test('canonical classification handles local and SAF paths and rejects lookalikes', () {
