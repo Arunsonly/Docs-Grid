@@ -505,6 +505,21 @@ class StorageLocationService {
   /// snapshot before updating the active portable-storage preferences.
   /// Select any readable PDF folder for recovery without changing the
   /// application's managed storage root or creating a destination folder.
+  /// User-approved external SAF destination. Does not change Grid storage.
+  Future<Map<String, String>?> chooseBackupExportFolder() async {
+    if (!Platform.isAndroid) {
+      throw UnsupportedError('Backup export picker is Android-only.');
+    }
+    final result = await _channel.invokeMapMethod<String, dynamic>(
+        'chooseBackupExportFolder');
+    if (result == null || result['uri'] is! String) return null;
+    return {
+      'uri': result['uri'] as String,
+      'name': result['name'] is String
+          ? result['name'] as String : 'Selected export folder',
+    };
+  }
+
   /// Read-only selection of an exported A001 folder; no active-root changes.
   Future<Map<String, String>?> chooseBackupChainFolder() async {
     if (!Platform.isAndroid) {
