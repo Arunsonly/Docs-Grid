@@ -45,7 +45,7 @@ class BackupChain {
       final zip = ZipDecoder().decodeStream(stream);
       final entry = zip.findFile('manifest.json');
       if (entry == null || !entry.isFile || entry.isSymbolicLink ||
-          entry.size > 1024 * 1024) {
+          entry.size > 16 * 1024 * 1024) {
         throw StateError('Missing or oversized backup manifest.');
       }
       final result = jsonDecode(utf8.decode(entry.content as List<int>));
@@ -219,7 +219,7 @@ class BackupChain {
         try {
           final archive = ZipDecoder().decodeStream(input);
           final manifestEntry = archive.findFile('manifest.json');
-          if (manifestEntry == null || manifestEntry.size > 1024 * 1024) {
+          if (manifestEntry == null || manifestEntry.size > 16 * 1024 * 1024) {
             throw StateError('The incremental manifest is missing.');
           }
           final m = jsonDecode(utf8.decode(manifestEntry.content as List<int>))
