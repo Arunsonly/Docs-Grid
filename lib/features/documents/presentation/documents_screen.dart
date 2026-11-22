@@ -7,6 +7,7 @@ import 'package:open_filex/open_filex.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../data/document_repository.dart';
+import '../data/home_dashboard_cache.dart';
 import '../data/phone_recent_history.dart';
 import '../data/phone_pdf_move_service.dart';
 import '../data/phone_pdf_delta.dart';
@@ -24,6 +25,7 @@ import 'phone_storage_browser_screen.dart';
 import 'phone_move_folder_picker.dart';
 import '../../folders/presentation/folders_screen.dart';
 import '../../reminders/data/reminder_repository.dart';
+import '../../../core/diagnostics/startup_timeline.dart';
 
 class DocumentsScreen extends StatefulWidget {
   const DocumentsScreen({super.key, this.favoritesOnly = false, this.recentOnly = false,
@@ -40,7 +42,10 @@ class DocumentsScreen extends StatefulWidget {
 
 class _DocumentsScreenState extends State<DocumentsScreen>
     with WidgetsBindingObserver {
+  bool get _isStartupHome =>
+      !widget.phoneOnly && !widget.favoritesOnly && !widget.recentOnly;
   final _repository = DocumentRepository();
+  final _homeCache = HomeDashboardCache();
   final _categoryRepository = CategoryRepository();
   final _folderRepository = FolderRepository();
   final _tools = DocumentToolsService();
@@ -69,6 +74,10 @@ class _DocumentsScreenState extends State<DocumentsScreen>
   int _homePhoneSearchVisibleCount = _homePhoneSearchPageSize;
   int _totalStorageBytes = 0;
   int _totalDocumentCount = 0;
+  bool _liveHomeSummaryLoaded = false;
+  bool _showCachedHomeSummary = false;
+  bool _liveGridRecentLoaded = false;
+  List<String> _cachedGridRecentNames = const [];
   int _starredCount = 0;
   int? _phoneStorageBytes;
   bool? _phoneHasAllFilesAccess;
@@ -107,6 +116,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
   @override
   void initState() {
     super.initState();
+    if (_isStartupHome) StartupTimeline.mark('home_init');
     WidgetsBinding.instance.addObserver(this);
     _phoneOcrIndex = PhoneOcrSearchIndex(_tools.extractPhonePdfTextFromUri);
     unawaited(_loadPhoneStarred());
@@ -118,6 +128,11 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       },
     );
     if (!widget.phoneOnly) {
+      // Display last-known *non-actionable* Home metadata while SQLite
+      // independently loads the authoritative data. Never block first paint.
+      if (!widget.favoritesOnly && !widget.recentOnly) {
+        unawaited(_restoreCachedHomeSnapshot());
+      }
       _load();
       _loadViewPreference();
       _loadTrashSummary();
@@ -127,6 +142,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
     _scrollController.addListener(_onScroll);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
+      if (_isStartupHome) StartupTimeline.mark('home_first_frame');
       if (widget.phoneOnly) {
         // Show the Phone tab in place; do not push a second page after scanning.
         _scanPhoneStorage(openBrowser: false);
@@ -444,11 +460,13 @@ class _DocumentsScreenState extends State<DocumentsScreen>
   }
 
   Future<void> _load() async {
+    if (_isStartupHome) StartupTimeline.mark('home_page_start');
     final generation = ++_loadGeneration;
     if (mounted) setState(() { _loading = true; _loadingMore = false; });
     // Run the small first page and dashboard aggregates concurrently. Render
     // the document rows as soon as the page is ready; never make the first
     // useful screen wait for a full-library summary query.
+    if (_isStartupHome) StartupTimeline.mark('home_summary_start');
     final summaryFuture = _repository.dashboardSummary();
     try {
       if (_searchInsideText && _search.text.trim().isNotEmpty) {
@@ -484,6 +502,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
           _error = null;
         });
       }
+      if (_isStartupHome) StartupTimeline.mark('home_page_ready');
       // Summary is secondary UI. Update it when ready without delaying the
       // first page, and ignore stale completions after a newer refresh.
       try {
@@ -493,11 +512,23 @@ class _DocumentsScreenState extends State<DocumentsScreen>
           _totalStorageBytes = summary.totalBytes;
           _totalDocumentCount = summary.documentCount;
           _starredCount = summary.favoriteCount;
+          _liveHomeSummaryLoaded = true;
+          _showCachedHomeSummary = false;
         });
+        if (_isStartupHome) StartupTimeline.mark('home_summary_ready');
+        if (!widget.phoneOnly && !widget.favoritesOnly && !widget.recentOnly) {
+          unawaited(_homeCache.saveSummary(
+            documentCount: summary.documentCount,
+            favoriteCount: summary.favoriteCount,
+            totalBytes: summary.totalBytes,
+          ));
+        }
       } catch (_) {
+        if (_isStartupHome) StartupTimeline.mark('home_summary_failed');
         // A summary failure must not blank a successfully loaded PDF list.
       }
     } catch (error) {
+      if (_isStartupHome) StartupTimeline.mark('home_page_failed');
       if (!mounted || generation != _loadGeneration) return;
       setState(() {
         _loading = false;
@@ -563,6 +594,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
   }
 
   Future<void> _loadTrashSummary() async {
+    if (_isStartupHome) StartupTimeline.mark('home_trash_start');
     try {
       final values = await Future.wait<Object>([
         _repository.trashCount(),
@@ -575,6 +607,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         _trashCount = count;
         _trashFolderCount = folders.length;
       });
+      if (_isStartupHome) StartupTimeline.mark('home_trash_ready');
     } catch (_) {
       // Keep the dashboard usable; the Recycle Bin screen reports its own error.
     }
@@ -588,7 +621,16 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       _totalStorageBytes = summary.totalBytes;
       _totalDocumentCount = summary.documentCount;
       _starredCount = summary.favoriteCount;
+      _liveHomeSummaryLoaded = true;
+      _showCachedHomeSummary = false;
     });
+    if (!widget.phoneOnly) {
+      unawaited(_homeCache.saveSummary(
+        documentCount: summary.documentCount,
+        favoriteCount: summary.favoriteCount,
+        totalBytes: summary.totalBytes,
+      ));
+    }
     await _loadTrashSummary();
   }
 
@@ -794,6 +836,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       _phoneScanPending = true;
       return;
     }
+    if (_isStartupHome) StartupTimeline.mark('home_phone_scan_start');
     _phoneMediaStoreReady = false;
     if (mounted) setState(() { _phoneScanLoading = true; _phoneScanCompleted = false; });
     try {
@@ -1034,6 +1077,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         _message('Phone Storage scan failed; inaccessible locations were not marked empty: $error');
       }
     } finally {
+      if (_isStartupHome) StartupTimeline.mark('home_phone_scan_finished');
       if (mounted) setState(() => _phoneScanLoading = false);
       if (mounted && widget.ocrSearchAvailable && _searchInsideText &&
           _search.text.trim().isNotEmpty) {
@@ -1500,6 +1544,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
   }
 
   Future<void> _loadRecentDocuments() async {
+    if (_isStartupHome) StartupTimeline.mark('home_recent_start');
     try {
       // Include both opened documents and newly added documents. The list
       // is capped at 20 so the dashboard's Recent panel can scroll independently.
@@ -1521,8 +1566,18 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       setState(() {
         _gridRecent = recentDocuments;
         _phoneRecent = phone.take(20).toList(growable: false);
+        _liveGridRecentLoaded = true;
+        _cachedGridRecentNames = const [];
       });
+      if (_isStartupHome) StartupTimeline.mark('home_recent_ready');
+      if (!widget.phoneOnly && !widget.favoritesOnly && !widget.recentOnly) {
+        // Names only. Do not persist IDs, paths, actions or raw PDF bytes.
+        unawaited(_homeCache.saveRecentNames(
+          recentDocuments.map((document) => document.name).toList(growable: false),
+        ));
+      }
     } catch (_) {
+      if (_isStartupHome) StartupTimeline.mark('home_recent_failed');
       // Recent metadata is optional and must not block the dashboard.
     }
   }
@@ -2879,6 +2934,9 @@ class _DocumentsScreenState extends State<DocumentsScreen>
                   Text('$_totalDocumentCount PDFs', style: const TextStyle(
                     color: Color(0xFF10162C), fontSize: 32, fontWeight: FontWeight.w800,
                   )),
+                  if (_showCachedHomeSummary)
+                    const Text('Previous summary · refreshing live counts',
+                      style: TextStyle(color: Color(0xFF17203D), fontSize: 10)),
                   const SizedBox(height: 12),
                   Row(children: [
                     Expanded(child: _dashboardStorageMetric(
@@ -3000,7 +3058,20 @@ class _DocumentsScreenState extends State<DocumentsScreen>
                                       itemBuilder: (context, index) => _phoneRecentTile(_phoneRecent[index]),
                                     )
                               : _gridRecent.isEmpty
-                                  ? const Center(child: Text('No recent Grid PDFs'))
+                                  ? (!_liveGridRecentLoaded && _cachedGridRecentNames.isNotEmpty
+                                      ? ListView.builder(
+                                          primary: false,
+                                          itemCount: _cachedGridRecentNames.length,
+                                          itemBuilder: (context, index) => ListTile(
+                                            dense: true,
+                                            enabled: false,
+                                            leading: const Icon(Icons.picture_as_pdf_outlined),
+                                            title: Text('${_cachedGridRecentNames[index]}.pdf',
+                                              maxLines: 1, overflow: TextOverflow.ellipsis),
+                                            subtitle: const Text('Previous session · verifying PDFs'),
+                                          ),
+                                        )
+                                      : const Center(child: Text('No recent Grid PDFs')))
                                   : ListView.separated(
                                       primary: false,
                                       itemCount: _gridRecent.length,
@@ -3518,6 +3589,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
             const PopupMenuItem(value: 'category', child: Text('Set category')),
             const PopupMenuItem(value: 'tags', child: Text('Edit tags')),
             const PopupMenuItem(value: 'rename', child: Text('Rename')),
+            const PopupMenuItem(value: 'relink', child: Text('Relink PDF')),
             const PopupMenuItem(value: 'move', child: Text('Move to folder')),
             const PopupMenuItem(value: 'trash', child: Text('Move to Recycle Bin')),
           ],

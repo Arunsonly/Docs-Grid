@@ -134,6 +134,59 @@ void main() {
     expect(await repository.countDirectChildren(null), 55);
   });
 
+
+  test('Missing vs Deleted Detection: provider not-found, denied, reappearing and recycled folders are distinct', () async {
+    const channel = MethodChannel('docsgrid/storage');
+    final messenger = TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+    const uri = 'content://provider/My Files/Shared/Untitled';
+    await db.update('folders', {'storage_uri_or_relative_path': uri},
+        where: 'id = ?', whereArgs: ['folder-0']);
+    var state = 'missing';
+    var deleteCalls = 0;
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      if (call.method == 'deletePdf') {
+        deleteCalls++;
+        throw StateError('Read-only validation may never delete a user file');
+      }
+      expect(call.method, 'listDirectory');
+      if (call.arguments['uri'] == uri) {
+        if (state == 'missing') {
+          throw PlatformException(code: 'NOT_FOUND', message: 'File absent');
+        }
+        if (state == 'denied') {
+          throw PlatformException(code: 'PERMISSION_DENIED', message: 'Permission revoked');
+        }
+      }
+      return <Map<String, Object?>>[];
+    });
+
+    // A missing provider folder is hidden from this one listing, not deleted.
+    expect((await repository.childrenOf(null)).map((f) => f.id),
+        isNot(contains('folder-0')));
+    expect((await db.query('folders', where: 'id = ?',
+        whereArgs: ['folder-0'])).single['deleted_at'], isNull);
+    expect(await repository.countDirectChildren(null), 55);
+
+    state = 'denied';
+    await expectLater(repository.childrenOf(null),
+        throwsA(isA<PlatformException>().having(
+            (e) => e.code, 'code', 'PERMISSION_DENIED')));
+    expect((await db.query('folders', where: 'id = ?',
+        whereArgs: ['folder-0'])).single['deleted_at'], isNull);
+
+    state = 'present';
+    expect((await repository.childrenOf(null)).map((f) => f.id),
+        contains('folder-0'));
+    await db.update('folders', {'deleted_at': '2026-11-21T00:00:00Z'},
+        where: 'id = ?', whereArgs: ['folder-0']);
+    expect((await repository.childrenOf(null)).map((f) => f.id),
+        isNot(contains('folder-0')));
+    expect((await db.query('folders', where: 'id = ?',
+        whereArgs: ['folder-0'])).single['deleted_at'], isNotNull);
+    expect(deleteCalls, 0);
+  });
+
   test('a provider that refuses parallel calls gets the legacy sequential fallback', () async {
     const channel = MethodChannel('docsgrid/storage');
     final messenger = TestDefaultBinaryMessengerBinding

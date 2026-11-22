@@ -38,11 +38,34 @@ class StorageChangeNotice {
   }
 }
 
+enum GridPdfReferenceKind {
+  /// This is only a syntactically supported address, not proof the bytes exist.
+  possibleFile,
+  /// Backup metadata without physical bytes; manual SHA-256 relink required.
+  missingFile,
+  unsupported,
+}
+
 class StorageLocationService {
   StorageLocationService._();
   static final StorageLocationService instance = StorageLocationService._();
   static const MethodChannel _channel = MethodChannel('docsgrid/storage');
   static const EventChannel _changesChannel = EventChannel('docsgrid/storage_changes');
+
+  /// Classify the saved Grid address without modifying files or SQLite.
+  /// PDF row names, cached previews and size are not evidence that the
+  /// underlying bytes still exist. The caller must open/verify the source.
+  static GridPdfReferenceKind gridPdfReferenceKind(String? saved) {
+    final value = saved?.trim() ?? '';
+    if (value.isEmpty || value.startsWith('missing://')) {
+      return GridPdfReferenceKind.missingFile;
+    }
+    if (value.startsWith('/') || value.startsWith('content://') ||
+        value.startsWith('file://')) {
+      return GridPdfReferenceKind.possibleFile;
+    }
+    return GridPdfReferenceKind.unsupported;
+  }
 
   /// The event is a hint, not a deletion instruction. Unknown events reconcile.
   Stream<StorageChangeNotice> get storageChanges =>
@@ -605,13 +628,23 @@ class StorageLocationService {
   /// Phone PDFs keep their original opening behaviour.
   Future<void> openPdf(String uri, {bool gridPdf = false}) async {
     if (gridPdf && Platform.isAndroid) {
+      final kind = gridPdfReferenceKind(uri);
+      if (kind == GridPdfReferenceKind.missingFile) {
+        throw StateError(
+          'The PDF file is unavailable (metadata only). '
+          'Use PDF options > Relink PDF to select a verified copy. '
+          'The library record has been preserved.',
+        );
+      }
+      if (kind == GridPdfReferenceKind.unsupported) {
+        throw StateError(
+          'Grid PDF has an unsupported storage location. '
+          'Use PDF options > Relink PDF to select a verified copy.',
+        );
+      }
       final normalizedUri = uri.startsWith('/')
           ? Uri.file(uri).toString()
           : uri;
-      if (!normalizedUri.startsWith('content://') &&
-          !normalizedUri.startsWith('file://')) {
-        throw StateError('Grid PDF has an unsupported storage location.');
-      }
       final cache = Directory(p.join(
         (await getTemporaryDirectory()).path,
         'docsgrid_grid_pdf',

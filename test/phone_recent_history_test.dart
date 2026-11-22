@@ -100,6 +100,33 @@ void main() {
     'isDirectory': false,
   };
 
+
+  test('Missing vs Deleted Detection: an incomplete scan cannot evict an offline PDF shortcut', () async {
+    final prefs = await SharedPreferences.getInstance();
+    const primary = 'content://media/external_primary/file/17';
+    const sd = 'content://media/9999-1234/file/21';
+    const saf = 'content://com.android.externalstorage.documents/document/primary%3AShared%2FUntitled%2FPolicy.pdf';
+    final before = [
+      item(primary, 'Primary.pdf'),
+      item(sd, 'Offline SD PDF.pdf'),
+      item(saf, 'Shared Untitled.pdf'),
+    ];
+    await prefs.setStringList(PhoneRecentHistory.storageKey, before);
+    expect(await PhoneRecentHistory.pruneAbsentMediaStoreUris(
+        {}, scannedVolumes: {}), 0);
+    expect(prefs.getStringList(PhoneRecentHistory.storageKey), before);
+    // Complete primary scan prunes ONLY one stale metadata shortcut.
+    expect(await PhoneRecentHistory.pruneAbsentMediaStoreUris(
+        {}, scannedVolumes: {'external_primary'}), 1);
+    expect(prefs.getStringList(PhoneRecentHistory.storageKey),
+        [before[1], before[2]]);
+    // A reconnected SD card showing the PDF leaves its saved URI intact.
+    expect(await PhoneRecentHistory.pruneAbsentMediaStoreUris(
+        {sd}, scannedVolumes: {'9999-1234'}), 0);
+    expect(prefs.getStringList(PhoneRecentHistory.storageKey),
+        [before[1], before[2]]);
+  });
+
   test('Phone baseline excludes old PDFs; next complete scan records Added once', () async {
     const scope = 'media:external_primary';
     const old = 'content://media/external_primary/file/1';

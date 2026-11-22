@@ -21,11 +21,15 @@ import 'features/tools/document_tools_service.dart';
 import 'core/database/app_database.dart';
 import 'core/storage/portable_snapshot_events.dart';
 import 'core/backup/backup_automation.dart';
+import 'core/diagnostics/startup_timeline.dart';
 
 final GlobalKey<NavigatorState> docsGridNavigatorKey = GlobalKey<NavigatorState>();
 
 void main() {
+  StartupTimeline.mark('dart_main_enter');
   WidgetsFlutterBinding.ensureInitialized();
+  StartupTimeline.mark('flutter_binding_ready');
+  StartupTimeline.mark('run_app_called');
   runApp(const DocsGridApp());
 }
 
@@ -46,11 +50,13 @@ class _DocsGridAppState extends State<DocsGridApp> {
   }
 
   Future<void> _loadTheme() async {
+    StartupTimeline.mark('theme_read_start');
     final prefs = await SharedPreferences.getInstance();
     if (!mounted) return;
     setState(() => _themeMode = prefs.getBool('dark_mode') == true
         ? ThemeMode.dark
         : ThemeMode.light);
+    StartupTimeline.mark('theme_read_ready');
   }
 
   Future<void> _setDarkMode(bool enabled) async {
@@ -90,6 +96,21 @@ class _DocsGridAppState extends State<DocsGridApp> {
 
 class DocsGridHome extends StatefulWidget {
   const DocsGridHome({super.key, required this.darkMode, required this.onDarkModeChanged});
+
+  /// Distinct element identities are REQUIRED because the Home and Phone
+  /// tabs both use DocumentsScreen but initialize completely different data.
+  /// Without distinct keys Flutter reuses the Phone State on Phone -> Home:
+  /// its initState never calls _load(), leaving the Home summary at zero.
+  static Widget screenForTab(int index) => switch (index) {
+    0 => const DocumentsScreen(
+      key: ValueKey('docsgrid-phone-tab'),
+      phoneOnly: true,
+    ),
+    1 => const DocumentsScreen(
+      key: ValueKey('docsgrid-home-tab'),
+    ),
+    _ => const FoldersScreen(),
+  };
   final bool darkMode;
   final ValueChanged<bool> onDarkModeChanged;
 
@@ -110,6 +131,7 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    StartupTimeline.mark('root_home_init');
     _snapshotChangesSubscription =
         PortableSnapshotEvents.changes.listen((_) => _schedulePortableSnapshot());
     // SQLite revision triggers are the durable source of truth. This low-cost

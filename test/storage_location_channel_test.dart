@@ -12,6 +12,24 @@ void main() {
     messenger.setMockMethodCallHandler(channel, null);
   });
 
+  test('Grid storage references distinguish metadata-only, invalid and actual-address candidates', () {
+    expect(StorageLocationService.gridPdfReferenceKind(null),
+        GridPdfReferenceKind.missingFile);
+    expect(StorageLocationService.gridPdfReferenceKind(''),
+        GridPdfReferenceKind.missingFile);
+    expect(StorageLocationService.gridPdfReferenceKind('missing://document-1'),
+        GridPdfReferenceKind.missingFile);
+    expect(StorageLocationService.gridPdfReferenceKind('backup-pdf://document-1'),
+        GridPdfReferenceKind.unsupported);
+    expect(StorageLocationService.gridPdfReferenceKind('content://provider/policy'),
+        GridPdfReferenceKind.possibleFile);
+    expect(StorageLocationService.gridPdfReferenceKind('file:///storage/Insurance/policy.pdf'),
+        GridPdfReferenceKind.possibleFile);
+    expect(StorageLocationService.gridPdfReferenceKind('/storage/Insurance/policy.pdf'),
+        GridPdfReferenceKind.possibleFile);
+    // A syntactically valid path is NOT proof of physical existence.
+  });
+
   test('copyFileToStorage forwards an app-staged archive and destination metadata', () async {
     messenger.setMockMethodCallHandler(channel, (call) async {
       expect(call.method, 'copyFileToStorage');
