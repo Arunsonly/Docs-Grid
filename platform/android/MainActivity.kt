@@ -929,7 +929,7 @@ class MainActivity : FlutterActivity() {
                                         selectedDocuments != prefs.getString("documents_uri", null) ||
                                         selectedLibrary != savedLibrary) {
                                         result.error("RESTORE_LOCATION_CHANGED",
-                                            "DocsGrid storage locations changed during restore preparation. Reopen Backup & Restore.", null)
+                                            "DocsGrid storage locations changed during restore preparation. Reopen Backup & Recovery.", null)
                                     } else {
                                         val documents = localFileBackedRestoreDirectory(selectedDocuments)
                                         val folders = localFileBackedRestoreDirectory(selectedLibrary)
