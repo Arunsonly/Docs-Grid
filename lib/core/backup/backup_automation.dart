@@ -23,10 +23,9 @@ void docsGridBackgroundDispatcher() {
     WidgetsFlutterBinding.ensureInitialized();
     DartPluginRegistrant.ensureInitialized();
 
-    final includePdfs = task == docsGridWeeklyFullBackupTask;
-    if (!includePdfs && task != docsGridDailyDatabaseBackupTask) {
-      return true;
-    }
+    // Full PDF archives are user-initiated only. Ignore legacy queued work.
+    if (task != docsGridDailyDatabaseBackupTask) return true;
+    const includePdfs = false;
 
     final prefs = await SharedPreferences.getInstance();
     final statusKey = includePdfs ? _weeklyStatusKey : _dailyStatusKey;
@@ -109,19 +108,9 @@ class BackupAutomation {
         ),
       );
     }
-    if (!await Workmanager().isScheduledByUniqueName(
-      docsGridWeeklyFullBackupTask,
-    )) {
-      await Workmanager().registerPeriodicTask(
-        docsGridWeeklyFullBackupTask,
-        docsGridWeeklyFullBackupTask,
-        frequency: const Duration(days: 7),
-        constraints: Constraints(
-          requiresBatteryNotLow: true,
-          requiresStorageNotLow: true,
-        ),
-      );
-    }
+    // Remove the periodic Full task that earlier DocsGrid versions registered.
+    // This is idempotent; manual Full/Incremental backups are never scheduled.
+    await Workmanager().cancelByUniqueName(docsGridWeeklyFullBackupTask);
   }
 
   static Future<Map<String, Object?>> readStatus({required bool full}) async {
@@ -164,10 +153,8 @@ class BackupAutomation {
     try {
       final locations = await storage.portableDataLocationsIfAvailable();
       final databaseUri = locations['databaseBackupsUri'] ?? locations['backupsUri'];
-      final fullUri = locations['fullBackupsUri'] ?? locations['backupsUri'];
-      // SAF-only trees can still use metadata snapshots and restore existing
-      // PDFs in place, but ZIP publishing requires a file-backed destination.
-      if (databaseUri == null || fullUri == null) return;
+      // Scheduled backups never need access to the user's PDF backup folder.
+      if (databaseUri == null) return;
 
       final now = DateTime.now().toUtc();
       final daily = await readStatus(full: false);
@@ -180,15 +167,6 @@ class BackupAutomation {
         await _runForegroundBackup(includePdfs: false);
       }
 
-      final weekly = await readStatus(full: true);
-      if (isBackupDue(
-        status: weekly,
-        now: now,
-        interval: const Duration(days: 7),
-        retryCooldown: const Duration(hours: 24),
-      )) {
-        await _runForegroundBackup(includePdfs: true);
-      }
     } catch (_) {
       // User PDF access remains usable when backup storage is unavailable.
     }
