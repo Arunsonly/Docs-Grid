@@ -1406,7 +1406,8 @@ class DocumentToolsService {
     final locations = await storage.portableDataLocationsIfAvailable();
     final documentsRoot = locations['documentsUri'];
     final foldersRoot = locations['libraryUri'];
-    if (documentsRoot == null && foldersRoot == null) {
+    if (documentsRoot == null && foldersRoot == null &&
+        additionalFolderUri == null) {
       throw StateError(
         'No accessible DocsGrid recovery folders were found. '
         'Restore the existing DocsGrid storage location first.',
