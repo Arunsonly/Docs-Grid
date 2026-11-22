@@ -723,6 +723,13 @@ class DocumentToolsService {
         !BackupChain.validSeriesName(seriesId)) {
       throw StateError('Select a readable DocsGrid backup series.');
     }
+    if (seriesId.startsWith('DocsGrid_') && seriesId.endsWith('.zip') &&
+        p.basename(seriesId) == seriesId) {
+      final file = File(p.join(Uri.parse(uri).toFilePath(), seriesId));
+      await BackupChain.manifest(file);
+      await shareFile(file.path, text: 'DocsGrid standalone backup');
+      return;
+    }
     final folder = Directory(p.join(Uri.parse(uri).toFilePath(), seriesId));
     final files = await BackupChain.verified(folder);
     await SharePlus.instance.share(ShareParams(
@@ -740,8 +747,20 @@ class DocumentToolsService {
     if (uri == null || !uri.startsWith('file://')) {
       throw StateError('Backup folder is not accessible.');
     }
-    return BackupChain.deleteSeries(
-        Directory(Uri.parse(uri).toFilePath()), seriesId);
+    final root = Directory(Uri.parse(uri).toFilePath());
+    if (seriesId.startsWith('DocsGrid_') && seriesId.endsWith('.zip') &&
+        p.basename(seriesId) == seriesId) {
+      final file = File(p.join(root.path, seriesId));
+      if (!await file.exists()) throw StateError('Backup is missing.');
+      final manifest = await BackupChain.manifest(file);
+      if (manifest['backupType'] != 'full') {
+        throw StateError('Only standalone legacy Full backups can be cleaned here.');
+      }
+      final bytes = await file.length();
+      await file.delete();
+      return bytes;
+    }
+    return BackupChain.deleteSeries(root, seriesId);
   });
 
   /// A restore creates its own private rescue checkpoint under the already
