@@ -190,6 +190,48 @@ jobs:
           gradle.write_text(s)
           print(f'Enabled core library desugaring in {gradle}')
           PY
+      - name: Include the Devanagari OCR engine used by DocsGrid in Release builds
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          candidates = [Path('android/app/build.gradle.kts'), Path('android/app/build.gradle')]
+          gradle = next((path for path in candidates if path.exists()), None)
+          if gradle is None:
+              raise SystemExit('Generated Android app Gradle file is missing')
+          source = gradle.read_text()
+          # DocsGrid requests TextRecognitionScript.devanagiri at runtime.
+          # Unlike unused optional scripts, this ML Kit package must be
+          # installed, not silenced via -dontwarn.
+          if gradle.suffix == '.kts':
+              dependency = 'implementation("com.google.mlkit:text-recognition-devanagari:16.0.0")'
+              proguard = 'proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")'
+          else:
+              dependency = "implementation 'com.google.mlkit:text-recognition-devanagari:16.0.0'"
+              proguard = "proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'"
+          if dependency not in source:
+              match = re.search(r'dependencies\s*\{', source)
+              if match:
+                  source = source[:match.end()] + '\n    ' + dependency + source[match.end():]
+              else:
+                  source += '\ndependencies {\n    ' + dependency + '\n}\n'
+          source, count = re.subn(
+              r'(release\s*\{)',
+              lambda match: match.group(1) + '\n            ' + proguard,
+              source, count=1,
+          )
+          if count != 1:
+              raise SystemExit('Could not find the release build type')
+          gradle.write_text(source)
+          rules = Path('android/app/proguard-rules.pro')
+          rules.write_text('''# Optional ML Kit scripts never invoked by DocsGrid.
+          # DO NOT silence Devanagari: DocsGrid uses it for Hindi OCR.
+          -dontwarn com.google.mlkit.vision.text.chinese.**
+          -dontwarn com.google.mlkit.vision.text.japanese.**
+          -dontwarn com.google.mlkit.vision.text.korean.**
+          ''')
+          print('Preserved Devanagari OCR dependency; scoped optional R8 rules.')
+          PY
       - name: Configure Android camera and notification permissions
         run: |
           python3 - <<'PY'
@@ -296,6 +338,109 @@ jobs:
           name: docsgrid-android-debug-apk
           path: build/app/outputs/flutter-apk/app-debug.apk
           if-no-files-found: error
+          retention-days: 14
+      # Same Flutter source, same generated AndroidManifest, same launcher
+      # icon and applicationId as the debug build above. Flutter's generated
+      # Android scaffolding uses the debug keystore for internal release
+      # evaluation unless a genuine production signing key is configured.
+      - name: Build internal performance-evaluation Release APK
+        run: |
+          set -euo pipefail
+          flutter build apk --release
+          test -s build/app/outputs/flutter-apk/app-release.apk
+      - name: Validate Release APK integrity, identity and signing
+        run: |
+          set -euo pipefail
+          APK=build/app/outputs/flutter-apk/app-release.apk
+          unzip -tq "$APK" >/dev/null
+          AAPT="$(find "${ANDROID_SDK_ROOT:-$ANDROID_HOME}/build-tools" -name aapt -type f | sort -V | tail -n 1)"
+          APKSIGNER="$(find "${ANDROID_SDK_ROOT:-$ANDROID_HOME}/build-tools" -name apksigner -type f | sort -V | tail -n 1)"
+          test -x "$AAPT"
+          test -x "$APKSIGNER"
+          "$APKSIGNER" verify --verbose --print-certs "$APK"
+          "$AAPT" dump badging "$APK" > /tmp/docsgrid-release-badging.txt
+          grep -F "package: name='com.docsgrid.mobile'" /tmp/docsgrid-release-badging.txt
+          grep -F "launchable-activity: name='com.docsgrid.docs_grid.MainActivity'" /tmp/docsgrid-release-badging.txt
+          echo "DocsGrid icon source:"
+          sha256sum assets/docsgrid_icon.png
+          echo "Release APK checksum and size:"
+          sha256sum "$APK"
+          wc -c "$APK"
+          echo "Internal performance-evaluation build only; DO NOT publish to Play."
+      - name: Upload verified Release APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: docsgrid-android-release-evaluation-apk
+          path: build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
+          retention-days: 14
+
+
+  android_release_startup:
+    name: Release APK process-cold launch benchmark (Android emulator)
+    needs: android
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    # GitHub-hosted Linux x86_64 runners expose KVM for accelerated Android tests.
+    # Avoid macOS ARM nested-HVF restrictions and slow Intel macOS emulation.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download verified Release APK from this exact run
+        uses: actions/download-artifact@v4
+        with:
+          name: docsgrid-android-release-evaluation-apk
+          path: artifacts/release
+      - name: Verify TTID parser and percentile calculations
+        run: python3 -m unittest discover -s scripts -p 'test_android_cold_launch.py' -v
+      - name: Enable hardware-accelerated Android virtualization
+        run: |
+          set -euo pipefail
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' |
+            sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          # Hosted runner images do not always run a persistent udev daemon.
+          # These two commands may fail even when /dev/kvm exists and is usable.
+          sudo udevadm control --reload-rules || echo 'udev reload unavailable; checking device directly'
+          sudo udevadm trigger --name-match=kvm || echo 'udev trigger unavailable; checking device directly'
+          if ! test -c /dev/kvm; then
+            echo '::error::This Linux runner does not expose /dev/kvm; emulator benchmark cannot run.'
+            ls -l /dev/kvm || true
+            exit 1
+          fi
+          # Same effective permission as the udev rule, on this disposable CI VM.
+          sudo chmod 0666 /dev/kvm
+          ls -l /dev/kvm
+          if ! test -r /dev/kvm || ! test -w /dev/kvm; then
+            echo '::error::KVM exists, but the CI runner cannot read/write it.'
+            exit 1
+          fi
+      - name: Confirm emulator host and APK ABI compatibility
+        run: |
+          set -euo pipefail
+          echo "Linux host architecture: $(uname -m)"
+          test "$(uname -m)" = x86_64
+          unzip -Z1 artifacts/release/app-release.apk | grep -Fx 'lib/x86_64/libflutter.so'
+      - name: Measure Release APK cold launches (TTID, not TTFD)
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          # Match the x86_64 Linux KVM runner.
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -no-snapshot
+          script: >-
+            python3 scripts/benchmark_android_cold_launch.py
+            --apk artifacts/release/app-release.apk
+            --output startup-results/cold-launch.json
+            --iterations 7 --warmups 1
+      - name: Upload startup timing baseline and sample data
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docsgrid-android-cold-launch-baseline
+          path: startup-results/cold-launch.json
+          if-no-files-found: warn
           retention-days: 14
 
   ios:

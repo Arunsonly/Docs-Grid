@@ -1,0 +1,398 @@
+import 'dart:async';
+import 'dart:io';
+
+import 'package:docs_grid/core/database/app_database.dart';
+import 'package:docs_grid/core/storage/durable_file_operations.dart';
+import 'package:docs_grid/features/folders/data/folder_repository.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:sqflite/sqflite.dart';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+
+void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+  setUpAll(() {
+    sqfliteFfiInit();
+    databaseFactory = databaseFactoryFfi;
+  });
+
+  Future<Database> openDb() =>
+      AppDatabase.instance.openProductionSchemaForTesting(inMemoryDatabasePath);
+
+  test('v12 journal is present in the real production SQLite schema', () async {
+    final db = await openDb();
+    addTearDown(db.close);
+    expect(await db.getVersion(), AppDatabase.schemaVersion);
+    expect(await db.rawQuery('PRAGMA foreign_key_check'), isEmpty);
+    final schema = await db.rawQuery("PRAGMA table_info(file_operation_journal)");
+    expect(schema.map((row) => row['name']), contains('resource_key'));
+    expect(schema.map((row) => row['name']), contains('owner_id'));
+  });
+
+  test('incomplete physical delete blocks conflicting folder restore', () async {
+    final db = await openDb();
+    addTearDown(db.close);
+    await expectLater(
+      DurableFileOperations.run<void>(
+        db: db, resourceKey: 'trash-tree:folder-1',
+        kind: 'delete-folder-tree',
+        action: (lease) async {
+          await lease.phase('deleting-pdf-bytes');
+          throw StateError('simulated write failure');
+        },
+      ),
+      throwsStateError,
+    );
+    final incomplete = await DurableFileOperations.incomplete(db);
+    expect(incomplete, hasLength(1));
+    expect(incomplete.single['phase'], 'deleting-pdf-bytes');
+    await expectLater(
+      DurableFileOperations.run<void>(
+        db: db, resourceKey: 'trash-tree:folder-1',
+        kind: 'restore-folder-tree',
+        action: (_) async {},
+      ),
+      throwsStateError,
+    );
+    // The same operation may safely revalidate and resume its own journal.
+    await DurableFileOperations.run<void>(
+      db: db, resourceKey: 'trash-tree:folder-1',
+      kind: 'delete-folder-tree',
+      action: (lease) async => lease.phase('metadata-committed'),
+    );
+    expect(await DurableFileOperations.incomplete(db), isEmpty);
+  });
+
+  test('rejected preflight does not poison a folder for recovery', () async {
+    final db = await openDb();
+    addTearDown(db.close);
+    await expectLater(
+      DurableFileOperations.run<void>(
+        db: db, resourceKey: 'trash-tree:parent',
+        kind: 'restore-pdf', action: (_) async {
+          throw StateError('Restore the containing folder first');
+        },
+      ),
+      throwsStateError,
+    );
+    expect(await DurableFileOperations.incomplete(db), isEmpty);
+    await DurableFileOperations.run<void>(
+      db: db, resourceKey: 'trash-tree:parent',
+      kind: 'restore-folder-tree', action: (_) async {},
+    );
+    expect(await DurableFileOperations.incomplete(db), isEmpty);
+  });
+
+  test('resume lease retains prior destructive phase for guarded preflight',
+      () async {
+    final db = await openDb();
+    addTearDown(db.close);
+    await expectLater(
+      DurableFileOperations.run<void>(
+        db: db, resourceKey: 'trash-tree:partial',
+        kind: 'delete-folder-tree',
+        action: (lease) async {
+          expect(lease.previousPhase, isNull);
+          await lease.phase('deleting-empty-directories');
+          throw StateError('simulated process interruption');
+        },
+      ), throwsStateError,
+    );
+    await DurableFileOperations.run<void>(
+      db: db, resourceKey: 'trash-tree:partial',
+      kind: 'delete-folder-tree',
+      action: (lease) async {
+        expect(lease.previousPhase, 'deleting-empty-directories');
+        expect(lease.mayHaveDeletedDirectories, isTrue);
+      },
+    );
+  });
+
+  test('failed retry preflight preserves prior destructive intent', () async {
+    final db = await openDb();
+    addTearDown(db.close);
+    await expectLater(
+      DurableFileOperations.run<void>(
+        db: db, resourceKey: 'document:crash', kind: 'delete-pdf',
+        action: (lease) async {
+          await lease.phase('deleting-pdf-bytes');
+          throw StateError('interrupted after physical delete');
+        },
+      ), throwsStateError,
+    );
+    await expectLater(
+      DurableFileOperations.run<void>(
+        db: db, resourceKey: 'document:crash', kind: 'delete-pdf',
+        action: (lease) async {
+          expect(lease.previousPhase, 'deleting-pdf-bytes');
+          throw StateError('retry cannot verify old file location');
+        },
+      ), throwsStateError,
+    );
+    final rows = await DurableFileOperations.incomplete(db);
+    expect(rows, hasLength(1));
+    expect(rows.single['state'], 'interrupted');
+  });
+
+  test('DB commit marker survives a simulated crash before journal finalize',
+      () async {
+    final db = await openDb();
+    addTearDown(db.close);
+    await expectLater(DurableFileOperations.run<void>(
+      db: db, resourceKey: 'document:atomic', kind: 'rename-pdf',
+      action: (lease) async {
+        await db.transaction((txn) async {
+          await txn.insert('settings', {
+            'key': 'db-commit-marker-proof',
+            'value_json': '"new-name"',
+            'updated_at': '2026-11-18T00:00:00Z',
+          });
+          await lease.markDatabaseCommitted(txn);
+        });
+        // Simulate termination just after SQLite commit.
+        throw StateError('crash after DB commit');
+      },
+    ), throwsStateError);
+    expect(await db.query('settings',
+      where: 'key = ?', whereArgs: ['db-commit-marker-proof']),
+      hasLength(1));
+    expect(await DurableFileOperations.incomplete(db), hasLength(1));
+    expect(await DurableFileOperations.reconcileFinished(db), 1);
+    expect(await DurableFileOperations.incomplete(db), isEmpty);
+  });
+
+  test('concurrent work with same resource cannot enter twice', () async {
+    final db = await openDb();
+    addTearDown(db.close);
+    final entered = Completer<void>();
+    final resume = Completer<void>();
+    final first = DurableFileOperations.run<void>(
+      db: db, resourceKey: 'document:one', kind: 'delete-pdf',
+      action: (lease) async {
+        entered.complete();
+        await resume.future;
+      },
+    );
+    await entered.future;
+    try {
+      await expectLater(
+        DurableFileOperations.run<void>(
+          db: db, resourceKey: 'document:one', kind: 'restore-pdf',
+          action: (_) async {},
+        ),
+        throwsStateError,
+      );
+    } finally {
+      resume.complete();
+      await first;
+    }
+    expect(await DurableFileOperations.incomplete(db), isEmpty);
+  });
+
+  test('restart reconciles a completed physical delete by database state only',
+      () async {
+    final directory = await Directory.systemTemp.createTemp('docsgrid-operation-recovery-');
+    addTearDown(() async {
+      if (await directory.exists()) await directory.delete(recursive: true);
+    });
+    final path = '${directory.path}/operations.db';
+    final db = await AppDatabase.instance.openProductionSchemaForTesting(path);
+    await db.insert('file_operation_journal', {
+      'resource_key': 'document:already-removed',
+      'operation_id': 'completed-delete',
+      'kind': 'delete-pdf',
+      'owner_id': 'previous-process',
+      'state': 'interrupted',
+      'phase': 'deleting-pdf-record',
+      'created_at': '2026-11-18T00:00:00Z',
+      'updated_at': '2026-11-18T00:00:00Z',
+    });
+    await db.insert('file_operation_journal', {
+      'resource_key': 'trash-tree:still-pending',
+      'operation_id': 'incomplete-tree-delete',
+      'kind': 'delete-folder-tree',
+      'owner_id': 'previous-process',
+      'state': 'interrupted',
+      'phase': 'deleting-pdf-bytes',
+      'created_at': '2026-11-18T00:00:00Z',
+      'updated_at': '2026-11-18T00:00:00Z',
+    });
+    await db.close();
+    final reopened = await AppDatabase.instance.openProductionSchemaForTesting(path);
+    addTearDown(reopened.close);
+    final done = await reopened.query('file_operation_journal',
+      where: 'operation_id = ?', whereArgs: ['completed-delete']);
+    expect(done.single['state'], 'completed');
+    expect(done.single['phase'], 'reconciled-after-restart');
+    final pending = await DurableFileOperations.incomplete(reopened);
+    expect(pending, hasLength(1));
+    expect(pending.single['resource_key'], 'trash-tree:still-pending');
+  });
+
+  test('folder-delete scope blocks a PDF move but not an unrelated tree',
+      () async {
+    final db = await openDb();
+    addTearDown(db.close);
+    const created = '2026-11-18T00:00:00Z';
+    for (final folder in [
+      {'id': 'parent', 'parent_id': null},
+      {'id': 'child', 'parent_id': 'parent'},
+      {'id': 'other', 'parent_id': null},
+    ]) {
+      await db.insert('folders', {
+        'id': folder['id'], 'name': folder['id'],
+        'parent_id': folder['parent_id'],
+        'created_at': created, 'updated_at': created,
+      });
+    }
+    await db.insert('documents', {
+      'id': 'child-pdf', 'name': 'Child',
+      'folder_id': 'child', 'mime_type': 'application/pdf',
+      'created_at': created, 'updated_at': created,
+    });
+    await db.insert('documents', {
+      'id': 'other-pdf', 'name': 'Other',
+      'folder_id': 'other', 'mime_type': 'application/pdf',
+      'created_at': created, 'updated_at': created,
+    });
+    final folderScopes = await DurableFileOperations.scopeForFolderTrees(
+        db, ['parent']);
+    final childScopes = await DurableFileOperations.scopeForDocument(
+        db, 'child-pdf', destinationFolderId: 'other');
+    expect(folderScopes, contains('folder:parent'));
+    expect(childScopes, contains('folder:parent'));
+    expect(childScopes, contains('folder:child'));
+
+    await expectLater(DurableFileOperations.run<void>(
+      db: db, resourceKey: 'folder:parent', kind: 'trash-folder-tree',
+      scopeKeys: folderScopes,
+      action: (lease) async {
+        await lease.phase('deleting-folder-records');
+        throw StateError('simulated process termination');
+      },
+    ), throwsStateError);
+
+    await expectLater(DurableFileOperations.run<void>(
+      db: db, resourceKey: 'document:child-pdf', kind: 'move-pdf',
+      scopeKeys: childScopes,
+      action: (_) async {
+        fail('Conflicting PDF move must never execute');
+      },
+    ), throwsStateError);
+
+    // No app-wide mutation lock: an unrelated root is still available.
+    await DurableFileOperations.run<void>(
+      db: db, resourceKey: 'document:other-pdf', kind: 'rename-pdf',
+      scopeKeys: await DurableFileOperations.scopeForDocument(db, 'other-pdf'),
+      action: (_) async {},
+    );
+
+    await DurableFileOperations.run<void>(
+      db: db, resourceKey: 'folder:parent', kind: 'trash-folder-tree',
+      scopeKeys: folderScopes,
+      action: (lease) async {
+        expect(lease.previousPhase, 'deleting-folder-records');
+      },
+    );
+    expect(await DurableFileOperations.incomplete(db), isEmpty);
+    await DurableFileOperations.run<void>(
+      db: db, resourceKey: 'document:child-pdf', kind: 'move-pdf',
+      scopeKeys: childScopes, action: (_) async {},
+    );
+    expect(await db.rawQuery('PRAGMA foreign_key_check'), isEmpty);
+  });
+
+  test('parent folder trash does not interleave an actively moving child PDF',
+      () async {
+    final db = await openDb();
+    addTearDown(db.close);
+    const created = '2026-11-18T00:00:00Z';
+    await db.insert('folders', {
+      'id': 'parent', 'name': 'Parent',
+      'created_at': created, 'updated_at': created,
+    });
+    await db.insert('documents', {
+      'id': 'pdf', 'name': 'One', 'folder_id': 'parent',
+      'created_at': created, 'updated_at': created,
+    });
+    final entered = Completer<void>();
+    final finish = Completer<void>();
+    final childMove = DurableFileOperations.run<void>(
+      db: db, resourceKey: 'document:pdf', kind: 'move-pdf',
+      scopeKeys: await DurableFileOperations.scopeForDocument(db, 'pdf'),
+      action: (lease) async {
+        entered.complete();
+        await finish.future;
+      },
+    );
+    await entered.future;
+    try {
+      final repo = FolderRepository(
+        database: AppDatabase.forTesting(() async => db),
+      );
+      await expectLater(repo.moveManyToRecycleBin(['parent']), throwsStateError);
+      final active = await db.query('documents',
+          columns: ['deleted_at'], where: 'id = ?', whereArgs: ['pdf']);
+      expect(active.single['deleted_at'], isNull);
+    } finally {
+      finish.complete();
+      await childMove;
+    }
+  });
+
+  test('committed parent operation releases its crashed scope reservations',
+      () async {
+    final db = await openDb();
+    addTearDown(db.close);
+    await expectLater(DurableFileOperations.run<void>(
+      db: db, resourceKey: 'trash-tree:committed', kind: 'delete-folder-tree',
+      scopeKeys: ['folder:parent', 'document:already-removed'],
+      action: (lease) async {
+        await db.transaction((txn) async {
+          await txn.insert('settings', {
+            'key': 'atomic-scope-check',
+            'value_json': 'true',
+            'updated_at': '2026-11-18T00:00:00Z',
+          });
+          await lease.markDatabaseCommitted(txn);
+        });
+        throw StateError('terminated just after database commit');
+      },
+    ), throwsStateError);
+    expect(await DurableFileOperations.incomplete(db), hasLength(3));
+    expect(await DurableFileOperations.reconcileFinished(db), 3);
+    expect(await DurableFileOperations.incomplete(db), isEmpty);
+    await DurableFileOperations.run<void>(
+      db: db, resourceKey: 'document:already-removed', kind: 'rename-pdf',
+      action: (_) async {},
+    );
+  });
+
+  test('v11 development DB upgrades to v12 without deleting documents', () async {
+    final directory = await Directory.systemTemp.createTemp('docsgrid-v12-');
+    addTearDown(() async {
+      if (await directory.exists()) await directory.delete(recursive: true);
+    });
+    final path = '${directory.path}/docs_grid.db';
+    final initial = await AppDatabase.instance.openProductionSchemaForTesting(path);
+    await initial.insert('documents', {
+      'id': 'preserved-pdf', 'name': 'Preserved',
+      'storage_uri': 'missing://sample', 'mime_type': 'application/pdf',
+      'size_bytes': 1, 'created_at': '2026-11-18T00:00:00Z',
+      'updated_at': '2026-11-18T00:00:00Z',
+    });
+    // Construct a v11-representative database using production schema
+    // callbacks, not a weaker hand-built collection of tables.
+    await initial.execute('DROP TABLE file_operation_journal');
+    await initial.execute('DROP INDEX IF EXISTS idx_file_operation_journal_state');
+    await initial.delete('schema_migrations', where: 'version = ?', whereArgs: [12]);
+    await initial.setVersion(11);
+    await initial.close();
+    final upgraded = await AppDatabase.instance.openProductionSchemaForTesting(path);
+    addTearDown(upgraded.close);
+    expect(await upgraded.getVersion(), 12);
+    expect(await upgraded.query('documents', where: 'id = ?', whereArgs: ['preserved-pdf']),
+        hasLength(1));
+    expect(await upgraded.rawQuery('PRAGMA foreign_key_check'), isEmpty);
+    expect(await upgraded.rawQuery("PRAGMA table_info(file_operation_journal)"), isNotEmpty);
+  });
+}

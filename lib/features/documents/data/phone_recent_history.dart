@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:shared_preferences/shared_preferences.dart';
+import 'phone_portable_state.dart';
 
 /// The Phone Recent panel tracks external URI *references*, not file copies.
 /// A successful Phone -> Grid move invalidates the source URI; never keep a
@@ -94,7 +95,10 @@ class PhoneRecentHistory {
         // Grid, backups and DocsGrid recycle folders are not Phone PDFs.
         final location = (file['folderPath'] ?? file['path'] ?? '')
             .toString().replaceAll('\\', '/').toLowerCase();
-        if (location.contains('android/media/com.docsgrid/') ||
+        if (location.contains('android/media/com.docsgrid.mobile/') ||
+            location.endsWith('android/media/com.docsgrid.mobile') ||
+            location.contains('android/media/com.docsgrid/') ||
+            location.endsWith('android/media/com.docsgrid') ||
             location.contains('android/media/docsgrid/')) continue;
         available.add(uri);
         validFiles.add(file);
@@ -139,6 +143,7 @@ class PhoneRecentHistory {
         final uri = file['uri'] as String;
         if (existingRecentUris.add(uri)) {
           added.add(jsonEncode({
+            'referenceId': await PhoneReferenceIdentity.idForUri(uri),
             'uri': uri,
             'name': file['name'],
             'sizeBytes': (file['sizeBytes'] as num?)?.toInt() ?? 0,
@@ -193,6 +198,7 @@ class PhoneRecentHistory {
     }
     final active = <String, Object?>{
       ...?prior,
+      'referenceId': await PhoneReferenceIdentity.idForUri(uri),
       'uri': uri,
       'name': name,
       'sizeBytes': sizeBytes > 0
@@ -206,6 +212,53 @@ class PhoneRecentHistory {
       throw StateError('Could not save the opened Phone PDF.');
     }
   });
+
+  /// A rename changes the locator, not the logical user's Added/Opened time.
+  /// Also change the scan baseline so a renamed item is not newly "Added".
+  static Future<void> updateRenamedReference(
+      String previousUri, String updatedUri, String updatedName) =>
+      _exclusive(() async {
+        final prefs = await SharedPreferences.getInstance();
+        final old = prefs.getStringList(storageKey) ?? const <String>[];
+        var changed = false;
+        final next = <String>[];
+        for (final raw in old) {
+          try {
+            final record = jsonDecode(raw);
+            if (record is Map && record['uri'] == previousUri) {
+              next.add(jsonEncode({
+                ...Map<String, Object?>.from(record),
+                'uri': updatedUri, 'name': updatedName,
+              }));
+              changed = true;
+              continue;
+            }
+          } catch (_) { /* Preserve unknown records unchanged. */ }
+          next.add(raw);
+        }
+        if (changed && !await prefs.setStringList(storageKey, next)) {
+          throw StateError('Recent reference update was not persisted.');
+        }
+        final rawInventory = prefs.getString(observedFilesKey);
+        if (rawInventory == null) return;
+        final decoded = jsonDecode(rawInventory);
+        if (decoded is! Map) return;
+        var inventoryChanged = false;
+        final updatedInventory = <String, List<String>>{};
+        for (final entry in decoded.entries) {
+          if (entry.key is! String || entry.value is! List) continue;
+          final uriSet = (entry.value as List).whereType<String>().toSet();
+          if (uriSet.remove(previousUri)) {
+            uriSet.add(updatedUri);
+            inventoryChanged = true;
+          }
+          updatedInventory[entry.key as String] = uriSet.toList()..sort();
+        }
+        if (inventoryChanged && !await prefs.setString(
+            observedFilesKey, jsonEncode(updatedInventory))) {
+          throw StateError('Scan baseline could not be updated after rename.');
+        }
+      });
 
   /// Clearing Recent is not clearing the scan inventory. Existing Phone PDFs
   /// must not all reappear as new on the next foreground scan.

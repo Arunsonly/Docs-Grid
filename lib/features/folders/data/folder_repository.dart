@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/services.dart';
+import 'package:crypto/crypto.dart';
 
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
@@ -9,6 +10,7 @@ import 'package:sqflite/sqflite.dart';
 import 'package:uuid/uuid.dart';
 
 import '../../../core/database/app_database.dart';
+import '../../../core/storage/durable_file_operations.dart';
 import '../../../core/storage/storage_location_service.dart';
 import '../../../core/storage/portable_snapshot_events.dart';
 import '../../../core/storage/storage_migration_gate.dart';
@@ -18,6 +20,21 @@ class FolderOption {
   const FolderOption({required this.folder, required this.path});
   final Folder folder;
   final String path;
+}
+
+/// Read-only metadata for all selected Grid folder subtrees.
+class FolderSelectionDetails {
+  const FolderSelectionDetails({
+    required this.selectedFolderCount,
+    required this.nestedFolderCount,
+    required this.pdfCount,
+    required this.totalPdfSizeBytes,
+  });
+
+  final int selectedFolderCount;
+  final int nestedFolderCount;
+  final int pdfCount;
+  final int totalPdfSizeBytes;
 }
 
 class FolderRepository {
@@ -84,48 +101,120 @@ class FolderRepository {
     return cleaned;
   }
 
-  Future<List<Folder>> childrenOf(String? parentId) async {
+  Future<List<Folder>> childrenOf(
+    String? parentId, {
+    int? previewLimit,
+  }) async {
+    if (previewLimit != null && (previewLimit < 1 || previewLimit > 24)) {
+      throw ArgumentError.value(previewLimit, 'previewLimit', 'Must be 1..24');
+    }
     final db = await _database.database;
     final rows = await db.rawQuery(
       '''
-      SELECT f.*,
-        (SELECT COUNT(*) FROM documents d
-          WHERE d.folder_id = f.id AND d.deleted_at IS NULL) AS pdf_count
+      SELECT f.*, COUNT(d.id) AS pdf_count,
+        COALESCE(SUM(d.size_bytes), 0) AS pdf_bytes
       FROM folders f
+      LEFT JOIN documents d
+        ON d.folder_id = f.id AND d.deleted_at IS NULL
       WHERE ${parentId == null ? 'f.parent_id IS NULL' : 'f.parent_id = ?'}
         AND f.deleted_at IS NULL
+      GROUP BY f.id
       ORDER BY f.sort_order ASC, f.name COLLATE NOCASE ASC
+      ${previewLimit == null ? '' : 'LIMIT ?'}
       ''',
-      parentId == null ? const [] : [parentId],
+      <Object?>[
+        if (parentId != null) parentId,
+        if (previewLimit != null) previewLimit,
+      ],
     );
+    final folders = rows.map(Folder.fromMap).toList(growable: false);
+    // Provider reads are independent and read-only. A small fixed worker pool
+    // prevents one slow SAF location from serially blocking every sibling,
+    // while never flooding cloud providers with hundreds of requests.
+    const maxConcurrentProviderChecks = 3;
+    final visible = List<bool>.filled(folders.length, false);
     final storage = StorageLocationService.instance;
-    final visible = <Folder>[];
-    for (final row in rows) {
-      final folder = Folder.fromMap(row);
-      final uri = folder.storageUri;
-      if (uri == null ||
-          (!uri.startsWith('content://') && !uri.startsWith('file://'))) {
-        visible.add(folder);
-        continue;
-      }
-      try {
-        // A folder can be deleted outside DocsGrid (for example in Samsung
-        // My Files). Do not keep showing its stale database row.
-        await storage.listDirectory(uri);
-        visible.add(folder);
-      } on PlatformException catch (error) {
-        final details = '${error.message ?? ''} ${error.details ?? ''}';
-        final missing = error.code == 'NOT_FOUND' ||
-            (error.code == 'STORAGE_ERROR' &&
-                (details.contains('FileNotFoundException') ||
-                 details.contains('Missing file')));
-        if (!missing) rethrow;
-        // External removal or revoked storage permission is not a user delete.
-        // Keep the database record active so it can reappear after relinking or
-        // restoring provider access; never add it to Grid Recycle Bin.
+    Object? firstError;
+    var cursor = 0;
+
+    Future<void> checkNext() async {
+      while (firstError == null) {
+        final index = cursor++;
+        if (index >= folders.length) return;
+        final uri = folders[index].storageUri;
+        if (uri == null ||
+            (!uri.startsWith('content://') && !uri.startsWith('file://'))) {
+          visible[index] = true;
+          continue;
+        }
+        try {
+          // Always consult the real provider. A cached folder preview cannot
+          // prove an external folder still exists or its grant is valid.
+          await storage.listDirectory(uri);
+          visible[index] = true;
+        } on PlatformException catch (error) {
+          final details = '${error.message ?? ''} ${error.details ?? ''}';
+          final missing = error.code == 'NOT_FOUND' ||
+              (error.code == 'STORAGE_ERROR' &&
+                  (details.contains('FileNotFoundException') ||
+                   details.contains('Missing file')));
+          if (!missing && firstError == null) firstError = error;
+          // Missing external folders stay absent from this visible listing,
+          // never marked deleted in SQLite or moved into Grid Recycle Bin.
+        } catch (error) {
+          firstError ??= error;
+        }
       }
     }
-    return visible;
+
+    await Future.wait(List.generate(
+      folders.length < maxConcurrentProviderChecks
+          ? folders.length : maxConcurrentProviderChecks,
+      (_) => checkNext(),
+    ));
+    if (firstError != null) {
+      // Some OEM SAF/cloud providers reject even a few overlapping reads.
+      // In that case use the *original sequential verification* once,
+      // preserving its exact NOT_FOUND / permission / error behavior.
+      final sequential = <Folder>[];
+      for (final folder in folders) {
+        final uri = folder.storageUri;
+        if (uri == null ||
+            (!uri.startsWith('content://') && !uri.startsWith('file://'))) {
+          sequential.add(folder);
+          continue;
+        }
+        try {
+          await storage.listDirectory(uri);
+          sequential.add(folder);
+        } on PlatformException catch (error) {
+          final details = '${error.message ?? ''} ${error.details ?? ''}';
+          final missing = error.code == 'NOT_FOUND' ||
+              (error.code == 'STORAGE_ERROR' &&
+                  (details.contains('FileNotFoundException') ||
+                   details.contains('Missing file')));
+          if (!missing) rethrow;
+        }
+      }
+      return sequential;
+    }
+    return [
+      for (var index = 0; index < folders.length; index++)
+        if (visible[index]) folders[index],
+    ];
+  }
+
+  /// Cheap, exact SQLite count used only for read-only previews. It must
+  /// never replace the normal physically validated childrenOf result.
+  Future<int> countDirectChildren(String? parentId) async {
+    final db = await _database.database;
+    final rows = await db.rawQuery(
+      parentId == null
+          ? 'SELECT COUNT(*) AS total FROM folders WHERE parent_id IS NULL AND deleted_at IS NULL'
+          : 'SELECT COUNT(*) AS total FROM folders WHERE parent_id = ? AND deleted_at IS NULL',
+      parentId == null ? const <Object?>[] : <Object?>[parentId],
+    );
+    return (rows.first['total'] as num).toInt();
   }
 
   /// Persists the visual order of the active children of one parent.
@@ -160,7 +249,52 @@ class FolderRepository {
       }
       await batch.commit(noResult: true);
     });
-    PortableSnapshotEvents.notifyDataChanged();
+    PortableSnapshotEvents.notifyDataChanged(affectedFolderIds: {parentId});
+  }
+
+  /// Count every nested folder and active PDF exactly once, even for
+  /// overlapping selected parent/child roots. This reads SQLite metadata only:
+  /// it never scans, moves, opens or deletes the physical PDF payloads.
+  Future<FolderSelectionDetails> selectionDetails(Set<String> folderIds) async {
+    if (folderIds.isEmpty) {
+      return const FolderSelectionDetails(
+        selectedFolderCount: 0,
+        nestedFolderCount: 0,
+        pdfCount: 0,
+        totalPdfSizeBytes: 0,
+      );
+    }
+    final db = await _database.database;
+    final selectedIds = folderIds.toList(growable: false);
+    final placeholders = List.filled(selectedIds.length, '?').join(', ');
+    final rows = await db.rawQuery('''
+      WITH RECURSIVE selected_tree(id) AS (
+        SELECT id FROM folders
+          WHERE id IN ($placeholders) AND deleted_at IS NULL
+        UNION
+        SELECT child.id FROM folders child
+        JOIN selected_tree parent ON child.parent_id = parent.id
+          WHERE child.deleted_at IS NULL
+      )
+      SELECT
+        (SELECT COUNT(*) FROM selected_tree) AS folder_count,
+        (SELECT COUNT(*) FROM documents d
+           WHERE d.folder_id IN (SELECT id FROM selected_tree)
+             AND d.deleted_at IS NULL) AS pdf_count,
+        (SELECT COALESCE(SUM(
+            CASE WHEN d.size_bytes > 0 THEN d.size_bytes ELSE 0 END
+          ), 0) FROM documents d
+           WHERE d.folder_id IN (SELECT id FROM selected_tree)
+             AND d.deleted_at IS NULL) AS total_size_bytes
+    ''', selectedIds);
+    final row = rows.single;
+    final folderCount = (row['folder_count'] as num).toInt();
+    return FolderSelectionDetails(
+      selectedFolderCount: selectedIds.length,
+      nestedFolderCount: (folderCount - selectedIds.length).clamp(0, folderCount).toInt(),
+      pdfCount: (row['pdf_count'] as num).toInt(),
+      totalPdfSizeBytes: (row['total_size_bytes'] as num).toInt(),
+    );
   }
 
   Future<List<FolderOption>> allFoldersWithPaths() async {
@@ -386,7 +520,7 @@ class FolderRepository {
           'updated_at': now,
         });
       });
-      PortableSnapshotEvents.notifyDataChanged();
+      PortableSnapshotEvents.notifyDataChanged(affectedFolderIds: {parentId});
     } catch (_) {
       // A pre-existing folder reused by recovery must NEVER be deleted.
       if (createdPhysicalDirectory && physicalUri != null) {
@@ -401,6 +535,10 @@ class FolderRepository {
     await StorageMigrationGate.waitUntilReady();
     final cleaned = validateFolderName(name);
     final db = await _database.database;
+    await DurableFileOperations.run<void>(
+      db: db, resourceKey: 'folder:$id', kind: 'rename-folder',
+      scopeKeys: await DurableFileOperations.scopeForFolders(db, [id]),
+      action: (lease) async {
     final rows = await db.query(
       'folders',
       columns: ['name', 'parent_id', 'storage_uri_or_relative_path'],
@@ -412,6 +550,7 @@ class FolderRepository {
     final oldName = rows.first['name'] as String;
     if (oldName == cleaned) return;
     final oldUri = rows.first['storage_uri_or_relative_path'] as String?;
+    await lease.phase('renaming-folder-bytes');
     final storage = StorageLocationService.instance;
     final renamedUri = oldUri == null
         ? null
@@ -597,8 +736,11 @@ class FolderRepository {
             whereArgs: [entry.key],
           );
         }
+        await lease.markDatabaseCommitted(txn);
       });
-      PortableSnapshotEvents.notifyDataChanged();
+      PortableSnapshotEvents.notifyDataChanged(affectedFolderIds: {
+        rows.first['parent_id'] as String?, id,
+      });
     } catch (_) {
       if (renamedUri != null) {
         try {
@@ -617,6 +759,8 @@ class FolderRepository {
       }
       rethrow;
     }
+      },
+    );
   }
 
   /// Reparents selected folders as logical library folders. Stable storage
@@ -627,7 +771,16 @@ class FolderRepository {
     final requested = folderIds.toSet();
     if (requested.isEmpty) return;
     final db = await _database.database;
-    await db.transaction((txn) async {
+    final affectedParents = <String?>{parentId};
+    final ordered = requested.toList()..sort();
+    await DurableFileOperations.run<void>(
+      db: db,
+      resourceKey: 'folder:${ordered.first}',
+      kind: 'move-folder-batch',
+      scopeKeys: await DurableFileOperations.scopeForFolders(
+          db, <String?>[...ordered, parentId]),
+      action: (lease) async {
+        await db.transaction((txn) async {
       final placeholders = List.filled(requested.length, '?').join(',');
       final rows = await txn.query(
         'folders',
@@ -649,6 +802,7 @@ class FolderRepository {
         if (target.isEmpty) throw StateError('Destination folder no longer exists.');
       }
       final roots = rows.where((row) => !requested.contains(row['parent_id'] as String?)).toList();
+      affectedParents.addAll(roots.map((row) => row['parent_id'] as String?));
       final rootIds = roots.map((row) => row['id'] as String).toSet();
       var ancestorId = parentId;
       final visited = <String>{};
@@ -705,8 +859,11 @@ class FolderRepository {
         );
       }
       await batch.commit(noResult: true);
-    });
-    PortableSnapshotEvents.notifyDataChanged();
+      await lease.markDatabaseCommitted(txn);
+        });
+      },
+    );
+    PortableSnapshotEvents.notifyDataChanged(affectedFolderIds: affectedParents);
   }
 
   /// Soft-deletes selected folders and all descendants. PDFs go to Recycle Bin
@@ -719,6 +876,11 @@ class FolderRepository {
     final requested = folderIds.toSet();
     if (requested.isEmpty) return 0;
     final db = await _database.database;
+    final ids = requested.toList()..sort();
+    return DurableFileOperations.run<int>(
+      db: db, resourceKey: 'folder:${ids.first}', kind: 'trash-folder-tree',
+      scopeKeys: await DurableFileOperations.scopeForFolderTrees(db, ids),
+      action: (lease) async {
     var movedPdfCount = 0;
     await db.transaction((txn) async {
       final placeholders = List.filled(requested.length, '?').join(',');
@@ -783,9 +945,12 @@ class FolderRepository {
           whereArgs: allIds.toList(),
         );
       }
+      await lease.markDatabaseCommitted(txn);
     });
-    PortableSnapshotEvents.notifyDataChanged();
+    PortableSnapshotEvents.notifyDataChanged(); // Complex deleted subtree: safe global fallback.
     return movedPdfCount;
+      },
+    );
   }
 
   Future<void> _backfillLegacyFolderTrashOperations() async {
@@ -836,7 +1001,7 @@ class FolderRepository {
         );
       }
     });
-    PortableSnapshotEvents.notifyDataChanged();
+    PortableSnapshotEvents.notifyDataChanged(affectedFolderIds: <String?>{});
   }
 
   /// Returns one visible root per DocsGrid folder-trash operation.
@@ -938,6 +1103,11 @@ class FolderRepository {
     );
     if (roots.isEmpty) throw StateError('Folder is no longer in the Recycle Bin.');
     final operationId = roots.single['trash_operation_id'] as String;
+    return DurableFileOperations.run<int>(
+      db: db, resourceKey: 'trash-tree:$operationId',
+      scopeKeys: await DurableFileOperations.scopeForFolderTrees(db, [rootFolderId]),
+      kind: 'restore-folder-tree',
+      action: (lease) async {
     final parentId = roots.single['parent_id'] as String?;
     if (parentId != null) {
       final parent = await db.query(
@@ -974,14 +1144,23 @@ class FolderRepository {
     for (final row in documents) {
       final uri = (row['storage_uri'] as String?)?.trim() ?? '';
       if (uri.isEmpty) throw StateError('A PDF in this folder has no storage location.');
-      if (uri.startsWith('content://') || uri.startsWith('file://')) {
-        final actual = await storage.sha256Pdf(uri);
-        final expected = (row['sha256'] as String?) ?? '';
-        if (expected.isNotEmpty && actual != expected) {
-          throw StateError('A PDF in this folder failed SHA-256 verification. No records were restored.');
+      final expected = ((row['sha256'] as String?) ?? '').toLowerCase();
+      final String actual;
+      if (uri.startsWith('content://')) {
+        actual = await storage.sha256Pdf(uri);
+      } else {
+        final file = File(uri.startsWith('file://')
+            ? Uri.parse(uri).toFilePath() : uri);
+        if (!await file.exists()) {
+          throw StateError('A PDF in this folder is missing: ${p.basename(uri)}');
         }
-      } else if (!await File(uri).exists()) {
-        throw StateError('A PDF in this folder is missing: ${p.basename(uri)}');
+        // Existence is not a proof of readability or matching original bytes.
+        actual = (await sha256.bind(file.openRead()).first).toString();
+      }
+      if (expected.isNotEmpty && actual.toLowerCase() != expected) {
+        throw StateError(
+          'A PDF in this folder failed SHA-256 verification. No records were restored.',
+        );
       }
     }
     var restoredPdfs = 0;
@@ -1011,9 +1190,12 @@ class FolderRepository {
         }),
         'created_at': DateTime.now().toUtc().toIso8601String(),
       });
+      await lease.markDatabaseCommitted(txn);
     });
-    PortableSnapshotEvents.notifyDataChanged();
+    PortableSnapshotEvents.notifyDataChanged(); // Entire restored subtree may have changed.
     return restoredPdfs;
+      },
+    );
   }
 
   /// Returns null for a missing local/provider directory and an empty list for
@@ -1082,6 +1264,11 @@ class FolderRepository {
     );
     if (roots.isEmpty) throw StateError('Folder is no longer in the Recycle Bin.');
     final operationId = roots.single['trash_operation_id'] as String;
+    await DurableFileOperations.run<void>(
+      db: db, resourceKey: 'trash-tree:$operationId',
+      scopeKeys: await DurableFileOperations.scopeForFolderTrees(db, [rootFolderId]),
+      kind: 'delete-folder-tree',
+      action: (lease) async {
     final folders = await db.query(
       'folders', columns: ['id', 'parent_id', 'storage_uri_or_relative_path'],
       where: 'trash_operation_id = ? AND deleted_at IS NOT NULL',
@@ -1098,6 +1285,31 @@ class FolderRepository {
     if (otherReferences.isNotEmpty) {
       throw StateError('This folder contains a separately recycled PDF. Permanently delete or restore that PDF first.');
     }
+    // A folder from another trash operation (or an active folder) may still
+    // reference a child in this tree. Reject before touching any physical bytes.
+    final otherFolderReferences = await db.query(
+      'folders', columns: ['id'],
+      where: "parent_id IN ($placeholders) AND "
+          "(COALESCE(trash_operation_id, '') != ? OR deleted_at IS NULL)",
+      whereArgs: [...ids, operationId], limit: 1,
+    );
+    if (otherFolderReferences.isNotEmpty) {
+      throw StateError('This folder tree contains a separately owned child folder.');
+    }
+    final byId = {for (final row in folders) row['id'] as String: row};
+    int depth(Map<String, Object?> row) {
+      var count = 0;
+      var parentId = row['parent_id'] as String?;
+      final seen = <String>{};
+      while (parentId != null && byId.containsKey(parentId)) {
+        if (!seen.add(parentId)) throw StateError('Folder hierarchy contains a cycle.');
+        count++;
+        parentId = byId[parentId]!['parent_id'] as String?;
+      }
+      return count;
+    }
+    // Validate hierarchy before any irreversible file operation.
+    final deepestFirst = [...folders]..sort((a, b) => depth(b).compareTo(depth(a)));
     final documents = await db.query(
       'documents', columns: ['id', 'name', 'storage_uri'],
       where: 'trash_operation_id = ? AND deleted_at IS NOT NULL',
@@ -1117,7 +1329,14 @@ class FolderRepository {
     for (final folder in folders) {
       final uri = folder['storage_uri_or_relative_path'] as String?;
       if (uri == null || uri.isEmpty) continue;
-      final children = (await _listTrashDirectoryChildren(uri)) ?? const <Map<String, Object?>>[];
+      final children = await _listTrashDirectoryChildren(uri);
+      if (children == null) {
+        if (!lease.mayHaveDeletedDirectories) {
+          throw StateError('Recycled folder is missing or inaccessible. '
+              'The folder record was preserved; check storage access.');
+        }
+        continue; // A prior interrupted delete reached directory removal.
+      }
       for (final child in children) {
         final childUri = child['uri'] as String? ?? '';
         if (childUri.isNotEmpty &&
@@ -1126,13 +1345,24 @@ class FolderRepository {
         }
       }
     }
+    await lease.phase('deleting-pdf-bytes');
     for (final document in documents) {
       final uri = (document['storage_uri'] as String?)?.trim() ?? '';
       if (uri.isEmpty) throw StateError('A recycled PDF has no storage location.');
       await _deleteTrashItemIfExists(uri);
       await db.transaction((txn) async {
+        // Delete reminders before the document: its FK uses ON DELETE SET
+        // NULL, so deleting the PDF first would leave orphaned reminders.
         await txn.delete('reminders', where: 'document_id = ?', whereArgs: [document['id']]);
-        await txn.delete('documents', where: 'id = ?', whereArgs: [document['id']]);
+        final deleted = await txn.delete(
+          'documents',
+          where: 'id = ? AND trash_operation_id = ? '
+              'AND deleted_at IS NOT NULL AND storage_uri = ?',
+          whereArgs: [document['id'], operationId, uri],
+        );
+        if (deleted != 1) {
+          throw StateError('Recycled PDF changed during permanent deletion.');
+        }
         await txn.insert('history', {
           'id': _uuid.v4(), 'document_id': null,
           'action': 'folder_trash_pdf_permanently_deleted',
@@ -1144,19 +1374,7 @@ class FolderRepository {
         });
       });
     }
-    final byId = {for (final row in folders) row['id'] as String: row};
-    int depth(Map<String, Object?> row) {
-      var count = 0;
-      var parentId = row['parent_id'] as String?;
-      final seen = <String>{};
-      while (parentId != null && byId.containsKey(parentId)) {
-        if (!seen.add(parentId)) throw StateError('Folder hierarchy contains a cycle.');
-        count++;
-        parentId = byId[parentId]!['parent_id'] as String?;
-      }
-      return count;
-    }
-    final deepestFirst = [...folders]..sort((a, b) => depth(b).compareTo(depth(a)));
+    await lease.phase('deleting-empty-directories');
     for (final folder in deepestFirst) {
       final uri = folder['storage_uri_or_relative_path'] as String?;
       if (uri != null && uri.isNotEmpty) {
@@ -1167,18 +1385,32 @@ class FolderRepository {
         await _deleteTrashItemIfExists(uri);
       }
     }
+    await lease.phase('deleting-folder-records');
     await db.transaction((txn) async {
-      await txn.delete('folders',
-        where: 'trash_operation_id = ? AND deleted_at IS NOT NULL',
-        whereArgs: [operationId]);
+      // Production SQLite uses ON DELETE RESTRICT for folders.parent_id.
+      // Removing the whole operation in one DELETE can fail even when every
+      // physical file was successfully removed. Delete descendants first.
+      for (final folder in deepestFirst) {
+        final deleted = await txn.delete(
+          'folders',
+          where: 'id = ? AND trash_operation_id = ? AND deleted_at IS NOT NULL',
+          whereArgs: [folder['id'], operationId],
+        );
+        if (deleted != 1) {
+          throw StateError('Recycled folder changed during permanent deletion.');
+        }
+      }
       await txn.insert('history', {
         'id': _uuid.v4(), 'document_id': null,
         'action': 'folder_tree_permanently_deleted',
         'details_json': jsonEncode({'rootFolderId': rootFolderId, 'trashOperationId': operationId}),
         'created_at': DateTime.now().toUtc().toIso8601String(),
       });
+      await lease.markDatabaseCommitted(txn);
     });
-    PortableSnapshotEvents.notifyDataChanged();
+    PortableSnapshotEvents.notifyDataChanged(affectedFolderIds: <String?>{});
+      },
+    );
   }
 
   /// Empty folders are sent to Grid Recycle Bin; their physical directory
@@ -1186,8 +1418,12 @@ class FolderRepository {
   Future<void> deleteEmpty(String id) async {
     await StorageMigrationGate.waitUntilReady();
     final db = await _database.database;
+    await DurableFileOperations.run<void>(
+      db: db, resourceKey: 'folder:$id', kind: 'trash-empty-folder',
+      scopeKeys: await DurableFileOperations.scopeForFolders(db, [id]),
+      action: (lease) async {
     final folder = await db.query(
-      'folders', columns: ['id', 'storage_uri_or_relative_path'],
+      'folders', columns: ['id', 'parent_id', 'storage_uri_or_relative_path'],
       where: 'id = ? AND deleted_at IS NULL',
       whereArgs: [id], limit: 1,
     );
@@ -1217,8 +1453,13 @@ class FolderRepository {
         'trash_operation_id': _uuid.v4(),
       }, where: 'id = ? AND deleted_at IS NULL', whereArgs: [id]);
       if (count == 0) throw StateError('Folder no longer exists.');
+      await lease.markDatabaseCommitted(txn);
     });
-    PortableSnapshotEvents.notifyDataChanged();
+    PortableSnapshotEvents.notifyDataChanged(affectedFolderIds: <String?>{
+      folder.single['parent_id'] as String?, id,
+    });
+      },
+    );
   }
 
 }

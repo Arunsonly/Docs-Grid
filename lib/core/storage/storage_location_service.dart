@@ -9,15 +9,68 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+/// A best-effort change hint; unknown providers require full reconciliation.
+class StorageChangeNotice {
+  const StorageChangeNotice({
+    this.mediaUris = const [],
+    this.paths = const [],
+    this.requiresFullRefresh = true,
+  });
+
+  final List<String> mediaUris;
+  final List<String> paths;
+  final bool requiresFullRefresh;
+
+  static StorageChangeNotice fromPlatform(Object? raw) {
+    if (raw is! Map) return const StorageChangeNotice();
+    final uris = raw['mediaUris'] is List
+        ? (raw['mediaUris'] as List).whereType<String>().toList(growable: false)
+        : <String>[];
+    final paths = raw['paths'] is List
+        ? (raw['paths'] as List).whereType<String>().toList(growable: false)
+        : <String>[];
+    return StorageChangeNotice(
+      mediaUris: uris,
+      paths: paths,
+      requiresFullRefresh: raw['requiresFullRefresh'] != false ||
+          (uris.isEmpty && paths.isEmpty),
+    );
+  }
+}
+
+enum GridPdfReferenceKind {
+  /// This is only a syntactically supported address, not proof the bytes exist.
+  possibleFile,
+  /// Backup metadata without physical bytes; manual SHA-256 relink required.
+  missingFile,
+  unsupported,
+}
+
 class StorageLocationService {
   StorageLocationService._();
   static final StorageLocationService instance = StorageLocationService._();
   static const MethodChannel _channel = MethodChannel('docsgrid/storage');
   static const EventChannel _changesChannel = EventChannel('docsgrid/storage_changes');
 
-  /// Foreground storage change notifications; events contain no file metadata.
-  Stream<void> get storageChanges =>
-      _changesChannel.receiveBroadcastStream().map<void>((_) {});
+  /// Classify the saved Grid address without modifying files or SQLite.
+  /// PDF row names, cached previews and size are not evidence that the
+  /// underlying bytes still exist. The caller must open/verify the source.
+  static GridPdfReferenceKind gridPdfReferenceKind(String? saved) {
+    final value = saved?.trim() ?? '';
+    if (value.isEmpty || value.startsWith('missing://')) {
+      return GridPdfReferenceKind.missingFile;
+    }
+    if (value.startsWith('/') || value.startsWith('content://') ||
+        value.startsWith('file://')) {
+      return GridPdfReferenceKind.possibleFile;
+    }
+    return GridPdfReferenceKind.unsupported;
+  }
+
+  /// The event is a hint, not a deletion instruction. Unknown events reconcile.
+  Stream<StorageChangeNotice> get storageChanges =>
+      _changesChannel.receiveBroadcastStream()
+          .map<StorageChangeNotice>(StorageChangeNotice.fromPlatform);
 
   /// Only an explicit native NOT_FOUND result permits creating a provider child.
   /// Permission, provider and I/O failures must propagate without side effects.
@@ -59,7 +112,11 @@ class StorageLocationService {
     final normalized = decoded.replaceAll('\\', '/').toLowerCase();
     // SAF tree document IDs use the form "primary:Android/media/DocsGrid",
     // so Android's segment may follow a colon rather than a slash.
-    return normalized.contains('android/media/docsgrid') ||
+    // The previous package-less media folder is legacy; the new
+    // com.docsgrid.mobile folder must never be treated as legacy.
+    return RegExp(r'(?:^|[:/])android/media/com\.docsgrid(?:/|$)')
+            .hasMatch(normalized) ||
+        normalized.contains('android/media/docsgrid') ||
         normalized.contains('/docsgrid/pdfs');
   }
 
@@ -68,7 +125,10 @@ class StorageLocationService {
     String decoded;
     try { decoded = Uri.decodeComponent(value); } catch (_) { decoded = value; }
     final normalized = decoded.replaceAll('\\', '/').toLowerCase();
-    return normalized.contains('/android/media/com.docsgrid');
+    // Match the full installed-package segment, not its shorter old prefix.
+    // Both local file paths and decoded SAF document IDs are supported.
+    return RegExp(r'(?:^|[:/])android/media/com\.docsgrid\.mobile(?:/|$)')
+        .hasMatch(normalized);
   }
 
   Future<Map<String, String>> portableDataLocations() async {
@@ -140,6 +200,38 @@ class StorageLocationService {
     return normalizePhonePdfIndexResponse(value);
   }
 
+  /// Query only precisely identified, permission-authorized MediaStore rows.
+  /// The caller must use the existing full scan if complete is false.
+  Future<Map<String, Object?>> queryPhonePdfChanges({
+    required List<String> mediaUris,
+    required List<String> paths,
+  }) async {
+    if (!Platform.isAndroid) {
+      throw UnsupportedError('Android-only incremental Phone PDF query.');
+    }
+    final raw = await _channel.invokeMapMethod<String, dynamic>(
+      'queryPhonePdfChanges', {
+        'mediaUris': mediaUris,
+        'paths': paths,
+      },
+    );
+    if (raw == null || raw['complete'] != true) {
+      return const {'complete': false};
+    }
+    final normalized = normalizePhonePdfIndexResponse(raw);
+    return {
+      'complete': true,
+      'entries': normalized['entries'],
+      'touchedMediaUris': (raw['touchedUris'] as List?)
+              ?.whereType<String>().toList(growable: false) ?? <String>[],
+      'touchedLocalPaths': (raw['touchedPaths'] as List?)
+              ?.whereType<String>().toList(growable: false) ?? <String>[],
+      'volumes': normalized['volumes'],
+      'mountedVolumes': (raw['mountedVolumes'] as List?)
+              ?.whereType<String>().toList(growable: false) ?? <String>[],
+    };
+  }
+
   /// Removes the synthetic root labels added by the Phone storage browser.
   /// The result is a true path relative to the storage volume.
   static String normalizePhoneFolderPath(String? value) {
@@ -173,6 +265,13 @@ class StorageLocationService {
         part == 'recycle bin');
   }
 
+  /// Public, conservative boundary for Phone Move destinations. The
+  /// pre-existing test helper remains unchanged.
+  static bool isRestrictedPhoneMoveDestination(String? uri) =>
+      isCanonicalPortableRootUri(uri) ||
+      isLegacyDocsGridStorageLocation(uri) ||
+      isAndroidTrashPath(uri);
+
   /// Normalizes the native MediaStore response separately from the Android
   /// channel guard, so the response contract can be unit-tested on every host.
   @visibleForTesting
@@ -196,6 +295,108 @@ class StorageLocationService {
       'entries': entries,
       'volumes': volumes,
       'complete': value['complete'] == true,
+    };
+  }
+
+  /// ZIP restore stages PDF bytes with dart:io, unlike ordinary SAF imports.
+  /// Resolve the selected *existing* local folders without changing the
+  /// application's storage preference or silently choosing another library.
+  Future<Map<String, String>> zipRestoreFileLocations() async {
+    if (!Platform.isAndroid) return const <String, String>{};
+    final granted = await hasAllFilesAccess();
+    final configured = await portableDataLocationsIfAvailable();
+    final documents = configured['documentsUri'];
+    final library = configured['libraryUri'];
+    Map<String, String>? mapped;
+    if (granted &&
+        ((documents?.startsWith('content://') ?? false) ||
+         (library?.startsWith('content://') ?? false))) {
+      final raw = await _channel.invokeMapMethod<String, dynamic>(
+        'resolveZipRestoreFileLocations', {
+          'documentsUri': documents,
+          'libraryUri': library,
+        },
+      );
+      if (raw != null) {
+        mapped = <String, String>{
+          if (raw['documentsUri'] is String)
+            'documentsUri': raw['documentsUri'] as String,
+          if (raw['libraryUri'] is String)
+            'libraryUri': raw['libraryUri'] as String,
+        };
+      }
+    }
+    return validateZipRestoreFileLocations(
+      configured: configured,
+      allFilesAccess: granted,
+      localEquivalent: mapped,
+    );
+  }
+
+  /// Pure, fail-closed preflight contract, independently testable on Linux/iOS.
+  /// A URI from an unknown provider must NEVER be converted to an assumed
+  /// device path; this would restore into a different and possibly empty tree.
+  @visibleForTesting
+  static Map<String, String> validateZipRestoreFileLocations({
+    required Map<String, String> configured,
+    required bool allFilesAccess,
+    Map<String, String>? localEquivalent,
+  }) {
+    if (!allFilesAccess) {
+      throw StateError(
+        'Full internal storage access is currently disabled for DocsGrid. '
+        'Enable it in Android Settings before restoring a ZIP. '
+        'No existing PDFs or database records were changed.',
+      );
+    }
+    final documents = configured['documentsUri'];
+    final library = configured['libraryUri'];
+    if (documents == null || library == null ||
+        documents.isEmpty || library.isEmpty) {
+      throw StateError(
+        'DocsGrid restore destinations are not initialized. '
+        'Open Storage settings to verify your existing DocsGrid folders. '
+        'No existing PDFs or database records were changed.',
+      );
+    }
+    final docsFile = documents.startsWith('file://')
+        ? documents : localEquivalent?['documentsUri'];
+    final libraryFile = library.startsWith('file://')
+        ? library : localEquivalent?['libraryUri'];
+
+    bool validFileUri(String? value) {
+      if (value == null || !value.startsWith('file://')) return false;
+      try {
+        final uri = Uri.parse(value);
+        final path = uri.toFilePath();
+        return uri.scheme == 'file' && uri.host.isEmpty &&
+            uri.query.isEmpty && uri.fragment.isEmpty &&
+            path.startsWith('/') && path != '/' &&
+            !path.split('/').contains('..');
+      } catch (_) {
+        return false;
+      }
+    }
+    if (!validFileUri(docsFile) || !validFileUri(libraryFile)) {
+      throw StateError(
+        'Full internal storage access is allowed, but the selected DocsGrid '
+        'folders are not available as writable local file destinations. '
+        'A cloud, SD-card or unavailable document-provider folder cannot be '
+        'silently replaced with another library. Check the selected storage '
+        'location before retrying. No PDF or database was changed.',
+      );
+    }
+    if (Uri.parse(docsFile!).toFilePath() ==
+        Uri.parse(libraryFile!).toFilePath()) {
+      throw StateError(
+        'DocsGrid cannot restore PDFs when the selected Documents and '
+        'Folders destinations are the same directory. '
+        'No PDF or database was changed.',
+      );
+    }
+    return {
+      'documentsUri': docsFile,
+      'libraryUri': libraryFile,
     };
   }
 
@@ -390,6 +591,32 @@ class StorageLocationService {
     return result;
   }
 
+  /// Identity, not content equality. An identical SHA-256 alone cannot prove
+  /// that deleting one URI leaves a second physical PDF untouched.
+  /// Unknown or unsupported provider identity fails closed (throws).
+  Future<bool> samePhysicalPdf({
+    required String sourceUri,
+    required String otherUri,
+  }) async {
+    if (sourceUri == otherUri) return true;
+    String? localPath(String uri) {
+      if (uri.startsWith('/')) return p.normalize(uri);
+      final parsed = Uri.tryParse(uri);
+      return parsed?.scheme == 'file' ? p.normalize(parsed!.toFilePath()) : null;
+    }
+    final first = localPath(sourceUri);
+    final second = localPath(otherUri);
+    if (first != null && first == second) return true;
+    final value = await _channel.invokeMethod<bool>('samePhysicalPdf', {
+      'sourceUri': sourceUri,
+      'otherUri': otherUri,
+    });
+    if (value == null) {
+      throw StateError('Android could not establish whether the Phone and Grid PDFs are independent.');
+    }
+    return value;
+  }
+
   Future<void> deletePdf(String uri) async {
     final deleted = await _channel.invokeMethod<bool>('deletePdf', {'uri': uri});
     if (deleted != true) throw StateError('The platform could not delete the PDF.');
@@ -401,13 +628,23 @@ class StorageLocationService {
   /// Phone PDFs keep their original opening behaviour.
   Future<void> openPdf(String uri, {bool gridPdf = false}) async {
     if (gridPdf && Platform.isAndroid) {
+      final kind = gridPdfReferenceKind(uri);
+      if (kind == GridPdfReferenceKind.missingFile) {
+        throw StateError(
+          'The PDF file is unavailable (metadata only). '
+          'Use PDF options > Relink PDF to select a verified copy. '
+          'The library record has been preserved.',
+        );
+      }
+      if (kind == GridPdfReferenceKind.unsupported) {
+        throw StateError(
+          'Grid PDF has an unsupported storage location. '
+          'Use PDF options > Relink PDF to select a verified copy.',
+        );
+      }
       final normalizedUri = uri.startsWith('/')
           ? Uri.file(uri).toString()
           : uri;
-      if (!normalizedUri.startsWith('content://') &&
-          !normalizedUri.startsWith('file://')) {
-        throw StateError('Grid PDF has an unsupported storage location.');
-      }
       final cache = Directory(p.join(
         (await getTemporaryDirectory()).path,
         'docsgrid_grid_pdf',
@@ -696,7 +933,11 @@ class StorageLocationService {
             final path = current.path.isEmpty ? name : '${current.path}/$name';
             if (isExcludedStorageDirectoryPath(path)) continue;
             allFolders.add(path);
-            if (path == 'Android/media/com.docsgrid' ||
+            // Never show DocsGrid-managed Grid PDFs in the Phone browser.
+            // Retain the previous path exclusion for recovery compatibility.
+            if (path == 'Android/media/com.docsgrid.mobile' ||
+                path.startsWith('Android/media/com.docsgrid.mobile/') ||
+                path == 'Android/media/com.docsgrid' ||
                 path.startsWith('Android/media/com.docsgrid/')) {
               continue;
             }

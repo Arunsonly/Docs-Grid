@@ -7,23 +7,40 @@ import 'package:open_filex/open_filex.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../data/document_repository.dart';
+import '../data/home_dashboard_cache.dart';
 import '../data/phone_recent_history.dart';
+import '../data/phone_pdf_move_service.dart';
+import '../data/phone_pdf_delta.dart';
+import '../data/phone_ocr_search_index.dart';
+import '../data/phone_refresh_queue.dart';
 import '../data/phone_star_repository.dart';
+import '../data/phone_portable_state.dart';
 import '../data/phone_trash_origin.dart';
 import '../../../core/storage/storage_location_service.dart';
+import '../../../core/storage/portable_snapshot_events.dart';
 import '../../categories/data/category_repository.dart';
 import '../../folders/data/folder_repository.dart';
 import '../../tools/document_tools_service.dart';
 import 'document_thumbnail.dart';
+import 'ocr_search_mode_control.dart';
 import 'phone_storage_browser_screen.dart';
+import 'phone_move_folder_picker.dart';
 import '../../folders/presentation/folders_screen.dart';
 import '../../reminders/data/reminder_repository.dart';
+import '../../../core/diagnostics/startup_timeline.dart';
 
 class DocumentsScreen extends StatefulWidget {
-  const DocumentsScreen({super.key, this.favoritesOnly = false, this.recentOnly = false, this.phoneOnly = false});
+  const DocumentsScreen({super.key, this.favoritesOnly = false, this.recentOnly = false,
+    this.phoneOnly = false, this.ocrSearchAvailable = false,
+    this.active = true, this.onBackAtRoot});
   final bool favoritesOnly;
   final bool recentOnly;
   final bool phoneOnly;
+  /// Offstage tabs retain their state, but must not intercept Back or poll storage.
+  final bool active;
+  final VoidCallback? onBackAtRoot;
+  /// OCR remains internally compatible with prior indexes but is disabled by the app shell.
+  final bool ocrSearchAvailable;
 
   @override
   State<DocumentsScreen> createState() => _DocumentsScreenState();
@@ -31,27 +48,60 @@ class DocumentsScreen extends StatefulWidget {
 
 class _DocumentsScreenState extends State<DocumentsScreen>
     with WidgetsBindingObserver {
+  bool get _isStartupHome =>
+      !widget.phoneOnly && !widget.favoritesOnly && !widget.recentOnly;
   final _repository = DocumentRepository();
+  final _homeCache = HomeDashboardCache();
   final _categoryRepository = CategoryRepository();
   final _folderRepository = FolderRepository();
   final _tools = DocumentToolsService();
+  late final PhoneOcrSearchIndex _phoneOcrIndex;
   final _search = TextEditingController();
   final _scrollController = ScrollController();
   List<DocumentRecord> _documents = [];
   bool _loading = true;
   final bool _importing = false;
   bool _searchInsideText = false;
+  bool _ocrIndexing = false;
+  bool _ocrIndexStarted = false;
+  int _ocrIndexEpoch = 0;
+  int _ocrIndexed = 0;
+  int _ocrIndexTotal = 0;
+  String? _ocrIndexMessage;
+  bool _phoneOcrBusy = false;
+  int _phoneOcrEpoch = 0;
+  int _phoneOcrDone = 0;
+  int _phoneOcrTotal = 0;
+  String? _phoneOcrMessage;
   bool _gridView = false;
+  // Home search tabs are view state only. Neither storage index is mutated.
+  bool _homeSearchPhoneSelected = true;
+  static const int _homePhoneSearchPageSize = 40;
+  int _homePhoneSearchVisibleCount = _homePhoneSearchPageSize;
   int _totalStorageBytes = 0;
   int _totalDocumentCount = 0;
+  bool _liveHomeSummaryLoaded = false;
+  bool _showCachedHomeSummary = false;
+  bool _liveGridRecentLoaded = false;
+  List<String> _cachedGridRecentNames = const [];
   int _starredCount = 0;
   int? _phoneStorageBytes;
   bool? _phoneHasAllFilesAccess;
   bool _phoneScanLoading = false;
   bool _phoneScanCompleted = false;
-  StreamSubscription<void>? _storageChangesSubscription;
+  StreamSubscription<StorageChangeNotice>? _storageChangesSubscription;
   Timer? _phoneRefreshDebounce;
   bool _phoneScanPending = false;
+  bool _phonePatchInFlight = false;
+  bool _phoneRefreshAfterBusy = false;
+  bool _phoneMediaStoreReady = false;
+  final PhoneRefreshQueue _phoneChangeQueue = PhoneRefreshQueue();
+  StreamSubscription<void>? _libraryChangesSubscription;
+  Timer? _libraryRefreshDebounce;
+  bool _libraryRefreshPendingWhileHidden = false;
+  bool _phoneRefreshPendingWhileHidden = false;
+  List<Map<String, String>> _phoneLastRoots = const [];
+  Map<String, Object?> _phoneLastMediaVolumes = const {};
   int _trashCount = 0;
   int _trashFolderCount = 0;
   List<Map<String, Object?>> _phoneRecent = [];
@@ -61,6 +111,8 @@ class _DocumentsScreenState extends State<DocumentsScreen>
   List<Map<String, Object?>> _phoneStarred = [];
   final Set<String> _phoneStarredUris = <String>{};
   String _recentFilter = 'grid';
+  // Separate from Recent so switching views preserves each selected source.
+  String _starredFilter = 'phone';
   List<Map<String, Object?>> _phoneEntries = [];
   final Set<String> _selectedIds = <String>{};
   bool _selectionMode = false;
@@ -74,31 +126,208 @@ class _DocumentsScreenState extends State<DocumentsScreen>
   @override
   void initState() {
     super.initState();
+    if (_isStartupHome) StartupTimeline.mark('home_init');
     WidgetsBinding.instance.addObserver(this);
+    _phoneOcrIndex = PhoneOcrSearchIndex(_tools.extractPhonePdfTextFromUri);
     unawaited(_loadPhoneStarred());
     _storageChangesSubscription =
         StorageLocationService.instance.storageChanges.listen(
-      (_) => _schedulePhoneStorageRefresh(),
+      (notice) => _schedulePhoneStorageRefresh(notice),
       onError: (_) {
         // Provider change events are best-effort; resume reconciliation remains.
       },
     );
     if (!widget.phoneOnly) {
+      // Display last-known *non-actionable* Home metadata while SQLite
+      // independently loads the authoritative data. Never block first paint.
+      if (!widget.favoritesOnly && !widget.recentOnly) {
+        unawaited(_restoreCachedHomeSnapshot());
+      }
       _load();
       _loadViewPreference();
       _loadTrashSummary();
       _loadRecentDocuments();
+      _libraryChangesSubscription = PortableSnapshotEvents.changes.listen((_) {
+        _scheduleLibraryRefresh();
+      });
     }
     _search.addListener(_onSearchChanged);
     _scrollController.addListener(_onScroll);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
+      if (_isStartupHome) StartupTimeline.mark('home_first_frame');
       if (widget.phoneOnly) {
         // Show the Phone tab in place; do not push a second page after scanning.
         _scanPhoneStorage(openBrowser: false);
       } else if (!widget.favoritesOnly && !widget.recentOnly) {
         _scanPhoneStorage(openBrowser: false);
       }
+    });
+  }
+
+  @override
+  void didUpdateWidget(covariant DocumentsScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.ocrSearchAvailable && !widget.ocrSearchAvailable) {
+      // Globally disabling OCR immediately returns every open search to names.
+      _ocrIndexEpoch++;
+      _phoneOcrEpoch++;
+      _phoneOcrIndex.clear();
+      _searchInsideText = false;
+      _ocrIndexStarted = false;
+      _ocrIndexMessage = null;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) unawaited(_load());
+      });
+    }
+    if (!oldWidget.active && widget.active &&
+        _phoneRefreshPendingWhileHidden) {
+      _phoneRefreshPendingWhileHidden = false;
+      _queuePhoneChangeRefresh();
+    }
+    if (!oldWidget.active && widget.active &&
+        _libraryRefreshPendingWhileHidden) {
+      _libraryRefreshPendingWhileHidden = false;
+      _scheduleLibraryRefresh();
+    }
+  }
+
+  void _setOcrSearchMode(bool enabled) {
+    if (!widget.ocrSearchAvailable || _searchInsideText == enabled) return;
+    if (!enabled) {
+      _ocrIndexEpoch++;
+      _phoneOcrEpoch++;
+      _phoneOcrIndex.clear();
+    } // Cancel all on-device PDF/page OCR.
+    setState(() {
+      _searchInsideText = enabled;
+      _ocrIndexStarted = false;
+      _ocrIndexMessage = null;
+    });
+    _load();
+    if (enabled) {
+      unawaited(_beginOcrIndexing());
+      unawaited(_beginPhoneOcrIndexing());
+    }
+  }
+
+  Future<void> _beginOcrIndexing() async {
+    if (!mounted || !widget.ocrSearchAvailable || !_searchInsideText ||
+        _search.text.trim().isEmpty || _ocrIndexing || _ocrIndexStarted) return;
+    final run = ++_ocrIndexEpoch;
+    _ocrIndexStarted = true;
+    setState(() {
+      _ocrIndexing = true;
+      _ocrIndexed = 0;
+      _ocrIndexTotal = 0;
+      _ocrIndexMessage = 'Preparing on-device PDF text index…';
+    });
+    try {
+      final summary = await _tools.indexPendingPdfsForSearch(
+        shouldCancel: () => !mounted || !widget.ocrSearchAvailable ||
+            !_searchInsideText || run != _ocrIndexEpoch,
+        onProgress: (completed, total) {
+          if (!mounted || run != _ocrIndexEpoch) return;
+          setState(() { _ocrIndexed = completed; _ocrIndexTotal = total; });
+          // Refresh results incrementally, not once for every single PDF.
+          if (completed % 10 == 0 || completed == total) unawaited(_load());
+        },
+      );
+      if (mounted && run == _ocrIndexEpoch) {
+        setState(() => _ocrIndexMessage =
+            'OCR indexing finished: ${summary.indexed} indexed, '
+            '${summary.failed} unavailable/failed, ${summary.skipped} skipped.');
+      }
+    } on OcrIndexCancelled {
+      // Switching back to file names or leaving the screen cancels OCR work.
+    } catch (error) {
+      if (mounted && run == _ocrIndexEpoch) {
+        setState(() => _ocrIndexMessage = 'OCR indexing unavailable: $error');
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _ocrIndexing = false);
+        if (run == _ocrIndexEpoch) {
+          unawaited(_load());
+        } else if (widget.ocrSearchAvailable && _searchInsideText &&
+            _search.text.trim().isNotEmpty) {
+          // Rapid mode toggles cannot strand an OCR query without indexing.
+          unawaited(_beginOcrIndexing());
+        }
+      }
+    }
+  }
+
+  Future<void> _beginPhoneOcrIndexing() async {
+    if (!mounted || !widget.ocrSearchAvailable || !_searchInsideText ||
+        _search.text.trim().isEmpty || _phoneOcrBusy || widget.phoneOnly) return;
+    final run = ++_phoneOcrEpoch;
+    setState(() {
+      _phoneOcrBusy = true;
+      _phoneOcrDone = 0;
+      _phoneOcrTotal = 0;
+      _phoneOcrMessage = null;
+    });
+    try {
+      final summary = await _phoneOcrIndex.indexEntries(
+        _phoneEntries,
+        shouldCancel: () => !mounted || !_searchInsideText ||
+            !widget.ocrSearchAvailable || run != _phoneOcrEpoch,
+        onProgress: (completed, total) {
+          if (!mounted || run != _phoneOcrEpoch) return;
+          setState(() {
+            _phoneOcrDone = completed;
+            _phoneOcrTotal = total;
+          });
+        },
+      );
+      if (mounted && run == _phoneOcrEpoch) {
+        setState(() => _phoneOcrMessage = summary.failed == 0
+            ? 'Phone OCR results ready'
+            : '${summary.failed} Phone PDFs could not be read.');
+      }
+    } on OcrIndexCancelled {
+      // Phone OCR text is temporary and never stored in the Grid database.
+    } catch (error) {
+      if (mounted && run == _phoneOcrEpoch) {
+        setState(() => _phoneOcrMessage = 'Phone OCR unavailable: $error');
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _phoneOcrBusy = false);
+        if (run != _phoneOcrEpoch && _searchInsideText &&
+            widget.ocrSearchAvailable && _search.text.trim().isNotEmpty) {
+          unawaited(_beginPhoneOcrIndexing());
+        }
+      }
+    }
+  }
+
+  Future<void> _restoreCachedHomeSnapshot() async {
+    if (_isStartupHome) StartupTimeline.mark('home_cache_read_start');
+    final summaryFuture = _homeCache.readSummary();
+    final namesFuture = _homeCache.readRecentNames();
+    final summary = await summaryFuture;
+    final names = await namesFuture;
+    if (_isStartupHome) {
+      StartupTimeline.mark('home_cache_read_done');
+      StartupTimeline.mark(summary == null
+          ? 'home_cache_summary_miss' : 'home_cache_summary_hit');
+    }
+    if (!mounted || widget.phoneOnly || widget.favoritesOnly ||
+        widget.recentOnly) return;
+    // Live database values always supersede optional cached placeholders.
+    if ((_liveHomeSummaryLoaded || summary == null) &&
+        (_liveGridRecentLoaded || names.isEmpty)) return;
+    setState(() {
+      if (!_liveHomeSummaryLoaded && summary != null) {
+        _totalDocumentCount = summary.documentCount;
+        _starredCount = summary.favoriteCount;
+        _totalStorageBytes = summary.totalBytes;
+        _showCachedHomeSummary = true;
+        if (_isStartupHome) StartupTimeline.mark('home_cache_summary_applied');
+      }
+      if (!_liveGridRecentLoaded) _cachedGridRecentNames = names;
     });
   }
 
@@ -125,13 +354,42 @@ class _DocumentsScreenState extends State<DocumentsScreen>
 
   void _onScroll() {
     if (!_scrollController.hasClients || _loadingMore || !_hasMore) return;
+    // Phone-result scrolling must not fetch unrelated Grid pages.
+    if (!widget.favoritesOnly && !widget.recentOnly &&
+        _search.text.trim().isNotEmpty && _homeSearchPhoneSelected) return;
     if (_scrollController.position.extentAfter < 600) _loadMore();
   }
 
   void _onSearchChanged() {
     _searchDebounce?.cancel();
     _searchDebounce = Timer(const Duration(milliseconds: 280), () {
-      if (mounted) _load();
+      if (!mounted) return;
+      _homePhoneSearchVisibleCount = _homePhoneSearchPageSize;
+      _load();
+      if (_searchInsideText && widget.ocrSearchAvailable) {
+        unawaited(_beginOcrIndexing());
+        unawaited(_beginPhoneOcrIndexing());
+      }
+    });
+  }
+
+  void _scheduleLibraryRefresh() {
+    if (!mounted || widget.phoneOnly || widget.favoritesOnly ||
+        widget.recentOnly) return;
+    if (!widget.active) {
+      _libraryRefreshPendingWhileHidden = true;
+      return;
+    }
+    _libraryRefreshDebounce?.cancel();
+    _libraryRefreshDebounce = Timer(const Duration(milliseconds: 240), () {
+      if (!mounted) return;
+      if (!widget.active) {
+        _libraryRefreshPendingWhileHidden = true;
+        return;
+      }
+      unawaited(_load());
+      unawaited(_loadRecentDocuments());
+      unawaited(_loadTrashSummary());
     });
   }
 
@@ -142,20 +400,134 @@ class _DocumentsScreenState extends State<DocumentsScreen>
     }
   }
 
-  void _schedulePhoneStorageRefresh() {
+  void _schedulePhoneStorageRefresh([StorageChangeNotice? notice]) {
     if (!mounted || widget.favoritesOnly || widget.recentOnly) return;
+    _phoneChangeQueue.add(notice);
+    if (!widget.active) {
+      _phoneRefreshPendingWhileHidden = true;
+      return;
+    }
+    _queuePhoneChangeRefresh();
+  }
+
+  void _queuePhoneChangeRefresh() {
+    if (!mounted || !_phoneChangeQueue.hasPending) return;
     _phoneRefreshDebounce?.cancel();
     _phoneRefreshDebounce = Timer(const Duration(milliseconds: 450), () {
-      if (mounted) unawaited(_scanPhoneStorage(openBrowser: false));
+      if (mounted) unawaited(_refreshPhoneStorageFromChanges());
     });
+  }
+
+  Future<void> _refreshPhoneStorageFromChanges() async {
+    if (!mounted) return;
+    if (_phoneScanLoading || _phonePatchInFlight) {
+      // Do not convert a precise event into an unconditional full scan just
+      // because another query has the Phone index temporarily busy.
+      _phoneRefreshAfterBusy = true;
+      return;
+    }
+    final batch = _phoneChangeQueue.take();
+    if (!batch.hasChanges) return;
+    final requiresFull = batch.requiresFullRefresh || !_phoneMediaStoreReady ||
+        !_phoneScanCompleted || _phoneLastRoots.isEmpty;
+    if (requiresFull) {
+      await _scanPhoneStorage(openBrowser: false);
+      return;
+    }
+    final changedUris = batch.mediaUris;
+    final changedPaths = batch.paths;
+
+    _phonePatchInFlight = true;
+    try {
+      final storage = StorageLocationService.instance;
+      if (!Platform.isAndroid || !await storage.hasAllFilesAccess()) {
+        await _scanPhoneStorage(openBrowser: false);
+        return;
+      }
+      final change = await storage.queryPhonePdfChanges(
+        mediaUris: changedUris,
+        paths: changedPaths,
+      );
+      if (change['complete'] != true) {
+        await _scanPhoneStorage(openBrowser: false);
+        return;
+      }
+      final observedVolumes = Map<String, Object?>.from(
+        change['volumes'] as Map,
+      );
+      final mountedVolumes = change['mountedVolumes'] as List<String>;
+      if (!PhonePdfDelta.volumesAreCompatible(
+        previous: _phoneLastMediaVolumes,
+        observed: observedVolumes,
+        mounted: mountedVolumes,
+      )) {
+        await _scanPhoneStorage(openBrowser: false);
+        return;
+      }
+      final updated = change['entries'] as List<Map<String, Object?>>;
+      final patch = PhonePdfDelta.apply(
+        existing: _phoneEntries,
+        updates: updated,
+        touchedMediaUris: change['touchedMediaUris'] as List<String>,
+        touchedLocalPaths: change['touchedLocalPaths'] as List<String>,
+      );
+      if (!mounted) return;
+      _phoneLastMediaVolumes = {
+        ..._phoneLastMediaVolumes,
+        ...observedVolumes,
+      };
+      if (!patch.changed) return;
+      setState(() => _phoneEntries = patch.entries);
+      // This is a proven complete MediaStore baseline plus scoped changes,
+      // not a partial scan; keep Recent discovery and the saved cache in sync.
+      final scopes = <String, List<Map<String, Object?>>>{
+        for (final volume in _phoneLastMediaVolumes.keys)
+          'media:$volume': <Map<String, Object?>>[],
+      };
+      for (final item in patch.entries) {
+        final volume = item['volumeName'] as String?;
+        if (volume != null && item['isDirectory'] != true) {
+          scopes['media:$volume']?.add(item);
+        }
+      }
+      try {
+        if (scopes.isNotEmpty) {
+          await PhoneRecentHistory.observeCompletedScans(scopes);
+          if (mounted && !widget.phoneOnly) await _loadRecentDocuments();
+        }
+      } catch (_) {
+        // Recent shortcuts are optional and never block the Phone index.
+      }
+      await _persistPhoneStorageIndexCache(
+        _phoneLastRoots, patch.entries,
+        mediaStoreVolumes: _phoneLastMediaVolumes,
+      );
+    } catch (_) {
+      // Permission change, provider timeout or ambiguous delta: use the
+      // established safe full index, never infer that PDFs were deleted.
+      if (mounted) await _scanPhoneStorage(openBrowser: false);
+    } finally {
+      _phonePatchInFlight = false;
+      if (mounted && (_phoneRefreshAfterBusy || _phoneChangeQueue.hasPending)) {
+        _phoneRefreshAfterBusy = false;
+        // Preserve the exact queued URI/path hints; do not call the no-arg
+        // scheduler, which deliberately requests a full resume scan.
+        _queuePhoneChangeRefresh();
+      }
+    }
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _storageChangesSubscription?.cancel();
+    _libraryChangesSubscription?.cancel();
+    _libraryRefreshDebounce?.cancel();
     _phoneRefreshDebounce?.cancel();
     _loadGeneration++;
+    _ocrIndexEpoch++;
+    _phoneOcrEpoch++;
+    _phoneOcrIndex.clear();
     _searchDebounce?.cancel();
     _search.removeListener(_onSearchChanged);
     _scrollController.removeListener(_onScroll);
@@ -165,11 +537,13 @@ class _DocumentsScreenState extends State<DocumentsScreen>
   }
 
   Future<void> _load() async {
+    if (_isStartupHome) StartupTimeline.mark('home_page_start');
     final generation = ++_loadGeneration;
     if (mounted) setState(() { _loading = true; _loadingMore = false; });
     // Run the small first page and dashboard aggregates concurrently. Render
     // the document rows as soon as the page is ready; never make the first
     // useful screen wait for a full-library summary query.
+    if (_isStartupHome) StartupTimeline.mark('home_summary_start');
     final summaryFuture = _repository.dashboardSummary();
     try {
       if (_searchInsideText && _search.text.trim().isNotEmpty) {
@@ -205,6 +579,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
           _error = null;
         });
       }
+      if (_isStartupHome) StartupTimeline.mark('home_page_ready');
       // Summary is secondary UI. Update it when ready without delaying the
       // first page, and ignore stale completions after a newer refresh.
       try {
@@ -214,11 +589,23 @@ class _DocumentsScreenState extends State<DocumentsScreen>
           _totalStorageBytes = summary.totalBytes;
           _totalDocumentCount = summary.documentCount;
           _starredCount = summary.favoriteCount;
+          _liveHomeSummaryLoaded = true;
+          _showCachedHomeSummary = false;
         });
+        if (_isStartupHome) StartupTimeline.mark('home_summary_ready');
+        if (!widget.phoneOnly && !widget.favoritesOnly && !widget.recentOnly) {
+          unawaited(_homeCache.saveSummary(
+            documentCount: summary.documentCount,
+            favoriteCount: summary.favoriteCount,
+            totalBytes: summary.totalBytes,
+          ));
+        }
       } catch (_) {
+        if (_isStartupHome) StartupTimeline.mark('home_summary_failed');
         // A summary failure must not blank a successfully loaded PDF list.
       }
     } catch (error) {
+      if (_isStartupHome) StartupTimeline.mark('home_page_failed');
       if (!mounted || generation != _loadGeneration) return;
       setState(() {
         _loading = false;
@@ -284,6 +671,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
   }
 
   Future<void> _loadTrashSummary() async {
+    if (_isStartupHome) StartupTimeline.mark('home_trash_start');
     try {
       final values = await Future.wait<Object>([
         _repository.trashCount(),
@@ -296,6 +684,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         _trashCount = count;
         _trashFolderCount = folders.length;
       });
+      if (_isStartupHome) StartupTimeline.mark('home_trash_ready');
     } catch (_) {
       // Keep the dashboard usable; the Recycle Bin screen reports its own error.
     }
@@ -309,7 +698,16 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       _totalStorageBytes = summary.totalBytes;
       _totalDocumentCount = summary.documentCount;
       _starredCount = summary.favoriteCount;
+      _liveHomeSummaryLoaded = true;
+      _showCachedHomeSummary = false;
     });
+    if (!widget.phoneOnly) {
+      unawaited(_homeCache.saveSummary(
+        documentCount: summary.documentCount,
+        favoriteCount: summary.favoriteCount,
+        totalBytes: summary.totalBytes,
+      ));
+    }
     await _loadTrashSummary();
   }
 
@@ -386,6 +784,9 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       final signature = roots.map((root) => root['uri']!).join('|');
       if (decoded is! Map || decoded['rootSignature'] != signature ||
           decoded['entries'] is! List) return false;
+      // The cache is scoped to the currently granted roots; make that
+      // signature available to per-folder previews before the live scan ends.
+      _phoneLastRoots = roots;
       final cached = (decoded['entries'] as List).whereType<Map>()
           .map((entry) => Map<String, Object?>.from(entry)).toList(growable: false);
       if (!mounted) return false;
@@ -512,6 +913,8 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       _phoneScanPending = true;
       return;
     }
+    if (_isStartupHome) StartupTimeline.mark('home_phone_scan_start');
+    _phoneMediaStoreReady = false;
     if (mounted) setState(() { _phoneScanLoading = true; _phoneScanCompleted = false; });
     try {
       var hasAllFilesAccess = false;
@@ -731,6 +1134,9 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       } else {
         await _persistPhoneStorageIndexCache(roots, entries);
       }
+      _phoneMediaStoreReady = mediaStoreComplete;
+      _phoneLastMediaVolumes = mediaStoreVolumes;
+      _phoneLastRoots = roots;
       setState(() {
         _phoneEntries=entries;
         _phoneScanCompleted = true;
@@ -741,17 +1147,28 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       if(inaccessibleRoots>0 && mounted) _message('$inaccessibleRoots granted location(s) could not be read; they were not marked empty.');
     } catch(error) {
       if (mounted) {
-        setState(() {
-          _phoneEntries = [];
-          _phoneScanCompleted = false;
-        });
-        _message('Phone Storage scan failed; inaccessible locations were not marked empty: $error');
+        // An index-refresh failure must not erase the last usable listing.
+        // Opening a cached PDF still goes through the real storage provider.
+        setState(() => _phoneScanCompleted = _phoneEntries.isNotEmpty);
+        _message('Phone Storage refresh failed; the last index is still shown: $error');
       }
     } finally {
+      if (_isStartupHome) StartupTimeline.mark('home_phone_scan_finished');
       if (mounted) setState(() => _phoneScanLoading = false);
-      if (_phoneScanPending && mounted) {
-        _phoneScanPending = false;
-        _schedulePhoneStorageRefresh();
+      if (mounted && widget.ocrSearchAvailable && _searchInsideText &&
+          _search.text.trim().isNotEmpty) {
+        unawaited(_beginPhoneOcrIndexing());
+      }
+      if (mounted) {
+        if (_phoneScanPending) {
+          _phoneScanPending = false;
+          // A second explicit scan request is still a real full refresh.
+          _phoneChangeQueue.add(null);
+        }
+        if (_phoneRefreshAfterBusy || _phoneChangeQueue.hasPending) {
+          _phoneRefreshAfterBusy = false;
+          _queuePhoneChangeRefresh();
+        }
       }
     }
   }
@@ -762,12 +1179,19 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       builder: (_) => PhoneStorageBrowserScreen(
         rootName: rootName, entries: entries, onOpenPdf: _openExternalStoragePdf,
         onMovePdf: _movePhonePdfToGrid,
+        onMoveWithinPhone: _movePhonePdfWithinPhone,
+        ocrSearchAvailable: widget.ocrSearchAvailable,
         onRenamePdf: _renamePhonePdf,
         onSharePdf: _sharePhonePdf,
+        onShareSelectedPdfs: _sharePhoneSelectedPdfs,
+        onMoveSelectedWithinPhone: _movePhoneSelectedWithinPhone,
+        onTrashSelectedPdfs: _trashPhoneSelectedPdfs,
         onToggleStarPdf: _recordExternalFavorite,
         starredUris: _phoneStarredUris,
         onTrashPdf: _trashPhonePdf,
         initialPath: initialPath,
+        cacheScope: _phoneLastRoots
+            .map((root) => root['uri'] ?? '').join('|'),
       ),
     ));
   }
@@ -782,7 +1206,8 @@ class _DocumentsScreenState extends State<DocumentsScreen>
           // browser reads it when reopening its menu after a Star action.
           _phoneStarredUris
             ..clear()
-            ..addAll(items.map((item) => item['uri'] as String));
+            ..addAll(items.where((item) => item['needsRelinking'] != true)
+                .map((item) => item['uri'] as String));
         });
       }
     } catch (_) {
@@ -827,6 +1252,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
           ? 'Remove from Star' : 'Add to Star'),
     ),
     const PopupMenuItem(value: 'rename', child: Text('Rename')),
+    const PopupMenuItem(value: 'move_phone', child: Text('Move')),
     const PopupMenuItem(value: 'move', child: Text('Move to Grid')),
     const PopupMenuItem(value: 'trash', child: Text('Delete')),
     const PopupMenuItem(value: 'location', child: Text('File Location')),
@@ -839,6 +1265,8 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       await _sharePhonePdf(uri, name);
     } else if (action == 'move') {
       await _movePhonePdfToGrid(uri, name);
+    } else if (action == 'move_phone') {
+      await _movePhonePdfWithinPhone(uri, name);
     } else if (action == 'favorite') {
       await _recordExternalFavorite(uri, name);
     } else if (action == 'trash') {
@@ -986,8 +1414,10 @@ class _DocumentsScreenState extends State<DocumentsScreen>
 
   Widget _recentDocumentTile(DocumentRecord document) {
     final activityAt = document.lastOpenedAt ?? document.createdAt;
+    // The Android external chooser reports successful dispatch, not proof
+    // that another application rendered and displayed the PDF.
     final activity = document.lastOpenedAt != null
-        ? 'Opened'
+        ? 'Open requested'
         : document.source == 'download'
             ? 'Downloaded'
             : 'Added';
@@ -1136,13 +1566,90 @@ class _DocumentsScreenState extends State<DocumentsScreen>
     );
   }
 
+  /// Manual selection is required: old Phone URIs are not portable grants.
+  Future<void> _relinkPendingPhonePdf(Map<String, Object?> item) async {
+    final identity = item['referenceId'] as String?;
+    if (identity == null) return;
+    try {
+      if (_phoneEntries.isEmpty) await _scanPhoneStorage(openBrowser: false);
+      if (!mounted) return;
+      final candidates = <String, Map<String, Object?>>{};
+      for (final row in _phoneEntries) {
+        final uri = row['uri'];
+        final name = row['name'];
+        if (row['isDirectory'] == true || row['isInaccessible'] == true ||
+            uri is! String || uri.isEmpty || name is! String ||
+            !name.toLowerCase().endsWith('.pdf')) continue;
+        candidates.putIfAbsent(uri, () => row);
+      }
+      final files = candidates.values.toList(growable: false);
+      final query = TextEditingController();
+      Map<String, Object?>? selected;
+      try {
+        selected = await showDialog<Map<String, Object?>>(
+          context: context,
+          builder: (dialog) => StatefulBuilder(
+            builder: (dialog, update) {
+              final term = query.text.trim().toLowerCase();
+              final matches = files.where((row) =>
+                (row['name'] as String).toLowerCase().contains(term))
+                  .take(50).toList(growable: false);
+              return AlertDialog(
+                title: const Text('Re-link Phone PDF'),
+                content: SizedBox(
+                  height: 360, width: double.maxFinite,
+                  child: Column(children: [
+                    const Text('Choose the corresponding PDF on this device.'),
+                    TextField(
+                      controller: query,
+                      decoration: const InputDecoration(labelText: 'Search files'),
+                      onChanged: (_) => update(() {}),
+                    ),
+                    Expanded(child: ListView.builder(
+                      itemCount: matches.length,
+                      itemBuilder: (_, index) => ListTile(
+                        dense: true,
+                        leading: const Icon(Icons.picture_as_pdf_outlined),
+                        title: Text(matches[index]['name'] as String),
+                        onTap: () => Navigator.pop(dialog, matches[index]),
+                      ),
+                    )),
+                  ]),
+                ),
+                actions: [TextButton(
+                  onPressed: () => Navigator.pop(dialog),
+                  child: const Text('Cancel'),
+                )],
+              );
+            },
+          ),
+        );
+      } finally {
+        query.dispose();
+      }
+      if (selected == null) return;
+      final uri = selected['uri'] as String;
+      final name = selected['name'] as String;
+      await StorageLocationService.instance.sha256Pdf(uri);
+      await PhonePortableState.relink(
+        referenceId: identity, selectedUri: uri, selectedName: name,
+      );
+      await _loadPhoneStarred();
+      await _loadRecentDocuments();
+      if (mounted) _message('Phone reference re-linked.');
+    } catch (error) {
+      if (mounted) _message('Phone PDF could not be re-linked: $error');
+    }
+  }
+
   Widget _phoneStarredTile(Map<String, Object?> item) {
     final uri = item['uri'] as String;
     final name = item['name'] as String? ?? 'PDF';
+    final unresolved = item['needsRelinking'] == true;
     return ListTile(
       key: ValueKey('phone-starred-$uri'),
       dense: true,
-      leading: DocumentThumbnail(
+      leading: unresolved ? const Icon(Icons.link_off_outlined) : DocumentThumbnail(
         documentId: 'phone_starred_$uri',
         storagePath: uri,
         sizeBytes: (item['sizeBytes'] as num?)?.toInt() ?? 0,
@@ -1152,9 +1659,10 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         const SizedBox(width: 6),
         _recentSourceTag('Phone'),
       ]),
-      subtitle: const Text('Starred'),
-      onTap: () => _openExternalStoragePdf(uri, name),
-      trailing: PopupMenuButton<String>(
+      subtitle: Text(unresolved ? 'Starred · Re-link this PDF on this device' : 'Starred'),
+      onTap: unresolved ? () => _relinkPendingPhonePdf(item)
+          : () => _openExternalStoragePdf(uri, name),
+      trailing: unresolved ? null : PopupMenuButton<String>(
         tooltip: 'Actions for $name',
         onSelected: (action) => _handlePhoneRecentAction(item, action),
         itemBuilder: (_) => _phoneRecentMenu(item),
@@ -1167,11 +1675,14 @@ class _DocumentsScreenState extends State<DocumentsScreen>
     final uri = item['uri'] as String? ?? '';
     final openedAt = DateTime.tryParse(item['openedAt']?.toString() ?? '');
     final addedAt = DateTime.tryParse(item['addedAt']?.toString() ?? '');
-    final activity = openedAt == null && addedAt != null ? 'Added' : 'Opened';
+    // External PDF choosers only acknowledge dispatch, not actual rendering.
+    final unresolved = item['needsRelinking'] == true;
+    final activity = unresolved ? 'Re-link required'
+        : openedAt == null && addedAt != null ? 'Added' : 'Open requested';
     return ListTile(
       key: ValueKey('phone-recent-$uri'),
       dense: true,
-      leading: DocumentThumbnail(
+      leading: unresolved ? const Icon(Icons.link_off_outlined) : DocumentThumbnail(
         documentId: 'phone_recent_$uri',
         storagePath: uri,
         sizeBytes: (item['sizeBytes'] as num?)?.toInt() ?? 0,
@@ -1182,9 +1693,10 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         _recentSourceTag('Phone'),
       ]),
       subtitle: Text('$activity · ${_recentDateLabel(openedAt ?? addedAt ?? DateTime.now())}'),
-      onTap: () => _openExternalStoragePdf(uri, name),
-      onLongPress: () => _openPhoneRecentSelection(item),
-      trailing: PopupMenuButton<String>(
+      onTap: unresolved ? () => _relinkPendingPhonePdf(item)
+          : () => _openExternalStoragePdf(uri, name),
+      onLongPress: unresolved ? null : () => _openPhoneRecentSelection(item),
+      trailing: unresolved ? null : PopupMenuButton<String>(
         tooltip: 'Actions for $name',
         onSelected: (action) => _handlePhoneRecentAction(item, action),
         itemBuilder: (_) => _phoneRecentMenu(item),
@@ -1193,6 +1705,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
   }
 
   Future<void> _loadRecentDocuments() async {
+    if (_isStartupHome) StartupTimeline.mark('home_recent_start');
     try {
       // Include both opened documents and newly added documents. The list
       // is capped at 20 so the dashboard's Recent panel can scroll independently.
@@ -1210,12 +1723,26 @@ class _DocumentsScreenState extends State<DocumentsScreen>
           // Skip malformed optional recent metadata without affecting PDFs.
         }
       }
+      final unlinkedRecent = (await PhonePortableState.pending())
+          .where((item) => item['wasRecent'] == true)
+          .toList(growable: false);
       if (!mounted) return;
       setState(() {
         _gridRecent = recentDocuments;
-        _phoneRecent = phone.take(20).toList(growable: false);
+        _phoneRecent = [...unlinkedRecent, ...phone]
+            .take(20).toList(growable: false);
+        _liveGridRecentLoaded = true;
+        _cachedGridRecentNames = const [];
       });
+      if (_isStartupHome) StartupTimeline.mark('home_recent_ready');
+      if (!widget.phoneOnly && !widget.favoritesOnly && !widget.recentOnly) {
+        // Names only. Do not persist IDs, paths, actions or raw PDF bytes.
+        unawaited(_homeCache.saveRecentNames(
+          recentDocuments.map((document) => document.name).toList(growable: false),
+        ));
+      }
     } catch (_) {
+      if (_isStartupHome) StartupTimeline.mark('home_recent_failed');
       // Recent metadata is optional and must not block the dashboard.
     }
   }
@@ -1872,19 +2399,206 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       return false;
     }
     try {
-      await StorageLocationService.instance.renamePdf(
-        uri: uri,
-        name: clean.toLowerCase().endsWith('.pdf') ? clean : '$clean.pdf',
+      final newName = clean.toLowerCase().endsWith('.pdf') ? clean : '$clean.pdf';
+      final newUri = await StorageLocationService.instance.renamePdf(
+        uri: uri, name: newName,
       );
-      if (!mounted) return false;
-      _message('PDF renamed.');
+      // Native rename is already committed. A shortcut preference failure must
+      // not be mistaken for a failed physical rename.
+      String? shortcutWarning;
+      try {
+        await PhoneReferenceIdentity.renamed(uri, newUri);
+        await PhoneStarRepository.updateRenamedReference(uri, newUri, newName);
+        await PhoneRecentHistory.updateRenamedReference(uri, newUri, newName);
+      } catch (error) {
+        shortcutWarning = 'PDF renamed, but its Star/Recent shortcut needs attention: $error';
+      }
+      if (!mounted) return true;
+      await _loadPhoneStarred();
       await _scanPhoneStorage(openBrowser: false);
       await _refreshDashboardSummary();
+      if (mounted) _message(shortcutWarning ?? 'PDF renamed.');
       return true;
     } catch (error) {
       if (mounted) _message('Could not rename PDF: $error');
       return false;
     }
+  }
+
+
+  Future<void> _sharePhoneSelectedPdfs(
+    List<Map<String, Object?>> selected,
+  ) async {
+    if (selected.isEmpty) return;
+    await _tools.shareManyStoredPdfs(
+      selected.map((row) => row['uri'] as String).toList(growable: false),
+      selected.map((row) => row['name'] as String).toList(growable: false),
+    );
+  }
+
+  /// Phone multi-select Move chooses one destination and runs the already
+  /// checksum-verified move service for each source. No Grid metadata changes.
+  Future<bool> _movePhoneSelectedWithinPhone(
+    List<Map<String, Object?>> selected,
+  ) async {
+    if (selected.isEmpty) return false;
+    if (selected.length == 1) {
+      final entry = selected.single;
+      return _movePhonePdfWithinPhone(
+          entry['uri'] as String, entry['name'] as String);
+    }
+    final storage = StorageLocationService.instance;
+    final List<Map<String, String>> roots;
+    try {
+      roots = await storage.accessibleStorageRoots();
+    } catch (error) {
+      if (mounted) _message('Could not list Phone folders: $error');
+      return false;
+    }
+    if (!mounted) return false;
+    if (roots.isEmpty) {
+      _message('No accessible Phone folders. Check storage access.');
+      return false;
+    }
+    final destination = await showModalBottomSheet<PhoneFolderDestination>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (_) => FractionallySizedBox(
+        heightFactor: 0.75,
+        child: PhoneMoveFolderPicker(
+          roots: roots,
+          sourceFolderPath: '',
+          listDirectory: storage.listDirectory,
+          createDirectory: (parent, folderName) =>
+              storage.createDirectory(parentUri: parent, name: folderName),
+        ),
+      ),
+    );
+    if (destination == null || !mounted) return false;
+    final movedSources = <String>{};
+    var failed = 0;
+    for (final entry in selected) {
+      final uri = entry['uri'] as String;
+      final name = entry['name'] as String;
+      try {
+        // Source is removed only by PhonePdfMoveService after verified copy.
+        final newUri = await const PhonePdfMoveService().move(
+          sourceUri: uri,
+          displayName: name,
+          destinationFolderUri: destination.uri,
+        );
+        movedSources.add(uri);
+        try {
+          final wasStarred = _phoneStarredUris.contains(uri);
+          await PhoneStarRepository.remove(uri);
+          if (wasStarred) {
+            await PhoneStarRepository.toggle(
+              uri: newUri,
+              name: name,
+              folderPath: destination.path,
+              sizeBytes: (entry['sizeBytes'] as num?)?.toInt() ?? 0,
+            );
+          }
+        } catch (_) {
+          // Optional Star metadata never rolls back verified file moves.
+        }
+        try { await PhoneRecentHistory.removeMovedSource(uri); } catch (_) {}
+      } catch (_) {
+        failed++;
+      }
+    }
+    if (movedSources.isNotEmpty) {
+      if (mounted) {
+        setState(() {
+          _phoneRecent = _phoneRecent.where(
+              (row) => !movedSources.contains(row['uri']))
+              .toList(growable: false);
+          _phoneEntries = _phoneEntries.where(
+              (row) => !movedSources.contains(row['uri']))
+              .toList(growable: false);
+        });
+      }
+      try { await _loadPhoneStarred(); } catch (_) {}
+      try {
+        if (mounted) {
+          await _scanPhoneStorage(openBrowser: false);
+          await _refreshDashboardSummary();
+        }
+      } catch (_) {
+        // Next storage refresh reconciles an already verified move.
+      }
+    }
+    if (mounted) {
+      _message('Moved ${movedSources.length} of ${selected.length} Phone PDFs'
+          '${failed == 0 ? '.' : '; $failed kept in the original folder.'}');
+    }
+    return movedSources.isNotEmpty;
+  }
+
+  /// Archive each Phone original through the existing checksum-safe service;
+  /// a duplicate or failed archive always leaves that original untouched.
+  Future<bool> _trashPhoneSelectedPdfs(
+    List<Map<String, Object?>> selected,
+  ) async {
+    if (selected.isEmpty) return false;
+    if (selected.length == 1) {
+      final entry = selected.single;
+      return _trashPhonePdf(entry['uri'] as String, entry['name'] as String);
+    }
+    final confirmed = await _confirmMoveToRecycleBin(
+      count: selected.length,
+      details: 'Each Phone PDF is safely archived in DocsGrid Recycle Bin '
+          'before its original is removed. Failed or duplicate archives '
+          'keep their originals.',
+    );
+    if (!confirmed || !mounted) return false;
+    final movedSources = <String>{};
+    var kept = 0;
+    for (final entry in selected) {
+      final uri = entry['uri'] as String;
+      final name = entry['name'] as String;
+      try {
+        final origin = await _phoneTrashOriginFor(uri, name);
+        final success = await _repository.moveExternalPdfToTrash(
+          sourceUri: uri,
+          displayName: name,
+          origin: origin,
+        );
+        if (!success) {
+          kept++;
+          continue;
+        }
+        movedSources.add(uri);
+        try { await PhoneStarRepository.remove(uri); } catch (_) {}
+      } catch (_) {
+        kept++;
+      }
+    }
+    if (movedSources.isNotEmpty) {
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        final keep = _phoneRecent.where(
+            (row) => !movedSources.contains(row['uri']))
+            .toList(growable: false);
+        await prefs.setStringList('docsgrid_phone_recent_v1',
+            keep.map(jsonEncode).toList());
+        if (mounted) setState(() => _phoneRecent = keep);
+      } catch (_) {}
+      try { await _loadPhoneStarred(); } catch (_) {}
+    }
+    try {
+      if (mounted) {
+        await _scanPhoneStorage(openBrowser: false);
+        await _loadTrashSummary();
+        await _refreshDashboardSummary();
+      }
+    } catch (_) {}
+    if (mounted) {
+      _message('Archived ${movedSources.length} of ${selected.length} PDFs. '
+          '${kept == 0 ? 'All selected originals archived.' : '$kept originals kept safely.'}');
+    }
+    return movedSources.isNotEmpty;
   }
 
   Future<void> _sharePhonePdf(String uri, String name) async {
@@ -2024,6 +2738,95 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       if (mounted) _message('Could not move $name. The Phone original was kept: $error');
       return false;
     }
+  }
+
+  /// The Phone three-dot Move action changes only the physical Phone file.
+  /// Grid's PDF metadata, folders and duplicate rules are never modified.
+  Future<bool> _movePhonePdfWithinPhone(String uri, String name) async {
+    final storage = StorageLocationService.instance;
+    List<Map<String, String>> roots;
+    try {
+      roots = await storage.accessibleStorageRoots();
+    } catch (error) {
+      if (mounted) _message('Could not list Phone storage locations: $error');
+      return false;
+    }
+    if (!mounted) return false;
+    if (roots.isEmpty) {
+      _message('No accessible Phone folders. Check storage access in Settings.');
+      return false;
+    }
+    final matches = <Map<String, Object?>>[
+      ..._phoneEntries.where((row) => row['uri'] == uri),
+      ..._phoneRecent.where((row) => row['uri'] == uri),
+      ..._phoneStarred.where((row) => row['uri'] == uri),
+    ];
+    final sourceFolderPath = matches.isEmpty ? ''
+        : (matches.first['folderPath'] ?? matches.first['path'] ?? '').toString();
+    final sourceSize = matches.isEmpty ? 0
+        : (matches.first['sizeBytes'] as num?)?.toInt() ?? 0;
+
+    final destination = await showModalBottomSheet<PhoneFolderDestination>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (_) => FractionallySizedBox(
+        heightFactor: 0.75,
+        child: PhoneMoveFolderPicker(
+          roots: roots,
+          sourceFolderPath: sourceFolderPath,
+          listDirectory: storage.listDirectory,
+          createDirectory: (parent, folderName) =>
+              storage.createDirectory(parentUri: parent, name: folderName),
+        ),
+      ),
+    );
+    if (destination == null || !mounted) return false;
+
+    String movedUri;
+    try {
+      movedUri = await const PhonePdfMoveService().move(
+        sourceUri: uri,
+        displayName: name,
+        destinationFolderUri: destination.uri,
+      );
+    } catch (error) {
+      if (mounted) _message('Phone PDF was not moved: $error');
+      return false;
+    }
+
+    // Preserve optional Phone Star across the URI change. This metadata
+    // cleanup must never undo a successful, checksum-verified file move.
+    try {
+      final wasStarred = _phoneStarredUris.contains(uri);
+      await PhoneStarRepository.remove(uri);
+      if (wasStarred) {
+        await PhoneStarRepository.toggle(
+          uri: movedUri, name: name,
+          folderPath: destination.path, sizeBytes: sourceSize,
+        );
+      }
+      await _loadPhoneStarred();
+    } catch (_) {}
+    try { await PhoneRecentHistory.removeMovedSource(uri); } catch (_) {}
+    if (mounted) {
+      setState(() {
+        _phoneRecent = _phoneRecent.where((row) => row['uri'] != uri)
+            .toList(growable: false);
+        _phoneEntries = _phoneEntries.where((row) => row['uri'] != uri)
+            .toList(growable: false);
+      });
+      _message('Moved $name to ${destination.path}.');
+    }
+    try {
+      if (mounted) {
+        await _scanPhoneStorage(openBrowser: false);
+        await _refreshDashboardSummary();
+      }
+    } catch (_) {
+      // The next Phone scan will reconcile the already successful move.
+    }
+    return true;
   }
 
   Future<void> _moveToFolder(DocumentRecord document) async {
@@ -2177,22 +2980,35 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         entries: _phoneEntries,
         onOpenPdf: _openExternalStoragePdf,
         onMovePdf: _movePhonePdfToGrid,
+        onMoveWithinPhone: _movePhonePdfWithinPhone,
+        ocrSearchAvailable: widget.ocrSearchAvailable,
         onRenamePdf: _renamePhonePdf,
         onSharePdf: _sharePhonePdf,
+        onShareSelectedPdfs: _sharePhoneSelectedPdfs,
+        onMoveSelectedWithinPhone: _movePhoneSelectedWithinPhone,
+        onTrashSelectedPdfs: _trashPhoneSelectedPdfs,
         onToggleStarPdf: _recordExternalFavorite,
         starredUris: _phoneStarredUris,
         onTrashPdf: _trashPhonePdf,
         embedded: true,
+        active: widget.active,
+        onBackAtRoot: widget.onBackAtRoot,
+        cacheScope: _phoneLastRoots
+            .map((root) => root['uri'] ?? '').join('|'),
         // Keep the last usable index visible while refresh continues silently.
         isLoading: _phoneScanLoading && _phoneEntries.isEmpty,
         onRefresh: () => _scanPhoneStorage(openBrowser: true),
       );
     }
     return PopScope<void>(
-      canPop: !_selectionMode,
+      canPop: !widget.active ||
+          (!_selectionMode && widget.onBackAtRoot == null),
       onPopInvokedWithResult: (didPop, result) {
-        if (!didPop && _selectionMode && mounted) {
+        if (didPop || !widget.active || !mounted) return;
+        if (_selectionMode) {
           _clearSelection();
+        } else {
+          widget.onBackAtRoot?.call();
         }
       },
       child: RefreshIndicator(
@@ -2227,21 +3043,24 @@ class _DocumentsScreenState extends State<DocumentsScreen>
                     controller: _search,
                     decoration: InputDecoration(
                       hintText: _searchInsideText ? 'Search text inside PDFs' : 'Search PDF names',
-                      prefixIcon: PopupMenuButton<String>(
-                        tooltip: 'Choose search type',
-                        icon: const Icon(Icons.search),
-                        onSelected: (value) {
-                          setState(() => _searchInsideText = value == 'text');
-                          _load();
-                        },
-                        itemBuilder: (_) => [
-                          PopupMenuItem(value: 'name', child: Row(children: [Icon(_searchInsideText ? Icons.circle_outlined : Icons.check_circle, size: 18), const SizedBox(width: 8), const Text('File name') ])),
-                          PopupMenuItem(value: 'text', child: Row(children: [Icon(_searchInsideText ? Icons.check_circle : Icons.circle_outlined, size: 18), const SizedBox(width: 8), const Text('Text inside PDF') ])),
+                      prefixIcon: const Icon(Icons.search),
+                      suffixIconConstraints: const BoxConstraints(minHeight: 48, minWidth: 0),
+                      suffixIcon: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          if (widget.ocrSearchAvailable)
+                            OcrSearchModeControl(
+                              searchInsidePdf: _searchInsideText,
+                              onChanged: _setOcrSearchMode,
+                            ),
+                          if (_search.text.isNotEmpty)
+                            IconButton(
+                              tooltip: 'Clear search',
+                              onPressed: _search.clear,
+                              icon: const Icon(Icons.close),
+                            ),
                         ],
                       ),
-                      suffixIcon: _search.text.isEmpty
-                          ? null
-                          : IconButton(tooltip: 'Clear search', onPressed: _search.clear, icon: const Icon(Icons.close)),
                       border: OutlineInputBorder(borderRadius: BorderRadius.circular(16)),
                     ),
                   ),
@@ -2256,7 +3075,26 @@ class _DocumentsScreenState extends State<DocumentsScreen>
               ],
             ),
           ),
-        if (!widget.favoritesOnly && !widget.recentOnly)
+        if (!widget.favoritesOnly && widget.ocrSearchAvailable && _searchInsideText)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (_ocrIndexing) LinearProgressIndicator(
+                  value: _ocrIndexTotal == 0 ? null : _ocrIndexed / _ocrIndexTotal,
+                ),
+                if (_ocrIndexing) const SizedBox(height: 6),
+                Text(_ocrIndexing
+                    ? 'Indexing PDF text locally: $_ocrIndexed / $_ocrIndexTotal'
+                    : _ocrIndexMessage ??
+                        'Enter a search term to index PDFs locally for OCR search.',
+                  style: Theme.of(context).textTheme.bodySmall),
+              ],
+            ),
+          ),
+        if (!widget.favoritesOnly && !widget.recentOnly &&
+            _search.text.trim().isEmpty)
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
             child: Container(
@@ -2278,6 +3116,9 @@ class _DocumentsScreenState extends State<DocumentsScreen>
                   Text('$_totalDocumentCount PDFs', style: const TextStyle(
                     color: Color(0xFF10162C), fontSize: 32, fontWeight: FontWeight.w800,
                   )),
+                  if (_showCachedHomeSummary)
+                    const Text('Previous summary · refreshing live counts',
+                      style: TextStyle(color: Color(0xFF17203D), fontSize: 10)),
                   const SizedBox(height: 12),
                   Row(children: [
                     Expanded(child: _dashboardStorageMetric(
@@ -2310,7 +3151,8 @@ class _DocumentsScreenState extends State<DocumentsScreen>
               ),
             ),
           ),
-        if (!widget.favoritesOnly && !widget.recentOnly)
+        if (!widget.favoritesOnly && !widget.recentOnly &&
+            _search.text.trim().isEmpty)
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
             child: Card(
@@ -2323,17 +3165,21 @@ class _DocumentsScreenState extends State<DocumentsScreen>
                       Text(_showStarredRecent ? 'Starred' : 'Recent',
                           style: const TextStyle(fontWeight: FontWeight.w700)),
                       const Spacer(),
-                      if (!_showStarredRecent)
-                        SegmentedButton<String>(
-                          showSelectedIcon: false,
-                          segments: const [
-                            ButtonSegment(value: 'phone', label: Text('Phone')),
-                            ButtonSegment(value: 'grid', label: Text('Grid')),
-                          ],
-                          selected: {_recentFilter},
-                          onSelectionChanged: (selection) =>
-                              setState(() => _recentFilter = selection.first),
-                        ),
+                      SegmentedButton<String>(
+                        showSelectedIcon: false,
+                        segments: const [
+                          ButtonSegment(value: 'phone', label: Text('Phone')),
+                          ButtonSegment(value: 'grid', label: Text('Grid')),
+                        ],
+                        selected: {_showStarredRecent ? _starredFilter : _recentFilter},
+                        onSelectionChanged: (selection) => setState(() {
+                          if (_showStarredRecent) {
+                            _starredFilter = selection.first;
+                          } else {
+                            _recentFilter = selection.first;
+                          }
+                        }),
+                      ),
                       PopupMenuButton<String>(
                         tooltip: _showStarredRecent ? 'Starred options' : 'Recent options',
                         onSelected: (value) async {
@@ -2365,17 +3211,25 @@ class _DocumentsScreenState extends State<DocumentsScreen>
                     SizedBox(
                       height: 320,
                       child: _showStarredRecent
-                          ? _starredRecent.isEmpty && _phoneStarred.isEmpty
-                              ? const Center(child: Text('No starred PDFs'))
-                              : ListView.separated(
-                                  primary: false,
-                                  itemCount: _phoneStarred.length + _starredRecent.length,
-                                  separatorBuilder: (_, _) => const Divider(height: 1),
-                                  itemBuilder: (context, index) =>
-                                      index < _phoneStarred.length
-                                          ? _phoneStarredTile(_phoneStarred[index])
-                                          : _recentDocumentTile(_starredRecent[index - _phoneStarred.length]),
-                                )
+                          ? _starredFilter == 'phone'
+                              ? _phoneStarred.isEmpty
+                                  ? const Center(child: Text('No starred Phone PDFs'))
+                                  : ListView.separated(
+                                      primary: false,
+                                      itemCount: _phoneStarred.length,
+                                      separatorBuilder: (_, _) => const Divider(height: 1),
+                                      itemBuilder: (context, index) =>
+                                          _phoneStarredTile(_phoneStarred[index]),
+                                    )
+                              : _starredRecent.isEmpty
+                                  ? const Center(child: Text('No starred Grid PDFs'))
+                                  : ListView.separated(
+                                      primary: false,
+                                      itemCount: _starredRecent.length,
+                                      separatorBuilder: (_, _) => const Divider(height: 1),
+                                      itemBuilder: (context, index) =>
+                                          _recentDocumentTile(_starredRecent[index]),
+                                    )
                           : _recentFilter == 'phone'
                               ? _phoneRecent.isEmpty
                                   ? const Center(child: Text('No recent Phone PDFs'))
@@ -2386,7 +3240,20 @@ class _DocumentsScreenState extends State<DocumentsScreen>
                                       itemBuilder: (context, index) => _phoneRecentTile(_phoneRecent[index]),
                                     )
                               : _gridRecent.isEmpty
-                                  ? const Center(child: Text('No recent Grid PDFs'))
+                                  ? (!_liveGridRecentLoaded && _cachedGridRecentNames.isNotEmpty
+                                      ? ListView.builder(
+                                          primary: false,
+                                          itemCount: _cachedGridRecentNames.length,
+                                          itemBuilder: (context, index) => ListTile(
+                                            dense: true,
+                                            enabled: false,
+                                            leading: const Icon(Icons.picture_as_pdf_outlined),
+                                            title: Text('${_cachedGridRecentNames[index]}.pdf',
+                                              maxLines: 1, overflow: TextOverflow.ellipsis),
+                                            subtitle: const Text('Previous session · verifying PDFs'),
+                                          ),
+                                        )
+                                      : const Center(child: Text('No recent Grid PDFs')))
                                   : ListView.separated(
                                       primary: false,
                                       itemCount: _gridRecent.length,
@@ -2399,7 +3266,8 @@ class _DocumentsScreenState extends State<DocumentsScreen>
               ),
             ),
           ),
-        if (!widget.favoritesOnly && !widget.recentOnly)
+        if (!widget.favoritesOnly && !widget.recentOnly &&
+            _search.text.trim().isEmpty)
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
             child: Card(
@@ -2436,81 +3304,104 @@ class _DocumentsScreenState extends State<DocumentsScreen>
               ),
             ),
           ),
-        if (!widget.favoritesOnly && !_searchInsideText && _search.text.trim().isNotEmpty)
+        if (!widget.favoritesOnly && _search.text.trim().isNotEmpty)
           Builder(builder: (context) {
-            final matches = _phoneStorageSearchMatches(_search.text);
-            return Padding(
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-              child: Card(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
+            final matches = _searchInsideText
+                ? _phoneOcrIndex.matches(_phoneEntries, _search.text)
+                : _phoneStorageSearchMatches(_search.text);
+            final visibleCount = matches.length < _homePhoneSearchVisibleCount
+                ? matches.length : _homePhoneSearchVisibleCount;
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 2, 16, 12),
+                  child: Row(children: [
+                    Expanded(child: _homeSearchSourceTab(
+                      phone: true,
+                      title: 'Phone Storage',
+                      count: '${matches.length}',
+                    )),
+                    const SizedBox(width: 8),
+                    Expanded(child: _homeSearchSourceTab(
+                      phone: false,
+                      title: 'Grid Storage',
+                      count: '${_documents.length}${_hasMore ? '+' : ''}',
+                    )),
+                  ]),
+                ),
+                if (_homeSearchPhoneSelected) ...[
+                  if (_searchInsideText && _phoneOcrBusy)
                     Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                      child: Text('Reading Phone PDFs locally: $_phoneOcrDone / $_phoneOcrTotal'),
+                    ),
+                  if (_searchInsideText && !_phoneOcrBusy && _phoneOcrMessage != null)
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                      child: Text(_phoneOcrMessage!),
+                    ),
+                  // Background reconciliation must never replace valid rows
+                  // with an empty "Scanning..." card.
+                  if (matches.isEmpty && _phoneScanLoading)
+                    const Padding(
+                      padding: EdgeInsets.fromLTRB(16, 12, 16, 16),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          SizedBox(width: 16, height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2)),
+                          SizedBox(width: 10),
+                          Flexible(child: Text('Scanning Phone Storage…')),
+                        ],
+                      ),
+                    )
+                  else if (matches.isEmpty && !(_searchInsideText && _phoneOcrBusy))
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
                       child: Text(
-                        'Phone Storage · ${matches.length} matches',
-                        style: Theme.of(context).textTheme.titleSmall,
+                        _searchInsideText
+                          ? 'No matching PDF text in Phone Storage.'
+                          : 'No matching PDFs in the scanned Phone Storage locations.',
+                        textAlign: TextAlign.center,
                       ),
                     ),
-                    if (_phoneScanLoading)
-                      const Padding(
-                        padding: EdgeInsets.fromLTRB(16, 8, 16, 12),
-                        child: Row(
-                          children: [
-                            SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
-                            SizedBox(width: 10),
-                            Text('Scanning Phone Storage…'),
-                          ],
-                        ),
-                      )
-                    else if (matches.isEmpty)
-                      const Padding(
-                        padding: EdgeInsets.fromLTRB(16, 4, 16, 12),
-                        child: Text('No matching PDFs in the scanned Phone Storage locations.'),
-                      )
-                    else
-                      SizedBox(
-                        height: (matches.length.clamp(1, 4) * 64).toDouble(),
-                        child: ListView.builder(
-                          itemCount: matches.length,
-                          itemBuilder: (context, index) {
-                            final item = matches[index];
-                            final name = item['name'] as String? ?? 'PDF';
-                            final uri = item['uri'] as String? ?? '';
-                            final folder = item['folderPath'] as String? ?? '';
-                            final bytes = (item['sizeBytes'] as num?)?.toInt() ?? 0;
-                            return ListTile(
-                              dense: true,
-                              leading: const Icon(Icons.picture_as_pdf_outlined),
-                              title: Text(name, maxLines: 1, overflow: TextOverflow.ellipsis),
-                              subtitle: Text(
-                                'Phone Storage · ${folder.isEmpty ? 'Root' : folder} · ${_size(bytes)}',
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                              onTap: () => _openExternalStoragePdf(uri, name),
-                            );
-                          },
-                        ),
+                  if (matches.isNotEmpty)
+                    ListView.separated(
+                      shrinkWrap: true,
+                      physics: const NeverScrollableScrollPhysics(),
+                      padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+                      itemCount: visibleCount,
+                      separatorBuilder: (_, _) => const SizedBox(height: 6),
+                      itemBuilder: (_, index) => _homePhoneSearchTile(matches[index]),
+                    ),
+                  if (visibleCount < matches.length)
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 18),
+                      child: TextButton(
+                        key: const ValueKey('home-phone-more-results'),
+                        onPressed: () => setState(() =>
+                            _homePhoneSearchVisibleCount += _homePhoneSearchPageSize),
+                        child: Text('Show more Phone PDFs (${matches.length - visibleCount} remaining)'),
                       ),
-                  ],
-                ),
-              ),
+                    ),
+                ] else
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+                    child: Align(
+                      alignment: Alignment.centerLeft,
+                      child: Text(
+                        '${_searchInsideText ? 'Grid OCR' : 'Grid Storage'} · ${_documents.length}${_hasMore ? '+' : ''} matches',
+                        style: Theme.of(context).textTheme.labelLarge,
+                      ),
+                    ),
+                  ),
+              ],
             );
           }),
-        if (!widget.favoritesOnly && !_searchInsideText && _search.text.trim().isNotEmpty)
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
-            child: Align(
-              alignment: Alignment.centerLeft,
-              child: Text(
-                'Grid Storage · ${_documents.length}${_hasMore ? '+' : ''} matches',
-                style: Theme.of(context).textTheme.labelLarge,
-              ),
-            ),
-          ),
         if (_importing) const LinearProgressIndicator(),
-        if (widget.favoritesOnly || widget.recentOnly || _search.text.trim().isNotEmpty)
+        if (widget.favoritesOnly || widget.recentOnly ||
+            (_search.text.trim().isNotEmpty && !_homeSearchPhoneSelected))
           if (_loading)
             const SizedBox(height: 220, child: Center(child: CircularProgressIndicator()))
         else if (_error != null)
@@ -2541,7 +3432,14 @@ class _DocumentsScreenState extends State<DocumentsScreen>
             ),
           )
         else if (_documents.isEmpty)
-          _emptyState()
+          if (!widget.favoritesOnly && _search.text.trim().isNotEmpty)
+            const Padding(
+              padding: EdgeInsets.fromLTRB(16, 22, 16, 28),
+              child: Text('No matching PDFs in Grid Storage.',
+                  textAlign: TextAlign.center),
+            )
+          else
+            _emptyState()
         else
           if (_gridView)
             LayoutBuilder(
@@ -2688,6 +3586,108 @@ class _DocumentsScreenState extends State<DocumentsScreen>
     ),
   );
 
+  Widget _homeSearchSourceTab({
+    required bool phone,
+    required String title,
+    required String count,
+  }) {
+    final selected = _homeSearchPhoneSelected == phone;
+    final colors = Theme.of(context).colorScheme;
+    return Material(
+      color: selected ? colors.secondaryContainer : colors.surfaceContainerLow,
+      borderRadius: BorderRadius.circular(14),
+      child: InkWell(
+        key: ValueKey(phone ? 'home-search-phone-tab' : 'home-search-grid-tab'),
+        borderRadius: BorderRadius.circular(14),
+        onTap: () {
+          if (selected) return;
+          setState(() => _homeSearchPhoneSelected = phone);
+          if (_scrollController.hasClients) _scrollController.jumpTo(0);
+        },
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+          child: Row(children: [
+            Icon(phone ? Icons.phone_android_outlined : Icons.folder_outlined,
+                size: 17, color: selected ? colors.onSecondaryContainer : colors.onSurfaceVariant),
+            const SizedBox(width: 6),
+            Expanded(child: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis,
+                style: TextStyle(fontSize: 12, fontWeight: selected ? FontWeight.w700 : FontWeight.w500))),
+            const SizedBox(width: 4),
+            Text(count, style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700,
+                color: selected ? colors.onSecondaryContainer : colors.onSurfaceVariant)),
+          ]),
+        ),
+      ),
+    );
+  }
+
+  // Matches the Grid Card/ListTile/thumbnail presentation while delegating
+  // every Phone file action to the existing, checksum-safe handlers.
+  Widget _homePhoneSearchTile(Map<String, Object?> entry) {
+    final name = entry['name'] as String? ?? 'PDF';
+    final uri = entry['uri'] as String? ?? '';
+    final path = (entry['folderPath'] ?? entry['path'] ?? '').toString();
+    final bytes = (entry['sizeBytes'] as num?)?.toInt() ?? 0;
+    return Card(
+      elevation: 0,
+      child: ListTile(
+        key: ValueKey('home-phone-pdf-$uri'),
+        onTap: () => _openExternalStoragePdf(uri, name),
+        leading: DocumentThumbnail(
+          documentId: 'phone_$uri',
+          storagePath: uri,
+          sizeBytes: bytes,
+          sourceLastModifiedMillis: thumbnailModifiedMillis(entry['lastModified']),
+        ),
+        title: Text(name, maxLines: 1, overflow: TextOverflow.ellipsis),
+        subtitle: Text('${_size(bytes)} · Phone Storage · ${path.isEmpty ? 'Root' : path}',
+            maxLines: 2, overflow: TextOverflow.ellipsis),
+        trailing: PopupMenuButton<String>(
+          tooltip: 'Actions for $name',
+          onSelected: (action) async {
+            if (action == 'share') {
+              await _sharePhonePdf(uri, name);
+            } else if (action == 'favorite') {
+              await _recordExternalFavorite(uri, name);
+            } else if (action == 'rename') {
+              await _renamePhonePdf(uri, name);
+            } else if (action == 'move_phone') {
+              await _movePhonePdfWithinPhone(uri, name);
+            } else if (action == 'move_grid') {
+              await _movePhonePdfToGrid(uri, name);
+            } else if (action == 'trash') {
+              await _trashPhonePdf(uri, name);
+            } else if (action == 'location') {
+              if (!mounted) return;
+              await showDialog<void>(
+                context: context,
+                builder: (dialogContext) => AlertDialog(
+                  title: const Text('File Location'),
+                  content: SelectableText(path.isEmpty ? uri : path),
+                  actions: [TextButton(
+                    onPressed: () => Navigator.pop(dialogContext),
+                    child: const Text('Close'),
+                  )],
+                ),
+              );
+            }
+          },
+          itemBuilder: (_) => [
+            const PopupMenuItem(value: 'share', child: Text('Share PDF')),
+            PopupMenuItem(value: 'favorite',
+              child: Text(_phoneStarredUris.contains(uri)
+                  ? 'Remove from Star' : 'Add to Star')),
+            const PopupMenuItem(value: 'rename', child: Text('Rename')),
+            const PopupMenuItem(value: 'move_phone', child: Text('Move')),
+            const PopupMenuItem(value: 'move_grid', child: Text('Move to Grid')),
+            const PopupMenuItem(value: 'trash', child: Text('Delete')),
+            const PopupMenuItem(value: 'location', child: Text('File Location')),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _documentTile(DocumentRecord document) {
     final selected = _selectedIds.contains(document.id);
     return Card(
@@ -2771,6 +3771,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
             const PopupMenuItem(value: 'category', child: Text('Set category')),
             const PopupMenuItem(value: 'tags', child: Text('Edit tags')),
             const PopupMenuItem(value: 'rename', child: Text('Rename')),
+            const PopupMenuItem(value: 'relink', child: Text('Relink PDF')),
             const PopupMenuItem(value: 'move', child: Text('Move to folder')),
             const PopupMenuItem(value: 'trash', child: Text('Move to Recycle Bin')),
           ],

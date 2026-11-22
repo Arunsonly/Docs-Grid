@@ -12,6 +12,24 @@ void main() {
     messenger.setMockMethodCallHandler(channel, null);
   });
 
+  test('Grid storage references distinguish metadata-only, invalid and actual-address candidates', () {
+    expect(StorageLocationService.gridPdfReferenceKind(null),
+        GridPdfReferenceKind.missingFile);
+    expect(StorageLocationService.gridPdfReferenceKind(''),
+        GridPdfReferenceKind.missingFile);
+    expect(StorageLocationService.gridPdfReferenceKind('missing://document-1'),
+        GridPdfReferenceKind.missingFile);
+    expect(StorageLocationService.gridPdfReferenceKind('backup-pdf://document-1'),
+        GridPdfReferenceKind.unsupported);
+    expect(StorageLocationService.gridPdfReferenceKind('content://provider/policy'),
+        GridPdfReferenceKind.possibleFile);
+    expect(StorageLocationService.gridPdfReferenceKind('file:///storage/Insurance/policy.pdf'),
+        GridPdfReferenceKind.possibleFile);
+    expect(StorageLocationService.gridPdfReferenceKind('/storage/Insurance/policy.pdf'),
+        GridPdfReferenceKind.possibleFile);
+    // A syntactically valid path is NOT proof of physical existence.
+  });
+
   test('copyFileToStorage forwards an app-staged archive and destination metadata', () async {
     messenger.setMockMethodCallHandler(channel, (call) async {
       expect(call.method, 'copyFileToStorage');
@@ -666,9 +684,16 @@ void main() {
       ),
       isTrue,
     );
+    // The former package-less media root is now legacy, not canonical.
     expect(
       StorageLocationService.isLegacyDocsGridStorageLocation(
         'file:///storage/emulated/0/Android/media/com.docsgrid/My%20Files/Folders/Insurance/Policy.pdf',
+      ),
+      isTrue,
+    );
+    expect(
+      StorageLocationService.isLegacyDocsGridStorageLocation(
+        'file:///storage/emulated/0/Android/media/com.docsgrid.mobile/My%20Files/Folders/Insurance/Policy.pdf',
       ),
       isFalse,
     );
@@ -676,7 +701,26 @@ void main() {
       StorageLocationService.isCanonicalPortableRootUri(
         'file:///storage/emulated/0/Android/media/com.docsgrid',
       ),
+      isFalse,
+    );
+    expect(
+      StorageLocationService.isCanonicalPortableRootUri(
+        'file:///storage/emulated/0/Android/media/com.docsgrid.mobile',
+      ),
       isTrue,
+    );
+    expect(
+      StorageLocationService.isCanonicalPortableRootUri(
+        'content://com.android.externalstorage.documents/tree/primary%3AAndroid%2Fmedia%2Fcom.docsgrid.mobile',
+      ),
+      isTrue,
+    );
+    // Similar package names must never count as the DocsGrid media folder.
+    expect(
+      StorageLocationService.isCanonicalPortableRootUri(
+        'file:///storage/emulated/0/Android/media/com.docsgrid.mobile.fake',
+      ),
+      isFalse,
     );
     expect(
       StorageLocationService.isCanonicalPortableRootUri(

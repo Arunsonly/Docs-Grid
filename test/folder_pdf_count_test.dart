@@ -29,6 +29,7 @@ void main() {
       CREATE TABLE documents (
         id TEXT PRIMARY KEY,
         folder_id TEXT,
+        size_bytes INTEGER NOT NULL DEFAULT 0,
         deleted_at TEXT
       )
     ''');
@@ -39,11 +40,12 @@ void main() {
       'created_at': '2026-01-01T00:00:00Z',
       'updated_at': '2026-01-01T00:00:00Z',
     });
-    await db.insert('documents', {'id': 'pdf-1', 'folder_id': 'banking'});
-    await db.insert('documents', {'id': 'pdf-2', 'folder_id': 'banking'});
+    await db.insert('documents', {'id': 'pdf-1', 'folder_id': 'banking', 'size_bytes': 1024});
+    await db.insert('documents', {'id': 'pdf-2', 'folder_id': 'banking', 'size_bytes': 2048});
     await db.insert('documents', {
       'id': 'deleted-pdf',
       'folder_id': 'banking',
+      'size_bytes': 4096,
       'deleted_at': '2026-01-02T00:00:00Z',
     });
 
@@ -55,5 +57,6 @@ void main() {
     expect(folders, hasLength(1));
     expect(folders.single.name, 'Banking');
     expect(folders.single.pdfCount, 2);
+    expect(folders.single.pdfBytes, 3072);
   });
 }

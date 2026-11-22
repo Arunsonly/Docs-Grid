@@ -411,6 +411,7 @@ void main() {
   Future<void> openActionBrowser(
     WidgetTester tester, {
     Future<bool> Function(String, String)? onMove,
+    Future<bool> Function(String, String)? onMoveWithinPhone,
     Future<bool> Function(String, String)? onRename,
     Future<bool> Function(String, String)? onTrash,
     Future<void> Function(String, String)? onShare,
@@ -429,6 +430,7 @@ void main() {
                   entries: actionEntries,
                   onOpenPdf: (_, __) async {},
                   onMovePdf: onMove,
+                  onMoveWithinPhone: onMoveWithinPhone,
                   onRenamePdf: onRename,
                   onSharePdf: onShare,
                   onToggleStarPdf: onStar,
@@ -485,26 +487,52 @@ void main() {
     expect(find.text('Download'), findsOneWidget);
   });
 
-  testWidgets('Phone PDF menu has requested six options in the exact order',
+  testWidgets('Phone PDF menu adds Move above Move to Grid without changing other actions',
       (tester) async {
     await openActionBrowser(tester,
       onShare: (_, __) async {},
       onStar: (_, __) async {},
       onRename: (_, __) async => false,
       onMove: (_, __) async => false,
+      onMoveWithinPhone: (_, __) async => false,
       onTrash: (_, __) async => false,
     );
     await tester.tap(find.byType(PopupMenuButton<String>));
     await tester.pumpAndSettle();
     final expected = [
       'Share PDF', 'Add to Star', 'Rename',
-      'Move to Grid', 'Delete', 'File Location',
+      'Move', 'Move to Grid', 'Delete', 'File Location',
     ];
     for (var index = 0; index < expected.length - 1; index++) {
       expect(tester.getTopLeft(find.text(expected[index])).dy,
           lessThan(tester.getTopLeft(find.text(expected[index + 1])).dy));
     }
-    expect(find.byType(PopupMenuItem<String>), findsNWidgets(6));
+    expect(find.byType(PopupMenuItem<String>), findsNWidgets(7));
+  });
+
+  testWidgets('Phone Move callback leaves all other actions unchanged',
+      (tester) async {
+    String? moved;
+    await openActionBrowser(tester,
+      onMoveWithinPhone: (uri, name) async {
+        moved = '$uri|$name';
+        return true;
+      },
+      onMove: (_, __) => throw StateError('Move to Grid must not run'),
+    );
+    await selectAction(tester, 'Move');
+    expect(moved, 'content://document/policy|Policy.pdf');
+    expect(find.text('Open browser'), findsOneWidget);
+  });
+
+  testWidgets('cancelled Phone Move keeps browser in its current folder',
+      (tester) async {
+    await openActionBrowser(tester,
+      onMoveWithinPhone: (_, __) async => false,
+    );
+    await selectAction(tester, 'Move');
+    expect(find.text('Personal Documents'), findsOneWidget);
+    expect(find.text('Policy.pdf'), findsOneWidget);
   });
 
   testWidgets('Phone Star invokes callback and leaves source file browser open',
@@ -654,6 +682,135 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('0 PDFs'), findsOneWidget);
     expect(find.byType(DocumentThumbnail), findsNothing);
+  });
+
+  testWidgets('Phone long-press keeps top row while floating toolbar sits over tabs',
+      (tester) async {
+    setTestViewport(tester);
+    var opened = 0;
+    List<Map<String, Object?>> shared = [];
+    const files = <Map<String, Object?>>[
+      {'name': 'Policies', 'uri': '', 'path': 'Internal/Policies',
+       'isDirectory': true, 'pdfCount': 2},
+      {'name': 'Alpha.pdf', 'uri': 'content://alpha',
+       'path': 'Internal/Policies', 'folderPath': 'Internal/Policies',
+       'isDirectory': false, 'sizeBytes': 1024},
+      {'name': 'Beta.pdf', 'uri': 'content://beta',
+       'path': 'Internal/Policies', 'folderPath': 'Internal/Policies',
+       'isDirectory': false, 'sizeBytes': 2048},
+    ];
+
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: PhoneStorageBrowserScreen(
+          rootName: 'Internal Storage',
+          embedded: true,
+          entries: files,
+          onOpenPdf: (_, __) async { opened++; },
+          onShareSelectedPdfs: (chosen) async { shared = chosen; },
+        ),
+        bottomNavigationBar: BottomNavigationBar(
+          items: [
+            BottomNavigationBarItem(icon: Icon(Icons.phone_android), label: 'Phone'),
+            BottomNavigationBarItem(icon: Icon(Icons.home), label: 'Home'),
+            BottomNavigationBarItem(icon: Icon(Icons.folder), label: 'Grid'),
+          ],
+        ),
+      ),
+    ));
+    await tester.tap(find.byKey(const ValueKey('phone-folder-Policies')));
+    await tester.pumpAndSettle();
+    await tester.longPress(find.text('Alpha.pdf'));
+    await tester.pumpAndSettle();
+
+    final bar = find.byKey(const ValueKey('phone-pdf-floating-selection-bar'));
+    expect(bar, findsOneWidget);
+    expect(tester.getBottomRight(bar).dy,
+        lessThan(tester.getTopLeft(find.byType(BottomNavigationBar)).dy));
+    expect(find.byTooltip('Back to folders'), findsOneWidget);
+    expect(find.byType(TextField), findsOneWidget);
+    expect(find.byKey(const ValueKey('storage-sort-filter')), findsOneWidget);
+    expect(find.text('1 selected'), findsOneWidget);
+    expect(opened, 0);
+
+    await tester.tap(find.byKey(const ValueKey('phone-pdf-select-all')));
+    await tester.pumpAndSettle();
+    expect(find.text('2 selected'), findsOneWidget);
+    expect(tester.widgetList<Checkbox>(find.byType(Checkbox))
+        .where((box) => box.value == true).length, 2);
+
+    await tester.tap(find.byKey(const ValueKey('phone-pdf-selected-more')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Details'));
+    await tester.pumpAndSettle();
+    expect(find.text('Selected PDFs: 2'), findsOneWidget);
+    expect(find.text('Total PDF size: 3.0 KB'), findsOneWidget);
+    await tester.tap(find.text('Close'));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const ValueKey('phone-pdf-share-selected')));
+    await tester.pumpAndSettle();
+    expect(shared.map((row) => row['uri']).toSet(),
+        {'content://alpha', 'content://beta'});
+    expect(opened, 0);
+
+    await tester.binding.handlePopRoute();
+    await tester.pumpAndSettle();
+    expect(bar, findsNothing);
+    expect(find.text('Alpha.pdf'), findsOneWidget);
+    expect(find.byTooltip('Back to folders'), findsOneWidget);
+  });
+
+  testWidgets('Phone root search supports selection and invokes batch action once',
+      (tester) async {
+    setTestViewport(tester);
+    var movedCalls = 0;
+    var trashCalls = 0;
+    var opened = 0;
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: PhoneStorageBrowserScreen(
+          rootName: 'Internal Storage',
+          embedded: true,
+          entries: const [
+            {'name': 'Report-A.pdf', 'uri': 'content://a',
+             'path': 'Internal/One', 'folderPath': 'Internal/One',
+             'isDirectory': false, 'sizeBytes': 100},
+            {'name': 'Report-B.pdf', 'uri': 'content://b',
+             'path': 'Internal/Two', 'folderPath': 'Internal/Two',
+             'isDirectory': false, 'sizeBytes': 200},
+          ],
+          onOpenPdf: (_, __) async { opened++; },
+          onMoveSelectedWithinPhone: (chosen) async {
+            movedCalls++;
+            expect(chosen.length, 2);
+            return false; // No sources changed; selection must remain.
+          },
+          onTrashSelectedPdfs: (chosen) async {
+            trashCalls++;
+            expect(chosen.length, 2);
+            return false;
+          },
+        ),
+      ),
+    ));
+    await tester.enterText(find.byType(TextField), 'Report');
+    await tester.pumpAndSettle();
+    await tester.longPress(find.text('Report-A.pdf'));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('phone-pdf-floating-selection-bar')), findsOneWidget);
+    expect(find.byType(TextField), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('phone-pdf-select-all')));
+    await tester.pumpAndSettle();
+    expect(find.text('2 selected'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('phone-pdf-move-selected')));
+    await tester.pumpAndSettle();
+    expect(movedCalls, 1);
+    expect(find.text('2 selected'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('phone-pdf-delete-selected')));
+    await tester.pumpAndSettle();
+    expect(trashCalls, 1);
+    expect(opened, 0);
   });
 
 }

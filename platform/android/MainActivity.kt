@@ -8,12 +8,17 @@ import android.database.ContentObserver
 import android.database.Cursor
 import android.net.Uri
 import android.content.ContentUris
+import android.content.ContentValues
 import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.os.Bundle
+import android.os.FileObserver
+import android.os.Environment
 import android.os.Handler
 import android.os.Looper
+import android.system.Os
 import android.provider.DocumentsContract
+import org.json.JSONObject
 import java.security.MessageDigest
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -34,15 +39,43 @@ class MainActivity : FlutterActivity() {
     private val mainHandler = Handler(Looper.getMainLooper())
     private val channelName = "docsgrid/storage"
     private val requestChooseFolder = 4817
+    private val requestMediaStoreRename = 4818
+    private data class PendingMediaRename(
+        val uri: Uri,
+        val name: String,
+        val result: MethodChannel.Result,
+    )
+    private var pendingMediaRename: PendingMediaRename? = null
     private var pendingFolderResult: MethodChannel.Result? = null
     private var pendingRecoverySelection = false
     private var storageChangeSink: EventChannel.EventSink? = null
     private val storageObservers = mutableListOf<ContentObserver>()
     private var storageObserversRegistered = false
+    private var storageObservationForeground = false
     private var storageChangeRunnable: Runnable? = null
+    private val pendingMediaUris = linkedSetOf<String>()
+    private val pendingLocalPaths = linkedSetOf<String>()
+    private var pendingUnscopedChange = false
+    // FileObserver complements MediaStore/SAF ContentObservers: a bounded,
+    // non-recursive, foreground-only watch on common local PDF locations.
+    private val localPdfFileObservers = mutableListOf<FileObserver>()
+    private val localPdfWatchEvents = FileObserver.CLOSE_WRITE or FileObserver.MOVED_TO or
+        FileObserver.MOVED_FROM or FileObserver.DELETE
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "docsgrid/app_lifecycle")
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "moveTaskToBack" -> {
+                        // Match the Android Home gesture at DocsGrid's tab root.
+                        // This keeps the Activity, SQLite handle and tab state
+                        // available for an instant warm resume.
+                        result.success(moveTaskToBack(true))
+                    }
+                    else -> result.notImplemented()
+                }
+            }
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "docsgrid/notifications")
             .setMethodCallHandler { call, result ->
                 when (call.method) {
@@ -101,16 +134,19 @@ class MainActivity : FlutterActivity() {
 
     override fun onResume() {
         super.onResume()
+        storageObservationForeground = true
         registerStorageChangeObservers()
     }
 
     override fun onPause() {
+        storageObservationForeground = false
         unregisterStorageChangeObservers()
         super.onPause()
     }
 
     private fun registerStorageChangeObservers() {
-        if (storageObserversRegistered || storageChangeSink == null) return
+        if (!storageObservationForeground ||
+            storageObserversRegistered || storageChangeSink == null) return
         val observedUris = linkedMapOf<String, Uri>()
         observedUris["media"] = MediaStore.Files.getContentUri("external")
         if (android.os.Build.VERSION.SDK_INT >= 29) {
@@ -140,7 +176,7 @@ class MainActivity : FlutterActivity() {
                     }
 
                     override fun onChange(selfChange: Boolean, changedUri: Uri?) {
-                        scheduleStorageChangeEvent()
+                        scheduleStorageChangeEvent(changedUri = changedUri)
                     }
                 }
                 contentResolver.registerContentObserver(uri, true, observer)
@@ -150,11 +186,16 @@ class MainActivity : FlutterActivity() {
             }
         }
         storageObserversRegistered = true
+        startLocalPdfFileObservers()
     }
 
     private fun unregisterStorageChangeObservers() {
+        stopLocalPdfFileObservers()
         storageChangeRunnable?.let { mainHandler.removeCallbacks(it) }
         storageChangeRunnable = null
+        pendingMediaUris.clear()
+        pendingLocalPaths.clear()
+        pendingUnscopedChange = false
         storageObservers.forEach { observer ->
             try { contentResolver.unregisterContentObserver(observer) } catch (_: Exception) {}
         }
@@ -162,16 +203,226 @@ class MainActivity : FlutterActivity() {
         storageObserversRegistered = false
     }
 
-    private fun scheduleStorageChangeEvent() {
+    private fun startLocalPdfFileObservers() {
+        if (localPdfFileObservers.isNotEmpty()) return
+        // Do not request any additional permission. Without access, the
+        // existing ContentObservers and resume refresh remain authoritative.
+        if (android.os.Build.VERSION.SDK_INT >= 30 &&
+            !Environment.isExternalStorageManager()) return
+
+        val root = try {
+            Environment.getExternalStorageDirectory().canonicalFile
+        } catch (_: Exception) {
+            return
+        }
+        if (!root.isDirectory || !root.canRead()) return
+
+        // Android FileObserver does not watch subdirectories recursively.
+        // Restrict its scope to known, high-value PDF download locations;
+        // MediaStore/SAF and resume reconciliation still cover other paths.
+        // Never monitor DocsGrid's own portable data or backup directories.
+        val relativeDirectories = listOf(
+            "", "Download", "Downloads", "Documents", "Bluetooth",
+            "DCIM", "Pictures",
+            "WhatsApp/Media/WhatsApp Documents",
+            "Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Documents",
+            "Android/media/com.whatsapp.w4b/WhatsApp Business/Media/WhatsApp Business Documents",
+            "Telegram/Telegram Documents",
+            "Android/media/org.telegram.messenger/Telegram/Telegram Documents"
+        )
+        val rootPrefix = root.path + java.io.File.separator
+        val seen = hashSetOf<String>()
+        for (relative in relativeDirectories) {
+            if (localPdfFileObservers.size >= 16) break
+            val directory = try {
+                java.io.File(root, relative).canonicalFile
+            } catch (_: Exception) {
+                continue
+            }
+            if ((directory != root && !directory.path.startsWith(rootPrefix)) ||
+                !directory.isDirectory || !directory.canRead() ||
+                !seen.add(directory.path)) continue
+            try {
+                // String constructor remains available on older Android
+                // releases; FileObserver(File, mask) requires API 29.
+                @Suppress("DEPRECATION")
+                val observer = object : FileObserver(directory.path, localPdfWatchEvents) {
+                    override fun onEvent(event: Int, path: String?) {
+                        if (path == null || !path.endsWith(".pdf", ignoreCase = true) ||
+                            (event and localPdfWatchEvents) == 0) return
+                        // Callbacks arrive off the UI thread. Reuse the
+                        // existing 650 ms ContentObserver debounce, never
+                        // perform a file scan or filesystem write here.
+                        mainHandler.post {
+                            if (storageObservationForeground &&
+                                storageObserversRegistered &&
+                                storageChangeSink != null) {
+                                scheduleStorageChangeEvent(
+                                    localPath = java.io.File(directory, path).absolutePath
+                                )
+                            }
+                        }
+                    }
+                }
+                observer.startWatching()
+                localPdfFileObservers.add(observer) // strong ref until stopWatching
+            } catch (_: Exception) {
+                // An inaccessible/OEM-specific directory must not break the app.
+            }
+        }
+    }
+
+    private fun stopLocalPdfFileObservers() {
+        for (observer in localPdfFileObservers) {
+            try {
+                observer.stopWatching()
+            } catch (_: Exception) {
+                // Failure to stop a single watch must not interrupt lifecycle.
+            }
+        }
+        localPdfFileObservers.clear()
+    }
+
+    private fun scheduleStorageChangeEvent(
+        changedUri: Uri? = null,
+        localPath: String? = null
+    ) {
+        // Precise MediaStore item URIs and local paths can be refreshed without
+        // querying the entire PDF library. All other events reconcile fully.
+        if (!pendingUnscopedChange) {
+            if (localPath != null) {
+                pendingLocalPaths.add(localPath)
+            } else if (changedUri != null && changedUri.authority == "media" &&
+                changedUri.pathSegments.size == 3 &&
+                changedUri.pathSegments[1] == "file" &&
+                changedUri.lastPathSegment?.toLongOrNull() != null) {
+                pendingMediaUris.add(changedUri.toString())
+            } else {
+                pendingUnscopedChange = true
+            }
+            if (pendingMediaUris.size + pendingLocalPaths.size > 48) {
+                pendingUnscopedChange = true
+            }
+            if (pendingUnscopedChange) {
+                // Never retain an unbounded burst of per-file paths/URIs.
+                // An opaque/overflowed event will get one full reconciliation.
+                pendingMediaUris.clear()
+                pendingLocalPaths.clear()
+            }
+        }
         storageChangeRunnable?.let { mainHandler.removeCallbacks(it) }
         val task = Runnable {
-            storageChangeSink?.success(mapOf("changedAt" to System.currentTimeMillis()))
+            storageChangeSink?.success(mapOf(
+                "changedAt" to System.currentTimeMillis(),
+                "mediaUris" to pendingMediaUris.toList(),
+                "paths" to pendingLocalPaths.toList(),
+                "requiresFullRefresh" to pendingUnscopedChange
+            ))
+            pendingMediaUris.clear()
+            pendingLocalPaths.clear()
+            pendingUnscopedChange = false
         }
         storageChangeRunnable = task
         mainHandler.postDelayed(task, 650L)
     }
 
-    private fun queryPhonePdfIndex(): Map<String, Any> {
+    private fun queryPhonePdfChanges(
+        mediaUris: List<String>, localPaths: List<String>
+    ): Map<String, Any> {
+        // A bounded, fail-closed fast path. Never modify the filesystem here.
+        if (android.os.Build.VERSION.SDK_INT < 29 ||
+            (android.os.Build.VERSION.SDK_INT >= 30 &&
+                !Environment.isExternalStorageManager()) ||
+            mediaUris.size + localPaths.size !in 1..48) {
+            return mapOf("complete" to false)
+        }
+        val volumeNames = MediaStore.getExternalVolumeNames(this)
+        val targets = linkedMapOf<String, MutableList<Pair<String, List<String>>>>()
+        val touchedUris = linkedSetOf<String>()
+        val touchedPaths = linkedSetOf<String>()
+        val watchedFiles = linkedMapOf<String, java.io.File>()
+
+        for (value in mediaUris) {
+            val uri = try { Uri.parse(value) }
+                catch (_: Exception) { return mapOf("complete" to false) }
+            val parts = uri.pathSegments
+            if (uri.scheme != "content" || uri.authority != "media" ||
+                parts.size != 3 || parts[1] != "file" ||
+                parts[2].toLongOrNull() == null || parts[0] !in volumeNames) {
+                return mapOf("complete" to false)
+            }
+            touchedUris.add(value)
+            targets.getOrPut(parts[0]) { mutableListOf() }
+                .add(MediaStore.MediaColumns._ID + " = ?" to listOf(parts[2]))
+        }
+
+        if (localPaths.isNotEmpty()) {
+            val root = try { Environment.getExternalStorageDirectory().canonicalFile }
+                catch (_: Exception) { return mapOf("complete" to false) }
+            val prefix = root.path + java.io.File.separator
+            if (!root.isDirectory || MediaStore.VOLUME_EXTERNAL_PRIMARY !in volumeNames) {
+                return mapOf("complete" to false)
+            }
+            for (raw in localPaths) {
+                val file = try { java.io.File(raw).canonicalFile }
+                    catch (_: Exception) { return mapOf("complete" to false) }
+                if (!file.path.startsWith(prefix) || !file.name.endsWith(".pdf", true) ||
+                    file.name.length > 255) return mapOf("complete" to false)
+                val relative = file.path.substring(prefix.length)
+                    .replace(java.io.File.separatorChar, '/')
+                val folder = relative.substringBeforeLast('/', "")
+                val relativeFolder = if (folder.isEmpty()) "" else "$folder/"
+                val key = "Internal/$relative"
+                touchedPaths.add(key)
+                watchedFiles[key] = file
+                targets.getOrPut(MediaStore.VOLUME_EXTERNAL_PRIMARY) { mutableListOf() }
+                    .add(
+                        "(" + MediaStore.MediaColumns.RELATIVE_PATH + " = ? AND " +
+                            MediaStore.MediaColumns.DISPLAY_NAME + " = ?)" to
+                            listOf(relativeFolder, file.name)
+                    )
+            }
+        }
+        if (targets.isEmpty()) return mapOf("complete" to false)
+        val scoped = targets.mapValues { (_, predicates) ->
+            Pair(predicates.joinToString(" OR ", "(", ")") { it.first },
+                predicates.flatMap { it.second })
+        }
+        val result = queryPhonePdfIndex(scoped)
+        if (result["complete"] != true) return mapOf("complete" to false)
+        @Suppress("UNCHECKED_CAST")
+        val found = result["entries"] as List<Map<String, Any>>
+
+        // MediaStore occasionally retains rows for recently deleted files.
+        // Do not re-add a row for an absent path merely because it is indexed.
+        val absentPaths = watchedFiles.filterValues { !it.isFile }.keys
+        val entries = found.filterNot { item ->
+            val folder = (item["folderPath"] as? String).orEmpty().ifEmpty { "Internal" }
+            val name = item["name"] as? String ?: ""
+            "$folder/$name" in absentPaths
+        }
+
+        // File creation may precede MediaStore indexing. An existing local
+        // PDF without a matching row is NOT proof of deletion: reconcile.
+        for ((key, file) in watchedFiles) {
+            if (file.isFile && entries.none { item ->
+                val folder = (item["folderPath"] as? String).orEmpty().ifEmpty { "Internal" }
+                "$folder/${item["name"]}" == key
+            }) return mapOf("complete" to false)
+        }
+        return mapOf(
+            "complete" to true,
+            "entries" to entries,
+            "touchedUris" to touchedUris.toList(),
+            "touchedPaths" to touchedPaths.toList(),
+            "mountedVolumes" to volumeNames.toList().sorted(),
+            "volumes" to (result["volumes"] ?: emptyMap<String, Any>())
+        )
+    }
+
+    private fun queryPhonePdfIndex(
+        scopedSelections: Map<String, Pair<String, List<String>>>? = null
+    ): Map<String, Any> {
         if (android.os.Build.VERSION.SDK_INT >= 30 &&
             !android.os.Environment.isExternalStorageManager()) {
             throw SecurityException("Allow Full internal storage access to index all shared PDF files.")
@@ -190,6 +441,7 @@ class MainActivity : FlutterActivity() {
         var complete = android.os.Build.VERSION.SDK_INT >= 29
 
         volumes.forEachIndexed { volumeIndex, volumeName ->
+            if (scopedSelections != null && volumeName !in scopedSelections) return@forEachIndexed
             try {
                 val collection = if (android.os.Build.VERSION.SDK_INT >= 29) {
                     MediaStore.Files.getContentUri(volumeName)
@@ -248,11 +500,13 @@ class MainActivity : FlutterActivity() {
                 } else {
                     "$mimeIndexName = ? OR $nameIndexName LIKE ?"
                 }
+                val scoped = scopedSelections?.get(volumeName)
                 contentResolver.query(
                     collection,
                     projection.toTypedArray(),
-                    pdfSelection,
-                    arrayOf("application/pdf", "%.pdf"),
+                    if (scoped == null) pdfSelection else "$pdfSelection AND (${scoped.first})",
+                    if (scoped == null) arrayOf("application/pdf", "%.pdf") else
+                        arrayOf("application/pdf", "%.pdf") + scoped.second.toTypedArray(),
                     "$modifiedIndexName DESC"
                 )?.use { cursor ->
                     val idIndex = cursor.getColumnIndex(idIndexName)
@@ -288,7 +542,12 @@ class MainActivity : FlutterActivity() {
                                 it == "recycle_bin" || it == "recycle bin"
                         }) continue
                         // DocsGrid-managed files belong to the Grid library, not Phone storage.
-                        if (normalized.startsWith("android/media/com.docsgrid/") ||
+                        // Match the installed applicationId, not the Kotlin namespace.
+                        // Keep former managed roots excluded from Phone results too.
+                        val activeManagedRoot = "android/media/${packageName.lowercase(java.util.Locale.ROOT)}"
+                        if (normalized.startsWith("$activeManagedRoot/") ||
+                            normalized == activeManagedRoot ||
+                            normalized.startsWith("android/media/com.docsgrid/") ||
                             normalized == "android/media/com.docsgrid" ||
                             normalized.startsWith("android/media/docsgrid/") ||
                             normalized == "android/media/docsgrid") {
@@ -485,7 +744,7 @@ class MainActivity : FlutterActivity() {
                                     "Android/media"
                                 )
                                 val legacyRoot = java.io.File(mediaRoot, "DocsGrid")
-                                val root = java.io.File(mediaRoot, "com.docsgrid")
+                                val root = java.io.File(mediaRoot, packageName)
                                 val myFiles = java.io.File(root, "My Files")
                                 val unfiled = java.io.File(myFiles, "Unfiled")
                                 val folders = java.io.File(myFiles, "Folders")
@@ -583,6 +842,11 @@ class MainActivity : FlutterActivity() {
                                 })
                             }
                             "queryPhonePdfIndex" -> result.success(queryPhonePdfIndex())
+                            "queryPhonePdfChanges" -> {
+                                val mediaUris = call.argument<List<String>>("mediaUris") ?: emptyList()
+                                val paths = call.argument<List<String>>("paths") ?: emptyList()
+                                result.success(queryPhonePdfChanges(mediaUris, paths))
+                            }
                             "getAccessibleScanRoots" -> {
                                 val roots = linkedMapOf<String, Map<String, String>>()
                                 val hasAllFiles = android.os.Build.VERSION.SDK_INT < 30 ||
@@ -633,7 +897,49 @@ class MainActivity : FlutterActivity() {
                                 result.success(roots.values.toList())
                             }
                             "consumeSharedPdfs" -> result.success(consumeSharedPdfs(incomingShareIntent))
+                            "finishSharedPdf" -> {
+                                val path = call.argument<String>("path")
+                                    ?: throw IllegalArgumentException("Staged PDF path missing")
+                                val outcome = call.argument<String>("outcome")
+                                    ?: throw IllegalArgumentException("Staged PDF outcome missing")
+                                result.success(finishSharedPdf(path, outcome))
+                            }
                             "checkStorageAccess" -> result.success(checkStorageAccess())
+                            "resolveZipRestoreFileLocations" -> {
+                                // ZIP extraction uses dart:io. Only identify the *same*
+                                // existing user-selected primary-storage directories as
+                                // file-backed paths, without changing any saved preferences.
+                                val allowed = android.os.Build.VERSION.SDK_INT < 30 ||
+                                    android.os.Environment.isExternalStorageManager()
+                                if (!allowed) {
+                                    result.error("RESTORE_PERMISSION_REQUIRED",
+                                        "Full internal storage access is not currently granted to DocsGrid.", null)
+                                } else {
+                                    val selectedDocuments = call.argument<String>("documentsUri")
+                                    val selectedLibrary = call.argument<String>("libraryUri")
+                                    val prefs = getSharedPreferences("docsgrid_storage", MODE_PRIVATE)
+                                    val savedLibrary = prefs.getString("folders_uri", null)
+                                        ?: prefs.getString("my_files_uri", null)
+                                    if (selectedDocuments == null || selectedLibrary == null ||
+                                        selectedDocuments != prefs.getString("documents_uri", null) ||
+                                        selectedLibrary != savedLibrary) {
+                                        result.error("RESTORE_LOCATION_CHANGED",
+                                            "DocsGrid storage locations changed during restore preparation. Reopen Backup & Restore.", null)
+                                    } else {
+                                        val documents = localFileBackedRestoreDirectory(selectedDocuments)
+                                        val folders = localFileBackedRestoreDirectory(selectedLibrary)
+                                        if (documents == null || folders == null) {
+                                            result.error("RESTORE_UNSUPPORTED_PROVIDER",
+                                                "The selected DocsGrid storage folder is not a writable local primary-storage folder. No PDF or database was changed.", null)
+                                        } else {
+                                            result.success(mapOf(
+                                                "documentsUri" to documents,
+                                                "libraryUri" to folders
+                                            ))
+                                        }
+                                    }
+                                }
+                            }
                             "hasAllFilesAccess" -> result.success(
                                 android.os.Build.VERSION.SDK_INT < 30 ||
                                     android.os.Environment.isExternalStorageManager()
@@ -735,6 +1041,11 @@ class MainActivity : FlutterActivity() {
                                 val uri = Uri.parse(call.argument<String>("uri")!!)
                                 result.success(digest(uri).joinToString("") { "%02x".format(it) })
                             }
+                            "samePhysicalPdf" -> {
+                                val source = Uri.parse(call.argument<String>("sourceUri")!!)
+                                val other = Uri.parse(call.argument<String>("otherUri")!!)
+                                result.success(samePhysicalPdf(source, other))
+                            }
                             "writeTextFile" -> {
                                 val parent = Uri.parse(call.argument<String>("parentUri")!!)
                                 val name = call.argument<String>("name")!!
@@ -743,11 +1054,28 @@ class MainActivity : FlutterActivity() {
                             }
                             "readTextFile" -> {
                                 val uri = Uri.parse(call.argument<String>("uri")!!)
-                                val bytes = if (uri.scheme == "file") {
-                                    fileForUri(uri).readBytes()
+                                // Never read attacker-controlled metadata without a bound.
+                                // The 64 MiB ceiling also applies when SAF size is unknown.
+                                val maxBytes = 64L * 1024 * 1024
+                                val input = if (uri.scheme == "file") {
+                                    fileForUri(uri).inputStream()
                                 } else {
-                                    contentResolver.openInputStream(uri)?.use { it.readBytes() }
-                                        ?: throw IllegalStateException("Could not read metadata file.")
+                                    contentResolver.openInputStream(uri)
+                                } ?: throw IllegalStateException("Could not read metadata file.")
+                                val bytes = input.use { stream ->
+                                    val output = java.io.ByteArrayOutputStream()
+                                    val chunk = ByteArray(64 * 1024)
+                                    var total = 0L
+                                    while (true) {
+                                        val read = stream.read(chunk)
+                                        if (read < 0) break
+                                        total += read
+                                        if (total > maxBytes) {
+                                            throw IllegalStateException("Metadata exceeds the supported 64 MiB read limit.")
+                                        }
+                                        output.write(chunk, 0, read)
+                                    }
+                                    output.toByteArray()
                                 }
                                 result.success(String(bytes, Charsets.UTF_8))
                             }
@@ -773,14 +1101,54 @@ class MainActivity : FlutterActivity() {
                             "renamePdf" -> {
                                 val uri = Uri.parse(call.argument<String>("uri")!!)
                                 val name = call.argument<String>("name")!!
+                                validateLeafName(name)
                                 val renamed = if (uri.scheme == "file") {
                                     val source = fileForUri(uri)
-                                    validateLeafName(name)
                                     val target = java.io.File(source.parentFile, name)
                                     if (target.exists() || !source.renameTo(target)) {
                                         throw IllegalStateException("Android could not rename this PDF.")
                                     }
                                     Uri.fromFile(target)
+                                } else if (uri.authority == MediaStore.AUTHORITY) {
+                                    // MediaStore content://media items are NOT DocumentsProvider URIs.
+                                    val values = ContentValues().apply {
+                                        put(MediaStore.MediaColumns.DISPLAY_NAME, name)
+                                    }
+                                    try {
+                                        if (contentResolver.update(uri, values, null, null) != 1) {
+                                            throw IllegalStateException("MediaStore did not rename this PDF.")
+                                        }
+                                    } catch (permission: SecurityException) {
+                                        if (android.os.Build.VERSION.SDK_INT < 29) throw permission
+                                        val consent = if (android.os.Build.VERSION.SDK_INT >= 30) {
+                                            MediaStore.createWriteRequest(contentResolver, listOf(uri))
+                                        } else {
+                                            (permission as? android.app.RecoverableSecurityException)
+                                                ?.userAction?.actionIntent
+                                                ?: throw permission
+                                        }
+                                        // Only the requesting user may grant a MediaStore write.
+                                        // The native call remains pending until Activity result.
+                                        mainHandler.post {
+                                            if (pendingMediaRename != null) {
+                                                result.error("BUSY", "Another PDF rename permission request is active.", null)
+                                            } else {
+                                                pendingMediaRename = PendingMediaRename(uri, name, result)
+                                                try {
+                                                    startIntentSenderForResult(
+                                                        consent.intentSender,
+                                                        requestMediaStoreRename,
+                                                        null, 0, 0, 0,
+                                                    )
+                                                } catch (error: Exception) {
+                                                    pendingMediaRename = null
+                                                    result.error("RENAME_PERMISSION", error.message ?: "Rename permission could not be requested.", null)
+                                                }
+                                            }
+                                        }
+                                        return
+                                    }
+                                    uri
                                 } else {
                                     DocumentsContract.renameDocument(contentResolver, uri, name)
                                         ?: throw IllegalStateException("Android could not rename this PDF.")
@@ -875,12 +1243,16 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun onDestroy() {
+        storageObservationForeground = false
+        unregisterStorageChangeObservers()
         storageExecutor.shutdown()
         super.onDestroy()
     }
 
     private fun consumeSharedPdfs(incomingIntent: Intent? = intent): List<Map<String, String>> {
-        val incoming = incomingIntent ?: return emptyList()
+        // Restart must enumerate existing private staged PDFs even when
+        // Android did not provide a new share intent to this Activity.
+        val incoming = incomingIntent ?: Intent()
         val uris = linkedSetOf<Uri>()
         if (incoming.action == Intent.ACTION_SEND) {
             val single = if (android.os.Build.VERSION.SDK_INT >= 33) {
@@ -899,11 +1271,38 @@ class MainActivity : FlutterActivity() {
             for (index in 0 until clip.itemCount) clip.getItemAt(index).uri?.let { uris.add(it) }
         }
         val output = mutableListOf<Map<String, String>>()
-        val shareDir = java.io.File(cacheDir, "incoming_docs").apply { mkdirs() }
-        // These files are only hand-off copies. Remove leftovers from a prior
-        // interrupted share/import before staging the current incoming items.
-        shareDir.listFiles()?.forEach { stale -> try { stale.delete() } catch (_: Exception) {} }
+        // Hand-off files must survive activity resume and process restart.
+        // cacheDir may be cleared by Android; keep only these private staged
+        // imports in the app's managed files directory until user completion.
+        val shareDir = java.io.File(filesDir, "incoming_docs").apply { mkdirs() }
+        // Never blindly delete a previously accepted but uncommitted import.
+        // Incomplete .part copies are ignored, not presented as valid PDFs.
+        val pendingSources = mutableSetOf<String>()
+        val metadata = shareDir.listFiles()?.filter {
+            it.isFile && it.name.endsWith(".json")
+        } ?: emptyList()
+        val restoredNames = mutableMapOf<String, String>()
+        for (record in metadata) {
+            try {
+                val json = JSONObject(record.readText())
+                val id = record.name.removeSuffix(".json")
+                val pendingFile = shareDir.listFiles()?.firstOrNull {
+                    it.isFile && it.name.startsWith("${id}_") && it.name.endsWith(".pdf")
+                }
+                if (pendingFile != null) {
+                    restoredNames[pendingFile.name] = json.optString("name", "Shared document.pdf")
+                    pendingSources.add(json.optString("sourceUri"))
+                }
+            } catch (_: Exception) { /* Old staged bytes remain discoverable. */ }
+        }
+        shareDir.listFiles()?.filter {
+            it.isFile && it.name.endsWith(".pdf")
+        }?.forEach {
+            output.add(mapOf("path" to it.absolutePath, "name" to
+                (restoredNames[it.name] ?: it.name.substringAfter('_', "Shared document.pdf"))))
+        }
         uris.forEachIndexed { index, uri ->
+            if (pendingSources.contains(uri.toString())) return@forEachIndexed
             try {
                 val mime = contentResolver.getType(uri)
                 var displayName: String? = null
@@ -916,19 +1315,96 @@ class MainActivity : FlutterActivity() {
                 val name = displayName ?: "Shared_Document_${index + 1}.pdf"
                 if (mime != "application/pdf" && !name.lowercase().endsWith(".pdf")) return@forEachIndexed
                 val safe = name.replace(Regex("[^A-Za-z0-9._ -]"), "_")
-                val target = java.io.File(shareDir, "${System.currentTimeMillis()}_$safe")
-                contentResolver.openInputStream(uri)?.use { input ->
-                    target.outputStream().buffered().use { outputStream -> input.copyTo(outputStream, 64 * 1024) }
-                } ?: return@forEachIndexed
-                val validPdf = target.inputStream().use { input ->
-                    val header = ByteArray(5)
-                    input.read(header) == 5 && String(header) == "%PDF-"
+                    .let { if (it.lowercase().endsWith(".pdf")) it else "$it.pdf" }
+                val fileId = java.util.UUID.randomUUID().toString()
+                val target = java.io.File(shareDir, "${fileId}_$safe")
+                val partial = java.io.File(shareDir, "${fileId}.part")
+                try {
+                    contentResolver.openInputStream(uri)?.use { input ->
+                        partial.outputStream().buffered().use { outputStream ->
+                            input.copyTo(outputStream, 64 * 1024)
+                            outputStream.flush()
+                        }
+                    } ?: return@forEachIndexed
+                    val validPdf = partial.inputStream().use { input ->
+                        val header = ByteArray(5)
+                        input.read(header) == 5 && String(header) == "%PDF-"
+                    }
+                    if (validPdf && partial.renameTo(target)) {
+                        // The private sidecar is the durable import ledger.
+                        // Commit/cancel removes it only after the Dart result.
+                        val record = JSONObject()
+                            .put("format", "DocsGridIncomingShare")
+                            .put("version", 1)
+                            .put("id", fileId)
+                            .put("name", name)
+                            .put("sourceUri", uri.toString())
+                            .put("state", "staged")
+                        val sidecar = java.io.File(shareDir, "$fileId.json")
+                        sidecar.outputStream().use { outputStream ->
+                            outputStream.write(record.toString().toByteArray(Charsets.UTF_8))
+                            outputStream.flush()
+                            outputStream.fd.sync()
+                        }
+                        output.add(mapOf("path" to target.absolutePath, "name" to name))
+                    }
+                } finally {
+                    if (partial.exists()) partial.delete()
                 }
-                if (validPdf) output.add(mapOf("path" to target.absolutePath, "name" to name))
-                else target.delete()
             } catch (_: Exception) { }
         }
         return output
+    }
+
+    /**
+     * A SAF URI is not a filesystem path. Only Android's own primary shared
+     * storage DocumentsProvider has a reliable local equivalent here.
+     * Do not manufacture paths for USB, SD, cloud or arbitrary providers.
+     *
+     * This does not create, move, delete, or change any selected storage root.
+     */
+    private fun localFileBackedRestoreDirectory(rawUri: String): String? {
+        return try {
+            val uri = Uri.parse(rawUri)
+            if (uri.scheme != "content" ||
+                uri.authority != "com.android.externalstorage.documents") return null
+            val documentId = DocumentsContract.getDocumentId(uri)
+            if (!documentId.startsWith("primary:", ignoreCase = true)) return null
+            val relative = documentId.substringAfter(':').replace('\\', '/')
+            if (relative.isBlank() || relative.startsWith("/") ||
+                relative.split('/').any { it.isBlank() || it == "." || it == ".." }) return null
+            val sharedRoot = Environment.getExternalStorageDirectory().canonicalFile
+            val directory = java.io.File(sharedRoot, relative).canonicalFile
+            if (!directory.path.startsWith(sharedRoot.path + java.io.File.separator) ||
+                !directory.isDirectory || !directory.canRead() || !directory.canWrite()) return null
+            Uri.fromFile(directory).toString()
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /** Only terminal outcomes may delete an app-owned staged PDF. */
+    private fun finishSharedPdf(path: String, outcome: String): Boolean {
+        if (outcome != "committed" && outcome != "cancelled") {
+            throw IllegalArgumentException("Unsupported staged import outcome")
+        }
+        val root = java.io.File(filesDir, "incoming_docs").canonicalFile
+        val candidate = java.io.File(path).canonicalFile
+        if (candidate.parentFile != root || !candidate.name.endsWith(".pdf")) {
+            throw SecurityException("Not a DocsGrid staged import")
+        }
+        val id = candidate.name.substringBefore('_')
+        if (!Regex("^[0-9a-fA-F-]{36}$").matches(id)) {
+            throw SecurityException("Invalid DocsGrid staged import identity")
+        }
+        if (candidate.exists() && !candidate.delete()) {
+            throw IllegalStateException("Could not clear completed staged PDF")
+        }
+        val sidecar = java.io.File(root, "$id.json")
+        if (sidecar.exists() && !sidecar.delete()) {
+            throw IllegalStateException("Could not clear completed import ledger")
+        }
+        return true
     }
 
     private fun checkStorageAccess(): Map<String, String> {
@@ -1438,6 +1914,28 @@ class MainActivity : FlutterActivity() {
         return md.digest()
     }
 
+    // Compare actual OS file identity (device + inode), not identical content
+    // hashes or different URI spellings. If a provider cannot expose a genuine
+    // file descriptor, fail closed instead of risking a managed Grid PDF.
+    private fun pdfPhysicalIdentity(uri: Uri): Pair<Long, Long> {
+        val stat = if (uri.scheme == "file" || uri.scheme.isNullOrEmpty()) {
+            val local = if (uri.scheme == "file") fileForUri(uri)
+                else java.io.File(uri.path ?: throw IllegalStateException("Missing PDF path."))
+            Os.stat(local.canonicalPath)
+        } else {
+            contentResolver.openFileDescriptor(uri, "r")?.use { descriptor ->
+                Os.fstat(descriptor.fileDescriptor)
+            } ?: throw IllegalStateException("Provider cannot expose PDF identity.")
+        }
+        if (stat.st_ino <= 0L || stat.st_dev <= 0L) {
+            throw IllegalStateException("PDF physical identity was not available.")
+        }
+        return Pair(stat.st_dev, stat.st_ino)
+    }
+
+    private fun samePhysicalPdf(a: Uri, b: Uri): Boolean =
+        pdfPhysicalIdentity(a) == pdfPhysicalIdentity(b)
+
     // Copy and verify without deleting the source. Dart updates SQLite first,
     // then explicitly deletes the source after the metadata transaction commits.
     private fun copyPdf(source: Uri, parentUri: Uri, name: String): Uri {
@@ -1517,6 +2015,30 @@ class MainActivity : FlutterActivity() {
     @Deprecated("Deprecated in Android API; retained for broad device compatibility")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == requestMediaStoreRename) {
+            val pending = pendingMediaRename
+            pendingMediaRename = null
+            if (pending == null) return
+            if (resultCode != Activity.RESULT_OK) {
+                pending.result.error("RENAME_CANCELLED", "The user did not grant permission to rename this PDF.", null)
+                return
+            }
+            enqueueStorageCall(pending.result) {
+                val callback = onMainThreadResult(pending.result)
+                try {
+                    val values = ContentValues().apply {
+                        put(MediaStore.MediaColumns.DISPLAY_NAME, pending.name)
+                    }
+                    if (contentResolver.update(pending.uri, values, null, null) != 1) {
+                        throw IllegalStateException("MediaStore did not rename the PDF after user consent.")
+                    }
+                    callback.success(pending.uri.toString())
+                } catch (error: Exception) {
+                    callback.error("RENAME_FAILED", error.message ?: "MediaStore rename failed.", null)
+                }
+            }
+            return
+        }
         if (requestCode != requestChooseFolder) return
         val callback = pendingFolderResult
         pendingFolderResult = null
@@ -1555,19 +2077,23 @@ class MainActivity : FlutterActivity() {
                         if (index >= 0) cursor.getString(index) else null
                     } else null
                 } ?: throw IllegalStateException("Could not read the selected folder name.")
-                // Accept both the current Android/media/com.docsgrid layout and
-                // older user-selected DocsGrid trees. When the parent is selected,
-                // prefer the current canonical root and fall back to the legacy name.
+                // Recovery is read-only: accept this app's package-named root,
+                // plus both previous managed names, without moving or creating data.
                 val docsGrid = if (
-                    selectedName.equals("DocsGrid", ignoreCase = true) ||
-                    selectedName.equals("com.docsgrid", ignoreCase = true)
+                    selectedName.equals(packageName, ignoreCase = true) ||
+                    selectedName.equals("com.docsgrid", ignoreCase = true) ||
+                    selectedName.equals("DocsGrid", ignoreCase = true)
                 ) {
                     selectedRoot
                 } else {
                     try {
-                        findChildUri(uri, "com.docsgrid")
+                        findChildUri(uri, packageName)
                     } catch (_: MissingStorageChildException) {
-                        findChildUri(uri, "DocsGrid")
+                        try {
+                            findChildUri(uri, "com.docsgrid")
+                        } catch (_: MissingStorageChildException) {
+                            findChildUri(uri, "DocsGrid")
+                        }
                     }
                 }
 

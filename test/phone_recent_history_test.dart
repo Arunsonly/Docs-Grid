@@ -32,6 +32,23 @@ void main() {
         reason: 'A repeated move/refresh must never remove unrelated history.');
   });
 
+  test('renamed PDF preserves its Opened time and completed-scan baseline', () async {
+    const before = 'content://media/external_primary/file/120';
+    const after = 'content://media/external_primary/file/230';
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList(PhoneRecentHistory.storageKey, [item(before, 'Old.pdf')]);
+    await prefs.setString(PhoneRecentHistory.observedFilesKey,
+        jsonEncode({'media:external_primary': [before]}));
+    await PhoneRecentHistory.updateRenamedReference(before, after, 'New.pdf');
+    final record = jsonDecode(
+        prefs.getStringList(PhoneRecentHistory.storageKey)!.single) as Map;
+    expect(record['uri'], after);
+    expect(record['name'], 'New.pdf');
+    expect(record['openedAt'], '2026-11-17T11:00:00Z');
+    expect(jsonDecode(prefs.getString(PhoneRecentHistory.observedFilesKey)!),
+        {'media:external_primary': [after]});
+  });
+
   test('failed or duplicate move should not mutate phone history', () async {
     const source = 'content://media/external_primary/file/1000702003';
     final prefs = await SharedPreferences.getInstance();
@@ -99,6 +116,33 @@ void main() {
     'lastModified': lastModified, 'folderPath': folder,
     'isDirectory': false,
   };
+
+
+  test('Missing vs Deleted Detection: an incomplete scan cannot evict an offline PDF shortcut', () async {
+    final prefs = await SharedPreferences.getInstance();
+    const primary = 'content://media/external_primary/file/17';
+    const sd = 'content://media/9999-1234/file/21';
+    const saf = 'content://com.android.externalstorage.documents/document/primary%3AShared%2FUntitled%2FPolicy.pdf';
+    final before = [
+      item(primary, 'Primary.pdf'),
+      item(sd, 'Offline SD PDF.pdf'),
+      item(saf, 'Shared Untitled.pdf'),
+    ];
+    await prefs.setStringList(PhoneRecentHistory.storageKey, before);
+    expect(await PhoneRecentHistory.pruneAbsentMediaStoreUris(
+        {}, scannedVolumes: {}), 0);
+    expect(prefs.getStringList(PhoneRecentHistory.storageKey), before);
+    // Complete primary scan prunes ONLY one stale metadata shortcut.
+    expect(await PhoneRecentHistory.pruneAbsentMediaStoreUris(
+        {}, scannedVolumes: {'external_primary'}), 1);
+    expect(prefs.getStringList(PhoneRecentHistory.storageKey),
+        [before[1], before[2]]);
+    // A reconnected SD card showing the PDF leaves its saved URI intact.
+    expect(await PhoneRecentHistory.pruneAbsentMediaStoreUris(
+        {sd}, scannedVolumes: {'9999-1234'}), 0);
+    expect(prefs.getStringList(PhoneRecentHistory.storageKey),
+        [before[1], before[2]]);
+  });
 
   test('Phone baseline excludes old PDFs; next complete scan records Added once', () async {
     const scope = 'media:external_primary';
@@ -230,6 +274,8 @@ void main() {
     final count = await PhoneRecentHistory.observeCompletedScans({
       scope: [
         scannedPdf('file:///root/real.pdf', 'Real.pdf'),
+        scannedPdf('file:///root/grid-new.pdf', 'GridNew.pdf',
+            folder: 'Android/media/com.docsgrid.mobile/My Files/Folders/Insurance'),
         scannedPdf('file:///root/grid.pdf', 'Grid.pdf',
             folder: 'Android/media/com.docsgrid/My Files/Folders/Insurance'),
         scannedPdf('file:///root/recycle.pdf', 'Old.pdf',

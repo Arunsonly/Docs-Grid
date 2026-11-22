@@ -1,16 +1,18 @@
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
+import '../storage/durable_file_operations.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart';
+import '../diagnostics/startup_timeline.dart';
 
 class AppDatabase {
   AppDatabase._({this._opener});
   @visibleForTesting
   AppDatabase.forTesting(Future<Database> Function() opener) : this._(opener: opener);
 
-  static const int schemaVersion = 11;
+  static const int schemaVersion = 12;
   static final AppDatabase instance = AppDatabase._();
   final Future<Database> Function()? _opener;
 
@@ -26,13 +28,16 @@ class AppDatabase {
     final opening = _openingDatabase;
     if (opening != null) return opening;
 
+    StartupTimeline.mark('database_open_start');
     final future = _opener?.call() ?? _openDatabase();
     _openingDatabase = future;
     try {
       final opened = await future;
       _database = opened;
+      StartupTimeline.mark('database_open_ready');
       return opened;
     } catch (_) {
+      StartupTimeline.mark('database_open_failed');
       _openingDatabase = null;
       rethrow;
     }
@@ -41,6 +46,16 @@ class AppDatabase {
   Future<Database> _openDatabase() async {
     final directory = await getApplicationDocumentsDirectory();
     final dbPath = p.join(directory.path, 'docs_grid.db');
+    return _openDatabaseAtPath(dbPath);
+  }
+
+  // Tests use the identical onCreate/onUpgrade callbacks and FK configuration
+  // as installed apps, rather than a hand-written partial schema.
+  @visibleForTesting
+  Future<Database> openProductionSchemaForTesting(String dbPath) =>
+      _openDatabaseAtPath(dbPath);
+
+  Future<Database> _openDatabaseAtPath(String dbPath) {
     return openDatabase(
       dbPath,
       version: schemaVersion,
@@ -124,6 +139,7 @@ class AppDatabase {
         await _createV9SmartCollectionFilters(db);
         await _createV10PortableSnapshotState(db);
         await _createV11TrashState(db);
+        await _createV12FileOperations(db);
         await db.insert('schema_migrations', {
           'version': 1,
           'applied_at': DateTime.now().toUtc().toIso8601String(),
@@ -168,8 +184,17 @@ class AppDatabase {
           'version': 11,
           'applied_at': DateTime.now().toUtc().toIso8601String(),
         });
+        await db.insert('schema_migrations', {
+          'version': 12,
+          'applied_at': DateTime.now().toUtc().toIso8601String(),
+        });
       },
       onUpgrade: upgradeForTesting,
+      onOpen: (db) async {
+        if (await db.getVersion() >= 12) {
+          await DurableFileOperations.reconcileFinished(db);
+        }
+      },
       onDowngrade: (db, oldVersion, newVersion) async {
         throw StateError(
           'Database downgrade from $oldVersion to $newVersion is not supported',
@@ -247,6 +272,11 @@ class AppDatabase {
     if (oldVersion < 11 && newVersion >= 11) {
       await _createV11TrashState(db);
       await db.insert('schema_migrations', {'version': 11, 'applied_at': applied},
+          conflictAlgorithm: ConflictAlgorithm.ignore);
+    }
+    if (oldVersion < 12 && newVersion >= 12) {
+      await _createV12FileOperations(db);
+      await db.insert('schema_migrations', {'version': 12, 'applied_at': applied},
           conflictAlgorithm: ConflictAlgorithm.ignore);
     }
   }
@@ -355,6 +385,28 @@ class AppDatabase {
 
   /// Tracks durable user-data mutations independently from UI state.
   /// SQLite triggers make this reliable even when a writer bypasses a repository.
+  /// Local-only write-ahead coordination for interrupted PDF operations.
+  /// Never export live ownership tokens in portable backups; they belong to
+  /// the process/installation which created the operation.
+  Future<void> _createV12FileOperations(DatabaseExecutor db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS file_operation_journal (
+        resource_key TEXT PRIMARY KEY,
+        operation_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        owner_id TEXT NOT NULL,
+        state TEXT NOT NULL CHECK(state IN ('running', 'interrupted', 'completed')),
+        phase TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )
+    ''');
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_file_operation_journal_state '
+      'ON file_operation_journal(state, updated_at)',
+    );
+  }
+
   Future<void> _createV11TrashState(DatabaseExecutor db) async {
     // One id groups a deleted folder tree and only the PDFs deliberately
     // moved with that tree. Existing independently trashed PDFs remain separate.

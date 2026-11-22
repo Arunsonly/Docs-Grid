@@ -131,11 +131,53 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
       return;
     }
     if (source != 'zip') return;
+    if (Platform.isAndroid) {
+      if (mounted) setState(() => _message =
+          'Checking restore access and existing DocsGrid folders…');
+      try {
+        await StorageLocationService.instance.zipRestoreFileLocations();
+      } on StateError catch (error) {
+        if (!error.toString().contains('Full internal storage access is currently disabled')) {
+          rethrow;
+        }
+        if (!mounted) return;
+        final openSettings = await showDialog<bool>(
+          context: context,
+          builder: (dialogContext) => AlertDialog(
+            title: const Text('ZIP restore needs storage access'),
+            content: const Text(
+              'Android reports that Full internal storage access is OFF for this installation. '
+              'Allow it in Android Settings. Your PDFs and existing database '
+              'have not been changed. Then return and choose Restore again.',
+            ),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(dialogContext, false),
+                  child: const Text('Not now')),
+              FilledButton(onPressed: () => Navigator.pop(dialogContext, true),
+                  child: const Text('Open settings')),
+            ],
+          ),
+        );
+        if (openSettings == true) {
+          if (mounted) setState(() => _message =
+              'Open Android Settings, allow DocsGrid full storage access, '
+              'then return and choose Restore again.');
+          await StorageLocationService.instance.requestAllFilesAccess();
+        } else if (mounted) {
+          setState(() => _message = 'Restore cancelled. Nothing was changed.');
+        }
+        return;
+      }
+    }
+    if (mounted) setState(() => _message = 'Choose the ZIP backup to restore…');
     final platformFile = await FilePicker.pickFile(
       type: FileType.custom,
       allowedExtensions: ['zip'],
     );
-    if (platformFile == null) return;
+    if (platformFile == null) {
+      if (mounted) setState(() => _message = 'Restore cancelled. Nothing was changed.');
+      return;
+    }
     final temporaryCopy =
         platformFile.path == null || platformFile.path!.isEmpty;
     final temporaryDirectory =
@@ -149,6 +191,9 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
           )
         : File(platformFile.path!);
     try {
+      if (mounted) setState(() => _message =
+          temporaryCopy ? 'Copying the selected ZIP to temporary storage…'
+              : 'Preparing the selected backup ZIP…');
       if (temporaryCopy) {
         // Backup ZIPs may contain many large PDFs. Stage provider data as a
         // stream rather than materializing the entire archive in RAM.
@@ -182,7 +227,10 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
           ],
         ),
       );
-      if (restoreMode == null || !mounted) return;
+      if (restoreMode == null || !mounted) {
+        if (mounted) setState(() => _message = 'Restore cancelled. Nothing was changed.');
+        return;
+      }
       Set<BackupRestoreSection>? selection;
       if (restoreMode == BackupRestoreMode.selective) {
         final selected = <BackupRestoreSection>{
@@ -241,13 +289,20 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
             ),
           ),
         );
-        if (selection == null || selection.isEmpty || !mounted) return;
+        if (selection == null || selection.isEmpty || !mounted) {
+          if (mounted) setState(() => _message = 'Restore cancelled. Nothing was changed.');
+          return;
+        }
       }
+      if (mounted) setState(() => _message = 'Waiting for the verified restore operation…');
       final restored = await _tools.restoreBackup(
         file,
         mode: restoreMode,
         selection: selection,
         confirmPlan: _confirmRestorePlan,
+        onProgress: (message) {
+          if (mounted) setState(() => _message = message);
+        },
         confirm: (count) async {
           if (!mounted) return false;
           return await showDialog<bool>(
@@ -276,10 +331,12 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
               false;
         },
       );
-      if (restored != null && mounted) {
-        setState(() => _message = restored == 0
-            ? 'Restore completed. No PDF payloads were included; recovered document records may need PDF relinking.'
-            : 'Restore completed: $restored PDF payload(s) restored and verified.');
+      if (mounted) {
+        setState(() => _message = restored == null
+            ? 'Restore cancelled. No PDF or database was changed.'
+            : restored == 0
+                ? 'Restore completed. No PDF payloads were included; recovered document records may need PDF relinking.'
+                : 'Restore completed: $restored PDF payload(s) restored and verified.');
       }
     } on StateError catch (error) {
       if (!error.toString().contains('contains no user PDFs') || !mounted) rethrow;
@@ -813,6 +870,16 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
         ])),
       ],
       if (widget.section == 'backup' || widget.section == 'restore' || widget.section == 'backup_restore') Card(child: Column(children: [
+        const ListTile(
+          leading: Icon(Icons.privacy_tip_outlined),
+          title: Text('Backup privacy'),
+          subtitle: Text(
+            'Portable ZIP backups and metadata snapshots are not encrypted. '
+            'Anyone with access to their saved copies can read document names, '
+            'OCR text and included PDFs. Store backups only in a trusted location.',
+          ),
+        ),
+        const Divider(height: 1),
         ListTile(leading: const Icon(Icons.backup_outlined), title: const Text('Create full backup'),
           subtitle: const Text('Save PDFs, folders, reminders, tags and settings into one ZIP file.'),
           trailing: const Icon(Icons.chevron_right), onTap: _busy ? null : _backup),
