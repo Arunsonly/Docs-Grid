@@ -1234,7 +1234,6 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       setState(() => _phoneRecent = []);
       await _loadRecentDocuments();
       if (_showStarredRecent) await _loadAllStarred();
-      if (mounted) _message('Recent cleared. PDF files were not deleted.');
     } catch (error) {
       if (mounted) _message('Could not clear Recent: $error');
     }
@@ -1323,7 +1322,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         ..._phoneRecent.where((entry) => entry['uri'] == uri),
       ];
       final entry = matching.isEmpty ? null : matching.first;
-      final added = await PhoneStarRepository.toggle(
+      await PhoneStarRepository.toggle(
         uri: uri,
         name: name,
         folderPath: (entry?['folderPath'] ?? entry?['path']) as String?,
@@ -1331,7 +1330,6 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       );
       await _loadPhoneStarred();
       if (_showStarredRecent) await _loadAllStarred();
-      if (mounted) _message(added ? 'Added to Star.' : 'Removed from Star.');
     } catch (error) {
       if (mounted) _message('Could not update Phone Star: $error');
     }
@@ -1491,7 +1489,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
   }
 
   Future<void> _openRecentSelection(DocumentRecord first) async {
-    final action = await Navigator.of(context).push<String>(MaterialPageRoute(
+    await Navigator.of(context).push<String>(MaterialPageRoute(
       builder: (_) => _RecentSelectionScreen(
         initialDocument: first,
         loadItems: _showStarredRecent ? _repository.listAllStarred : _loadAllRecentGrid,
@@ -1505,9 +1503,6 @@ class _DocumentsScreenState extends State<DocumentsScreen>
     ));
     await _loadRecentDocuments();
     await _loadAllStarred();
-    if (action == 'rename' && mounted) {
-      _message('Rename completed.');
-    }
   }
 
   Future<void> _bulkMoveDocuments(List<DocumentRecord> selected) async {
@@ -1541,8 +1536,9 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         failures.add('${document.name}: $error');
       }
     }
-    if (mounted) _message('Copied $copied of ${selected.length} PDFs'
-        '${failures.isEmpty ? '' : ' · ${failures.length} failed'}');
+    if (mounted && failures.isNotEmpty) {
+      _message('${failures.length} of ${selected.length} PDFs could not be copied. ${failures.first}');
+    }
   }
 
   Future<bool> _bulkDeleteDocuments(List<DocumentRecord> selected) async {
@@ -1635,7 +1631,6 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       );
       await _loadPhoneStarred();
       await _loadRecentDocuments();
-      if (mounted) _message('Phone reference re-linked.');
     } catch (error) {
       if (mounted) _message('Phone PDF could not be re-linked: $error');
     }
@@ -1871,10 +1866,9 @@ class _DocumentsScreenState extends State<DocumentsScreen>
     await _refreshDashboardSummary();
     if (!mounted) return;
     final failures = result['failures'] as List<String>;
-    final failureSummary = failures.isEmpty ? '' : ' · ${failures.length} failed';
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text('Moved ${result['moved']} of ${selected.length} PDFs$failureSummary'),
-    ));
+    if (failures.isNotEmpty) {
+      _message('${failures.length} selected PDFs could not be moved. ${failures.first}');
+    }
   }
 
   Future<void> _open(DocumentRecord document) async {
@@ -1907,11 +1901,6 @@ class _DocumentsScreenState extends State<DocumentsScreen>
     try {
       await _repository.relinkDocument(document);
       await _patchDocument(document.id);
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('PDF relinked and verified successfully.')),
-        );
-      }
     } catch (error) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -1997,7 +1986,6 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         remindAt: selected,
         documentId: document.id,
       );
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Reminder saved for this PDF.')));
     } catch (error) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not save reminder: $error')));
     }
@@ -2231,7 +2219,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       await _loadPhoneStarred();
       await _scanPhoneStorage(openBrowser: false);
       await _refreshDashboardSummary();
-      if (mounted) _message(shortcutWarning ?? 'PDF renamed.');
+      if (mounted && shortcutWarning != null) _message(shortcutWarning);
       return true;
     } catch (error) {
       if (mounted) _message('Could not rename PDF: $error');
@@ -2534,9 +2522,9 @@ class _DocumentsScreenState extends State<DocumentsScreen>
             _recentFilter = 'grid';
           });
           await _loadRecentDocuments();
-          _message(recentSaved
-              ? 'Moved $name to Grid. It is now in Grid Recent.'
-              : 'Moved $name to Grid, but could not save the Phone Recent cleanup.');
+          if (!recentSaved) {
+            _message('Moved to Grid, but Phone Recent cleanup needs attention.');
+          }
         }
       } else if (result.duplicates > 0 && mounted) {
         _message('This PDF already exists in Grid. The Phone original was kept.');
