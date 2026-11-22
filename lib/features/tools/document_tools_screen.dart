@@ -278,8 +278,11 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
       builder: (ctx) => SafeArea(child: Column(mainAxisSize: MainAxisSize.min, children: [
         const ListTile(title: Text('Choose restore source')),
         ListTile(leading: const Icon(Icons.archive_outlined), title: const Text('Backup ZIP file'),
-          subtitle: const Text('From this phone, SD card, USB or cloud storage.'),
+          subtitle: const Text('Standalone Full or Database ZIP.'),
           onTap: () => Navigator.pop(ctx, 'zip')),
+        ListTile(leading: const Icon(Icons.folder_zip_outlined), title: const Text('Incremental series folder'),
+          subtitle: const Text('Select an A001 folder containing its parent and I-series ZIP files.'),
+          onTap: () => Navigator.pop(ctx, 'series')),
         ListTile(leading: const Icon(Icons.folder_open_outlined), title: const Text('Existing DocsGrid folder'),
           subtitle: const Text('Recover metadata and PDFs from an old DocsGrid folder.'),
           onTap: () => Navigator.pop(ctx, 'folder')),
@@ -296,7 +299,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
       await _recoverSelectedPdfFolder();
       return;
     }
-    if (source != 'zip') return;
+    if (source != 'zip' && source != 'series') return;
     if (Platform.isAndroid) {
       if (mounted) setState(() => _message =
           'Checking restore access and existing DocsGrid folders…');
@@ -335,27 +338,33 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
         return;
       }
     }
-    if (mounted) setState(() => _message = 'Choose the ZIP backup to restore…');
-    final platformFile = await FilePicker.pickFile(
-      type: FileType.custom,
-      allowedExtensions: ['zip'],
-    );
-    if (platformFile == null) {
-      if (mounted) setState(() => _message = 'Restore cancelled. Nothing was changed.');
+    if (mounted) setState(() => _message =
+        source == 'series' ? 'Choose your A-series backup folder…'
+            : 'Choose the ZIP backup to restore…');
+    final chosenSeriesFolder = source == 'series'
+        ? await StorageLocationService.instance.chooseBackupChainFolder()
+        : null;
+    if (source == 'series' && chosenSeriesFolder == null) return;
+    final stagedSeriesFile = source == 'series'
+        ? await _tools.stageSelectedBackupChain(chosenSeriesFolder!['uri']!)
+        : null;
+    final platformFile = source == 'zip'
+        ? await FilePicker.pickFile(
+            type: FileType.custom, allowedExtensions: ['zip'])
+        : null;
+    if (source == 'zip' && platformFile == null) {
+      if (mounted) setState(() => _message =
+          'Restore cancelled. Nothing was changed.');
       return;
     }
-    final temporaryCopy =
-        platformFile.path == null || platformFile.path!.isEmpty;
+    final temporaryCopy = source == 'zip' &&
+        (platformFile!.path == null || platformFile.path!.isEmpty);
     final temporaryDirectory =
         temporaryCopy ? await getTemporaryDirectory() : null;
-    final file = temporaryCopy
-        ? File(
-            p.join(
-              temporaryDirectory!.path,
-              'DocsGrid_restore_${DateTime.now().microsecondsSinceEpoch}.zip',
-            ),
-          )
-        : File(platformFile.path!);
+    final file = stagedSeriesFile ?? (temporaryCopy
+        ? File(p.join(temporaryDirectory!.path,
+            'DocsGrid_restore_${DateTime.now().microsecondsSinceEpoch}.zip'))
+        : File(platformFile!.path!));
     try {
       if (mounted) setState(() => _message =
           temporaryCopy ? 'Copying the selected ZIP to temporary storage…'
@@ -363,7 +372,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
       if (temporaryCopy) {
         // Backup ZIPs may contain many large PDFs. Stage provider data as a
         // stream rather than materializing the entire archive in RAM.
-        await writeByteStreamToFile(platformFile.readAsByteStream(), file);
+        await writeByteStreamToFile(platformFile!.readAsByteStream(), file);
       }
       if (!mounted) return;
       final restoreMode = await showDialog<BackupRestoreMode>(
@@ -557,6 +566,11 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
       }
     } finally {
       if (temporaryCopy && await file.exists()) await file.delete();
+      if (stagedSeriesFile != null) {
+        try {
+          await stagedSeriesFile.parent.parent.delete(recursive: true);
+        } catch (_) {}
+      }
     }
   });
 
