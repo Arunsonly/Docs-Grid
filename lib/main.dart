@@ -464,6 +464,21 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
     }
   }
 
+  void _openSettings() {
+    Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => Scaffold(
+        appBar: AppBar(title: const Text('Settings')),
+        body: _SettingsScreen(
+          darkMode: widget.darkMode,
+          onDarkModeChanged: widget.onDarkModeChanged,
+          ocrSearchAvailable: widget.ocrSearchAvailable,
+          ocrPreferenceLoaded: widget.ocrPreferenceLoaded,
+          onOcrSearchChanged: widget.onOcrSearchChanged,
+        ),
+      ),
+    ));
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -478,18 +493,7 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
                 ),
                 IconButton(
                   tooltip: 'Settings',
-                  onPressed: () => Navigator.of(context).push(MaterialPageRoute(
-                    builder: (_) => Scaffold(
-                      appBar: AppBar(title: const Text('Settings')),
-                      body: _SettingsScreen(
-                        darkMode: widget.darkMode,
-                        onDarkModeChanged: widget.onDarkModeChanged,
-                        ocrSearchAvailable: widget.ocrSearchAvailable,
-                        ocrPreferenceLoaded: widget.ocrPreferenceLoaded,
-                        onOcrSearchChanged: widget.onOcrSearchChanged,
-                      ),
-                    ),
-                  )),
+                  onPressed: _openSettings,
                   icon: const Icon(Icons.settings_outlined),
                 ),
                 const SizedBox(width: 6),
@@ -507,7 +511,10 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
             key: const ValueKey('home-tab'),
             ocrSearchAvailable: widget.ocrSearchAvailable,
           ),
-          _ => FoldersScreen(ocrSearchAvailable: widget.ocrSearchAvailable),
+          _ => FoldersScreen(
+            ocrSearchAvailable: widget.ocrSearchAvailable,
+            onOpenSettings: _openSettings,
+          ),
         },
       ),
       bottomNavigationBar: NavigationBar(
