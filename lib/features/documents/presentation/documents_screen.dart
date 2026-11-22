@@ -2990,6 +2990,8 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         starredUris: _phoneStarredUris,
         onTrashPdf: _trashPhonePdf,
         embedded: true,
+        active: widget.active,
+        onBackAtRoot: widget.onBackAtRoot,
         cacheScope: _phoneLastRoots
             .map((root) => root['uri'] ?? '').join('|'),
         // Keep the last usable index visible while refresh continues silently.
