@@ -39,6 +39,15 @@ class BackupChain {
       prefix + number.toString().padLeft(3, '0');
   static bool validSeriesName(String value) => _series.hasMatch(value);
 
+  // A999 must precede A1000 (and I999 must precede I1000).
+  // Lexicographic sorting would break both next-series allocation and
+  // verification of an otherwise complete incremental parent chain.
+  static int _compareSerials(String left, String right) {
+    final order = BigInt.parse(left.substring(1))
+        .compareTo(BigInt.parse(right.substring(1)));
+    return order != 0 ? order : left.compareTo(right);
+  }
+
   static Future<Map<String, dynamic>> manifest(File file) async {
     await BackupArchiveLimits.validate(file);
     final stream = InputFileStream(file.path);
@@ -87,7 +96,8 @@ class BackupChain {
         result.add(entry);
       }
     }
-    result.sort((a,b) => p.basename(a.path).compareTo(p.basename(b.path)));
+    result.sort((a, b) =>
+        _compareSerials(p.basename(a.path), p.basename(b.path)));
     return result;
   }
 
@@ -112,7 +122,7 @@ class BackupChain {
       final bn = p.basenameWithoutExtension(b.path);
       if (an == series) return -1;
       if (bn == series) return 1;
-      return an.compareTo(bn);
+      return _compareSerials(an, bn);
     });
     if (items.isEmpty || p.basename(items.first.path) != series + '.zip') {
       throw StateError('Original Full Backup is missing.');
