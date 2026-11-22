@@ -505,6 +505,17 @@ class StorageLocationService {
   /// snapshot before updating the active portable-storage preferences.
   /// Select any readable PDF folder for recovery without changing the
   /// application's managed storage root or creating a destination folder.
+  /// Read-only selection of an exported A001 folder; no active-root changes.
+  Future<Map<String, String>?> chooseBackupChainFolder() async {
+    if (!Platform.isAndroid) {
+      throw UnsupportedError('Backup series folder picker is Android-only.');
+    }
+    final result = await _channel.invokeMapMethod<String, dynamic>(
+        'chooseBackupChainFolder');
+    if (result == null || result['uri'] is! String) return null;
+    return {'uri': result['uri'] as String, 'name': 'Selected backup series'};
+  }
+
   Future<Map<String, String>?> choosePdfRecoveryFolder() async {
     if (!Platform.isAndroid) {
       throw UnsupportedError('PDF folder recovery is Android-only.');
