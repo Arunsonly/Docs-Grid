@@ -11,6 +11,7 @@ import '../../core/storage/byte_stream_file.dart';
 import '../../core/storage/storage_location_service.dart';
 import '../documents/data/document_repository.dart';
 import 'document_tools_service.dart';
+import 'backup_chain.dart';
 
 class DocumentToolsScreen extends StatefulWidget {
   const DocumentToolsScreen({super.key, this.quickAction, this.section = 'tools', this.service});
