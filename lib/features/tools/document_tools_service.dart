@@ -18,6 +18,7 @@ import 'package:uuid/uuid.dart';
 import '../../core/database/app_database.dart';
 import '../../core/storage/storage_location_service.dart';
 import '../../core/storage/storage_migration_gate.dart';
+import '../../core/storage/portable_snapshot_events.dart';
 import '../documents/data/document_repository.dart';
 import '../documents/data/phone_portable_state.dart';
 import '../folders/data/folder_repository.dart';
@@ -1414,6 +1415,7 @@ class DocumentToolsService {
             'folderPath': preserveFolders
                 ? (item['folderPath'] as String? ?? '')
                 : '',
+            'sizeBytes': (item['sizeBytes'] as num?)?.toInt(),
           });
         }
       } catch (_) {
@@ -1482,14 +1484,58 @@ class DocumentToolsService {
 
     var added = 0;
     var duplicates = 0;
+    var relinked = 0;
     var processed = 0;
     final total = candidates.length;
+    final liveDb = await _database.database;
     onProgress?.call(0, total);
     for (final item in candidates) {
       try {
         final folderId = await ensureFolderPath(item['folderPath'] as String);
+        final uri = item['uri'] as String;
+        // The common reinstall case has all PDF bytes already on disk.
+        // Hash directly using native streaming. Do not stage/copy every
+        // existing PDF merely to relink its old metadata and reminders.
+        final digest = await storage.sha256Pdf(uri);
+        final matches = await liveDb.query(
+          'documents',
+          columns: ['id', 'storage_uri', 'folder_id'],
+          where: 'sha256 = ? AND deleted_at IS NULL',
+          whereArgs: [digest],
+        );
+        final alreadyLinked = matches.any((row) => row['storage_uri'] == uri);
+        if (alreadyLinked) {
+          duplicates++;
+          continue;
+        }
+        final missing = matches.where((row) =>
+            row['storage_uri'] == null ||
+            (row['storage_uri'] as String).startsWith('missing://')).toList();
+        final matchedFolder = missing.where((row) =>
+            row['folder_id'] == folderId).toList();
+        final candidatesForRelink = matchedFolder.length == 1
+            ? matchedFolder : missing;
+        if (candidatesForRelink.length == 1) {
+          final target = candidatesForRelink.single;
+          await liveDb.update('documents', {
+            'storage_uri': uri,
+            'relative_path': null,
+            if (item['sizeBytes'] is int) 'size_bytes': item['sizeBytes'],
+            'updated_at': DateTime.now().toUtc().toIso8601String(),
+          }, where: 'id = ? AND deleted_at IS NULL',
+             whereArgs: [target['id']]);
+          PortableSnapshotEvents.notifyDataChanged();
+          relinked++;
+          added++;
+          continue;
+        }
+        if (missing.length > 1) {
+          // Ambiguous identical bytes must never steal someone else's tag,
+          // reminder or folder identity.
+          throw StateError('Multiple missing records match this PDF.');
+        }
         final imported = await documentRepository.importExistingSharedPdf(
-          storageUri: item['uri'] as String,
+          storageUri: uri,
           displayName: item['name'] as String,
           targetFolderId: folderId,
         );
@@ -1508,6 +1554,7 @@ class DocumentToolsService {
 
     return {
       'added': added,
+      'relinked': relinked,
       'duplicates': duplicates,
       'failed': failed,
       'folders': createdFolders,
