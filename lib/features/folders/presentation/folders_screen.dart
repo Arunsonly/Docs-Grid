@@ -2045,10 +2045,21 @@ class _FoldersScreenState extends State<FoldersScreen>
                         child: Column(mainAxisSize: MainAxisSize.min, children: [
                           const Icon(Icons.folder_open_outlined, size: 52),
                           const SizedBox(height: 12),
-                          Text(_currentFolderId == null ? 'No folders or PDFs yet' : 'This folder is empty',
-                              style: Theme.of(context).textTheme.titleMedium),
+                          Text(
+                            _currentFolderId == null
+                                ? 'All Your Docs. One Smart Place.'
+                                : 'This folder is empty',
+                            textAlign: TextAlign.center,
+                            style: Theme.of(context).textTheme.titleMedium,
+                          ),
                           const SizedBox(height: 6),
-                          const Text('Create a folder or import a PDF to get started.', textAlign: TextAlign.center),
+                          Text(
+                            _currentFolderId == null
+                                ? 'Organize with folders, categories & tags.\n'
+                                    'Find faster, avoid duplicates & share easily.'
+                                : 'Create a folder or import a PDF to get started.',
+                            textAlign: TextAlign.center,
+                          ),
                           const SizedBox(height: 12),
                           FilledButton.icon(
                             onPressed: _createFolder,
