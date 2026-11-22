@@ -25,17 +25,14 @@ void docsGridBackgroundDispatcher() {
 
     // Full PDF archives are user-initiated only. Ignore legacy queued work.
     if (task != docsGridDailyDatabaseBackupTask) return true;
-    const includePdfs = false;
-
     final prefs = await SharedPreferences.getInstance();
-    final statusKey = includePdfs ? _weeklyStatusKey : _dailyStatusKey;
+    const statusKey = _dailyStatusKey;
     final attemptedAt = DateTime.now().toUtc().toIso8601String();
     try {
       final locations = await StorageLocationService.instance
           .cachedPortableDataLocations();
-      final destination = includePdfs
-          ? (locations['fullBackupsUri'] ?? locations['backupsUri'])
-          : (locations['databaseBackupsUri'] ?? locations['backupsUri']);
+      final destination = locations['databaseBackupsUri'] ??
+          locations['backupsUri'];
       if (destination == null || !destination.startsWith('file://')) {
         await prefs.setString(statusKey, jsonEncode({
           'status': 'needs_foreground_setup',
@@ -46,7 +43,7 @@ void docsGridBackgroundDispatcher() {
       }
 
       final archive = await DocumentToolsService().createBackup(
-        includePdfs: includePdfs,
+        includePdfs: false,
         backgroundSafe: true,
       );
       await prefs.setString(statusKey, jsonEncode({
