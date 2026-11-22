@@ -9,7 +9,11 @@ void main() {
     expect(main, contains("ValueKey('phone-tab')"));
     expect(main, contains("ValueKey('home-tab')"));
     expect(main, contains('phoneOnly: true,'));
-    expect(main, contains('FoldersScreen(ocrSearchAvailable: widget.ocrSearchAvailable)'));
+    // The Grid tab now additionally receives the existing Settings callback.
+    // OCR availability must still be forwarded to the very same FoldersScreen.
+    expect(main, contains('_ => FoldersScreen('));
+    expect(main, contains('ocrSearchAvailable: widget.ocrSearchAvailable,'));
+    expect(main, contains('onOpenSettings: _openSettings,'));
     expect(main.split('ocrSearchAvailable: widget.ocrSearchAvailable').length,
         greaterThanOrEqualTo(4));
   });
