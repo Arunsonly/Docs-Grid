@@ -23,6 +23,7 @@ import '../documents/data/phone_portable_state.dart';
 import '../folders/data/folder_repository.dart';
 import '../reminders/data/reminder_notifications.dart';
 import 'backup_archive_limits.dart';
+import 'backup_chain.dart';
 import 'backup_schema_compatibility.dart';
 import 'backup_folder_graph_validator.dart';
 import 'portable_snapshot_manifest.dart';
@@ -655,6 +656,64 @@ class DocumentToolsService {
   }
 
   /// Serialize public backup publication and retention with restore.
+  /// Manual PDF backups are explicitly initiated by the user. They are never
+  /// scheduled or pruned by the daily database-backup retention policy.
+  Future<File> createManualBackup({
+    void Function(int, int)? onProgress,
+    bool newFull = false,
+  }) => _withRecoveryLock(() async {
+    await StorageMigrationGate.waitUntilReady();
+    final locations = await StorageLocationService.instance
+        .portableDataLocationsIfAvailable();
+    final rootUri = locations['fullBackupsUri'];
+    if (rootUri == null || !rootUri.startsWith('file://')) {
+      throw StateError('Manual incremental backups require a readable local '
+          'DocsGrid Full backup folder. Restore and SAF exports stay available.');
+    }
+    final root = Directory(Uri.parse(rootUri).toFilePath());
+    await root.create(recursive: true);
+    final plan = await BackupChain.next(root, newFull: newFull);
+    if (await plan.output.exists()) {
+      throw StateError('Backup name already exists. Nothing was replaced.');
+    }
+    await plan.directory.create(recursive: true);
+    try {
+      return await _createBackupLocked(
+        onProgress: onProgress, includePdfs: true, seriesPlan: plan,
+      );
+    } catch (_) {
+      if (plan.isFull) {
+        try {
+          if (await plan.directory.exists() &&
+              await plan.directory.list().isEmpty) {
+            await plan.directory.delete();
+          }
+        } catch (_) {}
+      }
+      rethrow;
+    }
+  });
+
+  Future<List<BackupChainUsage>> manualBackupUsage() async {
+    final locations = await StorageLocationService.instance
+        .portableDataLocationsIfAvailable();
+    final uri = locations['fullBackupsUri'];
+    if (uri == null || !uri.startsWith('file://')) return const [];
+    return BackupChain.usage(Directory(Uri.parse(uri).toFilePath()));
+  }
+
+  Future<int> deleteManualBackupSeries(String seriesId) =>
+      _withRecoveryLock(() async {
+    final locations = await StorageLocationService.instance
+        .portableDataLocationsIfAvailable();
+    final uri = locations['fullBackupsUri'];
+    if (uri == null || !uri.startsWith('file://')) {
+      throw StateError('Backup folder is not accessible.');
+    }
+    return BackupChain.deleteSeries(
+        Directory(Uri.parse(uri).toFilePath()), seriesId);
+  });
+
   /// A restore creates its own private rescue checkpoint under the already
   /// held recovery lock, avoiding lock recursion.
   Future<File> createBackup({
@@ -674,6 +733,7 @@ class DocumentToolsService {
     bool includePdfs = true,
     bool backgroundSafe = false,
     bool rescueCheckpoint = false,
+    BackupChainPlan? seriesPlan,
   }) async {
     await StorageMigrationGate.waitUntilReady();
     final storage = StorageLocationService.instance;
@@ -705,7 +765,13 @@ class DocumentToolsService {
     final manifest = <String, Object?>{
       'format': 'DocsGridBackup',
       'version': 1,
-      'backupType': rescueCheckpoint ? 'rescue' : includePdfs ? 'full' : 'database',
+      'backupType': rescueCheckpoint ? 'rescue' : seriesPlan != null && !seriesPlan.isFull
+          ? 'incremental' : includePdfs ? 'full' : 'database',
+      if (seriesPlan != null) 'seriesId': seriesPlan.series,
+      if (seriesPlan != null) 'backupName': seriesPlan.name,
+      if (seriesPlan != null) 'parentName': seriesPlan.parent,
+      if (seriesPlan != null) 'documentFingerprints': <Map<String, Object?>>[],
+      if (seriesPlan != null) 'deletedDocumentIds': <String>[],
       if (rescueCheckpoint) 'missingPdfs': <Map<String, Object?>>[],
       'backupId': _uuid.v4(),
       'app': 'DocsGrid',
@@ -741,7 +807,7 @@ class DocumentToolsService {
         : await getTemporaryDirectory();
     await temp.create(recursive: true);
     final staging = await temp.createTemp('docsgrid_backup_');
-    final output = File(p.join(
+    final output = seriesPlan?.output ?? File(p.join(
       backups.path,
       'DocsGrid_${DateTime.now().toUtc().millisecondsSinceEpoch}_${_uuid.v4()}.zip',
     ));
@@ -865,6 +931,51 @@ class DocumentToolsService {
             );
             if (docs.isEmpty) break;
             for (final row in docs) {
+            // A previous verified ZIP already owns the unchanged PDF bytes.
+            // Fast-path verified local size/mtime, with hash verification when
+            // either changes. SAF providers are always re-hashed, never trusted
+            // solely by their display name or a possibly stale timestamp.
+            if (seriesPlan != null && !seriesPlan.isFull) {
+              final uri = row['storage_uri'] as String?;
+              final id = row['id'] as String;
+              final expected = row['sha256'] as String?;
+              final previous = seriesPlan.previous[id];
+              if (uri != null && expected != null &&
+                  previous?['sha256'] == expected) {
+                var sameBytes = false;
+                var modified = -1;
+                var size = (row['size_bytes'] as num?)?.toInt() ?? -1;
+                if (uri.startsWith('content://')) {
+                  sameBytes = await storage.sha256Pdf(uri) == expected;
+                } else {
+                  final local = File(uri.startsWith('file://')
+                      ? Uri.parse(uri).toFilePath() : uri);
+                  final stat = await local.stat();
+                  if (stat.type != FileSystemEntityType.file) {
+                    throw StateError('An existing PDF is unavailable; backup stopped.');
+                  }
+                  modified = stat.modified.millisecondsSinceEpoch;
+                  size = stat.size;
+                  sameBytes = size == previous!['sizeBytes'] &&
+                      modified == previous['modifiedMillis'];
+                  if (!sameBytes) {
+                    sameBytes =
+                        (await sha256.bind(local.openRead()).first).toString() ==
+                        expected;
+                  }
+                }
+                if (sameBytes) {
+                  (manifest['documentFingerprints'] as List).add({
+                    'id': id, 'sha256': expected, 'sizeBytes': size,
+                    'modifiedMillis': modified,
+                    'deletedAt': (row['deleted_at'] as String?),
+                  });
+                  completed++;
+                  onProgress?.call(completed, totalDocs);
+                  continue;
+                }
+              }
+            }
             // Only confirmed source-file problems may be written to a
             // rescue ledger. Never disguise ZIP-write, low-disk or coding
             // errors as missing PDFs: those must abort the rescue checkpoint.
@@ -930,6 +1041,17 @@ class DocumentToolsService {
                 'documentId': row['id'], 'entry': entry, 'sha256': digest,
                 'originalName': row['name'],
               });
+              if (seriesPlan != null) {
+                final localStat = uri.startsWith('content://')
+                    ? null : await file.stat();
+                (manifest['documentFingerprints'] as List).add({
+                  'id': row['id'], 'sha256': digest,
+                  'sizeBytes': await file.length(),
+                  'modifiedMillis':
+                      localStat?.modified.millisecondsSinceEpoch ?? -1,
+                  'deletedAt': row['deleted_at'],
+                });
+              }
             } finally {
               if (stagedProviderFile != null && await stagedProviderFile.exists()) {
                 await stagedProviderFile.delete();
@@ -950,6 +1072,12 @@ class DocumentToolsService {
           }
         }
 
+      if (seriesPlan != null && !seriesPlan.isFull) {
+        final currentIds = (manifest['documentFingerprints'] as List)
+            .map((row) => (row as Map)['id'] as String).toSet();
+        (manifest['deletedDocumentIds'] as List).addAll(
+            seriesPlan.previous.keys.where((id) => !currentIds.contains(id)));
+      }
       final currentRevision = await _database.portableSnapshotRevision();
       if (currentRevision != capturedRevision) {
         throw StateError(
@@ -977,11 +1105,11 @@ class DocumentToolsService {
           mimeType: 'application/zip',
         );
       }
-      if (!rescueCheckpoint) {
+      // User-created PDF series never expire automatically. The old 4-Full
+      // count retention is unsafe once Incremental files depend on parents.
+      if (!rescueCheckpoint && !includePdfs) {
         await _pruneBackupArchives(
-          backups,
-          keep: includePdfs ? 4 : 14,
-          newestPath: output.path,
+          backups, keep: 14, newestPath: output.path,
         );
       }
       return output;
