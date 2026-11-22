@@ -28,6 +28,8 @@ class PhoneStorageBrowserScreen extends StatefulWidget {
     this.onTrashPdf,
     this.initialPath = '',
     this.embedded = false,
+    this.active = true,
+    this.onBackAtRoot,
     this.isLoading = false,
     this.onRefresh,
     this.cacheScope = '',
@@ -56,6 +58,8 @@ class PhoneStorageBrowserScreen extends StatefulWidget {
   final Future<bool> Function(String uri, String name)? onTrashPdf;
   final String initialPath;
   final bool embedded;
+  final bool active;
+  final VoidCallback? onBackAtRoot;
   final bool isLoading;
   final Future<void> Function()? onRefresh;
   /// Identifies the granted storage roots, preventing stale cross-root reuse.
@@ -1283,9 +1287,11 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
     final selectedPath = _selectedFolderPath;
     if (widget.embedded) {
       return PopScope<void>(
-        canPop: !_isSelectingPdfs && selectedPath == null,
+        canPop: !widget.active ||
+            (!_isSelectingPdfs && selectedPath == null &&
+                widget.onBackAtRoot == null),
         onPopInvokedWithResult: (didPop, result) {
-          if (didPop || !mounted) return;
+          if (didPop || !mounted || !widget.active) return;
           if (_isSelectingPdfs) {
             _clearPdfSelection();
           } else if (_selectedFolderPath != null) {
@@ -1299,9 +1305,11 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
     }
 
     return PopScope<void>(
-      canPop: !_isSelectingPdfs && selectedPath == null,
+      canPop: !widget.active ||
+          (!_isSelectingPdfs && selectedPath == null &&
+              widget.onBackAtRoot == null),
       onPopInvokedWithResult: (didPop, result) {
-        if (didPop || !mounted) return;
+        if (didPop || !mounted || !widget.active) return;
         if (_isSelectingPdfs) {
           _clearPdfSelection();
         } else if (_selectedFolderPath != null) {
