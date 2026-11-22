@@ -94,7 +94,10 @@ class PhoneRecentHistory {
         // Grid, backups and DocsGrid recycle folders are not Phone PDFs.
         final location = (file['folderPath'] ?? file['path'] ?? '')
             .toString().replaceAll('\\', '/').toLowerCase();
-        if (location.contains('android/media/com.docsgrid/') ||
+        if (location.contains('android/media/com.docsgrid.mobile/') ||
+            location.endsWith('android/media/com.docsgrid.mobile') ||
+            location.contains('android/media/com.docsgrid/') ||
+            location.endsWith('android/media/com.docsgrid') ||
             location.contains('android/media/docsgrid/')) continue;
         available.add(uri);
         validFiles.add(file);
