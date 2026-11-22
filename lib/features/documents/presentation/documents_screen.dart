@@ -1063,6 +1063,9 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         ocrSearchAvailable: widget.ocrSearchAvailable,
         onRenamePdf: _renamePhonePdf,
         onSharePdf: _sharePhonePdf,
+        onShareSelectedPdfs: _sharePhoneSelectedPdfs,
+        onMoveSelectedWithinPhone: _movePhoneSelectedWithinPhone,
+        onTrashSelectedPdfs: _trashPhoneSelectedPdfs,
         onToggleStarPdf: _recordExternalFavorite,
         starredUris: _phoneStarredUris,
         onTrashPdf: _trashPhonePdf,
@@ -2191,6 +2194,182 @@ class _DocumentsScreenState extends State<DocumentsScreen>
     }
   }
 
+
+  Future<void> _sharePhoneSelectedPdfs(
+    List<Map<String, Object?>> selected,
+  ) async {
+    if (selected.isEmpty) return;
+    await _tools.shareManyStoredPdfs(
+      selected.map((row) => row['uri'] as String).toList(growable: false),
+      selected.map((row) => row['name'] as String).toList(growable: false),
+    );
+  }
+
+  /// Phone multi-select Move chooses one destination and runs the already
+  /// checksum-verified move service for each source. No Grid metadata changes.
+  Future<bool> _movePhoneSelectedWithinPhone(
+    List<Map<String, Object?>> selected,
+  ) async {
+    if (selected.isEmpty) return false;
+    if (selected.length == 1) {
+      final entry = selected.single;
+      return _movePhonePdfWithinPhone(
+          entry['uri'] as String, entry['name'] as String);
+    }
+    final storage = StorageLocationService.instance;
+    final List<Map<String, String>> roots;
+    try {
+      roots = await storage.accessibleStorageRoots();
+    } catch (error) {
+      if (mounted) _message('Could not list Phone folders: $error');
+      return false;
+    }
+    if (!mounted) return false;
+    if (roots.isEmpty) {
+      _message('No accessible Phone folders. Check storage access.');
+      return false;
+    }
+    final destination = await showModalBottomSheet<PhoneFolderDestination>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (_) => FractionallySizedBox(
+        heightFactor: 0.75,
+        child: PhoneMoveFolderPicker(
+          roots: roots,
+          sourceFolderPath: '',
+          listDirectory: storage.listDirectory,
+          createDirectory: (parent, folderName) =>
+              storage.createDirectory(parentUri: parent, name: folderName),
+        ),
+      ),
+    );
+    if (destination == null || !mounted) return false;
+    final movedSources = <String>{};
+    var failed = 0;
+    for (final entry in selected) {
+      final uri = entry['uri'] as String;
+      final name = entry['name'] as String;
+      try {
+        // Source is removed only by PhonePdfMoveService after verified copy.
+        final newUri = await const PhonePdfMoveService().move(
+          sourceUri: uri,
+          displayName: name,
+          destinationFolderUri: destination.uri,
+        );
+        movedSources.add(uri);
+        try {
+          final wasStarred = _phoneStarredUris.contains(uri);
+          await PhoneStarRepository.remove(uri);
+          if (wasStarred) {
+            await PhoneStarRepository.toggle(
+              uri: newUri,
+              name: name,
+              folderPath: destination.path,
+              sizeBytes: (entry['sizeBytes'] as num?)?.toInt() ?? 0,
+            );
+          }
+        } catch (_) {
+          // Optional Star metadata never rolls back verified file moves.
+        }
+        try { await PhoneRecentHistory.removeMovedSource(uri); } catch (_) {}
+      } catch (_) {
+        failed++;
+      }
+    }
+    if (movedSources.isNotEmpty) {
+      if (mounted) {
+        setState(() {
+          _phoneRecent = _phoneRecent.where(
+              (row) => !movedSources.contains(row['uri']))
+              .toList(growable: false);
+          _phoneEntries = _phoneEntries.where(
+              (row) => !movedSources.contains(row['uri']))
+              .toList(growable: false);
+        });
+      }
+      try { await _loadPhoneStarred(); } catch (_) {}
+      try {
+        if (mounted) {
+          await _scanPhoneStorage(openBrowser: false);
+          await _refreshDashboardSummary();
+        }
+      } catch (_) {
+        // Next storage refresh reconciles an already verified move.
+      }
+    }
+    if (mounted) {
+      _message('Moved ${movedSources.length} of ${selected.length} Phone PDFs'
+          '${failed == 0 ? '.' : '; $failed kept in the original folder.'}');
+    }
+    return movedSources.isNotEmpty;
+  }
+
+  /// Archive each Phone original through the existing checksum-safe service;
+  /// a duplicate or failed archive always leaves that original untouched.
+  Future<bool> _trashPhoneSelectedPdfs(
+    List<Map<String, Object?>> selected,
+  ) async {
+    if (selected.isEmpty) return false;
+    if (selected.length == 1) {
+      final entry = selected.single;
+      return _trashPhonePdf(entry['uri'] as String, entry['name'] as String);
+    }
+    final confirmed = await _confirmMoveToRecycleBin(
+      count: selected.length,
+      details: 'Each Phone PDF is safely archived in DocsGrid Recycle Bin '
+          'before its original is removed. Failed or duplicate archives '
+          'keep their originals.',
+    );
+    if (!confirmed || !mounted) return false;
+    final movedSources = <String>{};
+    var kept = 0;
+    for (final entry in selected) {
+      final uri = entry['uri'] as String;
+      final name = entry['name'] as String;
+      try {
+        final origin = await _phoneTrashOriginFor(uri, name);
+        final success = await _repository.moveExternalPdfToTrash(
+          sourceUri: uri,
+          displayName: name,
+          origin: origin,
+        );
+        if (!success) {
+          kept++;
+          continue;
+        }
+        movedSources.add(uri);
+        try { await PhoneStarRepository.remove(uri); } catch (_) {}
+      } catch (_) {
+        kept++;
+      }
+    }
+    if (movedSources.isNotEmpty) {
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        final keep = _phoneRecent.where(
+            (row) => !movedSources.contains(row['uri']))
+            .toList(growable: false);
+        await prefs.setStringList('docsgrid_phone_recent_v1',
+            keep.map(jsonEncode).toList());
+        if (mounted) setState(() => _phoneRecent = keep);
+      } catch (_) {}
+      try { await _loadPhoneStarred(); } catch (_) {}
+    }
+    try {
+      if (mounted) {
+        await _scanPhoneStorage(openBrowser: false);
+        await _loadTrashSummary();
+        await _refreshDashboardSummary();
+      }
+    } catch (_) {}
+    if (mounted) {
+      _message('Archived ${movedSources.length} of ${selected.length} PDFs. '
+          '${kept == 0 ? 'All selected originals archived.' : '$kept originals kept safely.'}');
+    }
+    return movedSources.isNotEmpty;
+  }
+
   Future<void> _sharePhonePdf(String uri, String name) async {
     try {
       await _tools.shareStoredPdf(uri, name);
@@ -2574,6 +2753,9 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         ocrSearchAvailable: widget.ocrSearchAvailable,
         onRenamePdf: _renamePhonePdf,
         onSharePdf: _sharePhonePdf,
+        onShareSelectedPdfs: _sharePhoneSelectedPdfs,
+        onMoveSelectedWithinPhone: _movePhoneSelectedWithinPhone,
+        onTrashSelectedPdfs: _trashPhoneSelectedPdfs,
         onToggleStarPdf: _recordExternalFavorite,
         starredUris: _phoneStarredUris,
         onTrashPdf: _trashPhonePdf,
