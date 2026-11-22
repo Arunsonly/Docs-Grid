@@ -865,11 +865,11 @@ class _SettingsScreenState extends State<_SettingsScreen> {
         _settingsCard([
           ListTile(
             leading: const Icon(Icons.backup_outlined),
-            title: const Text('Backup & Restore', style: TextStyle(fontWeight: FontWeight.w600)),
+            title: const Text('Backup & Recovery', style: TextStyle(fontWeight: FontWeight.w600)),
             subtitle: const Text('Create backup · Restore backup'),
             trailing: const Icon(Icons.chevron_right),
             onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => Scaffold(
-              appBar: AppBar(title: const Text('Backup & Restore')),
+              appBar: AppBar(title: const Text('Backup & Recovery')),
               body: const DocumentToolsScreen(section: 'backup_restore'),
             ))),
           ),
