@@ -4088,7 +4088,8 @@ Future<int?> _restoreBackupLocked(
           throw StateError('Incremental deletion ledger is invalid.');
         }
         for (final row in rowsByTable['documents']!) {
-          if (ledger[row['id']]?['sha256'] != row['sha256']) {
+          if (row['sha256'] != null &&
+              ledger[row['id']]?['sha256'] != row['sha256']) {
             throw StateError('Incremental fingerprint does not match metadata.');
           }
         }
