@@ -24,6 +24,7 @@ class FoldersScreen extends StatefulWidget {
     this.documentRepository,
     this.ocrSearchAvailable = false,
     this.ocrTools,
+    this.onOpenSettings,
   });
 
   // Optional dependencies permit complete widget regression tests without
@@ -32,6 +33,7 @@ class FoldersScreen extends StatefulWidget {
   final DocumentRepository? documentRepository;
   final bool ocrSearchAvailable;
   final DocumentToolsService? ocrTools;
+  final VoidCallback? onOpenSettings;
 
   @override
   State<FoldersScreen> createState() => _FoldersScreenState();
@@ -1164,6 +1166,95 @@ class _FoldersScreenState extends State<FoldersScreen>
     });
   }
 
+  void _startFolderSelection(Folder folder) {
+    if (_isReorderingFolders) return;
+    setState(() {
+      _isSelectingFolders = true;
+      _selectedDocumentIds.clear();
+      _selectedFolderIds.add(folder.id); // Long press selects immediately.
+    });
+  }
+
+  void _clearFolderSelection() {
+    setState(() {
+      _isSelectingFolders = false;
+      _selectedFolderIds.clear();
+    });
+  }
+
+  Future<void> _toggleAllVisibleFolders() async {
+    try {
+      final folders = await _foldersFuture;
+      if (!mounted || !_isSelectingFolders) return;
+      final query = _searchQuery.trim().toLowerCase();
+      final visibleIds = folders
+          .where((folder) => query.isEmpty ||
+              (!_ocrSelected && folder.name.toLowerCase().contains(query)))
+          .map((folder) => folder.id)
+          .toSet();
+      if (visibleIds.isEmpty) return;
+      setState(() {
+        if (_selectedFolderIds.containsAll(visibleIds)) {
+          _selectedFolderIds.removeAll(visibleIds);
+        } else {
+          _selectedFolderIds.addAll(visibleIds);
+        }
+      });
+    } catch (error) {
+      if (mounted) _message('Could not select all folders: $error');
+    }
+  }
+
+  Future<void> _showSelectedFolderDetails() async {
+    if (_selectedFolderIds.isEmpty) return;
+    final ids = Set<String>.of(_selectedFolderIds);
+    try {
+      final details = await _repository.selectionDetails(ids);
+      if (!mounted) return;
+      await showDialog<void>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('Selection Details'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Selected folders: ${details.selectedFolderCount}'),
+              const SizedBox(height: 8),
+              Text('Folders inside: ${details.nestedFolderCount}'),
+              const SizedBox(height: 8),
+              Text('PDFs inside: ${details.pdfCount}'),
+              const SizedBox(height: 8),
+              Text('Total PDF size: ${_size(details.totalPdfSizeBytes)}'),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Close'),
+            ),
+          ],
+        ),
+      );
+    } catch (error) {
+      if (mounted) _message('Could not calculate folder details: $error');
+    }
+  }
+
+  Future<void> _startFolderReorderFromMenu() async {
+    try {
+      final folders = await _foldersFuture;
+      if (!mounted) return;
+      if (folders.isEmpty) {
+        _message('No folders to rearrange.');
+        return;
+      }
+      _beginFolderReorder(folders);
+    } catch (error) {
+      if (mounted) _message('Could not load folders to rearrange: $error');
+    }
+  }
+
   Widget _buildFolderSelectionToolbar() {
     return FutureBuilder<List<Folder>>(
       future: _foldersFuture,
@@ -1171,64 +1262,67 @@ class _FoldersScreenState extends State<FoldersScreen>
         final selected = (snapshot.data ?? const <Folder>[])
             .where((folder) => _selectedFolderIds.contains(folder.id))
             .toList();
-        ButtonStyle actionStyle() => FilledButton.styleFrom(
-              backgroundColor: Colors.white,
-              foregroundColor: const Color(0xFF252A43),
-              disabledBackgroundColor: Colors.white.withValues(alpha: 0.55),
-              disabledForegroundColor: const Color(0xFF252A43).withValues(alpha: 0.35),
-              elevation: 0,
-              padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 10),
-              minimumSize: const Size(0, 44),
-              textStyle: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(16),
+        final scheme = Theme.of(context).colorScheme;
+        return Material(
+          key: const ValueKey('grid-folder-selection-header'),
+          color: scheme.secondaryContainer,
+          borderRadius: BorderRadius.circular(22),
+          clipBehavior: Clip.antiAlias,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 5),
+            child: Row(children: [
+              IconButton(
+                key: const ValueKey('grid-folder-select-all'),
+                tooltip: 'Select all folders',
+                onPressed: _toggleAllVisibleFolders,
+                icon: const Icon(Icons.select_all),
+                visualDensity: VisualDensity.compact,
               ),
-            );
-        return Padding(
-          padding: const EdgeInsets.fromLTRB(20, 10, 20, 8),
-          child: Material(
-            color: const Color(0xFFE1E6FF),
-            borderRadius: BorderRadius.circular(26),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      '${_selectedFolderIds.length} selected',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w700,
-                        color: Color(0xFF20243A),
-                      ),
+              Expanded(
+                child: Text(
+                  '${_selectedFolderIds.length} selected',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontWeight: FontWeight.w700),
+                ),
+              ),
+              IconButton(
+                key: const ValueKey('grid-folder-move-selected'),
+                tooltip: 'Move selected folders',
+                onPressed: selected.isEmpty ? null : () => _moveFolders(selected),
+                icon: const Icon(Icons.drive_file_move_outlined),
+                visualDensity: VisualDensity.compact,
+              ),
+              IconButton(
+                key: const ValueKey('grid-folder-delete-selected'),
+                tooltip: 'Move selected folders to Recycle Bin',
+                onPressed: selected.isEmpty
+                    ? null : () => _deleteSelectedFolders(selected),
+                icon: const Icon(Icons.delete_outline),
+                visualDensity: VisualDensity.compact,
+              ),
+              PopupMenuButton<String>(
+                key: const ValueKey('grid-folder-selected-more'),
+                tooltip: 'Selection actions',
+                icon: const Icon(Icons.more_vert),
+                onSelected: (action) {
+                  if (action == 'details') {
+                    unawaited(_showSelectedFolderDetails());
+                  }
+                },
+                itemBuilder: (_) => [
+                  PopupMenuItem<String>(
+                    value: 'details',
+                    enabled: selected.isNotEmpty,
+                    child: const ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      leading: Icon(Icons.info_outline),
+                      title: Text('Details'),
                     ),
-                  ),
-                  const SizedBox(width: 6),
-                  FilledButton(
-                    style: actionStyle(),
-                    onPressed: () => setState(() {
-                      _isSelectingFolders = false;
-                      _selectedFolderIds.clear();
-                    }),
-                    child: const Text('Cancel'),
-                  ),
-                  const SizedBox(width: 6),
-                  FilledButton(
-                    style: actionStyle(),
-                    onPressed: selected.isEmpty ? null : () => _moveFolders(selected),
-                    child: const Text('Move'),
-                  ),
-                  const SizedBox(width: 6),
-                  FilledButton(
-                    style: actionStyle(),
-                    onPressed: selected.isEmpty ? null : () => _deleteSelectedFolders(selected),
-                    child: const Text('Delete'),
                   ),
                 ],
               ),
-            ),
+            ]),
           ),
         );
       },
@@ -1573,9 +1667,9 @@ class _FoldersScreenState extends State<FoldersScreen>
                                       : _isReorderingFolders
                                           ? null
                                           : () => _openFolder(folder),
-                                  onLongPress: _isSelectingFolders || _isReorderingFolders
+                                  onLongPress: _isReorderingFolders
                                       ? null
-                                      : () => _beginFolderReorder(originalFolders),
+                                      : () => _startFolderSelection(folder),
                                   child: Padding(
                                     padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
                                     child: Row(
@@ -1638,7 +1732,9 @@ class _FoldersScreenState extends State<FoldersScreen>
                                             ],
                                           ),
                                         ),
-                                        if (_isReorderingFolders)
+                                        if (_isSelectingFolders)
+                                          const SizedBox.shrink()
+                                        else if (_isReorderingFolders)
                                           ReorderableDelayedDragStartListener(
                                             index: index,
                                             child: const Padding(
@@ -1738,9 +1834,12 @@ class _FoldersScreenState extends State<FoldersScreen>
     return Material(
       color: Theme.of(context).scaffoldBackgroundColor,
       child: PopScope(
-      canPop: _ancestors.isEmpty,
+      canPop: !_isSelectingFolders && _ancestors.isEmpty,
       onPopInvokedWithResult: (didPop, result) {
-        if (!didPop && _ancestors.isNotEmpty) {
+        if (didPop) return;
+        if (_isSelectingFolders) {
+          _clearFolderSelection();
+        } else if (_ancestors.isNotEmpty) {
           _goToAncestor(_ancestors.length - 2);
         }
       },
@@ -1783,63 +1882,73 @@ class _FoldersScreenState extends State<FoldersScreen>
           ),
         if (!keyboardVisible)
           Padding(
-          padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
-          child: Row(
-            children: [
-              Expanded(
-                child: InkWell(
-                  borderRadius: BorderRadius.circular(8),
-                  onTap: _showFolderTree,
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 8),
-                    child: Row(
-                      children: [
-                        Flexible(
-                          child: Text(_currentTitle,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700)),
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+            child: _isSelectingFolders
+                ? _buildFolderSelectionToolbar()
+                : Row(
+                    children: [
+                      Expanded(
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(8),
+                          onTap: _showFolderTree,
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 8),
+                            child: Row(children: [
+                              Flexible(
+                                child: Text(
+                                  _currentTitle,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: Theme.of(context).textTheme.titleLarge
+                                      ?.copyWith(fontWeight: FontWeight.w700),
+                                ),
+                              ),
+                              const SizedBox(width: 4),
+                              const Icon(Icons.arrow_drop_down, size: 24),
+                            ]),
+                          ),
                         ),
-                        const SizedBox(width: 4),
-                        const Icon(Icons.arrow_drop_down, size: 24),
-                      ],
-                    ),
+                      ),
+                      PopupMenuButton<String>(
+                        key: const ValueKey('grid-folder-normal-more'),
+                        tooltip: 'Grid folder options',
+                        icon: const Icon(Icons.more_vert),
+                        onSelected: (action) {
+                          if (action == 'rearrange') {
+                            unawaited(_startFolderReorderFromMenu());
+                          } else if (action == 'settings') {
+                            widget.onOpenSettings?.call();
+                          }
+                        },
+                        itemBuilder: (_) => [
+                          PopupMenuItem<String>(
+                            value: 'rearrange',
+                            enabled: !_isReorderingFolders,
+                            child: const ListTile(
+                              contentPadding: EdgeInsets.zero,
+                              leading: Icon(Icons.swap_vert),
+                              title: Text('Rearrange'),
+                            ),
+                          ),
+                          PopupMenuItem<String>(
+                            value: 'settings',
+                            enabled: widget.onOpenSettings != null,
+                            child: const ListTile(
+                              contentPadding: EdgeInsets.zero,
+                              leading: Icon(Icons.settings_outlined),
+                              title: Text('Settings'),
+                            ),
+                          ),
+                        ],
+                      ),
+                      IconButton(
+                        tooltip: 'Create folder',
+                        onPressed: _createFolder,
+                        icon: const Icon(Icons.create_new_folder_outlined),
+                      ),
+                    ],
                   ),
-                ),
-              ),
-              PopupMenuButton<String>(
-                tooltip: 'Folder selection',
-                icon: const Icon(Icons.more_vert),
-                onSelected: (action) {
-                  if (action == 'select_folders') {
-                    setState(() {
-                      _isReorderingFolders = false;
-                      _draftFolderOrder.clear();
-                      _isSelectingFolders = true;
-                      _selectedFolderIds.clear();
-                      _selectedDocumentIds.clear();
-                    });
-                  }
-                },
-                itemBuilder: (_) => const [
-                  PopupMenuItem(
-                    value: 'select_folders',
-                    child: ListTile(
-                      contentPadding: EdgeInsets.zero,
-                      leading: Icon(Icons.check_box_outlined),
-                      title: Text('Select folder'),
-                    ),
-                  ),
-                ],
-              ),
-              IconButton(
-                tooltip: 'Create folder',
-                onPressed: _createFolder,
-                icon: const Icon(Icons.create_new_folder_outlined),
-              ),
-            ],
           ),
-        ),
         Padding(
           padding: EdgeInsets.fromLTRB(12, keyboardVisible ? 2 : 8, 12, keyboardVisible ? 2 : 4),
           child: Row(
@@ -1922,7 +2031,6 @@ class _FoldersScreenState extends State<FoldersScreen>
               ],
             ),
           ),
-        if (_isSelectingFolders && !keyboardVisible) _buildFolderSelectionToolbar(),
         if (_ancestors.isNotEmpty && !keyboardVisible)
           SizedBox(
             height: 44,
