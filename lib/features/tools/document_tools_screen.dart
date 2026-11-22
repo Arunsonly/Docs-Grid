@@ -627,10 +627,33 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
               false;
         },
       );
-      if (restored != null && mounted) {
-        setState(() => _message = restored == 0
-            ? 'Portable recovery completed. The archive had no PDF payloads; document records may need PDF relinking.'
-            : 'Portable recovery completed: $restored PDF(s) restored from a verified backup.');
+      if (restored != null) {
+        Map<String, int>? scanned;
+        String? scanProblem;
+        if (restored == 0 && Platform.isAndroid) {
+          try {
+            scanned = await _tools.recoverLoosePortablePdfs(
+              onProgress: (completed, total) {
+                if (mounted) setState(() => _message =
+                    'Reconnecting PDFs: $completed of $total');
+              },
+            );
+          } catch (error) {
+            // The successfully restored metadata must not be reported as a
+            // failed ZIP restore just because PDF storage is not accessible.
+            scanProblem = error.toString();
+          }
+        }
+        if (mounted) {
+          setState(() => _message = scanned != null
+            ? 'Database restored. Linked existing PDFs: ' +
+                (scanned!['relinked'] ?? 0).toString() +
+                '. Needs attention: ' + (scanned['failed'] ?? 0).toString() + '.'
+            : scanProblem != null
+                ? 'Database restored. PDF relinking needs storage access: ' +
+                    scanProblem!
+                : 'Recovery completed: $restored PDF payload(s) verified.');
+        }
       }
     } catch (error) {
       if (!mounted) rethrow;
