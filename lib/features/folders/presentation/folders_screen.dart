@@ -781,6 +781,8 @@ class _FoldersScreenState extends State<FoldersScreen>
 
   Future<void> _openFolder(Folder folder) async {
     setState(() {
+      _isSelectingFolders = false;
+      _selectedFolderIds.clear();
       _ancestors.add(folder);
       _currentFolderId = folder.id;
       _currentTitle = folder.name;
@@ -790,6 +792,8 @@ class _FoldersScreenState extends State<FoldersScreen>
 
   void _goToRoot() {
     setState(() {
+      _isSelectingFolders = false;
+      _selectedFolderIds.clear();
       _ancestors.clear();
       _currentFolderId = null;
       _currentTitle = 'Folders';
@@ -799,6 +803,8 @@ class _FoldersScreenState extends State<FoldersScreen>
 
   void _goToAncestor(int index) {
     setState(() {
+      _isSelectingFolders = false;
+      _selectedFolderIds.clear();
       if (index < 0) {
         _ancestors.clear();
         _currentFolderId = null;
