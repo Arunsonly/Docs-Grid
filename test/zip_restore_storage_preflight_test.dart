@@ -25,15 +25,26 @@ void main() {
     expect(result['documentsUri'], isNot(contains('com.docsgrid/My Files')));
   });
 
-  test('canonical file-backed folders keep their original destinations', () {
-    const custom = {
+  test('new package-named file-backed folders keep exact restore destinations', () {
+    const current = {
+      'documentsUri': 'file:///storage/emulated/0/Android/media/com.docsgrid.mobile/My%20Files/Unfiled',
+      'libraryUri': 'file:///storage/emulated/0/Android/media/com.docsgrid.mobile/My%20Files/Folders',
+    };
+    expect(StorageLocationService.validateZipRestoreFileLocations(
+      configured: current,
+      allFilesAccess: true,
+    ), current);
+  });
+
+  test('previous selected file-backed folders remain valid for recovery', () {
+    const old = {
       'documentsUri': 'file:///storage/emulated/0/Android/media/com.docsgrid/My%20Files/Unfiled',
       'libraryUri': 'file:///storage/emulated/0/Android/media/com.docsgrid/My%20Files/Folders',
     };
     expect(StorageLocationService.validateZipRestoreFileLocations(
-      configured: custom,
+      configured: old,
       allFilesAccess: true,
-    ), custom);
+    ), old);
   });
 
   test('permission denied fails closed, even if stale file paths are cached', () {
