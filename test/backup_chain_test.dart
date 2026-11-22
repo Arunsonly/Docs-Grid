@@ -107,6 +107,18 @@ void main() {
     expect(third.previous.length, 2);
   });
 
+  test('new Full series allocation follows numeric order past A999', () async {
+    await Directory(p.join(full.path, 'A999')).create();
+    await Directory(p.join(full.path, 'A1000')).create();
+
+    final plan = await BackupChain.next(full, newFull: true);
+    expect(plan.series, 'A1001');
+    expect(plan.name, 'A1001');
+    expect(plan.parent, isNull);
+    expect(await Directory(p.join(full.path, 'A999')).exists(), true);
+    expect(await Directory(p.join(full.path, 'A1000')).exists(), true);
+  });
+
   test('only new payloads are saved, but last restore recovers all bytes', () async {
     final dir = Directory(p.join(full.path, 'A001'));
     await makeArchive(dir, 'A001', 'A001',
