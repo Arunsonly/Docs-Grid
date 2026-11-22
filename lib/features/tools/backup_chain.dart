@@ -304,12 +304,13 @@ class BackupChain {
       for (final row in decodedDocs) {
         if (row is! Map || row['id'] is! String ||
             !seenIds.add(row['id'] as String) ||
-            row['sha256'] is! String) {
+            (row['sha256'] != null && row['sha256'] is! String)) {
           throw StateError('Invalid or duplicate document record.');
         }
         final id = row['id'] as String;
         if (payloads[id] == null ||
-            checksums[id] != (row['sha256'] as String).toLowerCase()) {
+            (row['sha256'] is String &&
+                checksums[id] != (row['sha256'] as String).toLowerCase())) {
           throw StateError('A PDF or parent backup is missing for document ' + id);
         }
         composedFiles.add({
