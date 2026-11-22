@@ -772,7 +772,15 @@ class FolderRepository {
     if (requested.isEmpty) return;
     final db = await _database.database;
     final affectedParents = <String?>{parentId};
-    await db.transaction((txn) async {
+    final ordered = requested.toList()..sort();
+    await DurableFileOperations.run<void>(
+      db: db,
+      resourceKey: 'folder:${ordered.first}',
+      kind: 'move-folder-batch',
+      scopeKeys: await DurableFileOperations.scopeForFolders(
+          db, <String?>[...ordered, parentId]),
+      action: (lease) async {
+        await db.transaction((txn) async {
       final placeholders = List.filled(requested.length, '?').join(',');
       final rows = await txn.query(
         'folders',
@@ -852,7 +860,9 @@ class FolderRepository {
       }
       await batch.commit(noResult: true);
       await lease.markDatabaseCommitted(txn);
-    });
+        });
+      },
+    );
     PortableSnapshotEvents.notifyDataChanged(affectedFolderIds: affectedParents);
   }
 
@@ -1399,6 +1409,8 @@ class FolderRepository {
       await lease.markDatabaseCommitted(txn);
     });
     PortableSnapshotEvents.notifyDataChanged(affectedFolderIds: <String?>{});
+      },
+    );
   }
 
   /// Empty folders are sent to Grid Recycle Bin; their physical directory
@@ -1446,6 +1458,8 @@ class FolderRepository {
     PortableSnapshotEvents.notifyDataChanged(affectedFolderIds: <String?>{
       folder.single['parent_id'] as String?, id,
     });
+      },
+    );
   }
 
 }
