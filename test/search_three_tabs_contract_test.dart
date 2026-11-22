@@ -3,19 +3,16 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  test('Phone and Home have distinct state keys; OCR availability reaches all tabs',
+  test('Phone and Home retain distinct keys; OCR mode is never enabled by app shell',
       () {
     final main = File('lib/main.dart').readAsStringSync();
     expect(main, contains("ValueKey('phone-tab')"));
     expect(main, contains("ValueKey('home-tab')"));
     expect(main, contains('phoneOnly: true,'));
-    // The Grid tab now additionally receives the existing Settings callback.
-    // OCR availability must still be forwarded to the very same FoldersScreen.
     expect(main, contains('_ => FoldersScreen('));
-    expect(main, contains('ocrSearchAvailable: widget.ocrSearchAvailable,'));
     expect(main, contains('onOpenSettings: _openSettings,'));
-    expect(main.split('ocrSearchAvailable: widget.ocrSearchAvailable').length,
-        greaterThanOrEqualTo(4));
+    expect(main, isNot(contains('ocrSearchAvailable:')));
+    expect(main, isNot(contains('enable-ocr-search-setting')));
   });
 
   test('Home live filename query displays matches before its dashboard sections',
