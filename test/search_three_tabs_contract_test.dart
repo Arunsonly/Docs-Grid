@@ -9,7 +9,8 @@ void main() {
     expect(main, contains("ValueKey('phone-tab')"));
     expect(main, contains("ValueKey('home-tab')"));
     expect(main, contains('phoneOnly: true,'));
-    expect(main, contains('_ => FoldersScreen('));
+    expect(main, contains('IndexedStack('));
+    expect(main, contains('? FoldersScreen('));
     expect(main, contains('onOpenSettings: _openSettings,'));
     expect(main, isNot(contains('ocrSearchAvailable:')));
     expect(main, isNot(contains('enable-ocr-search-setting')));
