@@ -661,8 +661,10 @@ class DocumentToolsService {
   /// scheduled or pruned by the daily database-backup retention policy.
   Future<File> createManualBackup({
     void Function(int, int)? onProgress,
+    void Function(String)? onStage,
     bool newFull = false,
   }) => _withRecoveryLock(() async {
+    onStage?.call('Checking backup storage and parent chain…');
     await StorageMigrationGate.waitUntilReady();
     final locations = await StorageLocationService.instance
         .portableDataLocationsIfAvailable();
@@ -680,7 +682,8 @@ class DocumentToolsService {
     await plan.directory.create(recursive: true);
     try {
       return await _createBackupLocked(
-        onProgress: onProgress, includePdfs: true, seriesPlan: plan,
+        onProgress: onProgress, onStage: onStage,
+        includePdfs: true, seriesPlan: plan,
       );
     } catch (_) {
       if (plan.isFull) {
@@ -877,7 +880,16 @@ class DocumentToolsService {
     bool backgroundSafe = false,
     bool rescueCheckpoint = false,
     BackupChainPlan? seriesPlan,
+    void Function(String)? onStage,
   }) async {
+    // UI stages are informational: never mark the backup complete before
+    // the existing on-disk ZIP readback and checksum validation succeed.
+    Future<void> stage(String message) async {
+      if (onStage == null) return;
+      onStage(message);
+      // Give Flutter a frame between long, synchronous ZIP writer phases.
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+    }
     await StorageMigrationGate.waitUntilReady();
     final storage = StorageLocationService.instance;
     final portableLocations = Platform.isAndroid
@@ -968,6 +980,7 @@ class DocumentToolsService {
       }
     }
     try {
+      await stage('Saving preferences and database metadata…');
       encoder.create(output.path);
       encoderOpened = true;
 
@@ -1060,6 +1073,7 @@ class DocumentToolsService {
       });
 
         if (includePdfs) {
+          await stage('Checking PDF contents for this backup…');
           final totalDocs = Sqflite.firstIntValue(
             await db.rawQuery('SELECT COUNT(*) FROM documents'),
           ) ?? 0;
@@ -1254,6 +1268,7 @@ class DocumentToolsService {
       encoderOpened = false;
       // Structural ZIP checks alone do not prove that the archived bytes
       // match the manifest. Read back the complete output before pruning.
+      await stage('Verifying ZIP and checksums…');
       await validateBackup(output);
       // SAF locations use opaque content:// URIs rather than filesystem paths.
       // Publish the validated archive only after ZIP and manifest checks pass.
