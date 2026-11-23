@@ -67,9 +67,14 @@ void main() {
     expect(ui, contains("then return and choose Restore again."));
   });
 
-  test('UI keeps all three restore modes, file selection and selected-folder recovery', () {
-    expect(ui, contains("if (source == 'folder')"));
-    expect(ui, contains('await _restorePortableSnapshot()'));
+  test('UI keeps all three restore modes and ZIP selection; old folder stays in onboarding', () {
+    // Existing-folder restoration was deliberately removed from the ordinary
+    // ZIP restore sheet after it repointed the live backup root. The separate
+    // onboarding/Settings picker still offers read-only old-data recovery.
+    expect(ui, isNot(contains("if (source == 'folder')")));
+    expect(ui, contains("source == 'pdf_folder'"));
+    expect(ui, contains('restore_selected_portable'));
+    expect(ui, contains('sourceLocations: recoverySource'));
     expect(ui, contains("allowedExtensions: ['zip']"));
     expect(ui, contains('BackupRestoreMode.merge'));
     expect(ui, contains('BackupRestoreMode.fullReplacement'));
