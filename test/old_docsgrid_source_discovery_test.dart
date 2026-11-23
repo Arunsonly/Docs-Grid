@@ -33,12 +33,12 @@ void main() {
         'snapshot_20260101'));
     await snapshot.create(recursive: true);
     final manifest = File(p.join(snapshot.path, 'manifest.json'));
-    await manifest.writeAsString('snapshot marker');
+    await manifest.writeAsString('''{"format":"DocsGridPortableData", "formatVersion":1, "tables":{"documents":1,"folders":0}}''');
     final found = await OldDocsGridSourceDiscovery.inspect(old);
     expect(found, isNotNull);
     expect(found!['detectedSnapshot'], 'true');
     expect(found['databaseUri'], contains('System/Database'));
-    expect(await manifest.readAsString(), 'snapshot marker',
+    expect(await manifest.readAsString(), contains('DocsGridPortableData'),
         reason: 'Discovery must not mutate existing snapshots');
   });
 
