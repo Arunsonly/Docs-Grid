@@ -9,6 +9,8 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'old_docsgrid_source_discovery.dart';
+
 /// A best-effort change hint; unknown providers require full reconciliation.
 class StorageChangeNotice {
   const StorageChangeNotice({
@@ -172,6 +174,24 @@ class StorageLocationService {
       // Background automation may fall back safely when no path cache exists.
     }
     return locations;
+  }
+
+  /// First-launch discovery reads ONLY pre-existing DocsGrid media folders.
+  /// A generic/empty folder must not trigger a misleading restore prompt.
+  /// If all-files access is unavailable, null means "not inspected", not
+  /// proof that no old data exists; the user can still choose a SAF source.
+  Future<Map<String, String>?> discoverOldDocsGridStorage() async {
+    if (!Platform.isAndroid || !await hasAllFilesAccess()) return null;
+    final locations = await portableDataLocationsIfAvailable();
+    final roots = <Directory>[];
+    for (final key in ['rootUri', 'legacyRootUri']) {
+      final raw = locations[key];
+      if (raw == null || !raw.startsWith('file://')) continue;
+      final directory = Directory(Uri.parse(raw).toFilePath());
+      if (roots.any((existing) => existing.path == directory.path)) continue;
+      roots.add(directory);
+    }
+    return OldDocsGridSourceDiscovery.findIn(roots);
   }
 
   Future<Map<String, String>> cachedPortableDataLocations() async {
