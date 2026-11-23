@@ -682,10 +682,22 @@ class MainActivity : FlutterActivity() {
                                     .orEmpty()
                                 val savedRootIsLegacyDocsGrid =
                                     savedRootDocumentId.contains("android/media/docsgrid")
+                                // Previous "Existing DocsGrid folder" recovery wrongly
+                                // replaced active local file:// preferences with a SAF
+                                // view of that SAME primary-volume directory. Full
+                                // incremental backup only supports file://, so its
+                                // archives disappeared from Usage and new backups failed.
+                                // Rebind only verified primary-volume canonical paths;
+                                // never redirect a genuinely selected SD-card tree.
+                                val savedRootIsPrimaryCanonical =
+                                    savedRootDocumentId.startsWith(
+                                        "primary:android/media/${packageName.lowercase()}"
+                                    )
                                 if (savedRoot?.startsWith("content://") == true &&
                                     savedRecovery?.startsWith("content://") == true &&
                                     savedLibrary?.startsWith("content://") == true &&
-                                    !(hasAllFilesAccess && savedRootIsLegacyDocsGrid)) {
+                                    !(hasAllFilesAccess &&
+                                      (savedRootIsLegacyDocsGrid || savedRootIsPrimaryCanonical))) {
                                     val selectedLocations = mutableMapOf<String, String>(
                                         "rootUri" to savedRoot,
                                         "recoveryUri" to savedRecovery,
@@ -2194,16 +2206,17 @@ class MainActivity : FlutterActivity() {
                 if (snapshots.isEmpty()) {
                     throw IllegalStateException("The selected DocsGrid/System/Database (or legacy DocsGrid/Database) folder contains no recovery snapshots.")
                 }
-                getSharedPreferences("docsgrid_storage", MODE_PRIVATE).edit()
-                    .putString("tree_uri", uri.toString())
-                    .putString("docsgrid_uri", docsGrid.toString())
-                    .putString("documents_uri", documents.toString())
-                    .putString("folders_uri", folders.toString())
-                    .putString("my_files_uri", folders.toString())
-                    .putString("database_uri", database.toString())
-                    .putString("recovery_uri", recovery.toString())
-                    .apply()
-                callback?.success(mapOf("uri" to docsGrid.toString(), "name" to "DocsGrid", "rootUri" to docsGrid.toString()))
+                // A recovery source is READ-ONLY input, never the destination.
+                // Do not mutate docsgrid_uri or any active backup preferences.
+                callback?.success(mapOf(
+                    "uri" to docsGrid.toString(),
+                    "name" to "DocsGrid",
+                    "rootUri" to docsGrid.toString(),
+                    "databaseUri" to database.toString(),
+                    "documentsUri" to documents.toString(),
+                    "libraryUri" to folders.toString(),
+                    "recoveryUri" to recovery.toString(),
+                ))
                 return
             }
             // Reuse the selected DocsGrid directory when the user selected it
