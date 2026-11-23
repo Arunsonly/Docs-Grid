@@ -10,16 +10,20 @@ class OldDocsGridSourceDiscovery {
   OldDocsGridSourceDiscovery._();
 
   static Future<Map<String, String>?> findIn(
-    Iterable<Directory> possibleRoots,
-  ) async {
+    Iterable<Directory> possibleRoots, {
+    DateTime? currentInstallAtUtc,
+  }) async {
     for (final root in possibleRoots) {
-      final result = await inspect(root);
+      final result = await inspect(root,
+          currentInstallAtUtc: currentInstallAtUtc);
       if (result != null) return result;
     }
     return null;
   }
 
-  static Future<Map<String, String>?> inspect(Directory root) async {
+  static Future<Map<String, String>?> inspect(Directory root, {
+    DateTime? currentInstallAtUtc,
+  }) async {
     if (!await root.exists()) return null;
     final canonical = Directory(p.join(root.path, 'My Files'));
     final system = Directory(p.join(root.path, 'System'));
@@ -40,9 +44,10 @@ class OldDocsGridSourceDiscovery {
         ? p.join(root.path, 'System', 'Backups')
         : p.join(root.path, 'Backups'));
 
-    final hasMetadata = await _hasCompletedSnapshot(database);
-    final hasArchive = await _hasArchivedBackup(backups);
-    final hasPdfs = await _containsPdf(documents) || await _containsPdf(library);
+    final hasMetadata = await _hasCompletedSnapshot(database, currentInstallAtUtc);
+    final hasArchive = await _hasArchivedBackup(backups, currentInstallAtUtc);
+    final hasPdfs = await _containsPdf(documents, currentInstallAtUtc) ||
+        await _containsPdf(library, currentInstallAtUtc);
     if (!hasMetadata && !hasArchive && !hasPdfs) return null;
 
     return <String, String>{
@@ -61,7 +66,12 @@ class OldDocsGridSourceDiscovery {
     };
   }
 
-  static Future<bool> _hasCompletedSnapshot(Directory database) async {
+  static bool _predatesInstall(DateTime modified, DateTime? installedAt) =>
+      installedAt == null || modified.toUtc().isBefore(
+          installedAt.toUtc().subtract(const Duration(seconds: 60)));
+
+  static Future<bool> _hasCompletedSnapshot(
+      Directory database, DateTime? installedAt) async {
     if (!await database.exists()) return false;
     try {
       await for (final entry in database.list(followLinks: false)) {
@@ -77,6 +87,13 @@ class OldDocsGridSourceDiscovery {
               contents['formatVersion'] != 1) continue;
           final tables = contents['tables'];
           if (tables is! Map) continue;
+          if (installedAt != null) {
+            final createdAt = DateTime.tryParse(
+                contents['createdAtUtc'] as String? ?? '');
+            if (createdAt == null || !_predatesInstall(createdAt, installedAt)) {
+              continue;
+            }
+          }
           // Empty installation snapshots with only default categories are
           // not proof that a previous user library is available to restore.
           if (['documents', 'folders', 'tags', 'reminders', 'history',
@@ -94,7 +111,8 @@ class OldDocsGridSourceDiscovery {
     return false;
   }
 
-  static Future<bool> _hasArchivedBackup(Directory backupRoot) async {
+  static Future<bool> _hasArchivedBackup(
+      Directory backupRoot, DateTime? installedAt) async {
     if (!await backupRoot.exists()) return false;
     final candidates = <Directory>[
       backupRoot,
@@ -105,13 +123,18 @@ class OldDocsGridSourceDiscovery {
       if (!await folder.exists()) continue;
       try {
         await for (final entry in folder.list(followLinks: false)) {
-          if (entry is File && p.extension(entry.path).toLowerCase() == '.zip') {
+          if (entry is File && p.extension(entry.path).toLowerCase() == '.zip' &&
+              _predatesInstall(await entry.lastModified(), installedAt)) {
             return true;
           }
           if (entry is Directory &&
               RegExp(r'^A[0-9]{3,}$').hasMatch(p.basename(entry.path))) {
-            if (await File(p.join(entry.path,
-                '${p.basename(entry.path)}.zip')).exists()) return true;
+            final base = File(p.join(entry.path,
+                '${p.basename(entry.path)}.zip'));
+            if (await base.exists() &&
+                _predatesInstall(await base.lastModified(), installedAt)) {
+              return true;
+            }
           }
         }
       } on FileSystemException {
@@ -121,7 +144,8 @@ class OldDocsGridSourceDiscovery {
     return false;
   }
 
-  static Future<bool> _containsPdf(Directory directory) async {
+  static Future<bool> _containsPdf(
+      Directory directory, DateTime? installedAt) async {
     if (!await directory.exists()) return false;
     final pending = <({Directory dir, int depth})>[(dir: directory, depth: 0)];
     var scanned = 0;
@@ -131,7 +155,10 @@ class OldDocsGridSourceDiscovery {
         await for (final entity in current.dir.list(followLinks: false)) {
           if (++scanned > 4000) return false; // A bounded discovery scan.
           if (entity is File &&
-              p.extension(entity.path).toLowerCase() == '.pdf') return true;
+              p.extension(entity.path).toLowerCase() == '.pdf' &&
+              _predatesInstall(await entity.lastModified(), installedAt)) {
+            return true;
+          }
           if (entity is Directory && current.depth < 12 &&
               !p.basename(entity.path).startsWith('.')) {
             pending.add((dir: entity, depth: current.depth + 1));
