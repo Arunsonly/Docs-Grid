@@ -812,9 +812,26 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
     final snapshot = await _tools.verifyLatestPortableMetadataSnapshot(
         sourceLocations: recoverySource);
     if (snapshot == null && recoverySource != null) {
-      // A previous installation may have only a ZIP (Full or A-series) and
-      // no completed metadata snapshot. Prefer verified backup restoration
-      // over silently importing bare PDFs and losing their tags/reminders.
+      // On external SAF the existing Incremental picker is the only flow
+      // that stages and verifies every A-series parent. Do not pretend an
+      // incomplete or invisible external chain is an empty PDF folder.
+      final fullUri = recoverySource['fullBackupsUri'];
+      if (fullUri != null && fullUri.startsWith('content://')) {
+        final possibleSeries = await storage.listDirectory(fullUri);
+        final hasExternalChain = possibleSeries.any((item) =>
+            item['isDirectory'] == true &&
+            BackupChain.validSeriesName(item['name'] as String? ?? ''));
+        if (hasExternalChain) {
+          if (mounted) setState(() => _message =
+              'An old A-series backup folder was found. To recover it safely, '
+              'choose Restore backup → Incremental series folder, then select '
+              'the A001 (or relevant A-series) folder. All parent ZIPs will '
+              'be verified before restore; nothing has been changed.');
+          return;
+        }
+      }
+      // A previous installation may have only a standalone ZIP or no
+      // completed metadata snapshot. Verify full ZIPs before bare PDF import.
       final olderArchives = await _tools.listPortableBackupArchives(
           sourceLocations: recoverySource);
       if (olderArchives.isNotEmpty) {
