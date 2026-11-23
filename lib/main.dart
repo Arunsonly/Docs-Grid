@@ -323,6 +323,22 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
     if (snoozedUntil != null && snoozedUntil.isAfter(DateTime.now())) return;
     if (!mounted) return;
     if (Platform.isAndroid) {
+      // A kept app-private SQLite database is already the live library.
+      // Never offer an automatic restore over meaningful retained user data.
+      // Manual recovery of other sources remains available through Settings.
+      try {
+        if (await AppDatabase.instance.hasPortableUserData()) {
+          await prefs.setBool('docsgrid_restore_prompt_shown', true);
+          await prefs.remove('docsgrid_restore_prompt_snoozed_until');
+          return;
+        }
+      } catch (error) {
+        // DB errors are NOT proof that old PDFs disappeared. Keep the existing
+        // read-only recovery discovery flow available and log the failure.
+        unawaited(DiagnosticLogStore.instance.recordError(
+            'Existing database recovery check', error));
+      }
+      if (!mounted) return;
       final storage = StorageLocationService.instance;
       Map<String, String>? oldSource;
       bool storageInspected = false;
@@ -739,29 +755,25 @@ class _SettingsScreen extends StatefulWidget {
 }
 
 class _SettingsScreenState extends State<_SettingsScreen> {
-  Map<String, String>? _storageStatus;
   bool _checkingStorage = false;
 
   @override
   void initState() {
     super.initState();
-    _refreshStorageStatus();
+    // Keep the internal permission/provider health check after hiding its tile.
+    unawaited(_refreshStorageStatus());
   }
 
   Future<void> _refreshStorageStatus() async {
-    setState(() => _checkingStorage = true);
+    if (_checkingStorage) return;
+    _checkingStorage = true;
     try {
-      final status = await StorageLocationService.instance.checkStorageAccess();
-      if (mounted) setState(() => _storageStatus = status);
+      await StorageLocationService.instance.checkStorageAccess();
     } catch (error) {
-      if (mounted) {
-        setState(() => _storageStatus = {
-          'status': 'unknown',
-          'message': 'Could not check storage access: $error',
-        });
-      }
+      unawaited(DiagnosticLogStore.instance.recordError(
+          'Storage access health check', error));
     } finally {
-      if (mounted) setState(() => _checkingStorage = false);
+      _checkingStorage = false;
     }
   }
 
@@ -940,7 +952,6 @@ class _SettingsScreenState extends State<_SettingsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final status = _storageStatus?['status'];
     final mutedDivider = Divider(
       height: 1,
       indent: 64,
@@ -950,59 +961,6 @@ class _SettingsScreenState extends State<_SettingsScreen> {
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 28),
       children: [
-        if (Platform.isAndroid)
-          Padding(
-            padding: const EdgeInsets.only(bottom: 8),
-            child: _settingsCard([
-              FutureBuilder<bool>(
-                future: StorageLocationService.instance.hasAllFilesAccess(),
-                builder: (context, snapshot) {
-                  final granted = snapshot.data == true;
-                  return ListTile(
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                    leading: Container(
-                      width: 42,
-                      height: 42,
-                      decoration: BoxDecoration(
-                        color: (granted ? Colors.green : Theme.of(context).colorScheme.primary)
-                            .withOpacity(0.12),
-                        borderRadius: BorderRadius.circular(13),
-                      ),
-                      child: Icon(
-                        granted ? Icons.folder_special_outlined : Icons.folder_off_outlined,
-                        color: granted ? Colors.green : Theme.of(context).colorScheme.primary,
-                      ),
-                    ),
-                    title: const Text(
-                      'Full internal storage access',
-                      style: TextStyle(fontWeight: FontWeight.w700),
-                    ),
-                    subtitle: Padding(
-                      padding: const EdgeInsets.only(top: 4),
-                      child: Text(
-                        granted
-                            ? 'Allowed. DocsGrid can access shared internal storage.'
-                            : 'Required for full storage browsing and recovery discovery.',
-                      ),
-                    ),
-                    onTap: () async {
-                      try {
-                        await StorageLocationService.instance.requestAllFilesAccess();
-                        await _refreshStorageStatus();
-                      } catch (error) {
-                        if (context.mounted) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(content: Text('Could not open storage permission settings: $error')),
-                          );
-                        }
-                      }
-                    },
-                  );
-                },
-              ),
-            ]),
-          ),
-
         _sectionTitle('PREFERENCES'),
         _settingsCard([
           SwitchListTile(
@@ -1024,26 +982,6 @@ class _SettingsScreenState extends State<_SettingsScreen> {
             title: const Text('Choose storage location', style: TextStyle(fontWeight: FontWeight.w600)),
             trailing: const Icon(Icons.chevron_right),
             onTap: () => _chooseStorage(context),
-          ),
-        ]),
-
-        _sectionTitle('SECURITY & HEALTH'),
-        _settingsCard([
-          ListTile(
-            leading: const Icon(Icons.health_and_safety_outlined),
-            title: const Text('Storage access health', style: TextStyle(fontWeight: FontWeight.w600)),
-            subtitle: Text(_checkingStorage
-                ? 'Checking storage access…'
-                : status == 'available'
-                    ? 'Last checked today'
-                    : status == 'revoked'
-                        ? 'Access needs attention'
-                        : 'Check storage permissions'),
-            trailing: TextButton(
-              onPressed: _checkingStorage ? null : _refreshStorageStatus,
-              child: const Text('Check'),
-            ),
-            onTap: _checkingStorage ? null : _refreshStorageStatus,
           ),
         ]),
 
