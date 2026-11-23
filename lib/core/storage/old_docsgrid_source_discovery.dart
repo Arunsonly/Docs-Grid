@@ -23,17 +23,21 @@ class OldDocsGridSourceDiscovery {
     final canonical = Directory(p.join(root.path, 'My Files'));
     final system = Directory(p.join(root.path, 'System'));
     final newLayout = await canonical.exists() && await system.exists();
-    final library = Directory(p.join(
-        root.path, if (newLayout) 'My Files', 'Folders'));
-    final documents = Directory(p.join(
-        root.path, if (newLayout) 'My Files',
-        if (newLayout) 'Unfiled' else 'Documents'));
-    final database = Directory(p.join(
-        root.path, if (newLayout) 'System', 'Database'));
-    final recovery = Directory(p.join(
-        root.path, if (newLayout) 'System', 'Recovery'));
-    final backups = Directory(p.join(
-        root.path, if (newLayout) 'System', 'Backups'));
+    final library = Directory(newLayout
+        ? p.join(root.path, 'My Files', 'Folders')
+        : p.join(root.path, 'Folders'));
+    final documents = Directory(newLayout
+        ? p.join(root.path, 'My Files', 'Unfiled')
+        : p.join(root.path, 'Documents'));
+    final database = Directory(newLayout
+        ? p.join(root.path, 'System', 'Database')
+        : p.join(root.path, 'Database'));
+    final recovery = Directory(newLayout
+        ? p.join(root.path, 'System', 'Recovery')
+        : p.join(root.path, 'Recovery'));
+    final backups = Directory(newLayout
+        ? p.join(root.path, 'System', 'Backups')
+        : p.join(root.path, 'Backups'));
 
     final hasMetadata = await _hasCompletedSnapshot(database);
     final hasArchive = await _hasArchivedBackup(backups);
@@ -62,7 +66,7 @@ class OldDocsGridSourceDiscovery {
       await for (final entry in database.list(followLinks: false)) {
         if (entry is! Directory ||
             !p.basename(entry.path).startsWith('snapshot_')) continue;
-        if (await File(p.join(entry.path, 'manifest.json')).isFile()) {
+        if (await File(p.join(entry.path, 'manifest.json')).exists()) {
           return true;
         }
       }
