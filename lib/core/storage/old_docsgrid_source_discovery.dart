@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:convert';
 
 import 'package:path/path.dart' as p;
 
@@ -66,8 +67,25 @@ class OldDocsGridSourceDiscovery {
       await for (final entry in database.list(followLinks: false)) {
         if (entry is! Directory ||
             !p.basename(entry.path).startsWith('snapshot_')) continue;
-        if (await File(p.join(entry.path, 'manifest.json')).exists()) {
-          return true;
+        final manifest = File(p.join(entry.path, 'manifest.json'));
+        if (!await manifest.exists()) continue;
+        try {
+          if (await manifest.length() > 128 * 1024) continue;
+          final contents = jsonDecode(await manifest.readAsString());
+          if (contents is! Map ||
+              contents['format'] != 'DocsGridPortableData' ||
+              contents['formatVersion'] != 1) continue;
+          final tables = contents['tables'];
+          if (tables is! Map) continue;
+          // Empty installation snapshots with only default categories are
+          // not proof that a previous user library is available to restore.
+          if (['documents', 'folders', 'tags', 'reminders', 'history',
+                'smart_collections'].any((key) =>
+                  tables[key] is int && (tables[key] as int) > 0)) {
+            return true;
+          }
+        } catch (_) {
+          // A malformed snapshot cannot trigger a false old-data prompt.
         }
       }
     } on FileSystemException {
