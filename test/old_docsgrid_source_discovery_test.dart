@@ -32,6 +32,8 @@ void main() {
     final snapshot = Directory(p.join(old.path, 'System', 'Database',
         'snapshot_20260101'));
     await snapshot.create(recursive: true);
+    await Directory(p.join(old.path, 'My Files', 'Unfiled'))
+        .create(recursive: true);
     final manifest = File(p.join(snapshot.path, 'manifest.json'));
     await manifest.writeAsString('''{"format":"DocsGridPortableData", "formatVersion":1, "tables":{"documents":1,"folders":0}}''');
     final found = await OldDocsGridSourceDiscovery.inspect(old);
@@ -67,6 +69,8 @@ void main() {
     final base = File(p.join(old.path, 'System', 'Backups',
         'Full', 'A001', 'A001.zip'));
     await base.parent.create(recursive: true);
+    await Directory(p.join(old.path, 'My Files', 'Unfiled'))
+        .create(recursive: true);
     await base.writeAsString('old ZIP placeholder');
     final found = await OldDocsGridSourceDiscovery.inspect(old);
     expect(found, isNotNull);
