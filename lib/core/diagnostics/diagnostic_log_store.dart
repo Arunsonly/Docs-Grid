@@ -96,7 +96,7 @@ class DiagnosticLogStore {
       {int occurrences = 1}) {
     if (occurrences < 1) return Future<void>.value();
     final description = redact(message);
-    final line = '${DateTime.now().toUtc().toIso8601String()}Z | '
+    final line = '${DateTime.now().toUtc().toIso8601String()} | '
         'ERROR | ${_safeOperation(operation)} | count=$occurrences | '
         '$description\n';
     // All writes, even from concurrent async UI callbacks, are serialized.
@@ -176,9 +176,6 @@ class DiagnosticLogStore {
       try {
         final directory = await resolver();
         if (directory == null) continue;
-        if (!identical(resolver, _portableDirectory)) {
-          // Availability is recorded below from the second iteration.
-        }
         final files = await _journalFiles(directory);
         for (final file in files.reversed.take(4)) {
           final size = await file.length();
