@@ -3373,9 +3373,13 @@ Future<int?> _restoreBackupLocked(
   /// Returns the newest fully verified snapshot, skipping incomplete or
   /// damaged snapshots left by an interrupted export. A broken newest folder
   /// must not hide an older recoverable snapshot.
-  Future<Map<String, Object?>?> _findLatestVerifiedPortableSnapshot() async {
+  Future<Map<String, Object?>?> _findLatestVerifiedPortableSnapshot({
+    Map<String, String>? sourceLocations,
+  }) async {
     final storage = StorageLocationService.instance;
-    final locations = await storage.portableDataLocations();
+    // Explicit recovery sources are read-only; the active Grid destination
+    // must remain independent of the chosen backup/source location.
+    final locations = sourceLocations ?? await storage.portableDataLocations();
     final databaseUris = <String>[locations['databaseUri']!];
     final legacyUri = locations['legacyRootUri'];
     if (legacyUri != null && legacyUri.startsWith('file://')) {
@@ -3454,9 +3458,11 @@ Future<int?> _restoreBackupLocked(
     return bestSnapshot;
   }
 
-  Future<String?> verifyLatestPortableMetadataSnapshot() =>
-      _withRecoveryLock(() async {
-        final snapshot = await _findLatestVerifiedPortableSnapshot();
+  Future<String?> verifyLatestPortableMetadataSnapshot({
+    Map<String, String>? sourceLocations,
+  }) => _withRecoveryLock(() async {
+        final snapshot = await _findLatestVerifiedPortableSnapshot(
+          sourceLocations: sourceLocations);
         return snapshot?['name'] as String?;
       });
 
@@ -3465,16 +3471,20 @@ Future<int?> _restoreBackupLocked(
   /// SHA-256 from the currently selected library and are never overwritten.
   Future<Map<String, int>> restoreLatestPortableMetadataSnapshot({
     void Function(int completed, int total)? onProgress,
+    Map<String, String>? sourceLocations,
   }) => _withRecoveryLock(() =>
-      _restoreLatestPortableMetadataSnapshotLocked(onProgress: onProgress));
+      _restoreLatestPortableMetadataSnapshotLocked(
+          onProgress: onProgress, sourceLocations: sourceLocations));
 
   Future<Map<String, int>> _restoreLatestPortableMetadataSnapshotLocked({
     void Function(int completed, int total)? onProgress,
+    Map<String, String>? sourceLocations,
   }) async {
     await StorageMigrationGate.waitUntilReady();
     final storage = StorageLocationService.instance;
     final locations = await storage.portableDataLocations();
-    final snapshot = await _findLatestVerifiedPortableSnapshot();
+    final snapshot = await _findLatestVerifiedPortableSnapshot(
+        sourceLocations: sourceLocations);
     if (snapshot == null) {
       throw StateError('No complete, verified portable recovery snapshot was found.');
     }
@@ -3537,6 +3547,12 @@ Future<int?> _restoreBackupLocked(
       locations['libraryUri']!,
       if (locations['documentsUri'] != null)
         locations['documentsUri']!,
+      // Read PDF bytes from the selected OLD source too, without changing
+      // where the live Grid will create new PDFs or future backups.
+      if (sourceLocations?['libraryUri'] != null)
+        sourceLocations!['libraryUri']!,
+      if (sourceLocations?['documentsUri'] != null)
+        sourceLocations!['documentsUri']!,
     ];
 
     // A reinstall may initialize a new canonical com.docsgrid root while the
