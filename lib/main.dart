@@ -878,6 +878,54 @@ class _SettingsScreenState extends State<_SettingsScreen> {
         ),
       );
 
+  Future<void> _recoverPreviousInstallation() async {
+    if (!Platform.isAndroid) return;
+    final storage = StorageLocationService.instance;
+    try {
+      final known = await storage.discoverOldDocsGridStorage();
+      if (!mounted) return;
+      final choice = await showDialog<String>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Recover previous DocsGrid installation'),
+          content: const Text(
+              'Choose a read-only old DocsGrid source. Your current Grid '
+              'storage and existing backup folder will not be switched.'),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, 'cancel'),
+                child: const Text('Cancel')),
+            if (known != null)
+              TextButton(onPressed: () => Navigator.pop(ctx, 'old'),
+                  child: const Text('From old Storage location')),
+            FilledButton(onPressed: () => Navigator.pop(ctx, 'choose'),
+                child: const Text('Choose another location')),
+          ],
+        ),
+      );
+      if (!mounted) return;
+      final source = choice == 'old' ? known :
+          choice == 'choose' ? await storage.chooseRecoveryFolder() : null;
+      if (source == null || !mounted) return;
+      await Navigator.of(context).push(MaterialPageRoute(
+        builder: (_) => Scaffold(
+          appBar: AppBar(title: const Text('Restore previous DocsGrid data')),
+          body: DocumentToolsScreen(
+            quickAction: 'restore_selected_portable',
+            initialRecoverySource: source,
+            section: 'backup_restore',
+          ),
+        ),
+      ));
+    } catch (error) {
+      unawaited(DiagnosticLogStore.instance.recordError(
+          'Recover previous installation', error));
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Old storage could not be opened: $error')));
+      }
+    }
+  }
+
   Widget _settingsCard(List<Widget> children) => Container(
         decoration: BoxDecoration(
           color: Theme.of(context).colorScheme.surfaceContainerLow,
@@ -1011,6 +1059,17 @@ class _SettingsScreenState extends State<_SettingsScreen> {
               body: const DocumentToolsScreen(section: 'backup_restore'),
             ))),
           ),
+          if (Platform.isAndroid) ...[
+            mutedDivider,
+            ListTile(
+              leading: const Icon(Icons.folder_copy_outlined),
+              title: const Text('Recover previous installation',
+                  style: TextStyle(fontWeight: FontWeight.w600)),
+              subtitle: const Text('Choose an old storage source without changing the active folder.'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: _recoverPreviousInstallation,
+            ),
+          ],
           mutedDivider,
           ListTile(
             leading: const Icon(Icons.history),
