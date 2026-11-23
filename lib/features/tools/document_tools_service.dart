@@ -16,6 +16,7 @@ import 'package:sqflite/sqflite.dart';
 import 'package:uuid/uuid.dart';
 
 import '../../core/database/app_database.dart';
+import '../../core/diagnostics/diagnostic_log_store.dart';
 import '../../core/storage/storage_location_service.dart';
 import '../../core/storage/storage_migration_gate.dart';
 import '../../core/storage/portable_snapshot_events.dart';
@@ -25,6 +26,7 @@ import '../folders/data/folder_repository.dart';
 import '../reminders/data/reminder_notifications.dart';
 import 'backup_archive_limits.dart';
 import 'backup_chain.dart';
+import 'pdf_recovery_failure_report.dart';
 import 'backup_schema_compatibility.dart';
 import 'backup_folder_graph_validator.dart';
 import 'portable_snapshot_manifest.dart';
@@ -1560,6 +1562,11 @@ class DocumentToolsService {
 
     final candidates = <Map<String, Object?>>[];
     final seenUris = <String>{};
+    final failureReport = PdfRecoveryFailureReport();
+    void recordFailure(String stage, Object error) {
+      failureReport.record(stage, error);
+      onFailure?.call(stage, error);
+    }
     var failed = 0;
 
     Future<void> addPortableRoot(
@@ -1590,7 +1597,7 @@ class DocumentToolsService {
       } catch (error) {
         // A readable folder listing does not prove that all nested files can
         // be read. Preserve the actual provider failure for local diagnosis.
-        onFailure?.call('Scanning PDF folder', error);
+        recordFailure('Scanning PDF folder', error);
         failed++;
       }
     }
@@ -1724,13 +1731,23 @@ class DocumentToolsService {
         // Do not discard the reason for all-failed SAF or destination cases.
         // Report it to the local UI only; never upload file paths or content.
         failed++;
-        onFailure?.call(stage, error);
+        recordFailure(stage, error);
       } finally {
         processed++;
         onProgress?.call(processed, total);
       }
     }
 
+    if (failed > 0) {
+      // Persist grouped, sanitized causes once per scan instead of writing
+      // the same permission error 81 times. Logging must not alter PDF state.
+      await DiagnosticLogStore.instance.recordMessage(
+        'PDF folder recovery',
+        'added=$added, relinked=$relinked, duplicates=$duplicates, '
+        'failed=$failed. Reasons: ${failureReport.summary}',
+        occurrences: failed,
+      );
+    }
     return {
       'added': added,
       'relinked': relinked,
