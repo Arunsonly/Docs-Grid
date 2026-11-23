@@ -657,6 +657,11 @@ class MainActivity : FlutterActivity() {
                                     startActivityForResult(intent, requestChooseFolder)
                                 }
                             }
+                            "getDocsGridInstallTime" -> {
+                                @Suppress("DEPRECATION")
+                                val info = packageManager.getPackageInfo(packageName, 0)
+                                result.success(info.firstInstallTime)
+                            }
                             "getPortableDataLocations" -> {
                                 // A user-selected SAF recovery tree remains usable without
                                 // MANAGE_EXTERNAL_STORAGE. Return its persisted opaque URIs
