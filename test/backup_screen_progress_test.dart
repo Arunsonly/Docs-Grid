@@ -59,6 +59,8 @@ void main() {
         findsNothing);
     expect(find.text('Full Backup'), findsOneWidget);
     expect(find.text('Restore backup'), findsOneWidget);
+    // Logs remain persisted under DocsGrid/System/Logs, but are not a UI item.
+    expect(find.text('View error logs'), findsNothing);
 
     await tester.tap(find.text('Create Backup'));
     await tester.pump();
