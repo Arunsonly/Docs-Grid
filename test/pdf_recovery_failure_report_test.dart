@@ -38,7 +38,7 @@ void main() {
   test('large provider error text is bounded for display', () {
     final report = PdfRecoveryFailureReport();
     report.record('Importing verified PDF into Grid',
-        PlatformException(code: 'STORAGE_ERROR', message: 'a' * 1200));
+        PlatformException(code: 'STORAGE_ERROR', message: List.filled(1200, 'a').join()));
     expect(report.summary.length, lessThan(350));
   });
 
