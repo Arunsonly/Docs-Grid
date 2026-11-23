@@ -1803,6 +1803,28 @@ class DocumentToolsService {
     Map<String, String>? sourceLocations,
   }) async {
     await StorageMigrationGate.waitUntilReady();
+    // A-series from a chosen OLD root must be restored as a verified chain,
+    // not by mistakenly applying I002.zip by itself or ignoring its parent.
+    final oldFullUri = sourceLocations?['fullBackupsUri'];
+    if (oldFullUri != null && oldFullUri.startsWith('file://')) {
+      final oldFullRoot = Directory(Uri.parse(oldFullUri).toFilePath());
+      if (await oldFullRoot.exists()) {
+        final series = await BackupChain.folders(oldFullRoot);
+        for (final folder in series.reversed) {
+          List<File> verified;
+          try {
+            verified = await BackupChain.verified(folder);
+          } catch (_) {
+            // A damaged series is never partially applied.
+            continue;
+          }
+          if (verified.isNotEmpty) {
+            return restoreBackup(verified.last,
+              confirm: confirm, confirmPlan: confirmPlan);
+          }
+        }
+      }
+    }
     final candidates = await listPortableBackupArchives(
         sourceLocations: sourceLocations);
     if (candidates.isEmpty) {
