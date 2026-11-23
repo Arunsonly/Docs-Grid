@@ -323,13 +323,137 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
     if (snoozedUntil != null && snoozedUntil.isAfter(DateTime.now())) return;
     if (!mounted) return;
     if (Platform.isAndroid) {
+      final storage = StorageLocationService.instance;
+      Map<String, String>? oldSource;
+      bool storageInspected = false;
       try {
-        if (await StorageLocationService.instance.hasAllFilesAccess()) {
-          await StorageLocationService.instance.portableDataLocations();
+        storageInspected = await storage.hasAllFilesAccess();
+        if (storageInspected) {
+          oldSource = await storage.discoverOldDocsGridStorage();
         }
-      } catch (_) {
-        // Fresh setup remains available; recovery surfaces permission failures.
+      } catch (error) {
+        // Discovery is read-only and optional. A provider failure is NOT
+        // evidence that the user's old files do not exist.
+        unawaited(DiagnosticLogStore.instance.recordError(
+            'First launch old storage discovery', error));
+        storageInspected = false;
       }
+      if (!mounted) return;
+
+      // An empty folder made by this fresh install is not proof of old data.
+      // Do not show a misleading "existing database" prompt.
+      if (storageInspected && oldSource == null) {
+        await prefs.setBool('docsgrid_restore_prompt_shown', true);
+        return;
+      }
+
+      final found = oldSource != null;
+      final descriptions = <String>[
+        if (oldSource?['detectedSnapshot'] == 'true')
+          'a saved metadata snapshot',
+        if (oldSource?['detectedBackup'] == 'true')
+          'a backup ZIP',
+        if (oldSource?['detectedPdfs'] == 'true')
+          'previous PDF files',
+      ];
+      final action = await showDialog<String>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: Text(found
+              ? 'Existing DocsGrid data found'
+              : 'Check for previous DocsGrid data'),
+          content: Text(found
+              ? 'This phone has ${descriptions.join(', ')} in a DocsGrid storage folder. '
+                'Would you like to restore it or start fresh? '
+                'Starting fresh never deletes the old folder.'
+              : 'DocsGrid cannot inspect existing storage until Android '
+                'grants access. You may choose an old DocsGrid folder manually, '
+                'or start fresh without deleting any old files.'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, 'later'),
+              child: const Text('Later'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, 'fresh'),
+              child: const Text('Start fresh'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx, 'restore'),
+              child: const Text('Restore data'),
+            ),
+          ],
+        ),
+      );
+      if (!mounted) return;
+      if (action == 'fresh') {
+        await prefs.setBool('docsgrid_restore_prompt_shown', true);
+        await prefs.remove('docsgrid_restore_prompt_snoozed_until');
+        return;
+      }
+      if (action != 'restore') {
+        await prefs.setString('docsgrid_restore_prompt_snoozed_until',
+            DateTime.now().add(const Duration(days: 1)).toIso8601String());
+        return;
+      }
+
+      final choice = await showDialog<String>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Select recovery source'),
+          content: const Text(
+            'Recovery reads from the old folder. DocsGrid keeps its active '
+            'storage, PDFs and existing backup destination unchanged.'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, 'cancel'),
+              child: const Text('Cancel'),
+            ),
+            if (oldSource != null)
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, 'old'),
+                child: const Text('From old Storage location'),
+              ),
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx, 'choose'),
+              child: const Text('Choose another location'),
+            ),
+          ],
+        ),
+      );
+      if (!mounted) return;
+      Map<String, String>? source;
+      if (choice == 'old') {
+        source = oldSource;
+      } else if (choice == 'choose') {
+        try {
+          source = await storage.chooseRecoveryFolder();
+        } catch (error) {
+          unawaited(DiagnosticLogStore.instance.recordError(
+              'Choose old storage source', error));
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                content: Text('Cannot open old folder: $error')));
+          }
+          return;
+        }
+      }
+      if (source == null || !mounted) return;
+      // Preserve an avenue to retry on the next launch if restore is cancelled
+      // or the old snapshot turns out to be incomplete.
+      await prefs.setString('docsgrid_restore_prompt_snoozed_until',
+          DateTime.now().add(const Duration(days: 1)).toIso8601String());
+      await Navigator.of(context).push(MaterialPageRoute(
+        builder: (_) => Scaffold(
+          appBar: AppBar(title: const Text('Restore previous DocsGrid data')),
+          body: DocumentToolsScreen(
+            quickAction: 'restore_selected_portable',
+            initialRecoverySource: source,
+            section: 'backup_restore',
+          ),
+        ),
+      ));
+      return;
     }
 
     if (!mounted) return;
