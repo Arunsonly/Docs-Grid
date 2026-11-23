@@ -1341,11 +1341,13 @@ class DocumentToolsService {
 
   /// Lists portable ZIP archives without trusting their filenames as proof
   /// of validity. The restore decoder performs the full manifest/checksum scan.
-  Future<List<File>> listPortableBackupArchives() async {
+  Future<List<File>> listPortableBackupArchives({
+    Map<String, String>? sourceLocations,
+  }) async {
     final storage = StorageLocationService.instance;
-    final locations = Platform.isAndroid
+    final locations = sourceLocations ?? (Platform.isAndroid
         ? await storage.portableDataLocationsIfAvailable()
-        : const <String, String>{};
+        : const <String, String>{});
     final directories = <String, Directory>{};
 
     void addDirectory(Directory directory) {
@@ -1798,9 +1800,11 @@ class DocumentToolsService {
   Future<int?> restoreNewestPortableBackup({
     Future<bool> Function(int pdfCount)? confirm,
     Future<bool> Function(Map<String, int> preview)? confirmPlan,
+    Map<String, String>? sourceLocations,
   }) async {
     await StorageMigrationGate.waitUntilReady();
-    final candidates = await listPortableBackupArchives();
+    final candidates = await listPortableBackupArchives(
+        sourceLocations: sourceLocations);
     if (candidates.isEmpty) {
       throw StateError('No portable DocsGrid backup ZIP was found.');
     }
