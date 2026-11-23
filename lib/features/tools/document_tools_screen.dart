@@ -3,10 +3,12 @@ import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
 import '../../core/database/app_database.dart';
+import '../../core/diagnostics/diagnostic_log_store.dart';
 import '../../core/storage/byte_stream_file.dart';
 import '../../core/storage/storage_location_service.dart';
 import '../documents/data/document_repository.dart';
@@ -68,9 +70,58 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
     try {
       await action();
     } catch (e) {
+      unawaited(DiagnosticLogStore.instance.recordError(
+          'Tools ${widget.section}', e));
       if (mounted) setState(() => _message = 'Action could not be completed: $e');
     } finally {
       if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _showErrorLogs() async {
+    try {
+      final snapshot = await DiagnosticLogStore.instance.readRecent();
+      if (!mounted) return;
+      await showDialog<void>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Saved error logs'),
+          content: SizedBox(
+            width: 540, height: 400,
+            child: Column(children: [
+              Text(snapshot.portableAvailable
+                  ? 'System/Logs + private fallback. Recent errors are kept for up to 14 days.'
+                  : 'Private app logs only. Grant storage access for System/Logs; uninstalling may remove private logs.',
+                style: Theme.of(ctx).textTheme.bodySmall),
+              const SizedBox(height: 12),
+              Expanded(child: SingleChildScrollView(
+                child: SelectableText(snapshot.text),
+              )),
+            ]),
+          ),
+          actions: [
+            TextButton.icon(
+              onPressed: () async {
+                await Clipboard.setData(ClipboardData(text: snapshot.text));
+                if (ctx.mounted) {
+                  ScaffoldMessenger.of(ctx).showSnackBar(
+                    const SnackBar(content: Text('Diagnostic log copied.')),
+                  );
+                }
+              },
+              icon: const Icon(Icons.copy_outlined),
+              label: const Text('Copy log'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Close'),
+            ),
+          ],
+        ),
+      );
+    } catch (error) {
+      if (mounted) setState(() => _message =
+          'Could not read diagnostic logs: $error');
     }
   }
 
@@ -1156,6 +1207,14 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
         ListTile(leading: const Icon(Icons.settings_backup_restore_outlined), title: const Text('Restore backup'),
           subtitle: const Text('Choose a DocsGrid backup ZIP from this phone or another storage location.'),
           trailing: const Icon(Icons.chevron_right), onTap: _busy ? null : _restoreBackup),
+        const Divider(height: 1),
+        ListTile(
+          leading: const Icon(Icons.receipt_long_outlined),
+          title: const Text('View error logs'),
+          subtitle: const Text('Read and copy saved recovery and app failures.'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: _busy ? null : _showErrorLogs,
+        ),
       ])),
     ],
   );
