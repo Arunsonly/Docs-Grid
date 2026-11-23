@@ -1,4 +1,5 @@
 import 'dart:convert';
+import '../diagnostics/diagnostic_log_store.dart';
 import 'dart:io';
 import 'dart:ui' show DartPluginRegistrant;
 
@@ -57,6 +58,8 @@ void docsGridBackgroundDispatcher() {
       }));
       return true;
     } catch (error) {
+      await DiagnosticLogStore.instance.recordError(
+          'Background database backup', error);
       final message = error.toString();
       await prefs.setString(statusKey, jsonEncode({
         'status': 'needs_foreground_retry',
@@ -187,6 +190,8 @@ class BackupAutomation {
         'archiveBytes': await archive.length(),
       }));
     } catch (error) {
+      await DiagnosticLogStore.instance.recordError(
+          'Foreground database backup', error);
       await prefs.setString(key, jsonEncode({
         'status': 'failed',
         'attemptedAtUtc': attemptedAt,
