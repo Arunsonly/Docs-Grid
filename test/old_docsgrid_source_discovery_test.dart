@@ -74,6 +74,36 @@ void main() {
     expect(await base.readAsString(), 'old ZIP placeholder');
   });
 
+  test('same-install fresh PDFs never masquerade as prior installation', () async {
+    final source = Directory(p.join(temporary.path, 'com.docsgrid.mobile'));
+    final pdf = File(p.join(source.path, 'My Files', 'Unfiled',
+        'new_today.pdf'));
+    await pdf.parent.create(recursive: true);
+    await Directory(p.join(source.path, 'System')).create();
+    await pdf.writeAsString('%PDF-1.4');
+    final installedYesterday = DateTime.now().toUtc()
+        .subtract(const Duration(days: 1));
+    expect(await OldDocsGridSourceDiscovery.inspect(source,
+        currentInstallAtUtc: installedYesterday), isNull);
+    final installedTomorrow = DateTime.now().toUtc()
+        .add(const Duration(days: 1));
+    expect(await OldDocsGridSourceDiscovery.inspect(source,
+        currentInstallAtUtc: installedTomorrow), isNotNull);
+  });
+
+  test('old PDF remains discoverable after Android reinstall', () async {
+    final old = Directory(p.join(temporary.path, 'DocsGrid'));
+    final pdf = File(p.join(old.path, 'Documents', 'previous.pdf'));
+    await pdf.parent.create(recursive: true);
+    await pdf.writeAsString('%PDF-1.4');
+    final oldTime = DateTime.utc(2025, 1, 1);
+    await pdf.setLastModified(oldTime);
+    final currentInstall = DateTime.utc(2026, 11, 23);
+    final result = await OldDocsGridSourceDiscovery.inspect(old,
+        currentInstallAtUtc: currentInstall);
+    expect(result?['detectedPdfs'], 'true');
+  });
+
   test('a random unrelated folder is NOT a valid DocsGrid source', () async {
     final other = Directory(p.join(temporary.path, 'Downloads'));
     await other.create();
