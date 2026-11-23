@@ -41,8 +41,13 @@ class RecoveryResultData {
     RecoveryResultKind.noPdfs => Icons.info_outline,
   };
 
-  static int _count(Map<String, int> values, String key) =>
-      (values[key] ?? 0).clamp(0, 0x7fffffff);
+  static int _count(Map<String, int> values, String key) {
+    final value = values[key] ?? 0;
+    return value < 0 ? 0 : value;
+  }
+
+  static int _difference(int total, int part) =>
+      total > part ? total - part : 0;
 
   /// 'added' includes relinked records in the existing recovery service.
   /// Do not present a relinked PDF as newly imported.
@@ -53,7 +58,7 @@ class RecoveryResultData {
   }) {
     final added = _count(result, 'added');
     final relinked = _count(result, 'relinked');
-    final newPdfs = (added - relinked).clamp(0, added);
+    final newPdfs = _difference(added, relinked);
     final duplicates = _count(result, 'duplicates');
     final failed = _count(result, 'failed');
     final folders = _count(result, 'folders');
@@ -107,7 +112,7 @@ class RecoveryResultData {
     final initiallyUnmatched = _count(snapshot, 'pdfsMissing');
     final additional = _count(scan, 'added');
     final extraRelinked = _count(scan, 'relinked');
-    final extraNew = (additional - extraRelinked).clamp(0, additional);
+    final extraNew = _difference(additional, extraRelinked);
     final duplicates = _count(scan, 'duplicates');
     final failed = _count(scan, 'failed');
     final folders = _count(snapshot, 'folders');
@@ -183,15 +188,12 @@ class RecoveryResultData {
   }) {
     final restored = payloads < 0 ? 0 : payloads;
     final relinked = _count(scanned ?? const {}, 'relinked');
-    final imported = (_count(scanned ?? const {}, 'added') - relinked)
-        .clamp(0, 0x7fffffff);
+    final imported = _difference(_count(scanned ?? const {}, 'added'), relinked);
     final duplicates = _count(scanned ?? const {}, 'duplicates');
     final failed = _count(scanned ?? const {}, 'failed');
     final hasProblems = failed > 0 || (scanWarning?.isNotEmpty ?? false);
     final kind = hasProblems
-        ? (restored > 0 || relinked > 0 || imported > 0
-            ? RecoveryResultKind.partial
-            : RecoveryResultKind.partial) // Database metadata may have restored.
+        ? RecoveryResultKind.partial // Database metadata may still be restored.
         : restored > 0 || relinked > 0 || imported > 0
             ? RecoveryResultKind.recovered
             : RecoveryResultKind.upToDate; // Database-only restore can be valid.
@@ -219,8 +221,9 @@ class RecoveryResultData {
 
   factory RecoveryResultData.failure(Object error) => RecoveryResultData(
     kind: RecoveryResultKind.failed,
-    subtitle: 'Recovery could not be completed. Your existing files were not intentionally deleted.',
+    subtitle: 'Recovery could not be completed. See the error before retrying.',
     metrics: const [],
+    sourceFilesRetained: false,
     details: 'Error: $error\nSee local error logs for diagnostics.',
   );
 }
