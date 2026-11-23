@@ -14,11 +14,15 @@ import 'document_tools_service.dart';
 import 'backup_chain.dart';
 
 class DocumentToolsScreen extends StatefulWidget {
-  const DocumentToolsScreen({super.key, this.quickAction, this.section = 'tools', this.service});
+  const DocumentToolsScreen({super.key, this.quickAction, this.section = 'tools',
+    this.service, this.forceAndroidBackupForTesting = false});
   final String? quickAction;
   final String section;
   @visibleForTesting
   final DocumentToolsService? service;
+  /// Test-only switch: production continues to use dart:io Platform.isAndroid.
+  @visibleForTesting
+  final bool forceAndroidBackupForTesting;
 
   @override
   State<DocumentToolsScreen> createState() => _DocumentToolsScreenState();
@@ -71,7 +75,8 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
 
   Future<void> _refreshBackupUsage() async {
     try {
-      final sets = await _tools.manualBackupUsage();
+      final sets = await _tools.manualBackupUsage()
+          .timeout(const Duration(seconds: 20));
       if (mounted) setState(() {
         _manualBackupSets = sets;
         _backupUsageReady = true;
@@ -84,14 +89,16 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
   Future<void> _backup() => _run(() async {
     // Keep the pre-existing iOS standalone Full Backup behaviour intact.
     // A-series incremental storage currently targets Android's file root.
-    if (!Platform.isAndroid) {
+    if (!Platform.isAndroid && !widget.forceAndroidBackupForTesting) {
       final archive = await _tools.createBackup(includePdfs: true);
       await _tools.shareFile(archive.path, text: 'DocsGrid Full backup');
       if (mounted) setState(() => _message =
           'Full backup verified. Save the shared archive somewhere safe.');
       return;
     }
-    final sets = await _tools.manualBackupUsage();
+    if (mounted) setState(() => _message = 'Checking existing backup series…');
+    final sets = await _tools.manualBackupUsage()
+        .timeout(const Duration(seconds: 20));
     var newFull = false;
     final series = sets.where((s) => s.name.startsWith('A') &&
         !s.name.endsWith('.zip')).toList();
@@ -116,8 +123,12 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
       if (choice == null) return;
       newFull = choice;
     }
+    if (mounted) setState(() => _message = 'Preparing verified PDF backup…');
     final archive = await _tools.createManualBackup(
       newFull: newFull,
+      onStage: (stage) {
+        if (mounted) setState(() => _message = stage);
+      },
       onProgress: (completed, total) {
         if (!mounted) return;
         setState(() => _message = total == 0
@@ -125,11 +136,13 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
             : 'Checking PDFs: $completed of $total');
       },
     );
-    await _refreshBackupUsage();
+    // The validated archive has already completed. Refreshing the optional
+    // storage-usage counter must NOT keep the UI waiting or suppress success.
     if (mounted) setState(() => _message =
         'Verified backup created: ' + p.basename(archive.parent.path) +
         '/' + p.basename(archive.path) +
         '. Keep the complete A-series together when exporting.');
+    unawaited(_refreshBackupUsage());
   });
 
   Future<void> _exportBackupSeries(String id) => _run(() async {
@@ -1106,22 +1119,6 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
         ])),
       ],
       if (widget.section == 'backup' || widget.section == 'restore' || widget.section == 'backup_restore') Card(child: Column(children: [
-        const ListTile(
-          leading: Icon(Icons.privacy_tip_outlined),
-          title: Text('Backup privacy'),
-          subtitle: Text(
-            'Portable ZIP backups and metadata snapshots are not encrypted. '
-            'Anyone with access to their saved copies can read document names, '
-            'OCR text and included PDFs. Store backups only in a trusted location.',
-          ),
-        ),
-        const Divider(height: 1),
-        const ListTile(
-          leading: Icon(Icons.shield_outlined),
-          title: Text('Backup & Recovery'),
-          subtitle: Text('Automatic metadata protection · manual PDF backups'),
-        ),
-        const Divider(height: 1),
         ListTile(
           leading: const Icon(Icons.archive_outlined),
           title: const Text('Full Backup'),
