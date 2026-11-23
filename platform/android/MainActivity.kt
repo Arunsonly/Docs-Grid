@@ -678,8 +678,14 @@ class MainActivity : FlutterActivity() {
                                 val savedRootDocumentId = savedRoot
                                     ?.takeIf { it.startsWith("content://") }
                                     ?.let { rootUri ->
+                                        val parsed = Uri.parse(rootUri)
+                                        // Picker may select Android/media parent: the
+                                        // tree ID then names the parent, while the
+                                        // document ID names its DocsGrid child.
                                         runCatching {
-                                            DocumentsContract.getTreeDocumentId(Uri.parse(rootUri))
+                                            DocumentsContract.getDocumentId(parsed)
+                                        }.getOrNull() ?: runCatching {
+                                            DocumentsContract.getTreeDocumentId(parsed)
                                         }.getOrNull()
                                     }
                                     ?.replace('\\', '/')
