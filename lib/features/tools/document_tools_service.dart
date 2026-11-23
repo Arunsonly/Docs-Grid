@@ -1432,9 +1432,8 @@ class DocumentToolsService {
     await stagedRoot.create(recursive: true);
 
     Future<void> stageContentDirectory(
-      String uri, {
-      required String folderName,
-    }) async {
+      String uri, {required String folderName,}
+    ) async {
       try {
         final entries = await storage.listDirectory(uri);
         final targetDirectory = Directory(p.join(stagedRoot.path, folderName));
@@ -1443,35 +1442,53 @@ class DocumentToolsService {
           final name = entry['name'] as String? ?? '';
           final sourceUri = entry['uri'] as String? ?? '';
           if (entry['isDirectory'] == true) {
-            // An externally selected SAF Full/A001 tree is NOT a collection
-            // of standalone ZIPs. Copy its bounded, named members and verify
-            // the complete parent chain before offering the last restore.
             if (folderName != 'Full' || !BackupChain.validSeriesName(name) ||
                 !sourceUri.startsWith('content://')) continue;
             try {
               final members = await storage.listDirectory(sourceUri);
               final expected = '$name.zip';
-              if (members.any((m) {
-                final n = m['name'] as String? ?? '';
-                return m['isDirectory'] == true ||
-                    (n != expected &&
-                     !RegExp(r'^I[0-9]{3,}\\.zip
+              final incrementalPattern = RegExp(r'^I[0-9]{3,}[.]zip' + String.fromCharCode(36));
+              if (members.any((member) {
+                final memberName = member['name'] as String? ?? '';
+                return member['isDirectory'] == true ||
+                    (memberName != expected &&
+                     !incrementalPattern.hasMatch(memberName));
+              })) continue;
+              final stagedSeries = Directory(p.join(targetDirectory.path, name));
+              await stagedSeries.create(recursive: true);
+              for (final member in members) {
+                final zipName = member['name'] as String? ?? '';
+                final zipUri = member['uri'] as String? ?? '';
+                if (zipUri.isEmpty) throw StateError('Missing chain ZIP URI.');
+                await storage.copyStorageFileToPath(
+                  sourceUri: zipUri,
+                  destinationPath: p.join(stagedSeries.path, zipName),
+                );
+              }
+              final chain = await BackupChain.verified(stagedSeries);
+              if (chain.isNotEmpty) files[chain.last.path] = chain.last;
+            } catch (_) {
+              // Never apply a partial or invalid external chain.
+            }
+            continue;
+          }
+          if (!name.startsWith('DocsGrid_') ||
+              !name.toLowerCase().endsWith('.zip') || sourceUri.isEmpty) {
+            continue;
+          }
           final staged = File(p.join(targetDirectory.path, '${_uuid.v4()}_$name'));
           try {
             await storage.copyStorageFileToPath(
-              sourceUri: sourceUri,
-              destinationPath: staged.path,
-            );
+              sourceUri: sourceUri, destinationPath: staged.path);
             files[staged.path] = staged;
           } catch (_) {
-            // Skip only this unreadable item; other backups remain eligible.
+            // Other readable backups remain eligible.
           }
         }
       } catch (_) {
-        // One inaccessible SAF/cloud folder must not hide other backup sources.
+        // An inaccessible SAF provider must not hide other sources.
       }
     }
-
     final contentUris = <String, String>{};
     for (final key in ['fullBackupsUri', 'databaseBackupsUri', 'backupsUri']) {
       final uri = locations[key];
