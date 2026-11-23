@@ -352,7 +352,8 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
         ', skipped ' + (result['duplicates'] ?? 0).toString() +
         ' existing PDFs. Failed: ' + (result['failed'] ?? 0).toString() + '.' +
         (failures.totalFailures > 0
-            ? '\nActual failure reasons: ' + failures.summary : ''));
+            ? '\nActual failure reasons: ' + failures.summary +
+                '\nDiagnostic details saved: View error logs.' : ''));
   });
 
   Future<void> _restoreBackup() => _run(() async {
