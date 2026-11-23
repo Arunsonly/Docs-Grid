@@ -191,7 +191,14 @@ class StorageLocationService {
       if (roots.any((existing) => existing.path == directory.path)) continue;
       roots.add(directory);
     }
-    return OldDocsGridSourceDiscovery.findIn(roots);
+    // A folder may already contain data created *after* this fresh install.
+    // Such data must never be presented as a previous installation.
+    final installEpochMs = await _channel.invokeMethod<int>(
+        'getDocsGridInstallTime');
+    if (installEpochMs == null || installEpochMs <= 0) return null;
+    return OldDocsGridSourceDiscovery.findIn(roots,
+        currentInstallAtUtc:
+            DateTime.fromMillisecondsSinceEpoch(installEpochMs, isUtc: true));
   }
 
   Future<Map<String, String>> cachedPortableDataLocations() async {
