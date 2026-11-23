@@ -83,7 +83,8 @@ void main() {
   test('database-only ZIP restore with zero PDF payloads is not a failed restore',
       () {
     final result = RecoveryResultData.fromArchive(0);
-    expect(result.kind, isNot(RecoveryResultKind.failed));
+    expect(result.kind, RecoveryResultKind.recovered);
+    expect(result.title, 'Recovery completed');
     expect(result.subtitle, contains('Database restore completed'));
   });
 
