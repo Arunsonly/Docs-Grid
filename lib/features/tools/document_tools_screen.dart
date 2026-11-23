@@ -677,14 +677,18 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
 
   Future<void> _restoreNewestPortableBackup() => _run(_restoreNewestPortableBackupBody);
 
-  Future<void> _restoreNewestPortableBackupBody() async {
-    final candidates = await _tools.listPortableBackupArchives();
+  Future<void> _restoreNewestPortableBackupBody({
+    Map<String, String>? sourceLocations,
+  }) async {
+    final candidates = await _tools.listPortableBackupArchives(
+        sourceLocations: sourceLocations);
     if (candidates.isEmpty) {
       throw StateError('No portable DocsGrid backup ZIP was found.');
     }
     if (!mounted) return;
     try {
       final restored = await _tools.restoreNewestPortableBackup(
+        sourceLocations: sourceLocations,
         confirmPlan: _confirmRestorePlan,
         confirm: (count) async {
           if (!mounted) return false;
@@ -713,6 +717,8 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
         if (restored == 0 && Platform.isAndroid) {
           try {
             scanned = await _tools.recoverLoosePortablePdfs(
+              additionalFolderUri: sourceLocations?['libraryUri'],
+              additionalDocumentsUri: sourceLocations?['documentsUri'],
               onProgress: (completed, total) {
                 if (mounted) setState(() => _message =
                     'Reconnecting PDFs: $completed of $total');
@@ -805,6 +811,18 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
     }
     final snapshot = await _tools.verifyLatestPortableMetadataSnapshot(
         sourceLocations: recoverySource);
+    if (snapshot == null && recoverySource != null) {
+      // A previous installation may have only a ZIP (Full or A-series) and
+      // no completed metadata snapshot. Prefer verified backup restoration
+      // over silently importing bare PDFs and losing their tags/reminders.
+      final olderArchives = await _tools.listPortableBackupArchives(
+          sourceLocations: recoverySource);
+      if (olderArchives.isNotEmpty) {
+        await _restoreNewestPortableBackupBody(
+            sourceLocations: recoverySource);
+        return;
+      }
+    }
     if (snapshot == null) {
       if (!Platform.isAndroid) {
         throw StateError('No verified DocsGrid snapshot was found in the selected folder.');
