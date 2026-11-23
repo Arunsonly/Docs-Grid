@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:ui' show PlatformDispatcher;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -22,12 +23,25 @@ import 'core/database/app_database.dart';
 import 'core/storage/portable_snapshot_events.dart';
 import 'core/backup/backup_automation.dart';
 import 'core/diagnostics/startup_timeline.dart';
+import 'core/diagnostics/diagnostic_log_store.dart';
 
 final GlobalKey<NavigatorState> docsGridNavigatorKey = GlobalKey<NavigatorState>();
 
 void main() {
   StartupTimeline.mark('dart_main_enter');
   WidgetsFlutterBinding.ensureInitialized();
+  // Capture unexpected framework and asynchronous failures in a bounded,
+  // local diagnostic journal. Do not change Flutter's exception presentation.
+  FlutterError.onError = (details) {
+    FlutterError.presentError(details);
+    unawaited(DiagnosticLogStore.instance.recordError(
+        'Flutter framework error', details.exception));
+  };
+  PlatformDispatcher.instance.onError = (error, stack) {
+    unawaited(DiagnosticLogStore.instance.recordError(
+        'Unhandled asynchronous error', error));
+    return false; // Preserve the platform's normal unhandled-error behavior.
+  };
   StartupTimeline.mark('flutter_binding_ready');
   StartupTimeline.mark('run_app_called');
   runApp(const DocsGridApp());
