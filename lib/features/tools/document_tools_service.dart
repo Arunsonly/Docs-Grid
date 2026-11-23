@@ -1504,6 +1504,7 @@ class DocumentToolsService {
     void Function(int completed, int total)? onProgress,
     void Function(String stage, Object error)? onFailure,
     String? additionalFolderUri,
+    String? additionalDocumentsUri,
   }) async {
     await StorageMigrationGate.waitUntilReady();
     if (!Platform.isAndroid) {
@@ -1517,7 +1518,7 @@ class DocumentToolsService {
     final documentsRoot = locations['documentsUri'];
     final foldersRoot = locations['libraryUri'];
     if (documentsRoot == null && foldersRoot == null &&
-        additionalFolderUri == null) {
+        additionalFolderUri == null && additionalDocumentsUri == null) {
       throw StateError(
         'No accessible DocsGrid recovery folders were found. '
         'Restore the existing DocsGrid storage location first.',
@@ -1558,6 +1559,13 @@ class DocumentToolsService {
         throw ArgumentError('Recovery folder must be an authorized storage URI.');
       }
       roots.add((uri: additionalFolderUri, preserveFolders: true));
+    }
+    if (additionalDocumentsUri != null) {
+      if (!additionalDocumentsUri.startsWith('content://') &&
+          !additionalDocumentsUri.startsWith('file://')) {
+        throw ArgumentError('Recovery documents must be an authorized storage URI.');
+      }
+      roots.add((uri: additionalDocumentsUri, preserveFolders: false));
     }
 
     final candidates = <Map<String, Object?>>[];
