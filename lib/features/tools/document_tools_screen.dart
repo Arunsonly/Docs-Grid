@@ -87,7 +87,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
         builder: (ctx) => AlertDialog(
           title: const Text('Saved error logs'),
           content: SizedBox(
-            width: 540, height: 400,
+            width: 540, height: MediaQuery.sizeOf(ctx).height * 0.48,
             child: Column(children: [
               Text(snapshot.portableAvailable
                   ? 'System/Logs + private fallback. Recent errors are kept for up to 14 days.'
