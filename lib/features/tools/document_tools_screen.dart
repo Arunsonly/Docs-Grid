@@ -18,9 +18,13 @@ import 'pdf_recovery_failure_report.dart';
 
 class DocumentToolsScreen extends StatefulWidget {
   const DocumentToolsScreen({super.key, this.quickAction, this.section = 'tools',
-    this.service, this.forceAndroidBackupForTesting = false});
+    this.service, this.forceAndroidBackupForTesting = false,
+    this.initialRecoverySource});
   final String? quickAction;
   final String section;
+  /// Read-only old source selected by the fresh-install recovery chooser.
+  /// This never changes the active DocsGrid storage configuration.
+  final Map<String, String>? initialRecoverySource;
   @visibleForTesting
   final DocumentToolsService? service;
   /// Test-only switch: production continues to use dart:io Platform.isAndroid.
@@ -59,6 +63,8 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
       switch (widget.quickAction) {
         case 'backup': _backup(); break;
         case 'restore_portable': _restorePortableSnapshot(autoDetect: true); break;
+        case 'restore_selected_portable': _restorePortableSnapshot(
+            selectedSource: widget.initialRecoverySource); break;
         case 'restore_latest_backup': _restoreNewestPortableBackup(); break;
         case 'recover_loose_pdfs': _recoverLoosePortablePdfs(); break;
       }
@@ -368,19 +374,12 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
           ListTile(leading: const Icon(Icons.folder_zip_outlined), title: const Text('Incremental series folder'),
           subtitle: const Text('Select an A001 folder containing its parent and I-series ZIP files.'),
           onTap: () => Navigator.pop(ctx, 'series')),
-        ListTile(leading: const Icon(Icons.folder_open_outlined), title: const Text('Existing DocsGrid folder'),
-          subtitle: const Text('Recover metadata and PDFs from an old DocsGrid folder.'),
-          onTap: () => Navigator.pop(ctx, 'folder')),
         if (Platform.isAndroid)
           ListTile(leading: const Icon(Icons.picture_as_pdf_outlined), title: const Text('PDF folder'),
           subtitle: const Text('Find PDFs in any readable folder without moving originals.'),
           onTap: () => Navigator.pop(ctx, 'pdf_folder')),
       ])),
     );
-    if (source == 'folder') {
-      await _restorePortableSnapshot();
-      return;
-    }
     if (source == 'pdf_folder') {
       await _recoverSelectedPdfFolder();
       return;
@@ -776,8 +775,12 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
     }
   }
 
-  Future<void> _restorePortableSnapshot({bool autoDetect = false}) => _run(() async {
+  Future<void> _restorePortableSnapshot({
+    bool autoDetect = false,
+    Map<String, String>? selectedSource,
+  }) => _run(() async {
     final storage = StorageLocationService.instance;
+    Map<String, String>? recoverySource = selectedSource;
     if (autoDetect) {
       // Find the existing Android/media/DocsGrid tree automatically. Android
       // requires its special all-files access switch for this personal-use build.
@@ -796,16 +799,19 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
         await _restoreNewestPortableBackupBody();
         return;
       }
-    } else {
-      final selected = await storage.chooseRecoveryFolder();
-      if (selected == null) return;
+    } else if (recoverySource == null) {
+      recoverySource = await storage.chooseRecoveryFolder();
+      if (recoverySource == null) return;
     }
-    final snapshot = await _tools.verifyLatestPortableMetadataSnapshot();
+    final snapshot = await _tools.verifyLatestPortableMetadataSnapshot(
+        sourceLocations: recoverySource);
     if (snapshot == null) {
       if (!Platform.isAndroid) {
         throw StateError('No verified DocsGrid snapshot was found in the selected folder.');
       }
       final recovered = await _tools.recoverLoosePortablePdfs(
+        additionalFolderUri: recoverySource?['libraryUri'],
+        additionalDocumentsUri: recoverySource?['documentsUri'],
         onProgress: (completed, total) {
           if (mounted) setState(() => _message = 'Recovering PDFs: $completed of $total');
         },
@@ -842,6 +848,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
     );
     if (confirmed != true) return;
     final result = await _tools.restoreLatestPortableMetadataSnapshot(
+      sourceLocations: recoverySource,
       onProgress: (completed, total) {
         if (mounted) {
           setState(() => _message = 'Matching snapshot PDFs: $completed of $total');
@@ -860,6 +867,8 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
     String? looseRecoveryWarning;
     try {
       looseRecovery = await _tools.recoverLoosePortablePdfs(
+        additionalFolderUri: recoverySource?['libraryUri'],
+        additionalDocumentsUri: recoverySource?['documentsUri'],
         onProgress: (completed, total) {
           if (mounted) {
             setState(() => _message =
