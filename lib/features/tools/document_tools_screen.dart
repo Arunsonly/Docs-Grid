@@ -12,6 +12,7 @@ import '../../core/storage/storage_location_service.dart';
 import '../documents/data/document_repository.dart';
 import 'document_tools_service.dart';
 import 'backup_chain.dart';
+import 'pdf_recovery_failure_report.dart';
 
 class DocumentToolsScreen extends StatefulWidget {
   const DocumentToolsScreen({super.key, this.quickAction, this.section = 'tools',
@@ -285,8 +286,10 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
     final selected = await StorageLocationService.instance
         .choosePdfRecoveryFolder();
     if (selected == null) return;
+    final failures = PdfRecoveryFailureReport();
     final result = await _tools.recoverLoosePortablePdfs(
       additionalFolderUri: selected['uri'],
+      onFailure: failures.record,
       onProgress: (completed, total) {
         if (mounted) setState(() => _message =
             'Finding PDFs: $completed of $total');
@@ -296,7 +299,9 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
         'Recovered ' + (result['added'] ?? 0).toString() +
         ' PDFs, relinked ' + (result['relinked'] ?? 0).toString() +
         ', skipped ' + (result['duplicates'] ?? 0).toString() +
-        ' existing PDFs. Failed: ' + (result['failed'] ?? 0).toString() + '.');
+        ' existing PDFs. Failed: ' + (result['failed'] ?? 0).toString() + '.' +
+        (failures.totalFailures > 0
+            ? '\nActual failure reasons: ' + failures.summary : ''));
   });
 
   Future<void> _restoreBackup() => _run(() async {
