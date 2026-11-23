@@ -2075,7 +2075,7 @@ class MainActivity : FlutterActivity() {
             return
         }
         val uri = data.data!!
-        val requiredFlags = if (pdfFolderOnly || backupChainOnly) {
+        val requiredFlags = if (pdfFolderOnly || backupChainOnly || recoveryOnly) {
             Intent.FLAG_GRANT_READ_URI_PERMISSION
         } else {
             Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
