@@ -1500,6 +1500,7 @@ class DocumentToolsService {
 
   Future<Map<String, int>> recoverLoosePortablePdfs({
     void Function(int completed, int total)? onProgress,
+    void Function(String stage, Object error)? onFailure,
     String? additionalFolderUri,
   }) async {
     await StorageMigrationGate.waitUntilReady();
@@ -1586,8 +1587,10 @@ class DocumentToolsService {
             'sizeBytes': (item['sizeBytes'] as num?)?.toInt(),
           });
         }
-      } catch (_) {
-        // Preserve partial recovery from other valid DocsGrid roots.
+      } catch (error) {
+        // A readable folder listing does not prove that all nested files can
+        // be read. Preserve the actual provider failure for local diagnosis.
+        onFailure?.call('Scanning PDF folder', error);
         failed++;
       }
     }
@@ -1658,13 +1661,16 @@ class DocumentToolsService {
     final liveDb = await _database.database;
     onProgress?.call(0, total);
     for (final item in candidates) {
+      var stage = 'Preparing Grid destination folder';
       try {
         final folderId = await ensureFolderPath(item['folderPath'] as String);
         final uri = item['uri'] as String;
         // The common reinstall case has all PDF bytes already on disk.
         // Hash directly using native streaming. Do not stage/copy every
         // existing PDF merely to relink its old metadata and reminders.
+        stage = 'Reading source PDF checksum';
         final digest = await storage.sha256Pdf(uri);
+        stage = 'Matching existing Grid records';
         final matches = await liveDb.query(
           'documents',
           columns: ['id', 'storage_uri', 'folder_id'],
@@ -1685,6 +1691,7 @@ class DocumentToolsService {
             ? matchedFolder : missing;
         if (candidatesForRelink.length == 1) {
           final target = candidatesForRelink.single;
+          stage = 'Relinking existing Grid record';
           await liveDb.update('documents', {
             'storage_uri': uri,
             'relative_path': null,
@@ -1702,6 +1709,7 @@ class DocumentToolsService {
           // reminder or folder identity.
           throw StateError('Multiple missing records match this PDF.');
         }
+        stage = 'Importing verified PDF into Grid';
         final imported = await documentRepository.importExistingSharedPdf(
           storageUri: uri,
           displayName: item['name'] as String,
@@ -1712,8 +1720,11 @@ class DocumentToolsService {
         } else {
           duplicates++;
         }
-      } catch (_) {
+      } catch (error) {
+        // Do not discard the reason for all-failed SAF or destination cases.
+        // Report it to the local UI only; never upload file paths or content.
         failed++;
+        onFailure?.call(stage, error);
       } finally {
         processed++;
         onProgress?.call(processed, total);
