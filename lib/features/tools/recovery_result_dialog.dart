@@ -196,7 +196,7 @@ class RecoveryResultData {
         ? RecoveryResultKind.partial // Database metadata may still be restored.
         : restored > 0 || relinked > 0 || imported > 0
             ? RecoveryResultKind.recovered
-            : RecoveryResultKind.upToDate; // Database-only restore can be valid.
+            : RecoveryResultKind.recovered; // Database-only restore can be valid.
     return RecoveryResultData(
       kind: kind,
       subtitle: hasProblems
