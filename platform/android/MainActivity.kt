@@ -2203,12 +2203,66 @@ class MainActivity : FlutterActivity() {
                     it["isDirectory"] == true &&
                         (it["name"] as? String)?.startsWith("snapshot_") == true
                 }
-                if (snapshots.isEmpty()) {
-                    throw IllegalStateException("The selected DocsGrid/System/Database (or legacy DocsGrid/Database) folder contains no recovery snapshots.")
+                val systemRoot = if (isCanonicalLayout) canonicalSystem!! else docsGrid
+                val backups = try {
+                    findChildUri(systemRoot, "Backups")
+                } catch (_: MissingStorageChildException) { null }
+                val fullBackups = backups?.let {
+                    try { findChildUri(it, "Full") }
+                    catch (_: MissingStorageChildException) { null }
+                }
+                val databaseBackups = backups?.let {
+                    try { findChildUri(it, "Database") }
+                    catch (_: MissingStorageChildException) { null }
+                }
+                // A portable tree can be valuable even with NO snapshots:
+                // e.g. a previous A-series ZIP, or surviving new PDFs.
+                // Inspect ONLY managed PDF and backup roots, never the phone.
+                fun hasPdfInManagedTree(rootUri: Uri): Boolean {
+                    val pending = java.util.ArrayDeque<Pair<Uri, Int>>()
+                    pending.add(Pair(rootUri, 0))
+                    val visited = hashSetOf<String>()
+                    var entries = 0
+                    while (!pending.isEmpty() && entries < 4000) {
+                        val item = pending.removeLast()
+                        if (!visited.add(item.first.toString())) continue
+                        val children = try { listDirectory(item.first) }
+                            catch (_: Exception) { continue }
+                        for (child in children) {
+                            if (++entries > 4000) return false
+                            val name = child["name"] as? String ?: continue
+                            if (child["isDirectory"] != true &&
+                                name.endsWith(".pdf", ignoreCase = true)) return true
+                            if (child["isDirectory"] == true && item.second < 12 &&
+                                !name.startsWith(".")) {
+                                val childUri = child["uri"] as? String ?: continue
+                                pending.add(Pair(Uri.parse(childUri), item.second + 1))
+                            }
+                        }
+                    }
+                    return false
+                }
+                val containsBackups = backups?.let { backupRoot ->
+                    val direct = listDirectory(backupRoot)
+                    direct.any { (it["name"] as? String)?.endsWith(".zip", true) == true } ||
+                        listOfNotNull(fullBackups, databaseBackups).any { child ->
+                            listDirectory(child).any { member ->
+                                val name = member["name"] as? String ?: ""
+                                name.endsWith(".zip", true) ||
+                                    (member["isDirectory"] == true &&
+                                     Regex("^A[0-9]{3,}$").matches(name))
+                            }
+                        }
+                } ?: false
+                if (snapshots.isEmpty() && !containsBackups &&
+                    !hasPdfInManagedTree(documents) && !hasPdfInManagedTree(folders)) {
+                    throw IllegalStateException(
+                        "No previous DocsGrid metadata, ZIP or PDFs found in this folder."
+                    )
                 }
                 // A recovery source is READ-ONLY input, never the destination.
                 // Do not mutate docsgrid_uri or any active backup preferences.
-                callback?.success(mapOf(
+                val selectedSource = mutableMapOf(
                     "uri" to docsGrid.toString(),
                     "name" to "DocsGrid",
                     "rootUri" to docsGrid.toString(),
@@ -2216,7 +2270,11 @@ class MainActivity : FlutterActivity() {
                     "documentsUri" to documents.toString(),
                     "libraryUri" to folders.toString(),
                     "recoveryUri" to recovery.toString(),
-                ))
+                )
+                if (backups != null) selectedSource["backupsUri"] = backups.toString()
+                if (fullBackups != null) selectedSource["fullBackupsUri"] = fullBackups.toString()
+                if (databaseBackups != null) selectedSource["databaseBackupsUri"] = databaseBackups.toString()
+                callback?.success(selectedSource)
                 return
             }
             // Reuse the selected DocsGrid directory when the user selected it
