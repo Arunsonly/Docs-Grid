@@ -28,6 +28,7 @@ class FoldersScreen extends StatefulWidget {
     this.onOpenSettings,
     this.active = true,
     this.onBackAtRoot,
+    this.loadTimeout = const Duration(seconds: 20),
   });
 
   // Optional dependencies permit complete widget regression tests without
@@ -39,6 +40,9 @@ class FoldersScreen extends StatefulWidget {
   final VoidCallback? onOpenSettings;
   final bool active;
   final VoidCallback? onBackAtRoot;
+  /// A blocked SQLite/provider read must never leave Grid spinning forever.
+  /// Widget tests can shorten this without changing production timing.
+  final Duration loadTimeout;
 
   @override
   State<FoldersScreen> createState() => _FoldersScreenState();
@@ -460,6 +464,10 @@ class _FoldersScreenState extends State<FoldersScreen>
     }
   }
 
+  Future<T> _boundedGridRead<T>(Future<T> read, String label) =>
+      read.timeout(widget.loadTimeout, onTimeout: () =>
+          throw TimeoutException('$label did not finish. Please retry.'));
+
   void _reloadDocumentsOnly() {
     final epoch = ++_folderLoadEpoch;
     final folderId = _currentFolderId;
@@ -467,11 +475,12 @@ class _FoldersScreenState extends State<FoldersScreen>
     _resetDocumentPages();
     // Preserve existing global search and exact custom Name/Date sort behavior.
     _pagedDocumentsMode = query.isEmpty && !_explicitSort;
-    _documentsFuture = query.isNotEmpty
+    final read = query.isNotEmpty
         ? _ocrSelected ? _searchGridOcr(query) : _documents.list(query: query)
         : _pagedDocumentsMode
             ? _getFirstPage(folderId, epoch)
             : _documents.listInFolder(folderId);
+    _documentsFuture = _boundedGridRead(read, 'Grid PDF loading');
   }
 
   void _load() {
@@ -479,7 +488,8 @@ class _FoldersScreenState extends State<FoldersScreen>
     _prefetchFolderCandidates = const [];
     _prefetchFolderEpoch = -1;
     final folderId = _currentFolderId;
-    final folderFuture = _repository.childrenOf(folderId);
+    final folderFuture = _boundedGridRead(
+        _repository.childrenOf(folderId), 'Grid folder loading');
     _foldersFuture = folderFuture;
     _reloadDocumentsOnly();
     final epoch = _folderLoadEpoch;
@@ -2358,6 +2368,13 @@ class _FoldersScreenState extends State<FoldersScreen>
                     const Icon(Icons.error_outline, size: 40),
                     const SizedBox(height: 8),
                     const Text('Could not load folders.'),
+                    if (folderSnapshot.error is TimeoutException)
+                      const Padding(
+                        padding: EdgeInsets.symmetric(horizontal: 24, vertical: 8),
+                        child: Text('Grid is taking too long to open. '
+                            'Your files have not been changed. Try again.',
+                            textAlign: TextAlign.center),
+                      ),
                     TextButton(onPressed: _refresh, child: const Text('Try again')),
                   ]),
                 );
