@@ -131,6 +131,9 @@ class _FoldersScreenState extends State<FoldersScreen>
   bool _gridScreenForeground = true;
   final Set<String> _attemptedChildPrefetches = {};
   static const int _maxPrefetchChildFolders = 2;
+  // Future.timeout retains an uncancellable timer if a provider future never
+  // resolves. Track our timers instead so route disposal has zero leftovers.
+  final Set<Timer> _gridLoadTimeouts = <Timer>{};
 
   @override
   void initState() {
@@ -146,6 +149,10 @@ class _FoldersScreenState extends State<FoldersScreen>
   @override
   void dispose() {
     _ocrEpoch++;
+    for (final timer in _gridLoadTimeouts) {
+      timer.cancel();
+    }
+    _gridLoadTimeouts.clear();
     _idleFolderPrefetchTimer?.cancel();
     if (_gridPreviewInvalidationDebounce?.isActive == true) {
       _gridPreviewInvalidationDebounce?.cancel();
@@ -464,9 +471,28 @@ class _FoldersScreenState extends State<FoldersScreen>
     }
   }
 
-  Future<T> _boundedGridRead<T>(Future<T> read, String label) =>
-      read.timeout(widget.loadTimeout, onTimeout: () =>
-          throw TimeoutException('$label did not finish. Please retry.'));
+  Future<T> _boundedGridRead<T>(Future<T> read, String label) {
+    final result = Completer<T>();
+    late final Timer timer;
+    timer = Timer(widget.loadTimeout, () {
+      _gridLoadTimeouts.remove(timer);
+      if (!result.isCompleted) {
+        result.completeError(TimeoutException(
+            '$label did not finish. Please retry.'));
+      }
+    });
+    _gridLoadTimeouts.add(timer);
+    read.then<void>((value) {
+      timer.cancel();
+      _gridLoadTimeouts.remove(timer);
+      if (!result.isCompleted) result.complete(value);
+    }, onError: (Object error, StackTrace trace) {
+      timer.cancel();
+      _gridLoadTimeouts.remove(timer);
+      if (!result.isCompleted) result.completeError(error, trace);
+    });
+    return result.future;
+  }
 
   void _reloadDocumentsOnly() {
     final epoch = ++_folderLoadEpoch;
