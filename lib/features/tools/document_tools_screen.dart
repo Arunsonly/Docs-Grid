@@ -14,6 +14,7 @@ import '../documents/data/document_repository.dart';
 import 'document_tools_service.dart';
 import 'backup_chain.dart';
 import 'pdf_recovery_failure_report.dart';
+import 'recovery_result_dialog.dart';
 
 class DocumentToolsScreen extends StatefulWidget {
   const DocumentToolsScreen({super.key, this.quickAction, this.section = 'tools',
@@ -70,17 +71,31 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
     });
   }
 
-  Future<void> _run(Future<void> Function() action) async {
+  Future<void> _run(Future<void> Function() action,
+      {bool recoveryOperation = false}) async {
     setState(() { _busy = true; _message = null; });
     try {
       await action();
     } catch (e) {
       unawaited(DiagnosticLogStore.instance.recordError(
           'Tools ${widget.section}', e));
-      if (mounted) setState(() => _message = 'Action could not be completed: $e');
+      if (mounted) {
+        if (recoveryOperation) {
+          await _showRecoveryResult(RecoveryResultData.failure(e));
+        } else {
+          setState(() => _message = 'Action could not be completed: $e');
+        }
+      }
     } finally {
       if (mounted) setState(() => _busy = false);
     }
+  }
+
+  Future<void> _showRecoveryResult(RecoveryResultData result) async {
+    if (!mounted) return;
+    // Keep just a one-line status behind the popup; full output is expandable.
+    setState(() => _message = '${result.title}. ${result.subtitle}');
+    await showRecoveryResultDialog(context, result);
   }
 
   Future<void> _refreshBackupUsage() async {
@@ -304,15 +319,11 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
             'Finding PDFs: $completed of $total');
       },
     );
-    if (mounted) setState(() => _message =
-        'Recovered ' + (result['added'] ?? 0).toString() +
-        ' PDFs, relinked ' + (result['relinked'] ?? 0).toString() +
-        ', skipped ' + (result['duplicates'] ?? 0).toString() +
-        ' existing PDFs. Failed: ' + (result['failed'] ?? 0).toString() + '.' +
-        (failures.totalFailures > 0
-            ? '\nActual failure reasons: ' + failures.summary +
-                '\nDiagnostic details saved in local app logs.' : ''));
-  });
+    await _showRecoveryResult(RecoveryResultData.fromPdfFolder(
+      result,
+      failureReasons: failures.totalFailures > 0 ? failures.summary : null,
+    ));
+  }, recoveryOperation: true);
 
   Future<void> _restoreBackup() => _run(() async {
     final source = await showModalBottomSheet<String>(
@@ -554,15 +565,11 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
           },
         );
       }
-      if (mounted) {
-        setState(() => _message = restored == null
-            ? 'Restore cancelled. Nothing was changed.'
-            : relink != null
-                ? 'Database restored; linked ' + (relink['relinked'] ?? 0).toString() +
-                    ' surviving PDFs. Additional PDFs: ' +
-                    ((relink['added'] ?? 0) - (relink['relinked'] ?? 0)).toString() +
-                    '. Needs attention: ' + (relink['failed'] ?? 0).toString() + '.'
-                : 'Restore completed: $restored verified PDF payloads.');
+      if (restored == null) {
+        if (mounted) setState(() => _message = 'Restore cancelled. Nothing was changed.');
+      } else {
+        await _showRecoveryResult(
+            RecoveryResultData.fromArchive(restored, scanned: relink));
       }
     } on StateError catch (error) {
       if (!error.toString().contains('contains no user PDFs') || !mounted) rethrow;
@@ -592,12 +599,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
             if (mounted) setState(() => _message = 'Recovering PDFs: $completed of $total');
           },
         );
-        if (mounted) {
-          setState(() => _message =
-              'Recovery complete. Folders restored: ${result['folders']}; '
-              'PDFs added: ${result['added']}; duplicates: ${result['duplicates']}; '
-              'failed: ${result['failed']}. Original source PDFs were not deleted.');
-        }
+        await _showRecoveryResult(RecoveryResultData.fromPdfFolder(result));
       } else {
         rethrow;
       }
@@ -609,7 +611,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
         } catch (_) {}
       }
     }
-  });
+  }, recoveryOperation: true);
 
   Future<void> _recoverLoosePortablePdfs() => _run(() async {
     final recovered = await _tools.recoverLoosePortablePdfs(
@@ -619,15 +621,11 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
         }
       },
     );
-    if (mounted) {
-      setState(() => _message =
-          'PDF recovery finished. Folders restored: ${recovered['folders']}; '
-          'PDFs added: ${recovered['added']}; duplicates: ${recovered['duplicates']}; '
-          'failed: ${recovered['failed']}. Original source PDFs were not deleted.');
-    }
-  });
+    await _showRecoveryResult(RecoveryResultData.fromPdfFolder(recovered));
+  }, recoveryOperation: true);
 
-  Future<void> _restoreNewestPortableBackup() => _run(_restoreNewestPortableBackupBody);
+  Future<void> _restoreNewestPortableBackup() =>
+      _run(_restoreNewestPortableBackupBody, recoveryOperation: true);
 
   Future<void> _restoreNewestPortableBackupBody({
     Map<String, String>? sourceLocations,
@@ -682,16 +680,8 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
             scanProblem = error.toString();
           }
         }
-        if (mounted) {
-          setState(() => _message = scanned != null
-            ? 'Database restored. Linked existing PDFs: ' +
-                (scanned['relinked'] ?? 0).toString() +
-                '. Needs attention: ' + (scanned['failed'] ?? 0).toString() + '.'
-            : scanProblem != null
-                ? 'Database restored. PDF relinking needs storage access: ' +
-                    scanProblem
-                : 'Recovery completed: $restored PDF payload(s) verified.');
-        }
+        await _showRecoveryResult(RecoveryResultData.fromArchive(
+            restored, scanned: scanned, scanWarning: scanProblem));
       }
     } catch (error) {
       if (!mounted) rethrow;
@@ -723,12 +713,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
             if (mounted) setState(() => _message = 'Recovering PDFs: $completed of $total');
           },
         );
-        if (mounted) {
-          setState(() => _message =
-              'PDF discovery finished. Folders restored: ${recovered['folders']}; '
-              'PDFs added: ${recovered['added']}; duplicates: ${recovered['duplicates']}; '
-              'failed: ${recovered['failed']}.');
-        }
+        await _showRecoveryResult(RecoveryResultData.fromPdfFolder(recovered));
       }
     }
   }
@@ -803,12 +788,10 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
           if (mounted) setState(() => _message = 'Recovering PDFs: $completed of $total');
         },
       );
-      if (mounted) {
-        setState(() => _message =
-            'PDF discovery finished. Folders restored: ${recovered['folders']}; '
-            'PDFs added: ${recovered['added']}; duplicates: ${recovered['duplicates']}; '
-            'failed: ${recovered['failed']}. Other app metadata requires a valid backup.');
-      }
+      await _showRecoveryResult(RecoveryResultData.fromPdfFolder(
+        recovered,
+        note: 'Other app metadata requires a verified snapshot or backup.',
+      ));
       return;
     }
     if (!mounted) return;
@@ -869,23 +852,10 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
       looseRecoveryWarning = error.toString();
     }
 
-    if (mounted) {
-      setState(() => _message =
-        'Recovery complete.\n'
-        'Snapshot metadata: folders ${result['folders']}; document records added ${result['documentsAdded']}; '
-        'PDFs linked by SHA-256 ${result['documentsLinked']}; snapshot records initially unmatched ${result['pdfsMissing']}.\n'
-        'Remaining storage PDFs: ${looseRecovery['added'] ?? 0} newly registered/relinked; '
-        '${looseRecovery['duplicates'] ?? 0} already registered; '
-        '${looseRecovery['failed'] ?? 0} unreadable/failed; '
-        '${looseRecovery['folders'] ?? 0} additional folders created.\n'
-        'Categories: ${result['categories']}; tags: ${result['tags']}; '
-        'PDF-tag links: ${result['documentTags']}; reminders: ${result['reminders']}; '
-        'activity/history: ${result['activity']}; OCR indexes: ${result['ocrIndexes']}; '
-        'settings: ${result['settings']}.\n'
-        '${looseRecoveryWarning == null ? 'Existing source PDFs were retained. No source PDF was deleted or overwritten.' : 'Metadata restore completed, but the additional PDF scan could not finish: $looseRecoveryWarning'} '
-        'Reminder records are restored to the app database; Android notification delivery is rescheduled separately.');
-    }
-  });
+    await _showRecoveryResult(RecoveryResultData.fromSnapshot(
+      result, looseRecovery, scanWarning: looseRecoveryWarning,
+    ));
+  }, recoveryOperation: true);
 
   Future<void> _openSearchResult(Map<String, Object?> result) async {
     final uri = result['storage_uri']?.toString() ?? '';
