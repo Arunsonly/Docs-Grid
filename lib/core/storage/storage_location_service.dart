@@ -572,13 +572,45 @@ class StorageLocationService {
     };
   }
 
+  @visibleForTesting
+  static Map<String, String>? normalizeRecoverySource(
+      Map<String, dynamic>? value) {
+    if (value == null || value['uri'] is! String) return null;
+    // Only accept actual validated storage URIs from the native read-only
+    // selector. Never replace active DocsGrid storage preferences.
+    final root = value['uri'] as String;
+    if (!root.startsWith('content://') && !root.startsWith('file://')) {
+      return null;
+    }
+    final result = <String, String>{
+      'uri': root,
+      'name': value['name'] is String ? value['name'] as String : 'DocsGrid',
+    };
+    for (final key in [
+      'rootUri', 'databaseUri', 'documentsUri', 'libraryUri', 'recoveryUri',
+      'backupsUri', 'fullBackupsUri', 'databaseBackupsUri',
+    ]) {
+      final uri = value[key];
+      if (uri is String &&
+          (uri.startsWith('content://') || uri.startsWith('file://'))) {
+        result[key] = uri;
+      }
+    }
+    // Read-only metadata recovery must have an actual source DB location.
+    if (result['databaseUri'] == null ||
+        result['documentsUri'] == null ||
+        result['libraryUri'] == null) {
+      throw StateError('Selected old DocsGrid source has no usable PDF/database paths.');
+    }
+    return result;
+  }
+
   Future<Map<String, String>?> chooseRecoveryFolder() async {
     if (!Platform.isAndroid) {
       throw UnsupportedError('Selecting an existing portable recovery tree is currently supported on Android only. Existing data has not been changed.');
     }
     final value = await _channel.invokeMapMethod<String, dynamic>('chooseRecoveryFolder');
-    if (value == null || value['uri'] == null) return null;
-    return {'uri': value['uri'] as String, 'name': (value['name'] as String?) ?? 'DocsGrid'};
+    return normalizeRecoverySource(value);
   }
 
   Future<String> savePdf({
