@@ -132,16 +132,42 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
   }
 
   Future<void> _backup() => _run(() async {
+    if (mounted) setState(() => _message = 'Checking library and available storage…');
+    final preview = await _tools.fullBackupPreview();
+    if (!mounted) return;
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Create Full Backup'),
-        content: const Text('Create one independent ZIP with your DocsGrid '
-            'PDFs, folders, database, reminders and supported settings. '
-            'Phone Storage PDFs, temporary files, cache and thumbnails '
-            'are not included. The current ZIP limit is 2 GB. '
-            'Export the verified backup outside this phone for protection '
-            'if the phone is lost.'),
+        content: SingleChildScrollView(child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text('Create one independent ZIP for your DocsGrid library.'),
+            const SizedBox(height: 12),
+            for (final entry in <String, String>{
+              'PDF records': '${preview['documents']}',
+              'Folders & subfolders': '${preview['folders']}',
+              'Categories': '${preview['categories']}',
+              'Tags': '${preview['tags']}',
+              'Reminders': '${preview['reminders']}',
+              'Database & supported settings': 'Included',
+              'Registered PDF size': _formatSize(preview['pdfBytes'] ?? 0),
+              if (preview.containsKey('availableBytes'))
+                'Available storage': _formatSize(preview['availableBytes']!),
+            }.entries)
+              Padding(padding: const EdgeInsets.symmetric(vertical: 3),
+                child: Row(children: [
+                  Expanded(child: Text(entry.key)),
+                  const SizedBox(width: 8),
+                  Text(entry.value),
+                ])),
+            const Divider(),
+            const Text('The final ZIP size may differ. Phone Storage PDFs, cache '
+                'and temporary files are excluded. Current ZIP limit: 2 GB. '
+                'Export a verified copy outside this phone for protection if it is lost.'),
+          ],
+        )),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx, false),
               child: const Text('Cancel')),
@@ -150,7 +176,10 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
         ],
       ),
     );
-    if (confirmed != true || !mounted) return;
+    if (confirmed != true || !mounted) {
+      if (mounted) setState(() => _message = null);
+      return;
+    }
     setState(() => _message = 'Preparing verified Full backup…');
     final archive = await _tools.createStandaloneFullBackup(
       onStage: (stage) {
@@ -170,14 +199,24 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
       },
     );
     if (!mounted) return;
+    int? archiveBytes;
+    try { archiveBytes = await archive.length(); } catch (_) {}
+    if (!mounted) return;
     setState(() => _message =
         'Verified backup created: ${p.basename(archive.path)}');
+    // iOS currently has a private backup archive and native export, rather
+    // than Android's persistent local Full archive browser. Preserve sharing.
+    if (!Platform.isAndroid && !widget.forceAndroidBackupForTesting) {
+      await _tools.shareFile(archive.path, text: 'DocsGrid Full backup');
+      return;
+    }
     unawaited(_refreshBackupUsage());
     final export = await showDialog<bool>(context: context,
       builder: (ctx) => AlertDialog(
         icon: const Icon(Icons.check_circle_outline),
         title: const Text('Backup Successful'),
         content: Text('${p.basename(archive.path)}\n'
+            '${archiveBytes == null ? '' : 'Size: ${_formatSize(archiveBytes)}\n'}'
             'Your Full ZIP passed verification. Keep a copy outside this phone.'),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx, false),
@@ -187,11 +226,11 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
         ],
       ));
     if (export == true && mounted) {
-      await _tools.shareFile(archive.path, text: 'DocsGrid Full backup');
+      await _exportBackupDestination(p.basename(archive.path));
     }
   });
 
-  Future<void> _exportBackupSeries(String id) => _run(() async {
+  Future<void> _exportBackupDestination(String id) async {
     final choice = await showModalBottomSheet<String>(
       context: context, showDragHandle: true,
       builder: (ctx) => SafeArea(child: Column(mainAxisSize: MainAxisSize.min,
@@ -219,7 +258,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
     if (mounted) setState(() => _message =
         'Exported $id successfully (${_formatSize(bytes)}). '
         'The original backup remains unchanged.');
-  });
+  }
 
   Future<void> _showCleanBackups() => _run(() async {
     await _refreshBackupUsage();
@@ -290,7 +329,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
         FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Delete')),
       ],
     ));
-    if (confirmed != true) return;
+    if (confirmed != true || !mounted) return;
     var deleted = 0;
     final failures = <String>[];
     for (final id in ids) {
@@ -308,10 +347,9 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
     unawaited(_refreshBackupUsage());
   });
 
-  Future<void> _showExportBackups() async {
-    if (_busy) return;
+  Future<void> _showExportBackups() => _run(() async {
     await _refreshBackupUsage();
-    if (!mounted || _busy) return;
+    if (!mounted) return;
     if (!_backupUsageReady) {
       setState(() => _message = 'Backup storage could not be read. Try again.');
       return;
@@ -339,8 +377,8 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
               : () => Navigator.pop(ctx, selected), child: const Text('Continue')),
         ],
       )));
-    if (choice != null && mounted) await _exportBackupSeries(choice);
-  }
+    if (choice != null && mounted) await _exportBackupDestination(choice);
+  });
 
   Future<void> _databaseBackup() => _run(() async {
     if (mounted) setState(() => _message = 'Creating Database Backup…');
@@ -971,6 +1009,20 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
       if (!Platform.isAndroid || !mounted) rethrow;
       unawaited(DiagnosticLogStore.instance.recordError(
           'Metadata recovery fallback', error));
+      // A failed snapshot must not skip a potentially usable database ZIP.
+      // The existing ZIP restore flow verifies and previews before mutation.
+      try {
+        final archives = await _tools.listPortableBackupArchives(
+            sourceLocations: recoverySource);
+        if (archives.isNotEmpty && mounted) {
+          await _restoreNewestPortableBackupBody(sourceLocations: recoverySource);
+          return;
+        }
+      } catch (archiveError) {
+        unawaited(DiagnosticLogStore.instance.recordError(
+            'Archive recovery fallback', archiveError));
+      }
+      if (!mounted) return;
       final recoverPdfs = await showDialog<bool>(
         context: context,
         builder: (ctx) => AlertDialog(
