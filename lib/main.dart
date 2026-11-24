@@ -12,6 +12,7 @@ import 'features/documents/presentation/smart_collections_screen.dart';
 import 'features/categories/presentation/categories_screen.dart';
 import 'features/history/presentation/history_screen.dart';
 import 'features/reminders/presentation/reminders_screen.dart';
+import 'features/reminders/presentation/reminder_inbox_sheet.dart';
 import 'features/reminders/data/reminder_repository.dart';
 import 'features/reminders/data/reminder_notifications.dart';
 import 'features/folders/presentation/folders_screen.dart';
@@ -115,6 +116,11 @@ class DocsGridHome extends StatefulWidget {
   /// tabs both use DocumentsScreen but initialize completely different data.
   /// Without distinct keys Flutter reuses the Phone State on Phone -> Home:
   /// its initState never calls _load(), leaving the Home summary at zero.
+  /// Returning from a Phone/Grid root goes to Home, never exits the app.
+  /// Nested folders still handle their own Back navigation first.
+  static int destinationAfterStorageBack(int currentIndex) =>
+      currentIndex == 0 || currentIndex == 2 ? 1 : currentIndex;
+
   static Widget screenForTab(int index) => switch (index) {
     0 => const DocumentsScreen(
       key: ValueKey('docsgrid-phone-tab'),
@@ -134,6 +140,7 @@ class DocsGridHome extends StatefulWidget {
 
 class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver {
   int _selectedIndex = 1;
+  int _dueReminderCount = 0;
   // Lazily mount each tab once. Preserve its scroll, folder and loaded data
   // while the user switches between Phone, Home and Grid.
   final Set<int> _visitedTabs = <int>{1};
@@ -199,6 +206,47 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
     }
   }
 
+  void _returnToHomeFromStorage() {
+    final destination = DocsGridHome.destinationAfterStorageBack(_selectedIndex);
+    if (destination != _selectedIndex && mounted) {
+      setState(() => _selectedIndex = destination);
+      unawaited(_refreshReminderBadge());
+    }
+  }
+
+  Future<void> _refreshReminderBadge() async {
+    try {
+      final items = await ReminderRepository().list();
+      final count = ReminderInboxSheet.dueCount(items, DateTime.now());
+      if (mounted && count != _dueReminderCount) {
+        setState(() => _dueReminderCount = count);
+      }
+    } catch (_) {
+      // The badge is optional and must never block Home or PDF access.
+    }
+  }
+
+  Future<void> _showReminderCenter() async {
+    if (!mounted) return;
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (sheetContext) => ReminderInboxSheet(
+        reminders: ReminderRepository().list(),
+        onOpenDocument: (documentId) =>
+            unawaited(_openReminderDocument(documentId)),
+        onOpenAll: () {
+          if (!mounted) return;
+          Navigator.of(context).push(MaterialPageRoute(
+              builder: (_) => const RemindersScreen()))
+              .then((_) => unawaited(_refreshReminderBadge()));
+        },
+      ),
+    );
+    unawaited(_refreshReminderBadge());
+  }
+
   void _backgroundApp() {
     if (!Platform.isAndroid) return;
     // At a tab root, Back behaves like Home: background the Android task
@@ -248,6 +296,7 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
       // Document access remains available even if the OS notification queue
       // cannot be reconciled (for example, when notification permission is off).
     }
+    await _refreshReminderBadge();
   }
 
   Future<void> _maintainPortableSnapshots() async {
@@ -652,10 +701,12 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
         await _storageChannel.invokeMethod<bool>('finishSharedPdf', {
           'path': file.path, 'outcome': 'committed',
         });
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(
-            result.added == 1 ? 'Saved in DocsGrid.' : 'This PDF already exists in your library.',
-          )));
+        // A successful save is immediately visible; preserve only duplicate
+        // feedback because users must know why another PDF was not added.
+        if (mounted && result.added != 1) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('This PDF already exists in your library.')),
+          );
         }
       }
     } catch (error) {
@@ -681,7 +732,35 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('DocsGrid', style: TextStyle(fontWeight: FontWeight.w700)),
+        title: Row(mainAxisSize: MainAxisSize.min, children: [
+          const Text('DocsGrid', style: TextStyle(fontWeight: FontWeight.w700)),
+          if (_selectedIndex == 1)
+            IconButton(
+              key: const ValueKey('docsgrid-home-reminder-bell'),
+              tooltip: 'Document reminders',
+              onPressed: _showReminderCenter,
+              icon: Stack(clipBehavior: Clip.none, children: [
+                const Icon(Icons.notifications_none_outlined),
+                if (_dueReminderCount > 0)
+                  Positioned(
+                    top: -7, right: -10,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 3),
+                      constraints: const BoxConstraints(minWidth: 16, minHeight: 16),
+                      decoration: BoxDecoration(
+                        color: Theme.of(context).colorScheme.error,
+                        borderRadius: BorderRadius.circular(9),
+                      ),
+                      child: Center(child: Text(
+                        _dueReminderCount > 9 ? '9+' : '$_dueReminderCount',
+                        style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
+                            color: Theme.of(context).colorScheme.onError),
+                      )),
+                    ),
+                  ),
+              ]),
+            ),
+        ]),
         actions: _selectedIndex == 1
             ? [
                 IconButton(
@@ -707,7 +786,7 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
                     key: const ValueKey('phone-tab'),
                     phoneOnly: true,
                     active: _selectedIndex == 0,
-                    onBackAtRoot: _backgroundApp,
+                    onBackAtRoot: _returnToHomeFromStorage,
                   )
                 : const SizedBox.shrink(),
             DocumentsScreen(
@@ -719,7 +798,7 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
                 ? FoldersScreen(
                     key: const ValueKey('grid-tab'),
                     active: _selectedIndex == 2,
-                    onBackAtRoot: _backgroundApp,
+                    onBackAtRoot: _returnToHomeFromStorage,
                     onOpenSettings: _openSettings,
                   )
                 : const SizedBox.shrink(),
@@ -734,6 +813,7 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
             _visitedTabs.add(index);
             _selectedIndex = index;
           });
+          if (index == 1) unawaited(_refreshReminderBadge());
         },
         destinations: const [
           NavigationDestination(icon: Icon(Icons.phone_android_outlined), label: 'Phone'),
