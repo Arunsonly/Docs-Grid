@@ -140,6 +140,7 @@ class DocsGridHome extends StatefulWidget {
 
 class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver {
   int _selectedIndex = 1;
+  int _iosPhoneBrowseRevision = 0;
   int _dueReminderCount = 0;
   // Lazily mount each tab once. Preserve its scroll, folder and loaded data
   // while the user switches between Phone, Home and Grid.
@@ -203,6 +204,25 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
       _schedulePortableSnapshot();
       unawaited(BackupAutomation.runDueForegroundBackups());
       unawaited(_maintainPortableSnapshots());
+    }
+  }
+
+  Future<void> _chooseIosPhoneFilesFolder() async {
+    if (!Platform.isIOS) return;
+    try {
+      final chosen =
+          await StorageLocationService.instance.choosePhoneFolder();
+      if (chosen != null && mounted) {
+        // Recreate only Phone's view so it reindexes the newly granted Files
+        // location. Grid's selected storage and all PDF records stay intact.
+        setState(() => ++_iosPhoneBrowseRevision);
+      }
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Could not open Apple Files folder: $error'),
+        ));
+      }
     }
   }
 
@@ -775,7 +795,15 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
                 ),
                 const SizedBox(width: 6),
               ]
-            : const [],
+            : _selectedIndex == 0 && Platform.isIOS
+                ? [
+                    IconButton(
+                      tooltip: 'Choose Apple Files folder',
+                      icon: const Icon(Icons.folder_open_outlined),
+                      onPressed: _chooseIosPhoneFilesFolder,
+                    ),
+                  ]
+                : const [],
       ),
       body: SafeArea(
         child: IndexedStack(
@@ -783,7 +811,9 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
           children: [
             _visitedTabs.contains(0)
                 ? DocumentsScreen(
-                    key: const ValueKey('phone-tab'),
+                    key: Platform.isIOS
+                        ? ValueKey('phone-tab-ios-$_iosPhoneBrowseRevision')
+                        : const ValueKey('phone-tab'),
                     phoneOnly: true,
                     active: _selectedIndex == 0,
                     onBackAtRoot: _returnToHomeFromStorage,
