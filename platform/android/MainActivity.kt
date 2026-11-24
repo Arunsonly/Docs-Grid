@@ -435,6 +435,36 @@ class MainActivity : FlutterActivity() {
 
         val entries = mutableListOf<Map<String, Any>>()
         val volumeStates = linkedMapOf<String, Map<String, Any>>()
+        // A user-chosen SAF folder and the top-level Internal Storage/DocsGrid
+        // must be excluded just like the old Android/media Grid location.
+        // Resolve the exact managed root, never infer it from a folder name.
+        val activeGridRoot = getSharedPreferences("docsgrid_storage", MODE_PRIVATE)
+            .getString("docsgrid_uri", null)
+        val managedPrimaryRelative = activeGridRoot?.let { raw ->
+            runCatching {
+                val parsed = Uri.parse(raw)
+                when (parsed.scheme) {
+                    "file" -> {
+                        val primary = Environment.getExternalStorageDirectory().canonicalFile
+                        val actual = java.io.File(parsed.path ?: "").canonicalFile
+                        val prefix = primary.path.trimEnd('/') + "/"
+                        if (actual.path.startsWith(prefix))
+                            actual.path.removePrefix(prefix).trim('/').lowercase(java.util.Locale.ROOT)
+                        else null
+                    }
+                    "content" -> {
+                        val id = runCatching {
+                            DocumentsContract.getDocumentId(parsed)
+                        }.getOrNull() ?: runCatching {
+                            DocumentsContract.getTreeDocumentId(parsed)
+                        }.getOrNull()
+                        id?.takeIf { it.startsWith("primary:", ignoreCase = true) }
+                            ?.substringAfter(':')?.trim('/')?.lowercase(java.util.Locale.ROOT)
+                    }
+                    else -> null
+                }
+            }.getOrNull()
+        }?.takeIf { it.isNotEmpty() }
         val volumes = if (android.os.Build.VERSION.SDK_INT >= 29) {
             MediaStore.getExternalVolumeNames(this).toList().sorted()
         } else {
@@ -550,7 +580,11 @@ class MainActivity : FlutterActivity() {
                         // Match the installed applicationId, not the Kotlin namespace.
                         // Keep former managed roots excluded from Phone results too.
                         val activeManagedRoot = "android/media/${packageName.lowercase(java.util.Locale.ROOT)}"
-                        if (normalized.startsWith("$activeManagedRoot/") ||
+                        if ((volumeName == MediaStore.VOLUME_EXTERNAL_PRIMARY &&
+                             managedPrimaryRelative != null &&
+                             (normalized == managedPrimaryRelative ||
+                              normalized.startsWith("$managedPrimaryRelative/"))) ||
+                            normalized.startsWith("$activeManagedRoot/") ||
                             normalized == activeManagedRoot ||
                             normalized.startsWith("android/media/com.docsgrid/") ||
                             normalized == "android/media/com.docsgrid" ||
