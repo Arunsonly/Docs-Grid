@@ -822,7 +822,7 @@ class MainActivity : FlutterActivity() {
                                     }.getOrNull() }
                                     ?.takeIf { it == previousRoot || it == preferredRoot }
                                 val root = when {
-                                    existingSavedRoot?.isDirectory == true -> existingSavedRoot
+                                    existingSavedRoot != null && existingSavedRoot.isDirectory -> existingSavedRoot
                                     preferredRoot.isDirectory &&
                                         (java.io.File(preferredRoot, "My Files").exists() ||
                                          java.io.File(preferredRoot, "System").exists()) -> preferredRoot
