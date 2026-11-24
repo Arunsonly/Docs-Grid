@@ -9,6 +9,7 @@ void main(){
     expect(PdfDetailsDialog.location('file:///storage/Policy%20A.pdf',null,'Policy A'),'/storage/Policy A.pdf');
     expect(PdfDetailsDialog.location('content://pdf','Internal/Download','Policy.pdf'),'Internal/Download/Policy.pdf');
     expect(PdfDetailsDialog.sizeLabel(null),'Unavailable');
+    expect(PdfDetailsDialog.location('content://pdf',null,'Policy.pdf'),'Unavailable');
   });
   testWidgets('Phone Details shows name, size, updated and path',(tester) async {
     await tester.pumpWidget(MaterialApp(home:Scaffold(body:Builder(builder:(ctx)=>TextButton(
@@ -24,5 +25,7 @@ void main(){
     expect(find.textContaining('1.0 KB'),findsOneWidget);
     expect(find.text('Last updated'),findsOneWidget);
     expect(find.text('Internal/Download/Policy.pdf'),findsOneWidget);
+    expect(find.text('Storage URI'),findsNothing);
+    expect(find.text('content://pdf'),findsNothing);
   });
 }

@@ -34,7 +34,8 @@ class PdfDetailsDialog {
     if (uri.startsWith('/')) return uri;
     final path = folder?.trim() ?? '';
     if (path.isNotEmpty) return path.endsWith('/') ? path + fullName(name) : '$path/${fullName(name)}';
-    return uri.isEmpty ? 'Unavailable' : uri;
+    // Opaque provider identifiers are not human-readable file paths.
+    return uri.isEmpty || uri.contains('://') ? 'Unavailable' : uri;
   }
 
   static Future<void> showGrid(BuildContext context, DocumentRecord doc) =>
@@ -68,7 +69,6 @@ class PdfDetailsDialog {
           ('File size', sizeLabel(bytes)),
           ('Last updated', dateLabel(updated)),
           ('Path', location(uri, folder, name)),
-          if (uri.startsWith('content://') && folder?.isNotEmpty == true) ('Storage URI', uri),
         ]) ...[
           const SizedBox(height:12),
           Text(field.$1, style: Theme.of(ctx).textTheme.labelLarge),
