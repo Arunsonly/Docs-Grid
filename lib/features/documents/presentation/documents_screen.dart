@@ -1234,8 +1234,8 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         starredUris: _phoneStarredUris,
         onTrashPdf: _trashPhonePdf,
         initialPath: initialPath,
-        cacheScope: _phoneLastRoots
-            .map((root) => root['uri'] ?? '').join('|'),
+        cacheScope: '${_phoneLastRoots.map((root) => root['uri'] ?? '').join('|')}'
+            '|grid:${_gridBoundary.signature}',
       ),
     ));
   }
@@ -3059,8 +3059,8 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         embedded: true,
         active: widget.active,
         onBackAtRoot: widget.onBackAtRoot,
-        cacheScope: _phoneLastRoots
-            .map((root) => root['uri'] ?? '').join('|'),
+        cacheScope: '${_phoneLastRoots.map((root) => root['uri'] ?? '').join('|')}'
+            '|grid:${_gridBoundary.signature}',
         // Keep the last usable index visible while refresh continues silently.
         isLoading: _phoneScanLoading && _phoneEntries.isEmpty,
         onRefresh: () => _scanPhoneStorage(openBrowser: true),
