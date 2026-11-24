@@ -26,8 +26,12 @@ class PhonePdfMoveService {
         !displayName.toLowerCase().endsWith('.pdf')) {
       throw ArgumentError('Select a valid PDF and Phone destination folder.');
     }
-    // Do not let the new Phone action reach Grid-owned or system trash areas.
-    if (StorageLocationService.isRestrictedPhoneMoveDestination(destinationFolderUri)) {
+    // Neither the built-in top-level Grid location nor a separately chosen
+    // shared Grid folder is a valid Phone Move destination.
+    final storage = StorageLocationService.instance;
+    if (StorageLocationService.isRestrictedPhoneMoveDestination(destinationFolderUri) ||
+        (await storage.gridStorageBoundary())
+            .isManagedPath(destinationFolderUri)) {
       throw StateError('Choose a Phone folder outside DocsGrid and Recycle Bin.');
     }
     final sourcePath = _localPath(sourceUri);
@@ -36,7 +40,6 @@ class PhonePdfMoveService {
         p.dirname(sourcePath) == parentPath) {
       throw StateError('This PDF is already in the selected folder.');
     }
-    final storage = StorageLocationService.instance;
     final sourceDigest = await storage.sha256Pdf(sourceUri);
     String? destinationUri;
     var verifiedDistinct = false;

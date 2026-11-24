@@ -28,6 +28,7 @@ class FoldersScreen extends StatefulWidget {
     this.onOpenSettings,
     this.active = true,
     this.onBackAtRoot,
+    this.loadTimeout = const Duration(seconds: 20),
   });
 
   // Optional dependencies permit complete widget regression tests without
@@ -39,6 +40,9 @@ class FoldersScreen extends StatefulWidget {
   final VoidCallback? onOpenSettings;
   final bool active;
   final VoidCallback? onBackAtRoot;
+  /// A blocked SQLite/provider read must never leave Grid spinning forever.
+  /// Widget tests can shorten this without changing production timing.
+  final Duration loadTimeout;
 
   @override
   State<FoldersScreen> createState() => _FoldersScreenState();
@@ -117,7 +121,8 @@ class _FoldersScreenState extends State<FoldersScreen>
   Timer? _gridPreviewInvalidationDebounce;
   Set<String?>? _queuedGridPreviewIds = <String?>{};
   Completer<void>? _gridPreviewInvalidationDone;
-  bool _gridPreviewRebuildScheduled = false;
+  bool _gridContentRefreshPending = false;
+  bool _gridContentRefreshScheduled = false;
   // Only prepare metadata of the first two likely child folders, and only
   // after the current screen has loaded and the user has stopped scrolling.
   Timer? _idleFolderPrefetchTimer;
@@ -127,6 +132,9 @@ class _FoldersScreenState extends State<FoldersScreen>
   bool _gridScreenForeground = true;
   final Set<String> _attemptedChildPrefetches = {};
   static const int _maxPrefetchChildFolders = 2;
+  // Future.timeout retains an uncancellable timer if a provider future never
+  // resolves. Track our timers instead so route disposal has zero leftovers.
+  final Set<Timer> _gridLoadTimeouts = <Timer>{};
 
   @override
   void initState() {
@@ -142,6 +150,10 @@ class _FoldersScreenState extends State<FoldersScreen>
   @override
   void dispose() {
     _ocrEpoch++;
+    for (final timer in _gridLoadTimeouts) {
+      timer.cancel();
+    }
+    _gridLoadTimeouts.clear();
     _idleFolderPrefetchTimer?.cancel();
     if (_gridPreviewInvalidationDebounce?.isActive == true) {
       _gridPreviewInvalidationDebounce?.cancel();
@@ -162,13 +174,38 @@ class _FoldersScreenState extends State<FoldersScreen>
     if (!_gridScreenForeground) {
       _idleFolderPrefetchTimer?.cancel();
     } else {
+      _scheduleGridContentRefresh();
       _queueIdleFolderPrefetch();
     }
   }
 
+  // Grid lives in an IndexedStack. Invalidating preview metadata alone does
+  // not replace completed FutureBuilders when returning from Phone Storage.
+  // Refresh authoritative SQLite/provider reads, coalescing bursts per frame
+  // and deferring hidden-tab work until the next activation.
+  void _scheduleGridContentRefresh() {
+    if (!mounted || !_gridContentRefreshPending || !widget.active ||
+        !_gridScreenForeground || _gridContentRefreshScheduled) return;
+    _gridContentRefreshScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _gridContentRefreshScheduled = false;
+      if (!mounted || !_gridContentRefreshPending || !widget.active ||
+          !_gridScreenForeground) return;
+      setState(_load);
+    });
+    // addPostFrameCallback alone does not request a frame while idle.
+    WidgetsBinding.instance.ensureVisualUpdate();
+  }
+
   void _onGridFolderChange(GridFolderChange change) {
-    final affected = change.affectedFolderIds;
-    if (affected != null && affected.isEmpty) return;
+    final changed = change.affectedFolderIds;
+    if (changed != null && changed.isEmpty) return;
+    // A move into a child changes its parent's displayed PDF count, even
+    // when the current folder's own document IDs did not change. Global
+    // search results can also change for any nonempty structural event.
+    final affected = changed == null
+        ? null : <String?>{...changed, _currentFolderId};
+    _gridContentRefreshPending = true;
     final revision = ++_folderPreviewRevision;
     final currentKey = FolderPreviewCache.gridKey(_currentFolderId);
     final keys = affected?.map(FolderPreviewCache.gridKey).toSet();
@@ -188,13 +225,7 @@ class _FoldersScreenState extends State<FoldersScreen>
     }
     if (keys == null || keys.contains(currentKey)) {
       _suppressFolderPreviews.add(currentKey);
-      if (!_gridPreviewRebuildScheduled) {
-        _gridPreviewRebuildScheduled = true;
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          _gridPreviewRebuildScheduled = false;
-          if (mounted) setState(() {});
-        });
-      }
+      _scheduleGridContentRefresh();
     }
     // Group bursts of imports/moves into one disk operation per changed
     // folder; avoid rewriting/removing the same metadata hundreds of times.
@@ -382,6 +413,17 @@ class _FoldersScreenState extends State<FoldersScreen>
   @override
   void didUpdateWidget(covariant FoldersScreen oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.active && !widget.active) {
+      _idleFolderPrefetchTimer?.cancel();
+    } else if (!oldWidget.active && widget.active) {
+      // didUpdateWidget is followed by build, so no extra setState/frame is
+      // needed. The first visible Grid frame uses newly assigned futures.
+      if (_gridContentRefreshPending) {
+        _load();
+      } else {
+        _queueIdleFolderPrefetch();
+      }
+    }
     if (oldWidget.ocrSearchAvailable && !widget.ocrSearchAvailable) {
       _ocrEpoch++;
       _ocrSelected = false;
@@ -460,6 +502,29 @@ class _FoldersScreenState extends State<FoldersScreen>
     }
   }
 
+  Future<T> _boundedGridRead<T>(Future<T> read, String label) {
+    final result = Completer<T>();
+    late final Timer timer;
+    timer = Timer(widget.loadTimeout, () {
+      _gridLoadTimeouts.remove(timer);
+      if (!result.isCompleted) {
+        result.completeError(TimeoutException(
+            '$label did not finish. Please retry.'));
+      }
+    });
+    _gridLoadTimeouts.add(timer);
+    read.then<void>((value) {
+      timer.cancel();
+      _gridLoadTimeouts.remove(timer);
+      if (!result.isCompleted) result.complete(value);
+    }, onError: (Object error, StackTrace trace) {
+      timer.cancel();
+      _gridLoadTimeouts.remove(timer);
+      if (!result.isCompleted) result.completeError(error, trace);
+    });
+    return result.future;
+  }
+
   void _reloadDocumentsOnly() {
     final epoch = ++_folderLoadEpoch;
     final folderId = _currentFolderId;
@@ -467,19 +532,22 @@ class _FoldersScreenState extends State<FoldersScreen>
     _resetDocumentPages();
     // Preserve existing global search and exact custom Name/Date sort behavior.
     _pagedDocumentsMode = query.isEmpty && !_explicitSort;
-    _documentsFuture = query.isNotEmpty
+    final read = query.isNotEmpty
         ? _ocrSelected ? _searchGridOcr(query) : _documents.list(query: query)
         : _pagedDocumentsMode
             ? _getFirstPage(folderId, epoch)
             : _documents.listInFolder(folderId);
+    _documentsFuture = _boundedGridRead(read, 'Grid PDF loading');
   }
 
   void _load() {
+    _gridContentRefreshPending = false;
     _idleFolderPrefetchTimer?.cancel();
     _prefetchFolderCandidates = const [];
     _prefetchFolderEpoch = -1;
     final folderId = _currentFolderId;
-    final folderFuture = _repository.childrenOf(folderId);
+    final folderFuture = _boundedGridRead(
+        _repository.childrenOf(folderId), 'Grid folder loading');
     _foldersFuture = folderFuture;
     _reloadDocumentsOnly();
     final epoch = _folderLoadEpoch;
@@ -652,7 +720,7 @@ class _FoldersScreenState extends State<FoldersScreen>
 
   void _queueIdleFolderPrefetch() {
     _idleFolderPrefetchTimer?.cancel();
-    if (!_gridScreenForeground || _prefetchingChildFolders ||
+    if (!widget.active || !_gridScreenForeground || _prefetchingChildFolders ||
         _prefetchFolderCandidates.isEmpty || _searchQuery.trim().isNotEmpty ||
         _isReorderingFolders || _isSelectingFolders ||
         _prefetchFolderEpoch != _folderLoadEpoch) return;
@@ -661,7 +729,7 @@ class _FoldersScreenState extends State<FoldersScreen>
     // Debounce interaction; run no speculative SAF/provider reads during
     // an active scroll, initial navigation, or while the app is backgrounded.
     _idleFolderPrefetchTimer = Timer(const Duration(milliseconds: 650), () {
-      if (!mounted || !_gridScreenForeground ||
+      if (!mounted || !widget.active || !_gridScreenForeground ||
           epoch != _folderLoadEpoch) return;
       unawaited(_prefetchChildFolderMetadata(candidates, epoch));
     });
@@ -670,7 +738,7 @@ class _FoldersScreenState extends State<FoldersScreen>
   Future<void> _prefetchChildFolderMetadata(
     List<Folder> candidates, int epoch,
   ) async {
-    if (_prefetchingChildFolders || !mounted ||
+    if (_prefetchingChildFolders || !mounted || !widget.active ||
         !_gridScreenForeground || epoch != _folderLoadEpoch) return;
     _prefetchingChildFolders = true;
     final previewRevision = _folderPreviewRevision;
@@ -1190,7 +1258,7 @@ class _FoldersScreenState extends State<FoldersScreen>
       await _repository.create(name: name, parentId: parentId);
       if (!mounted) return;
       setState(_load);
-      _message('Folder created.');
+      // A newly created folder is visible immediately; no success Snackbar.
     } catch (error) {
       if (!mounted) return;
       _message(error.toString().replaceFirst('Invalid argument(s): ', ''));
@@ -1206,8 +1274,11 @@ class _FoldersScreenState extends State<FoldersScreen>
       if (!mounted) return;
       await _refresh();
       if (!mounted) return;
-      final details = result.errors.isEmpty ? '' : '\n${result.errors.first}';
-      _message('Added ${result.added} · Duplicates ${result.duplicates} · Failed ${result.failed}$details');
+      // Keep duplicate warnings and real failures, not noisy success messages.
+      if (result.duplicates > 0 || result.failed > 0) {
+        final details = result.errors.isEmpty ? '' : '\n${result.errors.first}';
+        _message('Duplicates ${result.duplicates} · Failed ${result.failed}$details');
+      }
     } catch (error) {
       if (mounted) _message('PDF import failed: $error');
     }
@@ -2358,6 +2429,13 @@ class _FoldersScreenState extends State<FoldersScreen>
                     const Icon(Icons.error_outline, size: 40),
                     const SizedBox(height: 8),
                     const Text('Could not load folders.'),
+                    if (folderSnapshot.error is TimeoutException)
+                      const Padding(
+                        padding: EdgeInsets.symmetric(horizontal: 24, vertical: 8),
+                        child: Text('Grid is taking too long to open. '
+                            'Your files have not been changed. Try again.',
+                            textAlign: TextAlign.center),
+                      ),
                     TextButton(onPressed: _refresh, child: const Text('Try again')),
                   ]),
                 );
