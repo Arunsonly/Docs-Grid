@@ -700,6 +700,34 @@ class DocumentToolsService {
     }
   });
 
+  /// Read-only estimate for the confirmation sheet. ZIP metadata and
+  /// filesystem changes can affect the final size; creation still verifies
+  /// the live revision and every archived PDF.
+  Future<Map<String, int>> fullBackupPreview() async {
+    final db = await _database.database;
+    final counts = await db.transaction((txn) async {
+      final result = <String, int>{};
+      for (final table in ['documents', 'folders', 'categories', 'tags', 'reminders']) {
+        result[table] = Sqflite.firstIntValue(
+          await txn.rawQuery('SELECT COUNT(*) FROM $table'),
+        ) ?? 0;
+      }
+      result['pdfBytes'] = Sqflite.firstIntValue(await txn.rawQuery(
+        'SELECT COALESCE(SUM(size_bytes), 0) FROM documents',
+      )) ?? 0;
+      return result;
+    });
+    if (Platform.isAndroid) {
+      try {
+        final usage = await StorageLocationService.instance.phoneStorageUsage();
+        counts['availableBytes'] = usage['availableBytes'] ?? 0;
+      } catch (_) {
+        // Display an estimate without inventing unavailable free space.
+      }
+    }
+    return counts;
+  }
+
   /// New backups are standalone Full ZIPs. Keep the legacy A-series
   /// engine intact for existing archives and their recovery/export.
   Future<File> createStandaloneFullBackup({
@@ -798,6 +826,7 @@ class DocumentToolsService {
       if (manifest['backupType'] != 'full') {
         throw StateError('Selected archive is not a standalone Full backup.');
       }
+      await validateBackup(file);
       files = [file];
     } else {
       if (!BackupChain.validSeriesName(id)) {
