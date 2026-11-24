@@ -12,9 +12,9 @@ void main() {
     expect(source, contains('widget.count(draft)'));
     expect(source, contains("Text('No filter selected'"));
     expect(source, contains("Text('Save all PDFs'"));
-    expect(source, contains("FROM documents WHERE"));
-    expect(source, contains("FROM documents d WHERE"));
-    expect(source, contains("deleted_at IS NULL"));
+    expect(source, isNot(contains('PDF name contains (optional)')));
+    expect(source, contains('SmartCollectionSelection(collection).count'));
+    expect(source, contains('Smart + Manual'));
     expect(source, contains("'favorites_only': 0"));
     expect(source, contains("'recent_only': 0"));
   });

@@ -21,6 +21,7 @@ import '../../core/storage/storage_location_service.dart';
 import '../../core/storage/storage_migration_gate.dart';
 import '../../core/storage/portable_snapshot_events.dart';
 import '../documents/data/document_repository.dart';
+import '../documents/data/smart_collection_selection.dart';
 import '../documents/data/phone_portable_state.dart';
 import '../folders/data/folder_repository.dart';
 import '../reminders/data/reminder_notifications.dart';
@@ -2908,7 +2909,8 @@ Future<int?> _restoreBackupLocked(
           final name = row['name'] as String;
           if (existingCollectionNames.contains(name.toLowerCase())) continue;
           final oldId = row['id'] as String;
-          final copy = Map<String, Object?>.from(row)
+          final copy = SmartCollectionSelection.remap(row, documentIds: documentIdMap,
+            categoryIds: categoryIdMap, tagIds: tagIdMap)
             ..['id'] = existingCollectionIds.contains(oldId) ? _uuid.v4() : oldId;
           queueInsert('smart_collections', copy);
           existingCollectionIds.add(copy['id'] as String);
@@ -3968,7 +3970,8 @@ Future<int?> _restoreBackupLocked(
         if (existingCollectionNames.contains(name.toLowerCase())) continue;
         final id = row['id'] as String;
         await txn.insert('smart_collections', {
-          ...row,
+          ...SmartCollectionSelection.remap(row, documentIds: documentIdMap,
+            categoryIds: categoryIdMap, tagIds: tagIdMap),
           'id': existingCollectionIds.contains(id) ? _uuid.v4() : id,
         }, conflictAlgorithm: ConflictAlgorithm.ignore);
         existingCollectionNames.add(name.toLowerCase());
