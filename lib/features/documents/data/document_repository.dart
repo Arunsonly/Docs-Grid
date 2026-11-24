@@ -250,7 +250,7 @@ class DocumentRepository {
 
   /// Returns the latest document activity: opened PDFs use last_opened_at;
   /// never-opened PDFs use created_at so recently added files also appear.
-  Future<List<DocumentRecord>> recentActivity({int limit = 20}) async {
+  Future<List<DocumentRecord>> recentActivity({int limit = 20, DateTime? since}) async {
     if (limit < 1 || limit > 100) {
       throw ArgumentError.value(limit, 'limit', 'Must be between 1 and 100.');
     }
@@ -262,10 +262,12 @@ class DocumentRepository {
       FROM documents d
       LEFT JOIN categories c ON c.id = d.category_id
       WHERE d.deleted_at IS NULL
+        AND (? IS NULL OR COALESCE(d.last_opened_at, d.created_at) > ?)
       ORDER BY COALESCE(d.last_opened_at, d.created_at) DESC,
                d.name COLLATE NOCASE ASC, d.id ASC
       LIMIT ?
-    ''', [limit]);
+    ''', [since?.toUtc().toIso8601String(),
+          since?.toUtc().toIso8601String(), limit]);
     return rows.map(DocumentRecord.fromMap).toList(growable: false);
   }
 
