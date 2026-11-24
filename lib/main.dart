@@ -1,3 +1,4 @@
+import 'core/storage/storage_information_screen.dart';
 import 'dart:async';
 import 'dart:io';
 import 'dart:ui' show PlatformDispatcher;
@@ -957,31 +958,17 @@ class _SettingsScreenState extends State<_SettingsScreen> {
           ),
         ]),
 
-        _sectionTitle('DATA'),
+        _sectionTitle('DOCUMENT MANAGEMENT'),
         _settingsCard([
           ListTile(
-            leading: const Icon(Icons.backup_outlined),
-            title: const Text('Backup & Recovery', style: TextStyle(fontWeight: FontWeight.w600)),
-            subtitle: const Text('Create backup · Restore backup'),
+            leading: const Icon(Icons.sell_outlined),
+            title: const Text('Category & Tag', style: TextStyle(fontWeight: FontWeight.w600)),
+            subtitle: const Text('Labels to organise your PDFs'),
             trailing: const Icon(Icons.chevron_right),
             onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => Scaffold(
-              appBar: AppBar(title: const Text('Backup & Recovery')),
-              body: const DocumentToolsScreen(section: 'backup_restore'),
+              appBar: AppBar(title: const Text('Category & Tag')),
+              body: const CategoriesScreen(),
             ))),
-          ),
-          mutedDivider,
-          ListTile(
-            leading: const Icon(Icons.history),
-            title: const Text('Activity', style: TextStyle(fontWeight: FontWeight.w600)),
-            trailing: const Icon(Icons.chevron_right),
-            onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const HistoryScreen())),
-          ),
-          mutedDivider,
-          ListTile(
-            leading: const Icon(Icons.notifications_active_outlined),
-            title: const Text('Reminder', style: TextStyle(fontWeight: FontWeight.w600)),
-            trailing: const Icon(Icons.chevron_right),
-            onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const RemindersScreen())),
           ),
           mutedDivider,
           ListTile(
@@ -995,14 +982,38 @@ class _SettingsScreenState extends State<_SettingsScreen> {
           ),
           mutedDivider,
           ListTile(
-            leading: const Icon(Icons.sell_outlined),
-            title: const Text('Category & Tag', style: TextStyle(fontWeight: FontWeight.w600)),
-            subtitle: const Text('Labels to organise your PDFs'),
+            leading: const Icon(Icons.notifications_active_outlined),
+            title: const Text('Reminder', style: TextStyle(fontWeight: FontWeight.w600)),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const RemindersScreen())),
+          ),
+          mutedDivider,
+          ListTile(
+            leading: const Icon(Icons.history),
+            title: const Text('Activity', style: TextStyle(fontWeight: FontWeight.w600)),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const HistoryScreen())),
+          ),
+        ]),
+        _sectionTitle('DATA & STORAGE'),
+        _settingsCard([
+          ListTile(
+            leading: const Icon(Icons.backup_outlined),
+            title: const Text('Backup & Recovery', style: TextStyle(fontWeight: FontWeight.w600)),
+            subtitle: const Text('Create backup · Restore backup'),
             trailing: const Icon(Icons.chevron_right),
             onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => Scaffold(
-              appBar: AppBar(title: const Text('Category & Tag')),
-              body: const CategoriesScreen(),
+              appBar: AppBar(title: const Text('Backup & Recovery')),
+              body: const DocumentToolsScreen(section: 'backup_restore'),
             ))),
+          ),
+          mutedDivider,
+          ListTile(
+            leading: const Icon(Icons.storage_outlined),
+            title: const Text('Storage Information', style: TextStyle(fontWeight: FontWeight.w600)),
+            subtitle: const Text('Storage usage · Cache management'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const StorageInformationScreen())),
           ),
         ]),
       ],

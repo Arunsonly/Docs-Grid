@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:sqflite/sqflite.dart';
 
 import '../../../core/database/app_database.dart';
+import '../../../core/database/document_defaults.dart';
 import '../../../core/storage/storage_location_service.dart';
 import '../../../core/storage/portable_snapshot_events.dart';
 import '../data/document_repository.dart';
@@ -22,6 +23,9 @@ class _SmartCollectionsScreenState extends State<SmartCollectionsScreen> {
   Future<Database> get _db => AppDatabase.instance.database;
   List<Map<String, Object?>> _collections = [];
   bool _loading = true;
+  bool _showHidden = false;
+  Set<String> _hidden = {};
+  List<Map<String,Object?>> _builtIns = [];
   final _categoryRepository = CategoryRepository();
 
   @override
@@ -57,8 +61,12 @@ class _SmartCollectionsScreenState extends State<SmartCollectionsScreen> {
       final db = await _db;
       await _ensureTable(db);
       final rows = await db.query('smart_collections', orderBy: 'name COLLATE NOCASE');
+      final builtIns = DocumentDefaults.collections(await db.query('tags'));
+      final prefs = await db.query('settings', columns: ['value_json'], where: 'key = ?',
+        whereArgs: [DocumentDefaults.hiddenKey], limit: 1);
+      final hidden = SmartCollectionSelection.ids(prefs.isEmpty ? null : prefs.single['value_json']);
       if (!mounted) return;
-      setState(() { _collections = rows; _loading = false; });
+      setState(() { _collections = rows; _builtIns = builtIns; _hidden = hidden; _loading = false; });
     } catch (error) {
       if (!mounted) return;
       setState(() => _loading = false);
@@ -75,6 +83,22 @@ class _SmartCollectionsScreenState extends State<SmartCollectionsScreen> {
 
   Future<int> _count(Map<String, Object?> collection) async =>
       SmartCollectionSelection(collection).count(await _db);
+
+  Future<void> _toggleHidden(Map<String,Object?> item) async {
+    final id = item['id'] as String;
+    final hidden = {..._hidden};
+    if (!hidden.add(id)) hidden.remove(id);
+    try {
+      final db = await _db;
+      await db.insert('settings', {'key':DocumentDefaults.hiddenKey,
+        'value_json':jsonEncode(hidden.toList()..sort()),
+        'updated_at':DateTime.now().toUtc().toIso8601String()}, conflictAlgorithm:ConflictAlgorithm.replace);
+      if (mounted) setState(() => _hidden = hidden);
+      PortableSnapshotEvents.notifyDataChanged();
+    } catch (error) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text('Could not change visibility: $error')));
+    }
+  }
 
   Future<void> _create() => _editCollection();
 
@@ -142,49 +166,58 @@ class _SmartCollectionsScreenState extends State<SmartCollectionsScreen> {
     if (mounted) await _load();
   }
 
+  Widget _collectionTile(Map<String,Object?> item) {
+    final builtIn = item['built_in'] == true;
+    final hidden = builtIn && _hidden.contains(item['id']);
+    return FutureBuilder<int>(
+      future: _count(item),
+      builder: (context,snapshot) => Card(child: ListTile(
+        leading: const CircleAvatar(child: Icon(Icons.auto_awesome_outlined)),
+        title: Text(item['name'] as String),
+        subtitle: Text(builtIn ? (item['rule_label'] as String) + (hidden ? ' · Hidden' : '') :
+          [if ((item['category_id'] as String? ?? '').isNotEmpty) 'Category',
+           if (_tagIds(item['tag_ids_json']).isNotEmpty) '${_tagIds(item['tag_ids_json']).length} tags',
+           'Automatic · no file copies'].join(' · ')),
+        trailing: Row(mainAxisSize:MainAxisSize.min,children:[
+          Text(snapshot.hasError ? '—' : snapshot.hasData ? snapshot.data.toString() : '…'),
+          if (builtIn)
+            IconButton(tooltip:hidden?'Show collection':'Hide collection',
+              icon:Icon(hidden?Icons.visibility_off_outlined:Icons.visibility_outlined),onPressed:()=>_toggleHidden(item))
+          else
+            PopupMenuButton<String>(onSelected:(value) {
+              if(value=='edit') _edit(item);
+              if(value=='delete') _delete(item);
+            },itemBuilder:(_)=>const [
+              PopupMenuItem(value:'edit',child:Text('Edit')),
+              PopupMenuItem(value:'delete',child:Text('Delete')),
+            ]),
+        ]),
+        onTap:()=>_open(item),
+      )),
+    );
+  }
+
   @override
   Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(title: const Text('Smart Collections')),
-    floatingActionButton: FloatingActionButton.extended(onPressed: _create, icon: const Icon(Icons.add), label: const Text('New collection')),
-    body: _loading ? const Center(child: CircularProgressIndicator()) : _collections.isEmpty
-      ? const Center(child: Padding(padding: EdgeInsets.all(28), child: Text('No Smart Collections yet. Use category and tags to automatically group PDFs. Only Grid PDFs are included; files stay in their original folders.')))
-      : ListView.separated(
-          padding: const EdgeInsets.fromLTRB(12, 12, 12, 96),
-          itemCount: _collections.length,
-          separatorBuilder: (_, _) => const SizedBox(height: 6),
-          itemBuilder: (context, index) {
-            final item = _collections[index];
-            return FutureBuilder<int>(
-              future: _count(item),
-              builder: (context, snapshot) => Card(
-                child: ListTile(
-                  leading: const CircleAvatar(child: Icon(Icons.auto_awesome_outlined)),
-                  title: Text(item['name'] as String),
-                  subtitle: Text([
-                    'Automatic',
-                    if ((item['category_id'] as String? ?? '').isNotEmpty) 'Category',
-                    if (_tagIds(item['tag_ids_json']).isNotEmpty) '${_tagIds(item['tag_ids_json']).length} tags',
-                    'Dynamic filter · no file copies',
-                  ].join(' · ')),
-                  trailing: Row(mainAxisSize: MainAxisSize.min, children: [
-                    Text(snapshot.hasData ? '${snapshot.data}' : '…'),
-                    PopupMenuButton<String>(
-                      onSelected: (value) {
-                        if (value == 'edit') _edit(item);
-                        if (value == 'delete') _delete(item);
-                      },
-                      itemBuilder: (_) => const [
-                        PopupMenuItem(value: 'edit', child: Text('Edit')),
-                        PopupMenuItem(value: 'delete', child: Text('Delete')),
-                      ],
-                    ),
-                  ]),
-                  onTap: () => _open(item),
-                ),
-              ),
-            );
-          },
-        ),
+    appBar: AppBar(title:const Text('Smart Collections'),actions:[
+      if (_hidden.isNotEmpty) IconButton(
+        tooltip:_showHidden?'Hide hidden collections':'Show hidden collections',
+        icon:Icon(_showHidden?Icons.visibility_off:Icons.visibility),
+        onPressed:()=>setState(()=>_showHidden=!_showHidden)),
+    ]),
+    floatingActionButton: FloatingActionButton.extended(onPressed:_create,
+      icon:const Icon(Icons.add),label:const Text('New collection')),
+    body:_loading?const Center(child:CircularProgressIndicator()):RefreshIndicator(
+      onRefresh:_load,child:ListView(padding:const EdgeInsets.fromLTRB(12,12,12,96),children:[
+        Text('Built-in collections',style:Theme.of(context).textTheme.titleMedium),
+        for(final item in _builtIns)
+          if(_showHidden||!_hidden.contains(item['id'])) _collectionTile(item),
+        const SizedBox(height:16),
+        Text('Custom collections',style:Theme.of(context).textTheme.titleMedium),
+        if(_collections.isEmpty) const Padding(padding:EdgeInsets.all(16),
+          child:Text('Create your own automatic collection by category and tags. Only Grid PDFs are included.')),
+        for(final item in _collections) _collectionTile(item),
+      ])),
   );
 }
 

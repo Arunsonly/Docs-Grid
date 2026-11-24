@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'document_defaults.dart';
 
 import 'package:flutter/foundation.dart';
 import '../storage/durable_file_operations.dart';
@@ -198,6 +199,7 @@ class AppDatabase {
       onOpen: (db) async {
         if (await db.getVersion() >= 12) {
           await DurableFileOperations.reconcileFinished(db);
+          await db.transaction((txn) => DocumentDefaults.seed(txn));
         }
       },
       onDowngrade: (db, oldVersion, newVersion) async {
@@ -292,9 +294,10 @@ class AppDatabase {
   }
 
   Future<void> _createV13CollectionSelection(DatabaseExecutor db) async {
-    await db.execute("ALTER TABLE smart_collections ADD COLUMN selection_mode TEXT NOT NULL DEFAULT 'automatic'");
-    await db.execute("ALTER TABLE smart_collections ADD COLUMN included_ids_json TEXT NOT NULL DEFAULT '[]'");
-    await db.execute("ALTER TABLE smart_collections ADD COLUMN excluded_ids_json TEXT NOT NULL DEFAULT '[]'");
+    final columns = (await db.rawQuery('PRAGMA table_info(smart_collections)')).map((row) => row['name']).toSet();
+    if (!columns.contains('selection_mode')) await db.execute("ALTER TABLE smart_collections ADD COLUMN selection_mode TEXT NOT NULL DEFAULT 'automatic'");
+    if (!columns.contains('included_ids_json')) await db.execute("ALTER TABLE smart_collections ADD COLUMN included_ids_json TEXT NOT NULL DEFAULT '[]'");
+    if (!columns.contains('excluded_ids_json')) await db.execute("ALTER TABLE smart_collections ADD COLUMN excluded_ids_json TEXT NOT NULL DEFAULT '[]'");
   }
 
   Future<void> _createV4PerformanceSchema(DatabaseExecutor db) async {

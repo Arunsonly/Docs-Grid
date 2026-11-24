@@ -1,3 +1,4 @@
+import '../../core/database/document_defaults.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -2060,7 +2061,7 @@ Future<int?> _restoreBackupLocked(
           hasRows('documents') ||
           hasRows('folders') ||
           hasCustomCategories ||
-          hasRows('tags') ||
+          (backup.rowsByTable['tags'] ?? const <Map<String,Object?>>[]).any((row) => !DocumentDefaults.isDefaultTagId(row['id'] as String)) ||
           hasRows('document_tags') ||
           hasRows('reminders') ||
           hasRows('history') ||
@@ -2924,6 +2925,7 @@ Future<int?> _restoreBackupLocked(
           if (pending >= 500) await flushBatch();
         }
         await flushBatch();
+        await DocumentDefaults.seed(txn);
         if ((await txn.rawQuery('PRAGMA foreign_key_check')).isNotEmpty) {
           throw StateError('Restored database contains inconsistent references.');
         }

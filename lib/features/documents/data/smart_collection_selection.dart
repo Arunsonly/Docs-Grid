@@ -15,6 +15,8 @@ class SmartCollectionSelection {
   ({String sql, List<Object?> args}) get predicate {
     final where = <String>['1=1'];
     final args = <Object?>[];
+    if (row['missing_category'] == true) where.add('d.category_id IS NULL');
+    if (row['missing_tags'] == true) where.add('NOT EXISTS (SELECT 1 FROM document_tags dt WHERE dt.document_id = d.id)');
     final category = row['category_id'] as String?;
     if (category != null && category.isNotEmpty) {
       where.add('d.category_id = ?');
