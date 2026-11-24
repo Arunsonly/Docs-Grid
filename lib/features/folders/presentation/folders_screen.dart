@@ -1226,7 +1226,7 @@ class _FoldersScreenState extends State<FoldersScreen>
       await _repository.create(name: name, parentId: parentId);
       if (!mounted) return;
       setState(_load);
-      _message('Folder created.');
+      // A newly created folder is visible immediately; no success Snackbar.
     } catch (error) {
       if (!mounted) return;
       _message(error.toString().replaceFirst('Invalid argument(s): ', ''));
@@ -1242,8 +1242,11 @@ class _FoldersScreenState extends State<FoldersScreen>
       if (!mounted) return;
       await _refresh();
       if (!mounted) return;
-      final details = result.errors.isEmpty ? '' : '\n${result.errors.first}';
-      _message('Added ${result.added} · Duplicates ${result.duplicates} · Failed ${result.failed}$details');
+      // Keep duplicate warnings and real failures, not noisy success messages.
+      if (result.duplicates > 0 || result.failed > 0) {
+        final details = result.errors.isEmpty ? '' : '\n${result.errors.first}';
+        _message('Duplicates ${result.duplicates} · Failed ${result.failed}$details');
+      }
     } catch (error) {
       if (mounted) _message('PDF import failed: $error');
     }
