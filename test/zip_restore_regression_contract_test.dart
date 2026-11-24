@@ -72,7 +72,9 @@ void main() {
     // ZIP restore sheet after it repointed the live backup root. The separate
     // onboarding/Settings picker still offers read-only old-data recovery.
     expect(ui, isNot(contains("if (source == 'folder')")));
-    expect(ui, contains("source == 'pdf_folder'"));
+    expect(ui, contains("case 'pdf': await _recoverSelectedPdfFolder();"));
+    expect(ui, contains("case 'series': await _restoreBackup(source: 'series');"));
+    expect(ui, contains("Future<void> _restoreBackup({String source = 'zip'})"));
     expect(ui, contains('restore_selected_portable'));
     expect(ui, contains('sourceLocations: recoverySource'));
     expect(ui, contains("allowedExtensions: ['zip']"));

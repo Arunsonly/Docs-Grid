@@ -127,6 +127,23 @@ class BackupAutomation {
     }
   }
 
+  /// Record a successful user-initiated database ZIP using the same status
+  /// format as the daily worker. The verified archive is already published.
+  static Future<void> recordManualDatabaseBackup(
+      File archive, DateTime completed) async {
+    final prefs = await SharedPreferences.getInstance();
+    final stamp = completed.toUtc().toIso8601String();
+    final bytes = await archive.length();
+    await prefs.setString(_dailyStatusKey, jsonEncode({
+      'status': 'success',
+      'attemptedAtUtc': stamp,
+      'completedAtUtc': stamp,
+      'archiveName': archive.uri.pathSegments.isEmpty
+          ? archive.path : archive.uri.pathSegments.last,
+      'archiveBytes': bytes,
+    }));
+  }
+
   /// A failed/unsupported task is retried with backoff instead of repeating
   /// a large archive on every Activity resume.
   static bool isBackupDue({

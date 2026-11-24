@@ -1543,7 +1543,6 @@ class _FoldersScreenState extends State<FoldersScreen>
         _selectedFolderIds.clear();
       });
       await _refresh();
-      _message('Moved ${selected.length} folder(s).');
     } catch (error) {
       if (mounted) _message('Could not move folders: $error');
     }
@@ -1566,7 +1565,7 @@ class _FoldersScreenState extends State<FoldersScreen>
     );
     if (confirmed != true) return;
     try {
-      final pdfCount = await _repository.moveManyToRecycleBin(
+      await _repository.moveManyToRecycleBin(
         selected.map((folder) => folder.id).toList(),
       );
       if (!mounted) return;
@@ -1575,7 +1574,6 @@ class _FoldersScreenState extends State<FoldersScreen>
         _selectedFolderIds.clear();
       });
       await _refresh();
-      _message('Moved ${selected.length} folder(s) and $pdfCount PDF(s) to Recycle Bin.');
     } catch (error) {
       if (mounted) _message('Could not delete folders: $error');
     }
@@ -1589,7 +1587,6 @@ class _FoldersScreenState extends State<FoldersScreen>
       if (!mounted) return;
       if (_currentFolderId == folder.id) _currentTitle = name.trim();
       setState(_load);
-      _message('Folder renamed.');
     } catch (error) {
       _message(error.toString().replaceFirst('Invalid argument(s): ', ''));
     }
@@ -1825,7 +1822,9 @@ class _FoldersScreenState extends State<FoldersScreen>
     _clearDocumentSelection();
     await _refresh();
     final failures = result['failures'] as List<String>;
-    _message('Moved ${result['moved']} PDF(s). ${failures.length} failed.');
+    if (failures.isNotEmpty) {
+      _message('${failures.length} selected PDF(s) could not be moved. ${failures.first}');
+    }
   }
 
   Future<void> _addReminder(DocumentRecord document) async {
@@ -1859,7 +1858,6 @@ class _FoldersScreenState extends State<FoldersScreen>
     title.dispose(); note.dispose();
     if (saved != true) return;
     await ReminderRepository().create(title: reminderTitle, note: reminderNote, remindAt: selected, documentId: document.id);
-    if (mounted) _message('Reminder saved for this PDF.');
   }
 
   Future<void> _chooseCategory(DocumentRecord document) async {
@@ -2754,7 +2752,6 @@ class _FoldersScreenState extends State<FoldersScreen>
                       if (!mounted) return;
                       setState(() => _isReorderingFolders = false);
                       await _refresh();
-                      _message('Folder order saved.');
                     } catch (error) {
                       if (mounted) _message('Could not save folder order: $error');
                     }

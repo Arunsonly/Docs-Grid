@@ -58,11 +58,12 @@ class _RemindersScreenState extends State<RemindersScreen> with WidgetsBindingOb
     try {
       final granted = await ReminderNotifications.instance.requestPermission();
       await _refreshNotificationPermission();
-      if (mounted) {
+      // Permission acceptance needs no toast; only alert the user if reminders
+      // are still blocked so they can enable notifications in Settings.
+      if (mounted && !granted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(granted
-              ? 'Notification permission request completed.'
-              : 'Notifications are off. Your reminders remain saved; enable alerts in app settings.')),
+          const SnackBar(content: Text(
+              'Notifications are off. Your reminders remain saved; enable alerts in app settings.')),
         );
       }
     } catch (error) {

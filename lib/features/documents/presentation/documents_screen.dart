@@ -27,6 +27,7 @@ import '../../tools/document_tools_service.dart';
 import 'document_thumbnail.dart';
 import 'ocr_search_mode_control.dart';
 import 'phone_storage_browser_screen.dart';
+import 'recycle_bin_dialog.dart';
 import 'phone_move_folder_picker.dart';
 import '../../folders/presentation/folders_screen.dart';
 import '../../reminders/data/reminder_repository.dart';
@@ -1385,7 +1386,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         ..._phoneRecent.where((entry) => entry['uri'] == uri),
       ];
       final entry = matching.isEmpty ? null : matching.first;
-      final added = await PhoneStarRepository.toggle(
+      await PhoneStarRepository.toggle(
         uri: uri,
         name: name,
         folderPath: (entry?['folderPath'] ?? entry?['path']) as String?,
@@ -1393,7 +1394,6 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       );
       await _loadPhoneStarred();
       if (_showStarredRecent) await _loadAllStarred();
-      if (mounted) _message(added ? 'Added to Star.' : 'Removed from Star.');
     } catch (error) {
       if (mounted) _message('Could not update Phone Star: $error');
     }
@@ -1448,11 +1448,8 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       await _loadTrashSummary();
       await _refreshDashboardSummary();
     }
-    if (mounted) {
-      _message(
-        'Moved ${movedUris.length} of ${chosen.length} PDFs to Recycle Bin'
-        '${failed > 0 ? ' · $failed kept' : ''}',
-      );
+    if (mounted && failed > 0) {
+      _message('$failed Phone PDFs were kept because they could not be archived.');
     }
     return movedUris.isNotEmpty;
   }
@@ -1561,7 +1558,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
   }
 
   Future<void> _openRecentSelection(DocumentRecord first) async {
-    final action = await Navigator.of(context).push<String>(MaterialPageRoute(
+    await Navigator.of(context).push<String>(MaterialPageRoute(
       builder: (_) => _RecentSelectionScreen(
         initialDocument: first,
         loadItems: _showStarredRecent ? _repository.listAllStarred : _loadAllRecentGrid,
@@ -1575,9 +1572,6 @@ class _DocumentsScreenState extends State<DocumentsScreen>
     ));
     await _loadRecentDocuments();
     await _loadAllStarred();
-    if (action == 'rename' && mounted) {
-      _message('Rename completed.');
-    }
   }
 
   Future<void> _bulkMoveDocuments(List<DocumentRecord> selected) async {
@@ -1595,22 +1589,23 @@ class _DocumentsScreenState extends State<DocumentsScreen>
     );
     if (destination == null) return;
     final result = await _repository.moveManyToFolder(selected, destination.isEmpty ? null : destination);
-    if (mounted) _message('Moved ${result['moved']} of ${selected.length} PDFs');
+    if (mounted && (result['moved'] as int? ?? 0) != selected.length) {
+      _message('Some PDFs could not be moved. Check their storage access.');
+    }
   }
 
   Future<void> _bulkCopyDocuments(List<DocumentRecord> selected) async {
-    var copied = 0;
     final failures = <String>[];
     for (final document in selected) {
       try {
         await _repository.copyDocument(document, targetFolderId: document.folderId);
-        copied++;
       } catch (error) {
         failures.add('${document.name}: $error');
       }
     }
-    if (mounted) _message('Copied $copied of ${selected.length} PDFs'
-        '${failures.isEmpty ? '' : ' · ${failures.length} failed'}');
+    if (mounted && failures.isNotEmpty) {
+      _message('${failures.length} of ${selected.length} PDFs could not be copied. ${failures.first}');
+    }
   }
 
   Future<bool> _bulkDeleteDocuments(List<DocumentRecord> selected) async {
@@ -1621,7 +1616,6 @@ class _DocumentsScreenState extends State<DocumentsScreen>
     if (!confirmed) return false;
     await _repository.moveManyToTrash(selected);
     if (mounted) {
-      _message('Moved ${selected.length} PDFs to Recycle Bin');
       await _refreshDashboardSummary();
     }
     return true;
@@ -1704,7 +1698,6 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       );
       await _loadPhoneStarred();
       await _loadRecentDocuments();
-      if (mounted) _message('Phone reference re-linked.');
     } catch (error) {
       if (mounted) _message('Phone PDF could not be re-linked: $error');
     }
@@ -1948,10 +1941,9 @@ class _DocumentsScreenState extends State<DocumentsScreen>
     await _refreshDashboardSummary();
     if (!mounted) return;
     final failures = result['failures'] as List<String>;
-    final failureSummary = failures.isEmpty ? '' : ' · ${failures.length} failed';
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text('Moved ${result['moved']} of ${selected.length} PDFs$failureSummary'),
-    ));
+    if (failures.isNotEmpty) {
+      _message('${failures.length} selected PDFs could not be moved. ${failures.first}');
+    }
   }
 
   Future<void> _open(DocumentRecord document) async {
@@ -1984,11 +1976,6 @@ class _DocumentsScreenState extends State<DocumentsScreen>
     try {
       await _repository.relinkDocument(document);
       await _patchDocument(document.id);
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('PDF relinked and verified successfully.')),
-        );
-      }
     } catch (error) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -2074,222 +2061,37 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         remindAt: selected,
         documentId: document.id,
       );
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Reminder saved for this PDF.')));
     } catch (error) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not save reminder: $error')));
     }
   }
 
   Future<void> _showTrash() async {
-    var trashed = await _repository.listTrash();
-    var trashedFolders = await _folderRepository.listTrashFolderRoots();
+    final trashed = await _repository.listTrash();
+    final trashedFolders = await _folderRepository.listTrashFolderRoots();
     if (!mounted) return;
     await showDialog<void>(
       context: context,
-      builder: (dialogContext) => StatefulBuilder(
-        builder: (context, refreshDialog) => AlertDialog(
-          title: const Text('Recycle Bin'),
-          content: SizedBox(
-            width: double.maxFinite,
-            height: 420,
-            child: trashed.isEmpty && trashedFolders.isEmpty
-                ? const Center(child: Text('Recycle Bin is empty.'))
-                : ListView(
-                    shrinkWrap: true,
-                    children: [
-                      if (trashedFolders.isNotEmpty) ...[
-                        const Padding(
-                          padding: EdgeInsets.only(top: 4, bottom: 6),
-                          child: Text('FOLDERS', style: TextStyle(fontWeight: FontWeight.w700)),
-                        ),
-                        for (final folder in trashedFolders)
-                          ListTile(
-                            contentPadding: EdgeInsets.zero,
-                            leading: const Icon(Icons.folder_outlined),
-                            title: Text(folder['name'] as String? ?? 'Folder',
-                                maxLines: 1, overflow: TextOverflow.ellipsis),
-                            subtitle: Text(
-                              '${folder['folder_count'] ?? 1} folders · ${folder['pdf_count'] ?? 0} PDFs · Deleted ${folder['deleted_at'] ?? ''}',
-                              maxLines: 2, overflow: TextOverflow.ellipsis,
-                            ),
-                            onTap: () async {
-                              try {
-                                final contents = await _folderRepository.trashFolderContents(
-                                  folder['id'] as String,
-                                );
-                                if (!dialogContext.mounted) return;
-                                final items = (contents['folders'] as List)
-                                    .cast<Map<String, Object?>>();
-                                final pdfs = (contents['documents'] as List)
-                                    .cast<Map<String, Object?>>();
-                                await showDialog<void>(
-                                  context: dialogContext,
-                                  builder: (detailContext) => AlertDialog(
-                                    title: Text(contents['rootName'] as String? ?? 'Deleted folder'),
-                                    content: SizedBox(
-                                      width: double.maxFinite,
-                                      height: 360,
-                                      child: ListView(
-                                        children: [
-                                          const Text('FOLDERS', style: TextStyle(fontWeight: FontWeight.w700)),
-                                          for (final item in items)
-                                            ListTile(
-                                              dense: true,
-                                              leading: const Icon(Icons.folder_outlined),
-                                              title: Text(item['path'] as String? ?? ''),
-                                            ),
-                                          const Divider(),
-                                          const Text('PDF FILES', style: TextStyle(fontWeight: FontWeight.w700)),
-                                          for (final pdf in pdfs)
-                                            ListTile(
-                                              dense: true,
-                                              leading: const Icon(Icons.picture_as_pdf_outlined),
-                                              title: Text(pdf['name'] as String? ?? 'PDF'),
-                                              subtitle: Text('${pdf['size_bytes'] ?? 0} bytes'),
-                                            ),
-                                        ],
-                                      ),
-                                    ),
-                                    actions: [
-                                      TextButton(
-                                        onPressed: () => Navigator.pop(detailContext),
-                                        child: const Text('Close'),
-                                      ),
-                                    ],
-                                  ),
-                                );
-                              } catch (error) {
-                                if (mounted) _message('Could not inspect deleted folder: $error');
-                              }
-                            },
-                            trailing: PopupMenuButton<String>(
-                              onSelected: (action) async {
-                                final id = folder['id'] as String;
-                                try {
-                                  if (action == 'restore') {
-                                    final restored = await _folderRepository.restoreTrashFolderTree(id);
-                                    refreshDialog(() => trashedFolders.removeWhere((item) => item['id'] == id));
-                                    await _load();
-                                    await _loadRecentDocuments();
-                                    await _refreshDashboardSummary();
-                                    if (mounted) _message('Folder restored with $restored PDF(s).');
-                                  } else if (action == 'delete') {
-                                    final confirmed = await showDialog<bool>(
-                                      context: dialogContext,
-                                      builder: (confirmContext) => AlertDialog(
-                                        title: const Text('Delete folder permanently?'),
-                                        content: Text(
-                                          'The folder tree and its ${folder['pdf_count'] ?? 0} managed PDFs will be permanently deleted. Untracked items are protected.',
-                                        ),
-                                        actions: [
-                                          TextButton(
-                                            onPressed: () => Navigator.pop(confirmContext, false),
-                                            child: const Text('Cancel'),
-                                          ),
-                                          FilledButton(
-                                            onPressed: () => Navigator.pop(confirmContext, true),
-                                            child: const Text('Delete permanently'),
-                                          ),
-                                        ],
-                                      ),
-                                    );
-                                    if (confirmed == true) {
-                                      await _folderRepository.permanentlyDeleteTrashFolderTree(id);
-                                      refreshDialog(() => trashedFolders.removeWhere((item) => item['id'] == id));
-                                      await _refreshDashboardSummary();
-                                    }
-                                  }
-                                } catch (error) {
-                                  if (mounted) _message('Folder Recycle Bin action failed: $error');
-                                }
-                              },
-                              itemBuilder: (_) => const [
-                                PopupMenuItem(value: 'restore', child: Text('Restore folder')),
-                                PopupMenuItem(value: 'delete', child: Text('Delete permanently')),
-                              ],
-                            ),
-                          ),
-                      ],
-                      if (trashed.isNotEmpty) ...[
-                        const Divider(),
-                        const Padding(
-                          padding: EdgeInsets.only(top: 4, bottom: 6),
-                          child: Text('PDF FILES', style: TextStyle(fontWeight: FontWeight.w700)),
-                        ),
-                        for (var index = 0; index < trashed.length; index++)
-                          ListTile(
-                            contentPadding: EdgeInsets.zero,
-                            leading: const Icon(Icons.picture_as_pdf_outlined),
-                            title: Text('${trashed[index].name}.pdf',
-                                maxLines: 1, overflow: TextOverflow.ellipsis),
-                            subtitle: const Text('PDF moved to Recycle Bin'),
-                            trailing: PopupMenuButton<String>(
-                              onSelected: (action) async {
-                                final document = trashed[index];
-                                try {
-                                  if (action == 'restore') {
-                                    await _repository.restoreFromTrash(document);
-                                    refreshDialog(() => trashed.removeAt(index));
-                                    await _load();
-                                    await _scanPhoneStorage(openBrowser: false);
-                                    await _loadRecentDocuments();
-                                    await _refreshDashboardSummary();
-                                    if (mounted && document.source ==
-                                        'phone_storage_recycle_bin') {
-                                      _message(
-                                        'PDF restored to its original Phone folder.',
-                                      );
-                                    }
-                                  } else if (action == 'delete') {
-                                    final confirmed = await showDialog<bool>(
-                                      context: dialogContext,
-                                      builder: (confirmContext) => AlertDialog(
-                                        title: const Text('Delete permanently?'),
-                                        content: Text('${document.name}.pdf will be erased from this device.'),
-                                        actions: [
-                                          TextButton(
-                                            onPressed: () => Navigator.pop(confirmContext, false),
-                                            child: const Text('Cancel'),
-                                          ),
-                                          FilledButton(
-                                            onPressed: () => Navigator.pop(confirmContext, true),
-                                            child: const Text('Delete'),
-                                          ),
-                                        ],
-                                      ),
-                                    );
-                                    if (confirmed == true) {
-                                      await _repository.permanentlyDelete(document);
-                                      refreshDialog(() => trashed.removeAt(index));
-                                      await _load();
-                                      await _scanPhoneStorage(openBrowser: false);
-                                      await _refreshDashboardSummary();
-                                    }
-                                  }
-                                } catch (error) {
-                                  if (mounted) _message('PDF Recycle Bin action failed: $error');
-                                }
-                              },
-                              itemBuilder: (_) => const [
-                                PopupMenuItem(value: 'restore', child: Text('Restore')),
-                                PopupMenuItem(value: 'delete', child: Text('Delete permanently')),
-                              ],
-                            ),
-                          ),
-                      ],
-                    ],
-                  ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dialogContext),
-              child: const Text('Close'),
-            ),
-          ],
-        ),
+      builder: (_) => RecycleBinDialog(
+        folders: trashedFolders,
+        pdfs: trashed,
+        inspectFolder: _folderRepository.trashFolderContents,
+        restoreFolder: (id) async {
+          await _folderRepository.restoreTrashFolderTree(id);
+        },
+        deleteFolder: _folderRepository.permanentlyDeleteTrashFolderTree,
+        restorePdf: _repository.restoreFromTrash,
+        deletePdf: _repository.permanentlyDelete,
+        onChanged: ({required bool pdfChanged}) async {
+          if (!mounted) return;
+          await _load();
+          if (pdfChanged) await _scanPhoneStorage(openBrowser: false);
+          await _loadRecentDocuments();
+          await _refreshDashboardSummary();
+        },
       ),
     );
-    await _refreshDashboardSummary();
+    if (mounted) await _refreshDashboardSummary();
   }
 
   Future<void> _chooseCategory(DocumentRecord document) async {
@@ -2415,7 +2217,6 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       );
       if (!mounted) return false;
       if (moved) {
-        _message('PDF moved to Recycle Bin.');
         try { await PhoneStarRepository.remove(uri); } catch (_) {}
         await _loadPhoneStarred();
         final prefs = await SharedPreferences.getInstance();
@@ -2493,7 +2294,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       await _loadPhoneStarred();
       await _scanPhoneStorage(openBrowser: false);
       await _refreshDashboardSummary();
-      if (mounted) _message(shortcutWarning ?? 'PDF renamed.');
+      if (mounted && shortcutWarning != null) _message(shortcutWarning);
       return true;
     } catch (error) {
       if (mounted) _message('Could not rename PDF: $error');
@@ -2606,9 +2407,8 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         // Next storage refresh reconciles an already verified move.
       }
     }
-    if (mounted) {
-      _message('Moved ${movedSources.length} of ${selected.length} Phone PDFs'
-          '${failed == 0 ? '.' : '; $failed kept in the original folder.'}');
+    if (mounted && failed > 0) {
+      _message('$failed Phone PDFs were kept in their original folders.');
     }
     return movedSources.isNotEmpty;
   }
@@ -2671,9 +2471,8 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         await _refreshDashboardSummary();
       }
     } catch (_) {}
-    if (mounted) {
-      _message('Archived ${movedSources.length} of ${selected.length} PDFs. '
-          '${kept == 0 ? 'All selected originals archived.' : '$kept originals kept safely.'}');
+    if (mounted && kept > 0) {
+      _message('$kept Phone PDF originals were kept safely.');
     }
     return movedSources.isNotEmpty;
   }
@@ -2894,7 +2693,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         _phoneEntries = _phoneEntries.where((row) => row['uri'] != uri)
             .toList(growable: false);
       });
-      _message('Moved $name to ${destination.path}.');
+      // Success is visible immediately in the refreshed Phone list.
     }
     try {
       if (mounted) {
