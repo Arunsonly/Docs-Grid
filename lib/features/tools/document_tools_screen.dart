@@ -446,11 +446,16 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
     }
   }
 
-  Future<bool> _confirmRestorePlan(Map<String, int> plan) async {
+  Future<bool> _confirmRestorePlan(Map<String, int> plan,
+      {String? backupType}) async {
     if (!mounted) return false;
     return await showDialog<bool>(context: context, builder: (context) => AlertDialog(
-      title: const Text('Verified restoration preview'),
-      content: Text('Folders in selection: ${plan['folders']}\n'
+      title: Text(backupType == 'database' ? 'Restore Database Backup'
+          : backupType == 'full' ? 'Restore Full Backup'
+          : 'Verified restoration preview'),
+      content: Text('Verified restoration preview\n'
+          '${backupType == 'database' ? 'PDF contents are not included. Existing PDFs will be matched and unavailable files marked for relinking.\n\n' : ''}'
+          'Folders in selection: ${plan['folders']}\n'
           'Verified existing folders: ${plan['matchedFolders']}\n'
           'New physical folders: ${plan['newFolders']}\n'
           'Document records: ${plan['documents']}\n'
@@ -567,7 +572,19 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
         await writeByteStreamToFile(platformFile.readAsByteStream(), file);
       }
       if (!mounted) return;
-      final restoreMode = await showDialog<BackupRestoreMode>(
+      // Read the bounded manifest for the type label; the restore engine
+      // still validates the complete archive and every PDF checksum.
+      final manifest = await BackupChain.manifest(file);
+      final backupType = manifest['backupType'] as String?;
+      var hasCurrentData = true;
+      try {
+        hasCurrentData = await AppDatabase.instance.hasPortableUserData();
+      } catch (_) {
+        // Unknown database state must not bypass the restore choices.
+      }
+      if (!mounted) return;
+      final restoreMode = !hasCurrentData ? BackupRestoreMode.merge
+          : await showDialog<BackupRestoreMode>(
         context: context,
         builder: (context) => AlertDialog(
           title: const Text('Choose restore mode'),
@@ -666,7 +683,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
         file,
         mode: restoreMode,
         selection: selection,
-        confirmPlan: _confirmRestorePlan,
+        confirmPlan: (plan) => _confirmRestorePlan(plan, backupType: backupType),
         onProgress: (message) {
           if (mounted) setState(() => _message = message);
         },
@@ -675,7 +692,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
           return await showDialog<bool>(
                 context: context,
                 builder: (context) => AlertDialog(
-                  title: const Text('Restore backup?'),
+                  title: Text(backupType == 'database' ? 'Restore Database Backup?' : 'Restore Full Backup?'),
                   content: Text(
                     restoreMode == BackupRestoreMode.fullReplacement
                         ? 'The archive contains $count PDF file(s). DocsGrid will first create a full safety backup, then replace the current database. Existing shared PDFs are not automatically deleted.'
