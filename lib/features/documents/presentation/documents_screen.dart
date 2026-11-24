@@ -753,10 +753,20 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       await _scanPhoneStorage(openBrowser: true);
       return;
     }
+    // iOS has no Android-style whole-phone scan. Ask for a Files folder
+    // explicitly when the user opens Phone from Home for the first time.
+    if (Platform.isIOS && _phoneLastRoots.isEmpty) {
+      final picked =
+          await StorageLocationService.instance.choosePhoneFolder();
+      if (picked == null) return;
+      await _scanPhoneStorage(openBrowser: true);
+      return;
+    }
     // Reuse the dashboard's completed scan. Opening its detailed browser must
     // not walk the whole storage tree a second time.
     if (_phoneScanCompleted) {
-      await _showRecursiveStoragePdfs('Internal Storage', _phoneEntries);
+      await _showRecursiveStoragePdfs(
+          Platform.isIOS ? 'Files' : 'Internal Storage', _phoneEntries);
       return;
     }
     await _scanPhoneStorage(openBrowser: true);
@@ -1174,7 +1184,9 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         _phoneScanCompleted = true;
       });
       if (openBrowser && !widget.phoneOnly) {
-        await _showRecursiveStoragePdfs('Internal Storage', entries);
+        await _showRecursiveStoragePdfs(
+            Platform.isIOS ? 'Files' : 'Internal Storage',
+            boundary.filterEntries(entries));
       }
       if(inaccessibleRoots>0 && mounted) _message('$inaccessibleRoots granted location(s) could not be read; they were not marked empty.');
     } catch(error) {
