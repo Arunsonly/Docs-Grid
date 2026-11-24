@@ -700,6 +700,26 @@ class DocumentToolsService {
     }
   });
 
+  /// New backups are standalone Full ZIPs. Keep the legacy A-series
+  /// engine intact for existing archives and their recovery/export.
+  Future<File> createStandaloneFullBackup({
+    void Function(int, int)? onProgress,
+    void Function(String)? onStage,
+  }) => _withRecoveryLock(() async {
+    if (Platform.isAndroid) {
+      final locations = await StorageLocationService.instance
+          .portableDataLocationsIfAvailable();
+      final rootUri = locations['fullBackupsUri'];
+      if (rootUri == null || !rootUri.startsWith('file://')) {
+        throw StateError('Full Backup requires an accessible local DocsGrid '
+            'backup folder. Check storage access and try again.');
+      }
+    }
+    return _createBackupLocked(
+      includePdfs: true, onProgress: onProgress, onStage: onStage,
+    );
+  });
+
   Future<List<BackupChainUsage>> manualBackupUsage() async {
     final locations = await StorageLocationService.instance
         .portableDataLocationsIfAvailable();
@@ -818,16 +838,22 @@ class DocumentToolsService {
     final locations = await StorageLocationService.instance
         .portableDataLocationsIfAvailable();
     final uri = locations['fullBackupsUri'];
-    if (uri == null || !uri.startsWith('file://') ||
-        !BackupChain.validSeriesName(seriesId)) {
-      throw StateError('Select a readable DocsGrid backup series.');
+    if (uri == null || !uri.startsWith('file://')) {
+      throw StateError('Select a readable DocsGrid backup.');
     }
     if (seriesId.startsWith('DocsGrid_') && seriesId.endsWith('.zip') &&
         p.basename(seriesId) == seriesId) {
       final file = File(p.join(Uri.parse(uri).toFilePath(), seriesId));
-      await BackupChain.manifest(file);
+      final manifest = await BackupChain.manifest(file);
+      if (manifest['backupType'] != 'full') {
+        throw StateError('Selected archive is not a standalone Full backup.');
+      }
+      await validateBackup(file);
       await shareFile(file.path, text: 'DocsGrid standalone backup');
       return;
+    }
+    if (!BackupChain.validSeriesName(seriesId)) {
+      throw StateError('Invalid backup series.');
     }
     final folder = Directory(p.join(Uri.parse(uri).toFilePath(), seriesId));
     final files = await BackupChain.verified(folder);
