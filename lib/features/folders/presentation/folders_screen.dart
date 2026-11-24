@@ -1,3 +1,4 @@
+import '../../documents/presentation/pdf_details_dialog.dart';
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -2130,6 +2131,10 @@ class _FoldersScreenState extends State<FoldersScreen>
         tooltip: 'PDF actions',
         onSelected: (action) async {
           try {
+            if (action == 'details') {
+              await PdfDetailsDialog.showGrid(context, document);
+              return;
+            }
             if (action == 'share') {
               await DocumentToolsService().shareStoredPdf(
                 document.storagePath, '${document.name}.pdf',
@@ -2159,6 +2164,7 @@ class _FoldersScreenState extends State<FoldersScreen>
           const PopupMenuItem(value: 'move', child: Text('Move to folder')),
           const PopupMenuItem(value: 'reminder', child: Text('Add to reminder')),
           const PopupMenuItem(value: 'trash', child: Text('Move to Recycle Bin')),
+          const PopupMenuItem(value: 'details', child: Text('Details')),
         ],
       );
 

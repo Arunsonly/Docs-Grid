@@ -14,6 +14,7 @@ class _RemindersScreenState extends State<RemindersScreen> with WidgetsBindingOb
   final _repository = ReminderRepository();
   late Future<List<ReminderRecord>> _future;
   bool? _notificationsEnabled;
+  bool? _soundEnabled;
 
   @override
   void initState() {
@@ -39,7 +40,8 @@ class _RemindersScreenState extends State<RemindersScreen> with WidgetsBindingOb
   Future<void> _refreshNotificationPermission() async {
     try {
       final enabled = await ReminderNotifications.instance.areNotificationsEnabled();
-      if (mounted) setState(() => _notificationsEnabled = enabled);
+      final sound = await ReminderNotifications.instance.isReminderSoundEnabled();
+      if (mounted) setState(() { _notificationsEnabled = enabled; _soundEnabled = sound; });
     } catch (_) {
       if (mounted) setState(() => _notificationsEnabled = false);
     }
@@ -114,7 +116,7 @@ class _RemindersScreenState extends State<RemindersScreen> with WidgetsBindingOb
     ));
     if (result == true) {
       if (existing == null) {
-        await _repository.create(title: title.text, note: note.text, remindAt: selected, recurrenceRule: recurrence == 'none' ? null : recurrence);
+        await _repository.create(title: title.text, note: note.text, remindAt: selected, recurrenceRule: recurrence == 'none' ? null : recurrence, requestPermission: true);
       } else {
         await _repository.update(id: existing.id, title: title.text, note: note.text, remindAt: selected, recurrenceRule: recurrence == 'none' ? null : recurrence);
       }
@@ -153,7 +155,7 @@ class _RemindersScreenState extends State<RemindersScreen> with WidgetsBindingOb
           ]),
         ),
       ),
-      if (_notificationsEnabled == false)
+      if (_notificationsEnabled == false || _soundEnabled == false)
         Card(
           margin: const EdgeInsets.fromLTRB(12, 4, 12, 8),
           child: Padding(
@@ -162,9 +164,9 @@ class _RemindersScreenState extends State<RemindersScreen> with WidgetsBindingOb
               const Icon(Icons.notifications_off_outlined),
               const SizedBox(width: 10),
               Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                const Text('Notifications are disabled', style: TextStyle(fontWeight: FontWeight.w700)),
+                Text(_notificationsEnabled == false ? 'Notifications are disabled' : 'Reminder sound is muted', style: const TextStyle(fontWeight: FontWeight.w700)),
                 const SizedBox(height: 4),
-                const Text('Your reminder records are safe, but alerts may not appear until notification permission and the DocsGrid reminder channel are enabled.'),
+                const Text('Check notification permission, the Document reminders sound, notification volume and Do Not Disturb. Saved reminders remain safe.'),
                 Align(alignment: Alignment.centerRight, child: TextButton.icon(
                   onPressed: () async {
                     try {

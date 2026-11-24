@@ -1,3 +1,4 @@
+import 'pdf_details_dialog.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -1314,6 +1315,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
     const PopupMenuItem(value: 'move', child: Text('Move to Grid')),
     const PopupMenuItem(value: 'trash', child: Text('Delete')),
     const PopupMenuItem(value: 'location', child: Text('File Location')),
+    const PopupMenuItem(value: 'details', child: Text('Details')),
   ];
 
   Future<void> _handlePhoneRecentAction(Map<String, Object?> item, String action) async {
@@ -1332,6 +1334,9 @@ class _DocumentsScreenState extends State<DocumentsScreen>
     } else if (action == 'rename') {
       await _renamePhonePdf(uri, name);
       await _loadRecentDocuments();
+    } else if (action == 'details') {
+      final matches = _phoneEntries.where((row) => row['uri'] == uri);
+      await PdfDetailsDialog.showPhone(context, {...item, if (matches.isNotEmpty) ...matches.first});
     } else if (action == 'location') {
       await _showPhoneFileLocation(uri, name);
     }
@@ -1516,9 +1521,14 @@ class _DocumentsScreenState extends State<DocumentsScreen>
     const PopupMenuItem(value: 'rename', child: Text('Rename')),
     const PopupMenuItem(value: 'move', child: Text('Move to folder')),
     const PopupMenuItem(value: 'trash', child: Text('Move to Recycle Bin')),
+    const PopupMenuItem(value: 'details', child: Text('Details')),
   ];
 
   Future<void> _handleRecentAction(DocumentRecord document, String action) async {
+    if (action == 'details') {
+      await PdfDetailsDialog.showGrid(context, document);
+      return;
+    }
     if (action == 'favorite') {
       await _repository.setFavorite(document, !document.isFavorite);
       await _loadAllStarred();
@@ -3609,9 +3619,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       if (uri.isEmpty || gridLocations.contains(uri)) return false;
 
       final name = (entry['name'] as String? ?? '').toLowerCase();
-      final folder = (entry['folderPath'] as String? ?? '').toLowerCase();
-      final searchable = '$name $folder';
-      return terms.every(searchable.contains);
+      return terms.every(name.contains);
     }).toList(growable: false)
       ..sort((a, b) {
         final folderA = (a['folderPath'] as String? ?? '').toLowerCase();
@@ -3725,6 +3733,8 @@ class _DocumentsScreenState extends State<DocumentsScreen>
               await _movePhonePdfToGrid(uri, name);
             } else if (action == 'trash') {
               await _trashPhonePdf(uri, name);
+            } else if (action == 'details') {
+              await PdfDetailsDialog.showPhone(context, entry);
             } else if (action == 'location') {
               if (!mounted) return;
               await showDialog<void>(
@@ -3750,6 +3760,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
             const PopupMenuItem(value: 'move_grid', child: Text('Move to Grid')),
             const PopupMenuItem(value: 'trash', child: Text('Delete')),
             const PopupMenuItem(value: 'location', child: Text('File Location')),
+            const PopupMenuItem(value: 'details', child: Text('Details')),
           ],
         ),
       ),
@@ -3830,6 +3841,8 @@ class _DocumentsScreenState extends State<DocumentsScreen>
               await _relink(document);
             } else if (value == 'trash') {
               await _trash(document);
+            } else if (value == 'details') {
+              await PdfDetailsDialog.showGrid(context, document);
             }
           },
           itemBuilder: (_) => [
@@ -3842,6 +3855,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
             const PopupMenuItem(value: 'relink', child: Text('Relink PDF')),
             const PopupMenuItem(value: 'move', child: Text('Move to folder')),
             const PopupMenuItem(value: 'trash', child: Text('Move to Recycle Bin')),
+            const PopupMenuItem(value: 'details', child: Text('Details')),
           ],
         ),
       ),

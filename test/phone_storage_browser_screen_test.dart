@@ -501,13 +501,13 @@ void main() {
     await tester.pumpAndSettle();
     final expected = [
       'Share PDF', 'Add to Star', 'Rename',
-      'Move', 'Move to Grid', 'Delete', 'File Location',
+      'Move', 'Move to Grid', 'Delete', 'File Location', 'Details',
     ];
     for (var index = 0; index < expected.length - 1; index++) {
       expect(tester.getTopLeft(find.text(expected[index])).dy,
           lessThan(tester.getTopLeft(find.text(expected[index + 1])).dy));
     }
-    expect(find.byType(PopupMenuItem<String>), findsNWidgets(7));
+    expect(find.byType(PopupMenuItem<String>), findsNWidgets(8));
   });
 
   testWidgets('Phone Move callback leaves all other actions unchanged',

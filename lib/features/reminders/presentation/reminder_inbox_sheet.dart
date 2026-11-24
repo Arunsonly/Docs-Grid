@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 import '../data/reminder_notifications.dart';
 import '../data/reminder_repository.dart';
 
-/// Read-only, on-device access to saved reminders. This is deliberately not
+/// On-device access to saved reminders and their management actions. This is deliberately not
 /// an OS-delivery log: Android does not guarantee a delivered-notification
 /// history to apps. Tapping an attached reminder opens its PDF.
 class ReminderInboxSheet extends StatefulWidget {
@@ -12,16 +12,20 @@ class ReminderInboxSheet extends StatefulWidget {
     required this.reminders,
     required this.onOpenDocument,
     required this.onOpenAll,
+    this.repository,
+    this.onChanged,
   });
 
   final Future<List<ReminderRecord>> reminders;
   final ValueChanged<String> onOpenDocument;
   final VoidCallback onOpenAll;
+  final ReminderRepository? repository;
+  final VoidCallback? onChanged;
 
   static int dueCount(List<ReminderRecord> items, DateTime now) {
     return items.where((item) => item.enabled &&
         item.status != 'completed' && item.status != 'cancelled' &&
-        item.recurrenceRule == null && !item.remindAt.isAfter(now)).length;
+        item.recurrenceRule == null && !(item.snoozedUntil ?? item.remindAt).isAfter(now)).length;
   }
 
   static bool isActive(ReminderRecord item) =>
@@ -33,6 +37,43 @@ class ReminderInboxSheet extends StatefulWidget {
 }
 
 class _ReminderInboxSheetState extends State<ReminderInboxSheet> {
+  late Future<List<ReminderRecord>> _future = widget.reminders;
+  late final _repository = widget.repository ?? ReminderRepository();
+  final _busy = <String>{};
+
+  Future<void> _action(ReminderRecord item, String action) async {
+    if (_busy.contains(item.id)) return;
+    setState(() => _busy.add(item.id));
+    try {
+      switch (action) {
+        case 'disable': await _repository.setEnabled(item, false); break;
+        case 'complete': await _repository.complete(item.id); break;
+        case 'snooze':
+          final duration = await showDialog<Duration>(context:context,builder:(ctx)=>SimpleDialog(
+            title:const Text('Snooze reminder'), children:[
+              for(final option in [('15 minutes',const Duration(minutes:15)),('1 hour',const Duration(hours:1)),('1 day',const Duration(days:1)),('1 week',const Duration(days:7))])
+                SimpleDialogOption(onPressed:()=>Navigator.pop(ctx,option.$2),child:Text(option.$1)),
+            ]));
+          if (duration == null || !mounted) return;
+          await _repository.snooze(item,duration:duration); break;
+        case 'delete':
+          final confirmed = await showDialog<bool>(context:context,builder:(ctx)=>AlertDialog(
+            title:const Text('Delete reminder?'),content:Text(item.title),actions:[
+              TextButton(onPressed:()=>Navigator.pop(ctx,false),child:const Text('Cancel')),
+              FilledButton(onPressed:()=>Navigator.pop(ctx,true),child:const Text('Delete')),
+            ]));
+          if(confirmed!=true || !mounted) return;
+          await _repository.delete(item.id); break;
+      }
+      if (!mounted) return;
+      setState(() => _future = _repository.list());
+      widget.onChanged?.call();
+    } catch (error) {
+      if(mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text('Could not update reminder: $error')));
+    } finally {
+      if(mounted) setState(()=>_busy.remove(item.id));
+    }
+  }
   String _dateLabel(DateTime date) {
     String two(int value) => value.toString().padLeft(2, '0');
     return '${two(date.day)}/${two(date.month)}/${date.year} · '
@@ -72,7 +113,7 @@ class _ReminderInboxSheetState extends State<ReminderInboxSheet> {
           ),
           Expanded(
             child: FutureBuilder<List<ReminderRecord>>(
-              future: widget.reminders,
+              future: _future,
               builder: (context, snapshot) {
                 if (snapshot.connectionState != ConnectionState.done) {
                   return const Center(child: CircularProgressIndicator());
@@ -88,10 +129,10 @@ class _ReminderInboxSheetState extends State<ReminderInboxSheet> {
                     .where(ReminderInboxSheet.isActive)
                     .toList(growable: false);
                 items.sort((a, b) {
-                  final aDue = a.recurrenceRule == null && !a.remindAt.isAfter(now);
-                  final bDue = b.recurrenceRule == null && !b.remindAt.isAfter(now);
+                  final aDue = a.recurrenceRule == null && !(a.snoozedUntil ?? a.remindAt).isAfter(now);
+                  final bDue = b.recurrenceRule == null && !(b.snoozedUntil ?? b.remindAt).isAfter(now);
                   if (aDue != bDue) return aDue ? -1 : 1;
-                  return a.remindAt.compareTo(b.remindAt);
+                  return (a.snoozedUntil ?? a.remindAt).compareTo(b.snoozedUntil ?? b.remindAt);
                 });
                 if (items.isEmpty) {
                   return const Center(child: Text('No active reminders.'));
@@ -102,10 +143,11 @@ class _ReminderInboxSheetState extends State<ReminderInboxSheet> {
                   separatorBuilder: (_, _) => const Divider(height: 1),
                   itemBuilder: (context, index) {
                     final item = items[index];
+                    final snoozed = item.snoozedUntil?.isAfter(now) == true;
                     final due = item.recurrenceRule == null &&
-                        !item.remindAt.isAfter(now);
-                    final scheduled = item.recurrenceRule == null
-                        ? item.remindAt
+                        !(item.snoozedUntil ?? item.remindAt).isAfter(now);
+                    final scheduled = snoozed ? item.snoozedUntil! : item.recurrenceRule == null
+                        ? (item.snoozedUntil ?? item.remindAt)
                         : ReminderNotifications.nextScheduledOccurrence(
                             at: item.remindAt, now: now,
                             recurrence: item.recurrenceRule) ?? item.remindAt;
@@ -120,10 +162,17 @@ class _ReminderInboxSheetState extends State<ReminderInboxSheet> {
                         if (item.documentName != null)
                           'PDF: ${item.documentName}.pdf',
                         if (item.note?.isNotEmpty == true) item.note!,
-                        '${due ? 'Due' : 'Scheduled'} · ${_dateLabel(scheduled)}',
+                        '${snoozed ? 'Snoozed' : due ? 'Due' : 'Scheduled'} · ${_dateLabel(scheduled)}',
                       ].join('\n'), maxLines: 4),
-                      trailing: Icon(item.documentId == null
-                          ? Icons.chevron_right : Icons.picture_as_pdf_outlined),
+                      trailing: PopupMenuButton<String>(
+                        tooltip: 'Reminder actions', enabled: !_busy.contains(item.id),
+                        onSelected: (action) => _action(item,action),
+                        itemBuilder: (_) => const [
+                          PopupMenuItem(value:'disable',child:Text('Disable')),
+                          PopupMenuItem(value:'snooze',child:Text('Snooze')),
+                          PopupMenuItem(value:'complete',child:Text('Mark completed')),
+                          PopupMenuItem(value:'delete',child:Text('Delete')),
+                        ]),
                       onTap: () {
                         Navigator.of(context).pop();
                         final documentId = item.documentId;

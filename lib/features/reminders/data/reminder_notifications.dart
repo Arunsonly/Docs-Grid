@@ -95,7 +95,7 @@ class ReminderNotifications {
     if (!androidEnabled) return false;
     final channels = await android?.getNotificationChannels();
     if (channels != null) {
-      final reminderChannel = channels.where((channel) => channel.id == 'docsgrid_reminders_v3');
+      final reminderChannel = channels.where((channel) => channel.id == 'docsgrid_reminders_v4');
       if (reminderChannel.isNotEmpty && reminderChannel.first.importance == Importance.none) {
         return false;
       }
@@ -103,6 +103,12 @@ class ReminderNotifications {
     final ios = _plugin.resolvePlatformSpecificImplementation<IOSFlutterLocalNotificationsPlugin>();
     final permissions = await ios?.checkPermissions();
     return permissions?.isEnabled ?? true;
+  }
+
+  /// Android channel and device settings may still mute an otherwise enabled alert.
+  Future<bool?> isReminderSoundEnabled() async {
+    try { return await _settingsChannel.invokeMethod<bool>('isReminderSoundEnabled'); }
+    catch (_) { return null; }
   }
 
   Future<void> openNotificationSettings() async {
@@ -186,7 +192,8 @@ class ReminderNotifications {
       }
       final at = DateTime.parse(row['remind_at_utc'] as String).toLocal();
       final recurrence = row['recurrence_rule'] as String?;
-      if (nextScheduledOccurrence(
+      final snoozed = DateTime.tryParse(row['snoozed_until'] as String? ?? '');
+      if (!(recurrence == null && snoozed != null && snoozed.isAfter(DateTime.now())) && nextScheduledOccurrence(
             at: at, now: DateTime.now(), recurrence: recurrence,
           ) != null) {
         activeIds.add(_id(row['id'] as String));
@@ -208,7 +215,8 @@ class ReminderNotifications {
         continue;
       }
       try {
-        await schedule(
+        final until = DateTime.tryParse(row['snoozed_until'] as String? ?? '');
+        if (!(row['recurrence_rule'] == null && until != null && until.isAfter(DateTime.now()))) await schedule(
           id: row['id'] as String,
           title: row['title'] as String,
           body: row['note'] as String?,
@@ -271,7 +279,7 @@ class ReminderNotifications {
         android: AndroidNotificationDetails(
           // Versioned channel ID: Android does not allow changing sound
           // behaviour on an already-created notification channel.
-          'docsgrid_reminders_v3',
+          'docsgrid_reminders_v4',
           'Document reminders',
           channelDescription: 'Audible local reminders for your documents',
           importance: Importance.max,
@@ -312,7 +320,7 @@ class ReminderNotifications {
       tz.TZDateTime.from(at, tz.local),
       const NotificationDetails(
         android: AndroidNotificationDetails(
-          'docsgrid_reminders_v3',
+          'docsgrid_reminders_v4',
           'Document reminders',
           channelDescription: 'Audible local reminders for your documents',
           importance: Importance.max,

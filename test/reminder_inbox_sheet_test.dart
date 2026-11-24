@@ -11,6 +11,7 @@ ReminderRecord reminder({
   String? documentId,
   String? documentName,
   String? recurrenceRule,
+  DateTime? snoozedUntil,
   bool enabled = true,
   String status = 'scheduled',
 }) => ReminderRecord(
@@ -23,6 +24,7 @@ ReminderRecord reminder({
   documentId: documentId,
   documentName: documentName,
   recurrenceRule: recurrenceRule,
+  snoozedUntil: snoozedUntil,
 );
 
 void main() {
@@ -39,6 +41,7 @@ void main() {
           status: 'completed'),
       reminder(id: 'repeat', title: 'Recurring', at: now,
           recurrenceRule: 'daily'),
+      reminder(id:'snoozed',title:'Snoozed',at:now,snoozedUntil:now.add(const Duration(hours:1))),
     ];
     expect(ReminderInboxSheet.dueCount(items, now), 1);
   });

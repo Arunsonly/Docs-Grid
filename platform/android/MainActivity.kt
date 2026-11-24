@@ -81,14 +81,43 @@ class MainActivity : FlutterActivity() {
                     else -> result.notImplemented()
                 }
             }
+        // A new channel is required because Android cannot change the sound of
+        // an already-created channel. Respect subsequent user sound settings.
+        if (android.os.Build.VERSION.SDK_INT >= 26) {
+            val manager = getSystemService(android.app.NotificationManager::class.java)
+            if (manager.getNotificationChannel("docsgrid_reminders_v4") == null) {
+                val channel = android.app.NotificationChannel("docsgrid_reminders_v4",
+                    "Document reminders", android.app.NotificationManager.IMPORTANCE_HIGH)
+                channel.description = "Audible local reminders for your documents"
+                channel.enableVibration(true)
+                channel.setSound(android.provider.Settings.System.DEFAULT_NOTIFICATION_URI,
+                    android.media.AudioAttributes.Builder()
+                        .setUsage(android.media.AudioAttributes.USAGE_NOTIFICATION)
+                        .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SONIFICATION).build())
+                manager.createNotificationChannel(channel)
+            }
+        }
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "docsgrid/notifications")
             .setMethodCallHandler { call, result ->
                 when (call.method) {
+                    "isReminderSoundEnabled" -> {
+                        val audio = getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
+                        val volume = audio.getStreamVolume(android.media.AudioManager.STREAM_NOTIFICATION)
+                        val audible = if (android.os.Build.VERSION.SDK_INT >= 26) {
+                            val channel = getSystemService(android.app.NotificationManager::class.java)
+                                .getNotificationChannel("docsgrid_reminders_v4")
+                            channel != null && channel.sound != null &&
+                                channel.importance >= android.app.NotificationManager.IMPORTANCE_DEFAULT
+                        } else true
+                        result.success(audible && volume > 0 &&
+                            audio.ringerMode == android.media.AudioManager.RINGER_MODE_NORMAL)
+                    }
                     "openSettings" -> {
                         try {
                             val settingsIntent = if (android.os.Build.VERSION.SDK_INT >= 26) {
-                                Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                                Intent(android.provider.Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS).apply {
                                     putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, packageName)
+                                    putExtra(android.provider.Settings.EXTRA_CHANNEL_ID, "docsgrid_reminders_v4")
                                 }
                             } else {
                                 Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {

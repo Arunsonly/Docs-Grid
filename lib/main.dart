@@ -255,6 +255,7 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
       isScrollControlled: true,
       builder: (sheetContext) => ReminderInboxSheet(
         reminders: ReminderRepository().list(),
+        onChanged: () => unawaited(_refreshReminderBadge()),
         onOpenDocument: (documentId) =>
             unawaited(_openReminderDocument(documentId)),
         onOpenAll: () {
