@@ -18,6 +18,7 @@ import '../data/phone_star_repository.dart';
 import '../data/phone_portable_state.dart';
 import '../data/phone_trash_origin.dart';
 import '../../../core/storage/storage_location_service.dart';
+import '../../../core/storage/grid_storage_boundary.dart';
 import '../../../core/storage/portable_snapshot_events.dart';
 import '../../categories/data/category_repository.dart';
 import '../../folders/data/folder_repository.dart';
@@ -53,6 +54,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       !widget.phoneOnly && !widget.favoritesOnly && !widget.recentOnly;
   final _repository = DocumentRepository();
   final _homeCache = HomeDashboardCache();
+  GridStorageBoundary _gridBoundary = GridStorageBoundary();
   final _categoryRepository = CategoryRepository();
   final _folderRepository = FolderRepository();
   final _tools = DocumentToolsService();
@@ -468,8 +470,8 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       }
       final updated = change['entries'] as List<Map<String, Object?>>;
       final patch = PhonePdfDelta.apply(
-        existing: _phoneEntries,
-        updates: updated,
+        existing: _gridBoundary.filterEntries(_phoneEntries),
+        updates: _gridBoundary.filterEntries(updated),
         touchedMediaUris: change['touchedMediaUris'] as List<String>,
         touchedLocalPaths: change['touchedLocalPaths'] as List<String>,
       );
@@ -478,7 +480,8 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         ..._phoneLastMediaVolumes,
         ...observedVolumes,
       };
-      if (!patch.changed) return;
+      if (!patch.changed &&
+          patch.entries.length == _phoneEntries.length) return;
       setState(() => _phoneEntries = patch.entries);
       // This is a proven complete MediaStore baseline plus scoped changes,
       // not a partial scan; keep Recent discovery and the saved cache in sync.
@@ -759,7 +762,8 @@ class _DocumentsScreenState extends State<DocumentsScreen>
     await _scanPhoneStorage(openBrowser: true);
   }
 
-  Future<bool> _restorePhoneStorageIndexCache(List<Map<String, String>> roots) async {
+  Future<bool> _restorePhoneStorageIndexCache(
+      List<Map<String, String>> roots, GridStorageBoundary boundary) async {
     try {
       final prefs = await SharedPreferences.getInstance();
       String? raw = prefs.getString('docsgrid_phone_storage_index_v1');
@@ -785,12 +789,14 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       final decoded = jsonDecode(raw);
       final signature = roots.map((root) => root['uri']!).join('|');
       if (decoded is! Map || decoded['rootSignature'] != signature ||
+          decoded['gridRootSignature'] != boundary.signature ||
           decoded['entries'] is! List) return false;
       // The cache is scoped to the currently granted roots; make that
       // signature available to per-folder previews before the live scan ends.
       _phoneLastRoots = roots;
-      final cached = (decoded['entries'] as List).whereType<Map>()
-          .map((entry) => Map<String, Object?>.from(entry)).toList(growable: false);
+      final cached = boundary.filterEntries(
+          (decoded['entries'] as List).whereType<Map>()
+              .map((entry) => Map<String, Object?>.from(entry)));
       if (!mounted) return false;
       setState(() { _phoneEntries = cached; _phoneScanCompleted = true; });
       return true;
@@ -808,8 +814,9 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       final prefs = await SharedPreferences.getInstance();
       final payload = jsonEncode({
         'rootSignature': roots.map((root) => root['uri']!).join('|'),
+        'gridRootSignature': _gridBoundary.signature,
         'mediaStoreVolumes': mediaStoreVolumes,
-        'entries': entries,
+        'entries': _gridBoundary.filterEntries(entries),
         'cachedAtUtc': DateTime.now().toUtc().toIso8601String(),
       });
       await prefs.setString('docsgrid_phone_storage_index_v1', payload);
@@ -919,6 +926,10 @@ class _DocumentsScreenState extends State<DocumentsScreen>
     _phoneMediaStoreReady = false;
     if (mounted) setState(() { _phoneScanLoading = true; _phoneScanCompleted = false; });
     try {
+      // Always resolve the currently selected Grid root before exposing cached
+      // or freshly indexed Phone files. This does not move or delete PDFs.
+      final boundary = await storage.gridStorageBoundary();
+      _gridBoundary = boundary;
       var hasAllFilesAccess = false;
       if (Platform.isAndroid) {
         try {
@@ -954,7 +965,16 @@ class _DocumentsScreenState extends State<DocumentsScreen>
           return;
         }
       }
-      final roots = await storage.accessibleStorageRoots();
+      var roots = await storage.accessibleStorageRoots();
+      if (roots.isEmpty && Platform.isIOS && widget.phoneOnly &&
+          widget.active) {
+        // Apple Files access is folder-scoped, not a whole-device index.
+        // Browsing must not replace the separately selected Grid root.
+        final chosen = await storage.choosePhoneFolder();
+        if (chosen != null) {
+          roots = await storage.accessibleStorageRoots();
+        }
+      }
       if (roots.isEmpty) {
         if (mounted) setState(() {
           _phoneEntries = [];
@@ -965,7 +985,8 @@ class _DocumentsScreenState extends State<DocumentsScreen>
 
       // The cached tree is rendered immediately. MediaStore then supplies a
       // fast current index for shared volumes, including removable volumes.
-      final cacheRestored = await _restorePhoneStorageIndexCache(roots);
+      final cacheRestored =
+          await _restorePhoneStorageIndexCache(roots, boundary);
       var mediaStoreComplete = false;
       var mediaStoreVolumes = <String, Object?>{};
       final entries = <Map<String, Object?>>[];
@@ -975,7 +996,8 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       if (Platform.isAndroid && hasAllFilesAccess) {
         try {
           final index = await storage.queryPhonePdfIndex();
-          final indexed = index['entries'] as List<Map<String, Object?>>;
+          final indexed = boundary.filterEntries(
+              index['entries'] as List<Map<String, Object?>>);
           final complete = index['complete'] == true;
           if (complete) {
             mediaStoreComplete = true;
@@ -1032,7 +1054,8 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         final firstLevelEntries = <Map<String, Object?>>[];
         for (var index = 0; index < roots.length; index++) {
           final root = roots[index];
-          final label = index == 0 ? 'Internal' : root['name']!;
+          final label = Platform.isAndroid && index == 0
+              ? 'Internal' : root['name']!;
           try {
             final children = await storage.listDirectory(root['uri']!);
             for (final child in children) {
@@ -1059,7 +1082,10 @@ class _DocumentsScreenState extends State<DocumentsScreen>
           }
         }
         if (!mounted) return;
-        if (!cacheRestored) setState(() => _phoneEntries = firstLevelEntries);
+        if (!cacheRestored) {
+          setState(() => _phoneEntries =
+              boundary.filterEntries(firstLevelEntries));
+        }
       }
 
       var inaccessibleRoots = 0;
@@ -1074,12 +1100,14 @@ class _DocumentsScreenState extends State<DocumentsScreen>
             Platform.isAndroid && hasAllFilesAccess) {
           // Native file-tree recursion is the safe fallback for failed volumes.
         }
-        final label = index == 0 ? 'Internal' : root['name']!;
+        final label = Platform.isAndroid && index == 0
+            ? 'Internal' : root['name']!;
         try {
           final found = await storage.listStorageTreeRecursively(
             uri,
             rootLabel: label,
             includeEmptyFolders: false,
+            excludeGrid: boundary,
           );
           // Only successfully scanned, entirely accessible SAF/file roots
           // may advance the discovery baseline. Otherwise a permission change
@@ -1092,6 +1120,8 @@ class _DocumentsScreenState extends State<DocumentsScreen>
                 .toList(growable: false);
           }
           for (final item in found) {
+            if (boundary.isManagedEntry(item,
+                scanRootUri: uri, rootLabel: label)) continue;
             final itemUri = item['uri'] as String? ?? '';
             if (item['isDirectory'] != true &&
                 itemUri.isNotEmpty &&
@@ -1140,7 +1170,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       _phoneLastMediaVolumes = mediaStoreVolumes;
       _phoneLastRoots = roots;
       setState(() {
-        _phoneEntries=entries;
+        _phoneEntries=boundary.filterEntries(entries);
         _phoneScanCompleted = true;
       });
       if (openBrowser && !widget.phoneOnly) {
@@ -1200,7 +1230,9 @@ class _DocumentsScreenState extends State<DocumentsScreen>
 
   Future<void> _loadPhoneStarred() async {
     try {
-      final items = await PhoneStarRepository.list();
+      final boundary =
+          await StorageLocationService.instance.gridStorageBoundary();
+      final items = boundary.filterEntries(await PhoneStarRepository.list());
       if (mounted) {
         setState(() {
           _phoneStarred = items;
@@ -1724,6 +1756,9 @@ class _DocumentsScreenState extends State<DocumentsScreen>
     try {
       // The cutoff is presentation-only: it hides older Grid Recent entries,
       // not stored documents. Reopening or adding a PDF makes it recent again.
+      final boundary =
+          await StorageLocationService.instance.gridStorageBoundary();
+      _gridBoundary = boundary;
       final since = await GridRecentHistory.lastClearedAt();
       final recentDocuments =
           await _repository.recentActivity(limit: 20, since: since);
@@ -1743,11 +1778,13 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       final unlinkedRecent = (await PhonePortableState.pending())
           .where((item) => item['wasRecent'] == true)
           .toList(growable: false);
+      final visiblePhone = boundary.filterEntries(
+          [...unlinkedRecent, ...phone]);
       if (!mounted || generation != _recentLoadGeneration) return;
       setState(() {
         _gridRecent = recentDocuments;
-        _phoneRecent = [...unlinkedRecent, ...phone]
-            .take(20).toList(growable: false);
+        _phoneRecent =
+            visiblePhone.take(20).toList(growable: false);
         _liveGridRecentLoaded = true;
         _cachedGridRecentNames = const [];
       });
@@ -2993,7 +3030,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
   Widget build(BuildContext context) {
     if (widget.phoneOnly) {
       return PhoneStorageBrowserScreen(
-        rootName: 'Internal Storage',
+        rootName: Platform.isIOS ? 'Files' : 'Internal Storage',
         entries: _phoneEntries,
         onOpenPdf: _openExternalStoragePdf,
         onMovePdf: _movePhonePdfToGrid,
