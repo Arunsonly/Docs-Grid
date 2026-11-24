@@ -853,14 +853,54 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
       ),
     );
     if (confirmed != true) return;
-    final result = await _tools.restoreLatestPortableMetadataSnapshot(
-      sourceLocations: recoverySource,
-      onProgress: (completed, total) {
-        if (mounted) {
-          setState(() => _message = 'Matching snapshot PDFs: $completed of $total');
-        }
-      },
-    );
+    Map<String, int> result;
+    try {
+      result = await _tools.restoreLatestPortableMetadataSnapshot(
+        sourceLocations: recoverySource,
+        onProgress: (completed, total) {
+          if (mounted) {
+            setState(() => _message = 'Matching snapshot PDFs: $completed of $total');
+          }
+        },
+      );
+    } catch (error) {
+      if (!Platform.isAndroid || !mounted) rethrow;
+      unawaited(DiagnosticLogStore.instance.recordError(
+          'Metadata recovery fallback', error));
+      final recoverPdfs = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Recover folders and PDFs instead?'),
+          content: const Text('The metadata restore could not be completed. '
+              'DocsGrid can still rebuild the folder hierarchy from the '
+              'existing PDF library. Tags, reminders and categories may '
+              'not be recovered. Original files will not be deleted.'),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('Cancel')),
+            FilledButton(onPressed: () => Navigator.pop(ctx, true),
+                child: const Text('Recover folders and PDFs')),
+          ],
+        ),
+      );
+      if (recoverPdfs != true || !mounted) return;
+      final failures = PdfRecoveryFailureReport();
+      final recovered = await _tools.recoverLoosePortablePdfs(
+        additionalFolderUri: recoverySource?['libraryUri'],
+        additionalDocumentsUri: recoverySource?['documentsUri'],
+        onFailure: failures.record,
+        onProgress: (completed, total) {
+          if (mounted) setState(() => _message =
+              'Recovering PDFs: $completed of $total');
+        },
+      );
+      await _showRecoveryResult(RecoveryResultData.fromPdfFolder(
+        recovered,
+        failureReasons: failures.totalFailures > 0 ? failures.summary : null,
+        note: 'Metadata restoration could not complete; only surviving files and folders were recovered.',
+      ));
+      return;
+    }
 
     // A portable metadata snapshot can be older than the surviving PDF library
     // (for example, snapshots created by releases which refreshed only after
