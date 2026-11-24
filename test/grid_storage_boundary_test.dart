@@ -21,6 +21,10 @@ void main() {
     expect(boundary.isManagedPath('Internal/DocsGrid/Folders',
         volumeName: 'sd_card'), isFalse,
         reason: 'Identically named SD-card folders are unrelated');
+    expect(boundary.isManagedPath('DocsGrid/Folders',
+        scanRootUri: 'file:///storage/1234-5678',
+        rootLabel: 'SD Card'), isFalse,
+        reason: 'Recursive scan of a separate SD card must keep its own PDFs');
   });
 
   test('custom Android storage location under Documents excludes only that subtree', () {
