@@ -66,7 +66,8 @@ class _ReminderInboxSheetState extends State<ReminderInboxSheet> {
           await _repository.delete(item.id); break;
       }
       if (!mounted) return;
-      setState(() => _future = _repository.list());
+      final next = _repository.list();
+      setState(() { _future = next; });
       widget.onChanged?.call();
     } catch (error) {
       if(mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text('Could not update reminder: $error')));
