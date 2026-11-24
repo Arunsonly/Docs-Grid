@@ -444,16 +444,17 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
       final action = await showDialog<String>(
         context: context,
         builder: (ctx) => AlertDialog(
+          icon: const Icon(Icons.folder_open),
           title: Text(found
-              ? 'Existing DocsGrid data found'
+              ? 'Welcome Back!'
               : 'Check for previous DocsGrid data'),
           content: Text(found
-              ? 'This phone has ${descriptions.join(', ')} in a DocsGrid storage folder. '
-                'Would you like to restore it or start fresh? '
+              ? 'Your previous DocsGrid library has been found.\n\n'
+                'Available: ${descriptions.join(', ')}.\n'
+                'Storage: ${oldSource?['rootUri'] ?? 'DocsGrid'}\n\n'
                 'Starting fresh never deletes the old folder.'
-              : 'DocsGrid cannot inspect existing storage until Android '
-                'grants access. You may choose an old DocsGrid folder manually, '
-                'or start fresh without deleting any old files.'),
+              : 'Allow Android storage access so DocsGrid can find your previous '
+                'library. You can also start fresh without deleting old files.'),
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(ctx, 'later'),
@@ -463,9 +464,14 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
               onPressed: () => Navigator.pop(ctx, 'fresh'),
               child: const Text('Start fresh'),
             ),
+            if (found)
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, 'choose'),
+                child: const Text('Choose Another Location'),
+              ),
             FilledButton(
               onPressed: () => Navigator.pop(ctx, 'restore'),
-              child: const Text('Restore data'),
+              child: const Text('Restore My Data'),
             ),
           ],
         ),
@@ -476,7 +482,7 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
         await prefs.remove('docsgrid_restore_prompt_snoozed_until');
         return;
       }
-      if (action != 'restore') {
+      if (action != 'restore' && action != 'choose') {
         await prefs.setString('docsgrid_restore_prompt_snoozed_until',
             DateTime.now().add(const Duration(days: 1)).toIso8601String());
         return;
@@ -498,35 +504,10 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
         return;
       }
 
-      final choice = await showDialog<String>(
-        context: context,
-        builder: (ctx) => AlertDialog(
-          title: const Text('Select recovery source'),
-          content: const Text(
-            'Recovery reads from the old folder. DocsGrid keeps its active '
-            'storage, PDFs and existing backup destination unchanged.'),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx, 'cancel'),
-              child: const Text('Cancel'),
-            ),
-            if (oldSource != null)
-              TextButton(
-                onPressed: () => Navigator.pop(ctx, 'old'),
-                child: const Text('From old Storage location'),
-              ),
-            FilledButton(
-              onPressed: () => Navigator.pop(ctx, 'choose'),
-              child: const Text('Choose another location'),
-            ),
-          ],
-        ),
-      );
-      if (!mounted) return;
-      Map<String, String>? source;
-      if (choice == 'old') {
-        source = oldSource;
-      } else if (choice == 'choose') {
+      // A detected old root is already a read-only recovery candidate.
+      // Restore My Data uses it directly; a different source is optional.
+      Map<String, String>? source = oldSource;
+      if (action == 'choose') {
         try {
           source = await storage.chooseRecoveryFolder();
         } catch (error) {
