@@ -905,107 +905,6 @@ class _SettingsScreenState extends State<_SettingsScreen> {
     }
   }
 
-  Future<void> _chooseStorage(BuildContext context) async {
-    final messenger = ScaffoldMessenger.of(context);
-    try {
-      final folder = await StorageLocationService.instance.chooseFolder();
-      if (folder == null || !context.mounted) return;
-      final migrate = await showDialog<bool>(
-        context: context,
-        builder: (dialogContext) => AlertDialog(
-          title: const Text('Copy existing PDF library?'),
-          content: Text(
-            'Use “${folder['name']}” for new imports and copy your existing PDFs and folder structure there? '
-            'Every PDF is verified. All original files remain untouched.',
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dialogContext, false),
-              child: const Text('New imports only'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.pop(dialogContext, true),
-              child: const Text('Copy existing library'),
-            ),
-          ],
-        ),
-      );
-      if (!context.mounted) return;
-      await _refreshStorageStatus();
-      if (!context.mounted) return;
-      if (migrate != true) {
-        messenger.showSnackBar(
-          SnackBar(content: Text('Storage folder selected: ${folder['name']}. Existing PDFs were left unchanged.')),
-        );
-        return;
-      }
-
-      var completed = 0;
-      var total = 0;
-      var current = 'Preparing verified copies…';
-      StateSetter? updateProgress;
-      final progressDialog = showDialog<void>(
-        context: context,
-        barrierDismissible: false,
-        builder: (dialogContext) => StatefulBuilder(
-          builder: (dialogContext, setDialogState) {
-            updateProgress = setDialogState;
-            final value = total == 0 ? null : completed / total;
-            return AlertDialog(
-              title: const Text('Copying PDF library'),
-              content: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  LinearProgressIndicator(value: value),
-                  const SizedBox(height: 14),
-                  Text(total == 0 ? 'Scanning documents…' : '$completed of $total PDFs processed'),
-                  const SizedBox(height: 6),
-                  Text(current, maxLines: 2, overflow: TextOverflow.ellipsis,
-                      style: Theme.of(dialogContext).textTheme.bodySmall),
-                  const SizedBox(height: 8),
-                  const Text('Keep DocsGrid open. Original files are never deleted during library copying.'),
-                ],
-              ),
-            );
-          },
-        ),
-      );
-      await Future<void>.delayed(Duration.zero);
-      try {
-        final count = await DocumentRepository().migrateExistingLibraryToSelectedStorage(
-          onProgress: (done, all, name) {
-            completed = done;
-            total = all;
-            current = name;
-            updateProgress?.call(() {});
-          },
-        );
-        if (context.mounted) {
-          Navigator.of(context, rootNavigator: true).pop();
-          await progressDialog;
-          messenger.showSnackBar(
-            SnackBar(content: Text('Library copy completed: $count PDFs verified. Originals retained.')),
-          );
-        }
-      } catch (error) {
-        if (context.mounted) {
-          Navigator.of(context, rootNavigator: true).pop();
-          await progressDialog;
-          messenger.showSnackBar(
-            SnackBar(content: Text('Library copy stopped safely: $error')),
-          );
-        }
-      }
-    } catch (error) {
-      if (context.mounted) {
-        messenger.showSnackBar(
-          SnackBar(content: Text('Storage operation stopped safely: $error')),
-        );
-      }
-    }
-  }
-
   Widget _sectionTitle(String title) => Padding(
         padding: const EdgeInsets.fromLTRB(4, 20, 4, 10),
         child: Text(
@@ -1017,54 +916,6 @@ class _SettingsScreenState extends State<_SettingsScreen> {
               ),
         ),
       );
-
-  Future<void> _recoverPreviousInstallation() async {
-    if (!Platform.isAndroid) return;
-    final storage = StorageLocationService.instance;
-    try {
-      final known = await storage.discoverOldDocsGridStorage();
-      if (!mounted) return;
-      final choice = await showDialog<String>(
-        context: context,
-        builder: (ctx) => AlertDialog(
-          title: const Text('Recover previous DocsGrid installation'),
-          content: const Text(
-              'Choose a read-only old DocsGrid source. Your current Grid '
-              'storage and existing backup folder will not be switched.'),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx, 'cancel'),
-                child: const Text('Cancel')),
-            if (known != null)
-              TextButton(onPressed: () => Navigator.pop(ctx, 'old'),
-                  child: const Text('From old Storage location')),
-            FilledButton(onPressed: () => Navigator.pop(ctx, 'choose'),
-                child: const Text('Choose another location')),
-          ],
-        ),
-      );
-      if (!mounted) return;
-      final source = choice == 'old' ? known :
-          choice == 'choose' ? await storage.chooseRecoveryFolder() : null;
-      if (source == null || !mounted) return;
-      await Navigator.of(context).push(MaterialPageRoute(
-        builder: (_) => Scaffold(
-          appBar: AppBar(title: const Text('Restore previous DocsGrid data')),
-          body: DocumentToolsScreen(
-            quickAction: 'restore_selected_portable',
-            initialRecoverySource: source,
-            section: 'backup_restore',
-          ),
-        ),
-      ));
-    } catch (error) {
-      unawaited(DiagnosticLogStore.instance.recordError(
-          'Recover previous installation', error));
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Old storage could not be opened: $error')));
-      }
-    }
-  }
 
   Widget _settingsCard(List<Widget> children) => Container(
         decoration: BoxDecoration(
@@ -1104,13 +955,6 @@ class _SettingsScreenState extends State<_SettingsScreen> {
             subtitle: Text('List'),
             trailing: Icon(Icons.chevron_right),
           ),
-          mutedDivider,
-          ListTile(
-            leading: const Icon(Icons.sd_storage_outlined),
-            title: const Text('Choose storage location', style: TextStyle(fontWeight: FontWeight.w600)),
-            trailing: const Icon(Icons.chevron_right),
-            onTap: () => _chooseStorage(context),
-          ),
         ]),
 
         _sectionTitle('DATA'),
@@ -1125,17 +969,6 @@ class _SettingsScreenState extends State<_SettingsScreen> {
               body: const DocumentToolsScreen(section: 'backup_restore'),
             ))),
           ),
-          if (Platform.isAndroid) ...[
-            mutedDivider,
-            ListTile(
-              leading: const Icon(Icons.folder_copy_outlined),
-              title: const Text('Recover previous installation',
-                  style: TextStyle(fontWeight: FontWeight.w600)),
-              subtitle: const Text('Choose an old storage source without changing the active folder.'),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: _recoverPreviousInstallation,
-            ),
-          ],
           mutedDivider,
           ListTile(
             leading: const Icon(Icons.history),
