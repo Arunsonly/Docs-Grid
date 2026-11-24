@@ -10,6 +10,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'old_docsgrid_source_discovery.dart';
+import 'grid_storage_boundary.dart';
 
 /// A best-effort change hint; unknown providers require full reconciliation.
 class StorageChangeNotice {
@@ -500,9 +501,33 @@ class StorageLocationService {
   }
 
   Future<List<Map<String, String>>> accessibleStorageRoots() async {
-    if (!Platform.isAndroid) return const [];
+    if (!Platform.isAndroid && !Platform.isIOS) return const [];
     final values = await _channel.invokeListMethod<dynamic>('getAccessibleScanRoots') ?? const [];
     return normalizeAccessibleStorageRoots(values);
+  }
+
+  /// iOS can browse a user-authorized Files folder separately from the Grid
+  /// storage destination. Android uses its existing storage roots.
+  Future<Map<String, String>?> choosePhoneFolder() async {
+    if (!Platform.isIOS) return null;
+    final selected =
+        await _channel.invokeMapMethod<String, dynamic>('choosePhoneFolder');
+    if (selected == null || selected['uri'] is! String) return null;
+    return {
+      'uri': selected['uri'] as String,
+      'name': selected['name'] as String? ?? 'Files',
+    };
+  }
+
+  /// Resolve the actual managed Grid root, never the generic internal drive.
+  Future<GridStorageBoundary> gridStorageBoundary() async {
+    try {
+      final current = await portableDataLocationsIfAvailable();
+      return GridStorageBoundary(activeRootUri: current['rootUri']);
+    } catch (_) {
+      final cached = await cachedPortableDataLocations();
+      return GridStorageBoundary(activeRootUri: cached['rootUri']);
+    }
   }
 
   /// Checks whether the OS still grants access to the saved external folder.
@@ -960,7 +985,8 @@ class StorageLocationService {
   /// within the explicitly granted SAF root. Empty folder branches are omitted.
   Future<List<Map<String, Object?>>> listStorageTreeRecursively(
     String rootUri, {int maxEntries = 50000, int maxDepth = 64,
-    bool includeEmptyFolders = false, String rootLabel = ''}) async {
+    bool includeEmptyFolders = false, String rootLabel = '',
+    GridStorageBoundary? excludeGrid}) async {
     final pending = <({String uri, String path, int depth})>[
       (uri: rootUri, path: '', depth: 0),
     ];
@@ -1032,18 +1058,18 @@ class StorageLocationService {
           final uri = child['uri'] as String;
           if (child['isDirectory'] == true) {
             final path = current.path.isEmpty ? name : '${current.path}/$name';
-            if (isExcludedStorageDirectoryPath(path)) continue;
-            allFolders.add(path);
-            // Never show DocsGrid-managed Grid PDFs in the Phone browser.
-            // Retain the previous path exclusion for recovery compatibility.
-            if (path == 'Android/media/com.docsgrid.mobile' ||
-                path.startsWith('Android/media/com.docsgrid.mobile/') ||
-                path == 'Android/media/com.docsgrid' ||
-                path.startsWith('Android/media/com.docsgrid/')) {
+            if (isExcludedStorageDirectoryPath(path) ||
+                (excludeGrid?.isManagedPath(path,
+                    scanRootUri: rootUri, rootLabel: rootLabel) ?? false)) {
               continue;
             }
+            allFolders.add(path);
             pending.add((uri: uri, path: path, depth: current.depth + 1));
           } else if (name.toLowerCase().endsWith('.pdf')) {
+            if (excludeGrid?.isManagedPath(current.path,
+                scanRootUri: rootUri, rootLabel: rootLabel) ?? false) {
+              continue;
+            }
             final size = (child['sizeBytes'] as num?)?.toInt() ??
                 (child['size'] as num?)?.toInt() ?? 0;
             final sizeKnown = child['sizeKnown'] as bool? ?? true;
