@@ -987,7 +987,7 @@ class _SettingsScreenState extends State<_SettingsScreen> {
           ListTile(
             leading: const Icon(Icons.auto_awesome_outlined),
             title: const Text('Smart Collections', style: TextStyle(fontWeight: FontWeight.w600)),
-            subtitle: const Text('Saved filters for categories, tags, starred and recent PDFs'),
+            subtitle: const Text('Saved filters for Grid PDF names, categories and tags'),
             trailing: const Icon(Icons.chevron_right),
             onTap: () => Navigator.of(context).push(MaterialPageRoute(
               builder: (_) => const SmartCollectionsScreen(),
