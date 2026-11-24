@@ -10,6 +10,8 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+  schedule:
+    - cron: '30 2 * * 0'
 
 permissions:
   contents: read
@@ -299,6 +301,26 @@ jobs:
           cp platform/android/MainActivity.kt android/app/src/main/kotlin/com/docsgrid/docs_grid/MainActivity.kt
       - name: Install packages
         run: flutter pub get
+      - name: OSV dependency scan (resolved Dart packages)
+        timeout-minutes: 8
+        run: |
+          set -euo pipefail
+          test -s pubspec.lock
+          mkdir -p quality-reports
+          # Scan the exact resolved lockfile; no app dependency changes.
+          docker run --rm -v "$PWD/pubspec.lock:/src/pubspec.lock:ro" ghcr.io/google/osv-scanner:v2.7.1 scan source --lockfile=/src/pubspec.lock --format=json > quality-reports/osv.json
+      - name: Upload dependency scan evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docsgrid-osv-dependency-scan
+          path: quality-reports/osv.json
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Check regression inventory and quality tooling
+        run: |
+          python3 -m unittest discover -s scripts -p 'test_quality_coverage.py' -v
+          python3 scripts/quality_coverage.py --inventory
       - name: Verify checked-in DocsGrid launcher icon
         run: |
           python3 - <<'PY'
@@ -321,8 +343,18 @@ jobs:
           else
             sudo apt-get install -y libsqlite3-dev
           fi
-      - name: Widget and unit tests
-        run: flutter test
+      - name: Widget and unit tests with line coverage
+        run: flutter test --coverage
+      - name: Validate and summarize coverage
+        run: python3 scripts/quality_coverage.py coverage/lcov.info
+      - name: Upload line coverage evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docsgrid-coverage-${{ runner.os }}
+          path: coverage/lcov.info
+          if-no-files-found: error
+          retention-days: 14
       - name: End-to-end integration workflow tests
         run: flutter test test/integration --reporter expanded
       - name: Performance benchmark (10k documents)
@@ -536,8 +568,18 @@ jobs:
         run: dart run flutter_launcher_icons
       - name: Analyze
         run: flutter analyze --no-fatal-infos
-      - name: Widget and unit tests
-        run: flutter test
+      - name: Widget and unit tests with line coverage
+        run: flutter test --coverage
+      - name: Validate and summarize coverage
+        run: python3 scripts/quality_coverage.py coverage/lcov.info
+      - name: Upload line coverage evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docsgrid-coverage-${{ runner.os }}
+          path: coverage/lcov.info
+          if-no-files-found: error
+          retention-days: 14
       - name: End-to-end integration workflow tests
         run: flutter test test/integration --reporter expanded
       - name: Performance benchmark (10k documents)
@@ -575,4 +617,4 @@ jobs:
             done
           } >> "$GITHUB_STEP_SUMMARY"
           if [ "$failed" -ne 0 ]; then exit 1; fi
-          echo 'All required automated checks passed. Device testing and signing are separate release requirements.'
+          echo 'All required automated checks passed, including Dart dependency scan and coverage evidence. Device testing and signing are separate release requirements.'
