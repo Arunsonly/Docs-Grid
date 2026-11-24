@@ -10,6 +10,9 @@ class GridStorageBoundary {
 
   final String _activeRoot;
 
+  /// Cache identity: changing Grid's storage invalidates prior Phone previews.
+  String get signature => _activeRoot;
+
   static const _legacyRelativeRoots = <String>[
     'android/media/com.docsgrid.mobile',
     'android/media/com.docsgrid',
