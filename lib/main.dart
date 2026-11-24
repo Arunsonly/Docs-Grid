@@ -941,13 +941,6 @@ class _SettingsScreenState extends State<_SettingsScreen> {
             value: widget.darkMode,
             onChanged: widget.onDarkModeChanged,
           ),
-          mutedDivider,
-          const ListTile(
-            leading: Icon(Icons.view_agenda_outlined),
-            title: Text('Default view', style: TextStyle(fontWeight: FontWeight.w600)),
-            subtitle: Text('List'),
-            trailing: Icon(Icons.chevron_right),
-          ),
         ]),
 
         _sectionTitle('DOCUMENT MANAGEMENT'),

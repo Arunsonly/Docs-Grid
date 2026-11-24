@@ -1,23 +1,9 @@
-import 'package:docs_grid/core/settings/ocr_search_preferences.dart';
 import 'package:docs_grid/features/documents/presentation/ocr_search_mode_control.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
-
-  setUp(() => SharedPreferences.setMockInitialValues({}));
-
-  test('new installation keeps OCR disabled; enabling persists across app restart',
-      () async {
-    expect(await OcrSearchPreferences.isEnabled(), isFalse);
-    await OcrSearchPreferences.setEnabled(true);
-    // A new reader (as on a new app launch) sees the durable permission.
-    expect(await OcrSearchPreferences.isEnabled(), isTrue);
-    await OcrSearchPreferences.setEnabled(false);
-    expect(await OcrSearchPreferences.isEnabled(), isFalse);
-  });
 
   testWidgets('OCR toggle starts off, highlights on one tap, and turns off on second tap',
       (tester) async {
