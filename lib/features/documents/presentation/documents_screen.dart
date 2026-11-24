@@ -8,6 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../data/document_repository.dart';
 import '../data/home_dashboard_cache.dart';
+import '../data/grid_recent_history.dart';
 import '../data/phone_recent_history.dart';
 import '../data/phone_pdf_move_service.dart';
 import '../data/phone_pdf_delta.dart';
@@ -106,6 +107,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
   int _trashFolderCount = 0;
   List<Map<String, Object?>> _phoneRecent = [];
   List<DocumentRecord> _gridRecent = [];
+  int _recentLoadGeneration = 0;
   bool _showStarredRecent = false;
   List<DocumentRecord> _starredRecent = [];
   List<Map<String, Object?>> _phoneStarred = [];
@@ -1226,23 +1228,35 @@ class _DocumentsScreenState extends State<DocumentsScreen>
   }
 
   Future<void> _clearRecentActivity() async {
+    // Capture the cutoff before clearing so PDFs created/opened afterwards
+    // can appear in Recent, without deleting the PDFs themselves.
+    final cutoff = DateTime.now().toUtc();
+    ++_recentLoadGeneration; // An older async read must not refill Recent.
     try {
       await PhoneRecentHistory.clearRecent();
       await _repository.clearOpenedHistory();
+      await GridRecentHistory.markCleared(cutoff);
+      await _homeCache.saveRecentNames(const []);
       if (!mounted) return;
-      setState(() => _phoneRecent = []);
+      setState(() {
+        _phoneRecent = [];
+        _gridRecent = [];
+        _cachedGridRecentNames = const [];
+        _liveGridRecentLoaded = true;
+      });
       await _loadRecentDocuments();
       if (_showStarredRecent) await _loadAllStarred();
-      if (mounted) _message('Recent cleared. PDF files were not deleted.');
+      // Deliberately no success Snackbar for either Phone or Grid Recent.
     } catch (error) {
       if (mounted) _message('Could not clear Recent: $error');
     }
   }
 
-  Future<List<DocumentRecord>> _loadAllRecentGrid() =>
-      // The repository caps this query at 100 rows. Requesting 100,000 throws
-      // and used to leave Recent selection looking blank.
-      _repository.recentActivity(limit: 100);
+  Future<List<DocumentRecord>> _loadAllRecentGrid() async {
+    // Use the same durable cutoff in the full Recent picker and Home panel.
+    final since = await GridRecentHistory.lastClearedAt();
+    return _repository.recentActivity(limit: 100, since: since);
+  }
 
   List<PopupMenuEntry<String>> _phoneRecentMenu(Map<String, Object?> item) => [
     const PopupMenuItem(value: 'share', child: Text('Share PDF')),
@@ -1705,11 +1719,14 @@ class _DocumentsScreenState extends State<DocumentsScreen>
   }
 
   Future<void> _loadRecentDocuments() async {
+    final generation = ++_recentLoadGeneration;
     if (_isStartupHome) StartupTimeline.mark('home_recent_start');
     try {
-      // Include both opened documents and newly added documents. The list
-      // is capped at 20 so the dashboard's Recent panel can scroll independently.
-      final recentDocuments = await _repository.recentActivity(limit: 20);
+      // The cutoff is presentation-only: it hides older Grid Recent entries,
+      // not stored documents. Reopening or adding a PDF makes it recent again.
+      final since = await GridRecentHistory.lastClearedAt();
+      final recentDocuments =
+          await _repository.recentActivity(limit: 20, since: since);
       final prefs = await SharedPreferences.getInstance();
       final saved = prefs.getStringList('docsgrid_phone_recent_v1') ?? const <String>[];
       final phone = <Map<String, Object?>>[];
@@ -1726,7 +1743,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       final unlinkedRecent = (await PhonePortableState.pending())
           .where((item) => item['wasRecent'] == true)
           .toList(growable: false);
-      if (!mounted) return;
+      if (!mounted || generation != _recentLoadGeneration) return;
       setState(() {
         _gridRecent = recentDocuments;
         _phoneRecent = [...unlinkedRecent, ...phone]
@@ -2722,9 +2739,9 @@ class _DocumentsScreenState extends State<DocumentsScreen>
             _recentFilter = 'grid';
           });
           await _loadRecentDocuments();
-          _message(recentSaved
-              ? 'Moved $name to Grid. It is now in Grid Recent.'
-              : 'Moved $name to Grid, but could not save the Phone Recent cleanup.');
+          if (!recentSaved) {
+            _message('PDF moved, but Phone Recent cleanup could not be saved.');
+          }
         }
       } else if (result.duplicates > 0 && mounted) {
         _message('This PDF already exists in Grid. The Phone original was kept.');
