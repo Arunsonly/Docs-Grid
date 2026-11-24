@@ -120,8 +120,14 @@ class GridStorageBoundary {
       }
     }
 
+    final scan = _normalize(scanRootUri ?? '');
+    final scanningPrimary = scanRootUri == null ||
+        scan.contains('/storage/emulated/0') ||
+        scan.contains('/storage/self/primary') ||
+        scan.contains('primary:');
     final activePrimary = _relativeToPrimary(_activeRoot);
-    if (activePrimary != null && activePrimary.isNotEmpty &&
+    if (scanningPrimary &&
+        activePrimary != null && activePrimary.isNotEmpty &&
         (volumeName == null || volumeName == 'external_primary')) {
       return _atOrUnder(relative, activePrimary) ||
           _atOrUnder(unlabelled, activePrimary);
