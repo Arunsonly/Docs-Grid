@@ -1,3 +1,4 @@
+import 'package:docs_grid/core/storage/portable_snapshot_events.dart';
 import 'package:docs_grid/features/documents/data/document_repository.dart';
 import 'package:docs_grid/features/documents/presentation/document_thumbnail.dart';
 import 'package:docs_grid/features/folders/data/folder_repository.dart';
@@ -79,10 +80,11 @@ Folder _folder(int index) => Folder(
   updatedAt: DateTime(2026, 1, 1),
 );
 
-DocumentRecord _pdf(int index) => DocumentRecord(
+DocumentRecord _pdf(int index, {String? folderId}) => DocumentRecord(
   id: 'doc-$index',
   name: 'Policy_${index.toString().padLeft(3, '0')}',
   storagePath: 'content://media/$index',
+  folderId: folderId,
   sizeBytes: 2048,
   createdAt: DateTime(2026, 1, 1),
   isFavorite: false,
@@ -97,6 +99,79 @@ void main() {
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
   }
+
+  testWidgets('Phone to Grid commit refreshes an already visited hidden Grid tab',
+      (tester) async {
+    viewport(tester);
+    final rows = <DocumentRecord>[];
+    final documents = _Documents(rows);
+    final folders = _Folders(<Folder>[]);
+    Future<void> showGrid(bool active) => tester.pumpWidget(MaterialApp(
+      home: Scaffold(body: FoldersScreen(
+        key: const ValueKey('retained-grid'),
+        active: active,
+        folderRepository: folders,
+        documentRepository: documents,
+      )),
+    ));
+    await showGrid(true);
+    await tester.pumpAndSettle();
+    expect(find.text('Policy_001.pdf'), findsNothing);
+    await showGrid(false);
+    await tester.pumpAndSettle();
+    final callsBefore = documents.pageCalls;
+
+    // Same committed event emitted by importScannedPdf during Move to Grid.
+    rows.add(_pdf(1));
+    PortableSnapshotEvents.notifyDataChanged(affectedFolderIds: <String?>{null});
+    await tester.pump(const Duration(milliseconds: 150));
+    expect(documents.pageCalls, callsBefore);
+    await showGrid(true);
+    await tester.pumpAndSettle();
+    expect(find.text('Policy_001.pdf'), findsOneWidget);
+    expect(find.text('0 folders · 1 PDFs'), findsOneWidget);
+    expect(documents.pageCalls, greaterThan(callsBefore));
+    expect(documents.fullListCalls, 0);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('Grid refreshes child counts and the open destination on commit',
+      (tester) async {
+    viewport(tester);
+    final root = <Folder>[_folder(0)];
+    final rows = <DocumentRecord>[];
+    final documents = _Documents(rows);
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(body: FoldersScreen(
+        folderRepository: _Folders(root),
+        documentRepository: documents,
+      )),
+    ));
+    await tester.pumpAndSettle();
+    expect(find.text('Folder · 0 PDFs'), findsOneWidget);
+    final child = root.single;
+    root[0] = Folder(id: child.id, name: child.name,
+      createdAt: child.createdAt, updatedAt: child.updatedAt, pdfCount: 1);
+    rows.add(_pdf(1, folderId: child.id));
+    PortableSnapshotEvents.notifyDataChanged(affectedFolderIds: {child.id});
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 150));
+    await tester.pumpAndSettle();
+    expect(find.text('Folder · 1 PDFs'), findsOneWidget);
+    await tester.tap(find.byKey(ValueKey('folder-${child.id}')));
+    await tester.pumpAndSettle();
+    expect(find.text('Policy_001.pdf'), findsOneWidget);
+
+    rows.add(_pdf(2, folderId: child.id));
+    PortableSnapshotEvents.notifyDataChanged(affectedFolderIds: {child.id});
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 150));
+    await tester.pumpAndSettle();
+    expect(find.text('Policy_002.pdf'), findsOneWidget);
+    expect(find.text('0 folders · 2 PDFs'), findsOneWidget);
+    expect(documents.fullListCalls, 0);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
 
   testWidgets('Grid virtualizes 220 folders, without eagerly building all Cards',
       (tester) async {

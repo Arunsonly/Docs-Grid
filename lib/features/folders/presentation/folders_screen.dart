@@ -121,7 +121,8 @@ class _FoldersScreenState extends State<FoldersScreen>
   Timer? _gridPreviewInvalidationDebounce;
   Set<String?>? _queuedGridPreviewIds = <String?>{};
   Completer<void>? _gridPreviewInvalidationDone;
-  bool _gridPreviewRebuildScheduled = false;
+  bool _gridContentRefreshPending = false;
+  bool _gridContentRefreshScheduled = false;
   // Only prepare metadata of the first two likely child folders, and only
   // after the current screen has loaded and the user has stopped scrolling.
   Timer? _idleFolderPrefetchTimer;
@@ -173,13 +174,38 @@ class _FoldersScreenState extends State<FoldersScreen>
     if (!_gridScreenForeground) {
       _idleFolderPrefetchTimer?.cancel();
     } else {
+      _scheduleGridContentRefresh();
       _queueIdleFolderPrefetch();
     }
   }
 
+  // Grid lives in an IndexedStack. Invalidating preview metadata alone does
+  // not replace completed FutureBuilders when returning from Phone Storage.
+  // Refresh authoritative SQLite/provider reads, coalescing bursts per frame
+  // and deferring hidden-tab work until the next activation.
+  void _scheduleGridContentRefresh() {
+    if (!mounted || !_gridContentRefreshPending || !widget.active ||
+        !_gridScreenForeground || _gridContentRefreshScheduled) return;
+    _gridContentRefreshScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _gridContentRefreshScheduled = false;
+      if (!mounted || !_gridContentRefreshPending || !widget.active ||
+          !_gridScreenForeground) return;
+      setState(_load);
+    });
+    // addPostFrameCallback alone does not request a frame while idle.
+    WidgetsBinding.instance.ensureVisualUpdate();
+  }
+
   void _onGridFolderChange(GridFolderChange change) {
-    final affected = change.affectedFolderIds;
-    if (affected != null && affected.isEmpty) return;
+    final changed = change.affectedFolderIds;
+    if (changed != null && changed.isEmpty) return;
+    // A move into a child changes its parent's displayed PDF count, even
+    // when the current folder's own document IDs did not change. Global
+    // search results can also change for any nonempty structural event.
+    final affected = changed == null
+        ? null : <String?>{...changed, _currentFolderId};
+    _gridContentRefreshPending = true;
     final revision = ++_folderPreviewRevision;
     final currentKey = FolderPreviewCache.gridKey(_currentFolderId);
     final keys = affected?.map(FolderPreviewCache.gridKey).toSet();
@@ -199,13 +225,7 @@ class _FoldersScreenState extends State<FoldersScreen>
     }
     if (keys == null || keys.contains(currentKey)) {
       _suppressFolderPreviews.add(currentKey);
-      if (!_gridPreviewRebuildScheduled) {
-        _gridPreviewRebuildScheduled = true;
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          _gridPreviewRebuildScheduled = false;
-          if (mounted) setState(() {});
-        });
-      }
+      _scheduleGridContentRefresh();
     }
     // Group bursts of imports/moves into one disk operation per changed
     // folder; avoid rewriting/removing the same metadata hundreds of times.
@@ -393,6 +413,17 @@ class _FoldersScreenState extends State<FoldersScreen>
   @override
   void didUpdateWidget(covariant FoldersScreen oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.active && !widget.active) {
+      _idleFolderPrefetchTimer?.cancel();
+    } else if (!oldWidget.active && widget.active) {
+      // didUpdateWidget is followed by build, so no extra setState/frame is
+      // needed. The first visible Grid frame uses newly assigned futures.
+      if (_gridContentRefreshPending) {
+        _load();
+      } else {
+        _queueIdleFolderPrefetch();
+      }
+    }
     if (oldWidget.ocrSearchAvailable && !widget.ocrSearchAvailable) {
       _ocrEpoch++;
       _ocrSelected = false;
@@ -510,6 +541,7 @@ class _FoldersScreenState extends State<FoldersScreen>
   }
 
   void _load() {
+    _gridContentRefreshPending = false;
     _idleFolderPrefetchTimer?.cancel();
     _prefetchFolderCandidates = const [];
     _prefetchFolderEpoch = -1;
@@ -688,7 +720,7 @@ class _FoldersScreenState extends State<FoldersScreen>
 
   void _queueIdleFolderPrefetch() {
     _idleFolderPrefetchTimer?.cancel();
-    if (!_gridScreenForeground || _prefetchingChildFolders ||
+    if (!widget.active || !_gridScreenForeground || _prefetchingChildFolders ||
         _prefetchFolderCandidates.isEmpty || _searchQuery.trim().isNotEmpty ||
         _isReorderingFolders || _isSelectingFolders ||
         _prefetchFolderEpoch != _folderLoadEpoch) return;
@@ -697,7 +729,7 @@ class _FoldersScreenState extends State<FoldersScreen>
     // Debounce interaction; run no speculative SAF/provider reads during
     // an active scroll, initial navigation, or while the app is backgrounded.
     _idleFolderPrefetchTimer = Timer(const Duration(milliseconds: 650), () {
-      if (!mounted || !_gridScreenForeground ||
+      if (!mounted || !widget.active || !_gridScreenForeground ||
           epoch != _folderLoadEpoch) return;
       unawaited(_prefetchChildFolderMetadata(candidates, epoch));
     });
@@ -706,7 +738,7 @@ class _FoldersScreenState extends State<FoldersScreen>
   Future<void> _prefetchChildFolderMetadata(
     List<Folder> candidates, int epoch,
   ) async {
-    if (_prefetchingChildFolders || !mounted ||
+    if (_prefetchingChildFolders || !mounted || !widget.active ||
         !_gridScreenForeground || epoch != _folderLoadEpoch) return;
     _prefetchingChildFolders = true;
     final previewRevision = _folderPreviewRevision;
