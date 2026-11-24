@@ -80,7 +80,7 @@ void main() {
       group['duplicate_type'] == 'SHA-256' && group['copies'] == 2), isTrue);
     expect(await database.query('document_text_index'), hasLength(2));
 
-    // Soft-deleted items must disappear from search and duplicate results.
+    // Soft-deleted items must disappear from verified exact duplicate results.
     await database.update('documents', {'deleted_at': stamp},
       where: 'id = ?', whereArgs: ['b']);
     expect(await database.query('document_text_index'), hasLength(2));

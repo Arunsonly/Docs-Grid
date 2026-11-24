@@ -40,9 +40,12 @@ def main():
         baseline, events = execute()
         if baseline.returncode != 0 or not any(e.get("type") == "done" and e.get("success") is True for e in events):
             raise RuntimeError("Baseline mutation test suite did not pass")
+        problems = []
         for name, old, new, expected in MUTANTS:
             if original.count(old) != 1:
-                raise RuntimeError("Ambiguous mutation anchor: " + name)
+                problems.append("Ambiguous mutation anchor: " + name)
+                report["mutants"].append({"name": name, "status": "BLOCKED"})
+                continue
             SOURCE.write_text(original.replace(old, new, 1))
             try:
                 result, events = execute()
@@ -56,7 +59,9 @@ def main():
                 for e in events))
             report["mutants"].append({"name": name, "killed_by_expected_test": killed})
             if not killed:
-                raise RuntimeError("Mutant survived or test evidence unavailable: " + name)
+                problems.append("Mutant survived or expected test evidence unavailable: " + name)
+        if problems:
+            raise RuntimeError("; ".join(problems))
         print("All four targeted mutants detected by their expected tests.")
     finally:
         SOURCE.write_text(original)

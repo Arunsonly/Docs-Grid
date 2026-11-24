@@ -74,6 +74,11 @@ def main():
         analyzer = read_text(folder / "analyzer.txt")
         info_count = len(re.findall(r"\binfo\s+[•-]", analyzer))
         metrics[platform + "_analyzer_infos"] = info_count if analyzer else None
+        metrics[platform + "_analyzer_errors"] = len(re.findall(r"\berror\s+[•-]", analyzer)) if analyzer else None
+        metrics[platform + "_analyzer_warnings"] = len(re.findall(r"\bwarning\s+[•-]", analyzer)) if analyzer else None
+        metrics[platform + "_analyzer_diagnostics"] = [
+            line.strip() for line in analyzer.splitlines()
+            if re.search(r"\b(?:error|warning|info)\s+[•-]", line)]
         test_log = read_text(folder / "tests.txt")
         test_count = metric_count(test_log, r"\+(\d+): All tests passed!")
         if test_count is None:
@@ -152,9 +157,13 @@ def main():
         add("Emulator navigation/resource sampling", "FAIL", resources["error"])
     else:
         add("Emulator navigation/resource sampling", "PARTIAL" if resources.get("status") == "measured" else "NOT_TESTED", "Five repeated tab-navigation cycles")
+    step_evidence = [
+        {"job": job["name"], "step": step["name"], "conclusion": step.get("conclusion")}
+        for job in jobs for step in job.get("steps", [])
+    ]
     report = {"schema": 1, "run": os.getenv("GITHUB_RUN_ID"), "attempt": os.getenv("GITHUB_RUN_ATTEMPT"),
               "commit": os.getenv("GITHUB_SHA"), "baseline": BASELINE, "metrics": metrics,
-              "api_error": api_error, "tests": rows}
+              "api_error": api_error, "tests": rows, "step_evidence": step_evidence}
     (out / "report.json").write_text(json.dumps(report, indent=2) + "\n")
     parts = [
         ("1. Passed", {"PASS"}),
@@ -179,6 +188,14 @@ def main():
             continue
         new = metrics.get(key)
         lines.append(f"| {key} | {old} | {new if new is not None else 'NOT MEASURED'} |")
+    lines.extend(["", "## Analyzer findings", "", "| Platform | Errors | Warnings | Info |", "| --- | ---: | ---: | ---: |"])
+    for platform in ("android", "ios"):
+        values = [metrics.get(platform + "_analyzer_" + suffix) for suffix in ("errors", "warnings", "infos")]
+        lines.append("| " + platform + " | " + " | ".join("NOT MEASURED" if x is None else str(x) for x in values) + " |")
+    lines.extend(["", "## Failed and skipped steps", "", "| Job | Step | Conclusion |", "| --- | --- | --- |"])
+    for step in step_evidence:
+        if step["conclusion"] in ("failure", "cancelled", "skipped", "timed_out"):
+            lines.append("| " + " | ".join(str(step[k]).replace("|", "/") for k in ("job", "step", "conclusion")) + " |")
     content = "\n".join(lines) + "\n"
     (out / "report.md").write_text(content)
     if os.getenv("GITHUB_STEP_SUMMARY"):

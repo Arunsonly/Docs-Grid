@@ -21,12 +21,19 @@ def sample():
 
 def select(name, ordinal):
     target = f"{name} Tab {ordinal} of 3"
-    matches = [n for n in nodes() if " ".join(label(n).split()) == target
-               and n.get("enabled", "true") == "true"]
-    if len(matches) != 1:
-        raise RuntimeError("Could not identify unique navigation tab: " + target)
-    tap(matches[0])
-    time.sleep(0.8)
+    deadline = time.monotonic() + 20
+    while time.monotonic() < deadline:
+        matches = [n for n in nodes()
+                   if " ".join(label(n).split()).casefold() == target.casefold()
+                   and n.get("enabled", "true") == "true"]
+        if len(matches) > 1:
+            matches = [n for n in matches if n.get("clickable") == "true"]
+        if len(matches) == 1:
+            tap(matches[0])
+            time.sleep(0.8)
+            return
+        time.sleep(0.3)
+    raise RuntimeError("Could not identify unique navigation tab: " + target)
 
 def main():
     parser = argparse.ArgumentParser()

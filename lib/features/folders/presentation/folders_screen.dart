@@ -10,6 +10,7 @@ import '../../../core/diagnostics/diagnostic_log_store.dart';
 
 import '../../documents/data/document_repository.dart';
 import '../../documents/presentation/document_thumbnail.dart';
+import '../../tools/document_tools_service.dart';
 import '../../../core/storage/storage_location_service.dart';
 import '../../../core/storage/folder_preview_cache.dart';
 import '../../reminders/data/reminder_repository.dart';

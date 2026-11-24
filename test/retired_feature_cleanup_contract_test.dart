@@ -24,4 +24,15 @@ void main() {
     expect(ci, contains('android.permission.POST_NOTIFICATIONS'));
     expect(ci, contains('CFBundleDocumentTypes'));
   });
+
+  test('Grid single and bulk sharing retain the active service import', () {
+    final grid = File('lib/features/folders/presentation/folders_screen.dart').readAsStringSync();
+    final service = File('lib/features/tools/document_tools_service.dart').readAsStringSync();
+    expect(grid, contains("import '../../tools/document_tools_service.dart';"));
+    expect(grid, contains('DocumentToolsService().shareManyStoredPdfs('));
+    expect(grid, contains('DocumentToolsService().shareStoredPdf('));
+    expect(service, contains('Future<void> shareManyStoredPdfs('));
+    expect(service, contains('Future<void> shareStoredPdf('));
+    expect(grid, isNot(contains('OcrSearchModeControl(')));
+  });
 }

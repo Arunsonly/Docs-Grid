@@ -258,6 +258,7 @@ jobs:
           mkdir -p android/app/src/main/kotlin/com/docsgrid/docs_grid
           cp platform/android/MainActivity.kt android/app/src/main/kotlin/com/docsgrid/docs_grid/MainActivity.kt
       - name: Install packages
+        id: packages
         run: flutter pub get
       - name: OSV dependency scan (resolved Dart packages)
         timeout-minutes: 8
@@ -294,12 +295,15 @@ jobs:
       - name: Generate DocsGrid launcher icons
         run: dart run flutter_launcher_icons
       - name: Analyze
+        id: analyzer
+        if: ${{ !cancelled() && steps.packages.outcome == 'success' }}
         run: |
           set -o pipefail
           mkdir -p quality-reports
           flutter analyze --no-fatal-infos 2>&1 | tee quality-reports/analyzer.txt
       - name: Ensure system SQLite for FFI tests
-        if: runner.os == 'Linux'
+        id: sqlite
+        if: ${{ !cancelled() && runner.os == 'Linux' && steps.packages.outcome == 'success' }}
         run: |
           if dpkg-query -W -f='${Status}' libsqlite3-dev 2>/dev/null | grep -q 'install ok installed'; then
             echo 'libsqlite3-dev is already installed on the hosted runner.'
@@ -307,14 +311,17 @@ jobs:
             sudo apt-get install -y libsqlite3-dev
           fi
       - name: Widget and unit tests with line coverage
+        id: test_suite
+        if: ${{ !cancelled() && steps.packages.outcome == 'success' && (runner.os != 'Linux' || steps.sqlite.outcome == 'success') }}
         run: |
           set -o pipefail
           mkdir -p quality-reports
           flutter test --coverage --reporter expanded 2>&1 | tee quality-reports/tests.txt
       - name: Validate and summarize coverage
+        if: ${{ !cancelled() && steps.test_suite.outcome == 'success' }}
         run: python3 scripts/quality_coverage.py coverage/lcov.info
       - name: Upload line coverage evidence
-        if: always()
+        if: ${{ !cancelled() && steps.test_suite.outcome == 'success' }}
         uses: actions/upload-artifact@v4
         with:
           name: docsgrid-coverage-${{ runner.os }}
@@ -322,15 +329,25 @@ jobs:
           if-no-files-found: error
           retention-days: 14
       - name: End-to-end integration workflow tests
-        run: flutter test test/integration --reporter expanded
+        if: ${{ !cancelled() && steps.packages.outcome == 'success' && (runner.os != 'Linux' || steps.sqlite.outcome == 'success') }}
+        run: |
+          set -o pipefail
+          mkdir -p quality-reports
+          flutter test test/integration --reporter expanded 2>&1 | tee quality-reports/integration.txt
       - name: Performance benchmark (10k documents)
+        if: ${{ !cancelled() && steps.packages.outcome == 'success' && (runner.os != 'Linux' || steps.sqlite.outcome == 'success') }}
         run: |
           set -o pipefail
           mkdir -p quality-reports
           flutter test test/performance --reporter expanded 2>&1 | tee quality-reports/performance.txt
       - name: Seeded fuzz and ZIP fault injection
-        run: flutter test test/quality_fault_fuzz_test.dart --reporter expanded
+        if: ${{ !cancelled() && steps.packages.outcome == 'success' && (runner.os != 'Linux' || steps.sqlite.outcome == 'success') }}
+        run: |
+          set -o pipefail
+          mkdir -p quality-reports
+          flutter test test/quality_fault_fuzz_test.dart --reporter expanded 2>&1 | tee quality-reports/fuzz-fault.txt
       - name: Targeted mutation testing
+        if: ${{ !cancelled() && steps.test_suite.outcome == 'success' && steps.analyzer.outcome == 'success' }}
         timeout-minutes: 15
         run: python3 scripts/quality_mutation.py
       - name: Build debug APK
@@ -542,6 +559,7 @@ jobs:
               print('No CocoaPods Podfile generated; Flutter plugin tooling will manage iOS dependencies.')
           PY
       - name: Install packages
+        id: packages
         run: flutter pub get
       - name: Verify checked-in DocsGrid launcher icon
         run: |
@@ -556,19 +574,24 @@ jobs:
       - name: Generate DocsGrid launcher icons
         run: dart run flutter_launcher_icons
       - name: Analyze
+        id: analyzer
+        if: ${{ !cancelled() && steps.packages.outcome == 'success' }}
         run: |
           set -o pipefail
           mkdir -p quality-reports
           flutter analyze --no-fatal-infos 2>&1 | tee quality-reports/analyzer.txt
       - name: Widget and unit tests with line coverage
+        id: test_suite
+        if: ${{ !cancelled() && steps.packages.outcome == 'success' && (runner.os != 'Linux' || steps.sqlite.outcome == 'success') }}
         run: |
           set -o pipefail
           mkdir -p quality-reports
           flutter test --coverage --reporter expanded 2>&1 | tee quality-reports/tests.txt
       - name: Validate and summarize coverage
+        if: ${{ !cancelled() && steps.test_suite.outcome == 'success' }}
         run: python3 scripts/quality_coverage.py coverage/lcov.info
       - name: Upload line coverage evidence
-        if: always()
+        if: ${{ !cancelled() && steps.test_suite.outcome == 'success' }}
         uses: actions/upload-artifact@v4
         with:
           name: docsgrid-coverage-${{ runner.os }}
@@ -576,14 +599,23 @@ jobs:
           if-no-files-found: error
           retention-days: 14
       - name: End-to-end integration workflow tests
-        run: flutter test test/integration --reporter expanded
+        if: ${{ !cancelled() && steps.packages.outcome == 'success' && (runner.os != 'Linux' || steps.sqlite.outcome == 'success') }}
+        run: |
+          set -o pipefail
+          mkdir -p quality-reports
+          flutter test test/integration --reporter expanded 2>&1 | tee quality-reports/integration.txt
       - name: Performance benchmark (10k documents)
+        if: ${{ !cancelled() && steps.packages.outcome == 'success' && (runner.os != 'Linux' || steps.sqlite.outcome == 'success') }}
         run: |
           set -o pipefail
           mkdir -p quality-reports
           flutter test test/performance --reporter expanded 2>&1 | tee quality-reports/performance.txt
       - name: Seeded fuzz and ZIP fault injection
-        run: flutter test test/quality_fault_fuzz_test.dart --reporter expanded
+        if: ${{ !cancelled() && steps.packages.outcome == 'success' && (runner.os != 'Linux' || steps.sqlite.outcome == 'success') }}
+        run: |
+          set -o pipefail
+          mkdir -p quality-reports
+          flutter test test/quality_fault_fuzz_test.dart --reporter expanded 2>&1 | tee quality-reports/fuzz-fault.txt
       - name: Build iOS without code signing
         run: flutter build ios --no-codesign
       - name: Upload detailed quality evidence
