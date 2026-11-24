@@ -38,7 +38,7 @@ void main() {
     expect(storage, contains('GridStorageBoundary? excludeGrid'));
     expect(storage, contains('excludeGrid?.isManagedPath(path,'));
     expect(native, contains('managedPrimaryRelative'));
-    expect(native, contains('normalized.startsWith("$managedPrimaryRelative/")'));
+    expect(native, contains(r'normalized.startsWith("$managedPrimaryRelative/")'));
     // Old Grid paths stay excluded after a user selects the new root.
     expect(native, contains('normalized.startsWith("android/media/com.docsgrid/")'));
     final boundary = File('lib/core/storage/grid_storage_boundary.dart')
