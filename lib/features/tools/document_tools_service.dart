@@ -13,6 +13,7 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:pdfx/pdfx.dart' as pdfx;
 import 'package:share_plus/share_plus.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:uuid/uuid.dart';
 
@@ -749,6 +750,39 @@ class DocumentToolsService {
       includePdfs: true, onProgress: onProgress, onStage: onStage,
     );
   });
+
+  /// A provider failure must never invalidate or delete the local backup.
+  /// Verified provider bytes do not prove completion of cloud upload.
+  Future<bool> publishIosRecoveryArchive(File archive) async {
+    if (!Platform.isIOS) return false;
+    final storage = StorageLocationService.instance;
+    final destination = await storage.iosRecoveryDestination();
+    if (destination == null) return false;
+    final manifest = await BackupChain.manifest(archive);
+    final type = manifest['backupType'];
+    if (type != 'full' && type != 'database') {
+      throw StateError('Only standalone Full and Database ZIPs can be exported automatically.');
+    }
+    final locations = await StorageLocationService.iosPrivateArchiveLocations();
+    final expectedRoot = Uri.parse(locations[type == 'full' ? 'fullBackupsUri' : 'databaseBackupsUri']!).toFilePath();
+    final root = await Directory(expectedRoot).resolveSymbolicLinks();
+    final actual = await archive.resolveSymbolicLinks();
+    if (!p.isWithin(root, actual)) {
+      throw StateError('Recovery export requires an owned local archive.');
+    }
+    final digest = (await sha256.bind(archive.openRead()).first).toString();
+    final copied = await storage.copyFileToStorage(
+      sourcePath: archive.path, parentUri: destination['uri']!,
+      name: p.basename(archive.path), mimeType: 'application/zip',
+    );
+    if (await storage.sha256Pdf(copied) != digest) {
+      throw StateError('External backup verification failed; local ZIP retained.');
+    }
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('docsgrid_ios_external_${type}_verified_at', DateTime.now().toUtc().toIso8601String());
+    await prefs.setString('docsgrid_ios_external_${type}_destination', destination['uri']!);
+    return true;
+  }
 
   Future<List<BackupChainUsage>> manualBackupUsage() async {
     final locations = Platform.isIOS

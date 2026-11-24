@@ -10,9 +10,11 @@ import UserNotifications
     private let currentBookmarkKey = "docsgrid_storage_bookmark"
     private let bookmarkListKey = "docsgrid_storage_bookmarks"
     private let phoneFolderBookmarkKey = "docsgrid_phone_browse_bookmark"
+    private let recoveryDestinationBookmarkKey = "docsgrid_ios_recovery_destination_bookmark"
     private var pendingFolderIsPhone = false
     private var pendingFolderIsAuxiliary = false
     private var pendingFolderIsExport = false
+    private var pendingFolderIsRecoveryDestination = false
     private var pendingFolderResult: FlutterResult?
     private var documentController: UIDocumentInteractionController?
     private var previewScopedURL: URL?
@@ -35,6 +37,7 @@ import UserNotifications
                 if call.method == "chooseFolder" ||
                     call.method == "choosePhoneFolder" ||
                     call.method == "chooseBackupExportFolder" ||
+                    call.method == "chooseIosRecoveryDestination" ||
                     call.method == "choosePdfRecoveryFolder" ||
                     call.method == "chooseBackupChainFolder" ||
                     call.method == "openPdf" {
@@ -96,7 +99,7 @@ import UserNotifications
         do {
             let args = call.arguments as? [String: Any] ?? [:]
             switch call.method {
-            case "chooseFolder", "choosePhoneFolder", "chooseBackupExportFolder", "choosePdfRecoveryFolder", "chooseBackupChainFolder":
+            case "chooseFolder", "choosePhoneFolder", "chooseBackupExportFolder", "choosePdfRecoveryFolder", "chooseBackupChainFolder", "chooseIosRecoveryDestination":
                 guard pendingFolderResult == nil else {
                     result(FlutterError(code: "BUSY", message: "Folder picker is already open.", details: nil))
                     return
@@ -104,12 +107,19 @@ import UserNotifications
                 pendingFolderResult = result
                 pendingFolderIsPhone = call.method == "choosePhoneFolder"
                 pendingFolderIsAuxiliary = call.method != "chooseFolder" && call.method != "choosePhoneFolder"
-                pendingFolderIsExport = call.method == "chooseBackupExportFolder"
+                pendingFolderIsRecoveryDestination = call.method == "chooseIosRecoveryDestination"
+                pendingFolderIsExport = call.method == "chooseBackupExportFolder" || pendingFolderIsRecoveryDestination
                 let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.folder], asCopy: false)
                 picker.delegate = self
                 picker.allowsMultipleSelection = false
                 picker.modalPresentationStyle = .formSheet
                 window?.rootViewController?.present(picker, animated: true)
+            case "getIosRecoveryDestination":
+                result(try selectedRecoveryDestination())
+            case "clearIosRecoveryDestination":
+                // Disconnect automatic copies only. Never delete external files.
+                UserDefaults.standard.removeObject(forKey: recoveryDestinationBookmarkKey)
+                result(true)
             case "getAccessibleScanRoots":
                 // iOS cannot enumerate all device storage. Only scan the
                 // independently granted Apple Files browsing folder.
@@ -468,6 +478,9 @@ import UserNotifications
         if let current = UserDefaults.standard.data(forKey: currentBookmarkKey), !values.contains(current) {
             values.append(current)
         }
+        if let recovery = UserDefaults.standard.data(forKey: recoveryDestinationBookmarkKey), !values.contains(recovery) {
+            values.append(recovery)
+        }
         return values
     }
 
@@ -564,8 +577,8 @@ import UserNotifications
     }
 
     private func isInsideAppContainer(_ url: URL) -> Bool {
-        let home = URL(fileURLWithPath: NSHomeDirectory()).standardizedFileURL.path
-        let path = url.standardizedFileURL.path
+        let home = URL(fileURLWithPath: NSHomeDirectory()).resolvingSymlinksInPath().standardizedFileURL.path
+        let path = url.resolvingSymlinksInPath().standardizedFileURL.path
         return path == home || path.hasPrefix(home + "/")
     }
 
@@ -590,6 +603,31 @@ import UserNotifications
             } else {
                 bookmarks.append(refreshed)
             }
+            UserDefaults.standard.set(bookmarks, forKey: bookmarkListKey)
+        }
+        return ["uri": root.absoluteString, "name": root.lastPathComponent]
+    }
+
+    private func selectedRecoveryDestination() throws -> [String: String]? {
+        guard let data = UserDefaults.standard.data(forKey: recoveryDestinationBookmarkKey) else { return nil }
+        var stale = false
+        let root = try URL(resolvingBookmarkData: data, options: [], relativeTo: nil,
+                           bookmarkDataIsStale: &stale)
+        let accessed = root.startAccessingSecurityScopedResource()
+        defer { if accessed { root.stopAccessingSecurityScopedResource() } }
+        guard accessed && !isInsideAppContainer(root) else {
+            throw storageError("Recovery folder access expired. Choose it again in Backup & Recovery.")
+        }
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: root.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+            throw storageError("Recovery folder is unavailable. Reconnect it or choose another location.")
+        }
+        if stale {
+            let updated = try root.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
+            UserDefaults.standard.set(updated, forKey: recoveryDestinationBookmarkKey)
+            var bookmarks = bookmarkDataList()
+            if let index = bookmarks.firstIndex(of: data) { bookmarks[index] = updated }
+            else { bookmarks.append(updated) }
             UserDefaults.standard.set(bookmarks, forKey: bookmarkListKey)
         }
         return ["uri": root.absoluteString, "name": root.lastPathComponent]
@@ -709,11 +747,11 @@ import UserNotifications
             coordinator.coordinate(writingItemAt: target, options: [], error: &coordinationError) { coordinated in
                 do {
                     guard !FileManager.default.fileExists(atPath: coordinated.path) else {
-                        throw storageError("An export with this name already exists. Nothing was replaced.")
+                        throw self.storageError("An export with this name already exists. Nothing was replaced.")
                     }
                     try FileManager.default.copyItem(at: source, to: temporary)
-                    guard try sha256Pdf(url: temporary) == digest else {
-                        throw storageError("Export checksum verification failed.")
+                    guard try self.sha256Pdf(url: temporary) == digest else {
+                        throw self.storageError("Export checksum verification failed.")
                     }
                     try FileManager.default.moveItem(at: temporary, to: coordinated)
                 } catch { failure = error }
@@ -877,9 +915,11 @@ import UserNotifications
         let isPhoneFolder = pendingFolderIsPhone
         let isAuxiliary = pendingFolderIsAuxiliary
         let isExport = pendingFolderIsExport
+        let isRecoveryDestination = pendingFolderIsRecoveryDestination
         pendingFolderIsPhone = false
         pendingFolderIsAuxiliary = false
         pendingFolderIsExport = false
+        pendingFolderIsRecoveryDestination = false
         do {
             let accessed = url.startAccessingSecurityScopedResource()
             defer { if accessed { url.stopAccessingSecurityScopedResource() } }
@@ -899,6 +939,9 @@ import UserNotifications
                 UserDefaults.standard.set(data, forKey: isPhoneFolder
                     ? phoneFolderBookmarkKey : currentBookmarkKey)
             }
+            if isRecoveryDestination {
+                UserDefaults.standard.set(data, forKey: recoveryDestinationBookmarkKey)
+            }
             callback(["uri": url.absoluteString, "name": url.lastPathComponent])
         } catch {
             callback(FlutterError(code: "PERMISSION", message: error.localizedDescription, details: nil))
@@ -911,6 +954,7 @@ import UserNotifications
         pendingFolderIsPhone = false
         pendingFolderIsAuxiliary = false
         pendingFolderIsExport = false
+        pendingFolderIsRecoveryDestination = false
         callback?(nil)
     }
 

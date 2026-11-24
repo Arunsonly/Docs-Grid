@@ -5,6 +5,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../core/database/app_database.dart';
 import '../../core/backup/backup_automation.dart';
@@ -52,6 +53,10 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
   List<BackupChainUsage> _manualBackupSets = const [];
   bool _backupUsageReady = false;
   DateTime? _lastDatabaseBackup;
+  String? _iosProtectionName;
+  String? _iosProtectionError;
+  DateTime? _iosExternalFullAt;
+  DateTime? _iosExternalDatabaseAt;
   double? _backupProgress;
 
   @override
@@ -63,6 +68,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
         widget.section == 'backup_restore') {
       unawaited(_refreshBackupUsage());
       unawaited(_refreshDatabaseStatus());
+      if (Platform.isIOS) unawaited(_refreshIosProtection());
     }
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
@@ -130,6 +136,59 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
       }
     } catch (_) {
       // Optional status must not block backup or recovery.
+    }
+  }
+
+  Future<void> _refreshIosProtection() async {
+    if (!Platform.isIOS) return;
+    try {
+      final folder = await StorageLocationService.instance.iosRecoveryDestination();
+      final prefs = await SharedPreferences.getInstance();
+      DateTime? verified(String type) {
+        if (folder == null || prefs.getString('docsgrid_ios_external_${type}_destination') != folder['uri']) return null;
+        return DateTime.tryParse(prefs.getString('docsgrid_ios_external_${type}_verified_at') ?? '')?.toLocal();
+      }
+      if (mounted) setState(() {
+        _iosProtectionName = folder?['name'];
+        _iosProtectionError = null;
+        _iosExternalFullAt = verified('full');
+        _iosExternalDatabaseAt = verified('database');
+      });
+    } catch (_) {
+      if (mounted) setState(() {
+        _iosProtectionName = null;
+        _iosProtectionError = 'Recovery folder unavailable. Reconnect it in Files.';
+        _iosExternalFullAt = null;
+        _iosExternalDatabaseAt = null;
+      });
+    }
+  }
+
+  Future<void> _chooseIosProtection() => _run(() async {
+    final chosen = await StorageLocationService.instance.chooseIosRecoveryDestination();
+    if (chosen == null || !mounted) return;
+    await _refreshIosProtection();
+    if (mounted) setState(() => _message = 'Recovery folder connected. Create a Full Backup to copy PDFs and metadata. Only verified exported files are protected.');
+  });
+
+  Future<void> _disconnectIosProtection() => _run(() async {
+    await StorageLocationService.instance.clearIosRecoveryDestination();
+    await _refreshIosProtection();
+    if (mounted) setState(() => _message = 'Recovery destination disconnected. Existing external ZIP files were not deleted.');
+  });
+
+  Future<String?> _publishIosProtection(File archive) async {
+    if (!Platform.isIOS) return null;
+    try {
+      final copied = await _tools.publishIosRecoveryArchive(archive);
+      await _refreshIosProtection();
+      return copied
+          ? 'An external copy passed checksum verification. Confirm cloud sync in Files if using iCloud.'
+          : 'Local ZIP only. Export outside DocsGrid before deleting the app.';
+    } catch (error) {
+      unawaited(DiagnosticLogStore.instance.recordError('iOS recovery export', error));
+      await _refreshIosProtection();
+      return 'External copy failed. Your verified local ZIP is safe; reconnect or export manually.';
     }
   }
 
@@ -212,6 +271,8 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
       await _tools.shareFile(archive.path, text: 'DocsGrid Full backup');
       return;
     }
+    final protectionResult = Platform.isIOS ? await _publishIosProtection(archive) : null;
+    if (!mounted) return;
     unawaited(_refreshBackupUsage());
     final export = await showDialog<bool>(context: context,
       builder: (ctx) => AlertDialog(
@@ -219,7 +280,8 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
         title: const Text('Backup Successful'),
         content: Text('${p.basename(archive.path)}\n'
             '${archiveBytes == null ? '' : 'Size: ${_formatSize(archiveBytes)}\n'}'
-            'Your Full ZIP passed verification. Keep a copy outside this phone.'),
+            'Your Full ZIP passed verification. Keep a copy outside this phone.'
+            '${protectionResult == null ? '' : '\n\n$protectionResult'}'),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx, false),
               child: const Text('Done')),
@@ -389,6 +451,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
     if (mounted) setState(() => _message = 'Creating Database Backup…');
     final archive = await _tools.createBackup(includePdfs: false);
     final completed = DateTime.now();
+    final protectionResult = Platform.isIOS ? await _publishIosProtection(archive) : null;
     try {
       await BackupAutomation.recordManualDatabaseBackup(archive, completed);
     } catch (_) {}
@@ -401,8 +464,9 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
       builder: (ctx) => AlertDialog(
         icon: const Icon(Icons.check_circle_outline),
         title: const Text('Database Backup Successful'),
-        content: const Text('Document records, folders and supported metadata '
-            'were saved. Actual PDF contents are not included.'),
+        content: Text('Document records, folders and supported metadata '
+            'were saved. Actual PDF contents are not included.'
+            '${protectionResult == null ? '' : '\n\n$protectionResult'}'),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Done')),
           FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Share Backup')),
@@ -1310,6 +1374,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state != AppLifecycleState.resumed) return;
     unawaited(_refreshDatabaseStatus());
+    if (Platform.isIOS) unawaited(_refreshIosProtection());
     if (!_awaitingAllFilesPermission) return;
     _awaitingAllFilesPermission = false;
     unawaited(() async {
@@ -1405,6 +1470,28 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
       ],
       if (widget.section == 'backup' || widget.section == 'restore' ||
           widget.section == 'backup_restore') ...[
+        if (Platform.isIOS) ...[
+          Card(child: Column(children: [
+            ListTile(leading: const Icon(Icons.cloud_upload_outlined),
+              title: const Text('Recovery Protection'),
+              subtitle: Text(_iosProtectionError ?? (_iosProtectionName == null
+                ? 'Not configured. Local files are removed by Delete App.'
+                : 'Destination: $_iosProtectionName\n'
+                  'Verified Full ZIP: ${_iosExternalFullAt?.toString().split('.')[0] ?? 'Not yet copied'}\n'
+                  'Verified Database ZIP: ${_iosExternalDatabaseAt?.toString().split('.')[0] ?? 'Not yet copied'}')),
+            ),
+            Padding(padding: const EdgeInsets.fromLTRB(16,0,16,12),
+              child: Wrap(spacing: 8, children: [
+                FilledButton.tonal(onPressed: _busy ? null : _chooseIosProtection,
+                    child: const Text('Choose Recovery Folder')),
+                if (_iosProtectionName != null || _iosProtectionError != null)
+                  TextButton(onPressed: _busy ? null : _disconnectIosProtection,
+                      child: const Text('Disconnect')),
+              ])),
+            const ListTile(subtitle: Text('Choose independent iCloud Drive or Files storage. Full ZIPs include PDFs; daily foreground Database ZIPs do not. Verify iCloud sync separately. New PDFs require a new Full Backup.')),
+          ])),
+          const SizedBox(height: 8),
+        ],
         Card(child: Column(children: [
           ListTile(
             leading: const Icon(Icons.archive_outlined),

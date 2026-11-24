@@ -605,6 +605,25 @@ class StorageLocationService {
   /// Select any readable PDF folder for recovery without changing the
   /// application's managed storage root or creating a destination folder.
   /// User-approved external SAF destination. Does not change Grid storage.
+  Future<Map<String, String>?> chooseIosRecoveryDestination() async {
+    if (!Platform.isIOS) return null;
+    final result = await _channel.invokeMapMethod<String, dynamic>('chooseIosRecoveryDestination');
+    if (result == null || result['uri'] is! String) return null;
+    return {'uri': result['uri'] as String, 'name': result['name'] as String? ?? 'Files'};
+  }
+
+  Future<Map<String, String>?> iosRecoveryDestination() async {
+    if (!Platform.isIOS) return null;
+    final result = await _channel.invokeMapMethod<String, dynamic>('getIosRecoveryDestination');
+    if (result == null || result['uri'] is! String) return null;
+    return {'uri': result['uri'] as String, 'name': result['name'] as String? ?? 'Files'};
+  }
+
+  Future<void> clearIosRecoveryDestination() async {
+    if (!Platform.isIOS) return;
+    await _channel.invokeMethod<bool>('clearIosRecoveryDestination');
+  }
+
   Future<Map<String, String>?> chooseBackupExportFolder() async {
     if (!Platform.isAndroid && !Platform.isIOS) {
       throw UnsupportedError('Backup export picker is unavailable on this platform.');

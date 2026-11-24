@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import '../diagnostics/diagnostic_log_store.dart';
 import 'dart:io';
@@ -173,6 +174,8 @@ class BackupAutomation {
             interval: const Duration(hours:24), retryCooldown: const Duration(hours:6))) {
           await _runForegroundBackup(includePdfs:false);
         }
+      } catch (error) {
+        unawaited(DiagnosticLogStore.instance.recordError('iOS foreground backup check', error));
       } finally { _iosForegroundBackupRunning = false; }
       return;
     }
@@ -220,6 +223,13 @@ class BackupAutomation {
             : archive.uri.pathSegments.last,
         'archiveBytes': await archive.length(),
       }));
+      if (Platform.isIOS) {
+        try {
+          await DocumentToolsService().publishIosRecoveryArchive(archive);
+        } catch (error) {
+          await DiagnosticLogStore.instance.recordError('iOS external database backup', error);
+        }
+      }
     } catch (error) {
       await DiagnosticLogStore.instance.recordError(
           'Foreground database backup', error);

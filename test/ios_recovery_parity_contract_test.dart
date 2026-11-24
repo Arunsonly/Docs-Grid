@@ -11,6 +11,11 @@ void main() {
     expect(host, contains('if !isAuxiliary'));
     expect(host, contains('if isExport && isInsideAppContainer'));
     expect(host, contains('exportVerifiedFile'));
+    expect(host, contains('recoveryDestinationBookmarkKey'));
+    expect(host, contains('if isRecoveryDestination'));
+    expect(tools, contains('publishIosRecoveryArchive'));
+    expect(tools, contains('External backup verification failed; local ZIP retained.'));
+    expect(host, contains('UserDefaults.standard.removeObject(forKey: recoveryDestinationBookmarkKey)'));
     expect(tools, contains('candidatesForRelink.length == 1 && !Platform.isIOS'));
     expect(repo, contains('_copyIosRecoveredPdf'));
     expect(repo, contains('Recovered PDF did not pass SHA-256 verification.'));
