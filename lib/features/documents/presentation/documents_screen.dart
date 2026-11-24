@@ -13,7 +13,6 @@ import '../data/grid_recent_history.dart';
 import '../data/phone_recent_history.dart';
 import '../data/phone_pdf_move_service.dart';
 import '../data/phone_pdf_delta.dart';
-import '../data/phone_ocr_search_index.dart';
 import '../data/phone_refresh_queue.dart';
 import '../data/phone_star_repository.dart';
 import '../data/phone_portable_state.dart';
@@ -25,7 +24,6 @@ import '../../categories/data/category_repository.dart';
 import '../../folders/data/folder_repository.dart';
 import '../../tools/document_tools_service.dart';
 import 'document_thumbnail.dart';
-import 'ocr_search_mode_control.dart';
 import 'phone_storage_browser_screen.dart';
 import 'recycle_bin_dialog.dart';
 import 'phone_move_folder_picker.dart';
@@ -35,7 +33,7 @@ import '../../../core/diagnostics/startup_timeline.dart';
 
 class DocumentsScreen extends StatefulWidget {
   const DocumentsScreen({super.key, this.favoritesOnly = false, this.recentOnly = false,
-    this.phoneOnly = false, this.ocrSearchAvailable = false,
+    this.phoneOnly = false,
     this.active = true, this.onBackAtRoot});
   final bool favoritesOnly;
   final bool recentOnly;
@@ -43,8 +41,6 @@ class DocumentsScreen extends StatefulWidget {
   /// Offstage tabs retain their state, but must not intercept Back or poll storage.
   final bool active;
   final VoidCallback? onBackAtRoot;
-  /// OCR remains internally compatible with prior indexes but is disabled by the app shell.
-  final bool ocrSearchAvailable;
 
   @override
   State<DocumentsScreen> createState() => _DocumentsScreenState();
@@ -60,24 +56,11 @@ class _DocumentsScreenState extends State<DocumentsScreen>
   final _categoryRepository = CategoryRepository();
   final _folderRepository = FolderRepository();
   final _tools = DocumentToolsService();
-  late final PhoneOcrSearchIndex _phoneOcrIndex;
   final _search = TextEditingController();
   final _scrollController = ScrollController();
   List<DocumentRecord> _documents = [];
   bool _loading = true;
   final bool _importing = false;
-  bool _searchInsideText = false;
-  bool _ocrIndexing = false;
-  bool _ocrIndexStarted = false;
-  int _ocrIndexEpoch = 0;
-  int _ocrIndexed = 0;
-  int _ocrIndexTotal = 0;
-  String? _ocrIndexMessage;
-  bool _phoneOcrBusy = false;
-  int _phoneOcrEpoch = 0;
-  int _phoneOcrDone = 0;
-  int _phoneOcrTotal = 0;
-  String? _phoneOcrMessage;
   bool _gridView = false;
   // Home search tabs are view state only. Neither storage index is mutated.
   bool _homeSearchPhoneSelected = true;
@@ -134,7 +117,6 @@ class _DocumentsScreenState extends State<DocumentsScreen>
     super.initState();
     if (_isStartupHome) StartupTimeline.mark('home_init');
     WidgetsBinding.instance.addObserver(this);
-    _phoneOcrIndex = PhoneOcrSearchIndex(_tools.extractPhonePdfTextFromUri);
     unawaited(_loadPhoneStarred());
     _storageChangesSubscription =
         StorageLocationService.instance.storageChanges.listen(
@@ -174,18 +156,6 @@ class _DocumentsScreenState extends State<DocumentsScreen>
   @override
   void didUpdateWidget(covariant DocumentsScreen oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.ocrSearchAvailable && !widget.ocrSearchAvailable) {
-      // Globally disabling OCR immediately returns every open search to names.
-      _ocrIndexEpoch++;
-      _phoneOcrEpoch++;
-      _phoneOcrIndex.clear();
-      _searchInsideText = false;
-      _ocrIndexStarted = false;
-      _ocrIndexMessage = null;
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) unawaited(_load());
-      });
-    }
     if (!oldWidget.active && widget.active &&
         _phoneRefreshPendingWhileHidden) {
       _phoneRefreshPendingWhileHidden = false;
@@ -198,116 +168,6 @@ class _DocumentsScreenState extends State<DocumentsScreen>
     }
   }
 
-  void _setOcrSearchMode(bool enabled) {
-    if (!widget.ocrSearchAvailable || _searchInsideText == enabled) return;
-    if (!enabled) {
-      _ocrIndexEpoch++;
-      _phoneOcrEpoch++;
-      _phoneOcrIndex.clear();
-    } // Cancel all on-device PDF/page OCR.
-    setState(() {
-      _searchInsideText = enabled;
-      _ocrIndexStarted = false;
-      _ocrIndexMessage = null;
-    });
-    _load();
-    if (enabled) {
-      unawaited(_beginOcrIndexing());
-      unawaited(_beginPhoneOcrIndexing());
-    }
-  }
-
-  Future<void> _beginOcrIndexing() async {
-    if (!mounted || !widget.ocrSearchAvailable || !_searchInsideText ||
-        _search.text.trim().isEmpty || _ocrIndexing || _ocrIndexStarted) return;
-    final run = ++_ocrIndexEpoch;
-    _ocrIndexStarted = true;
-    setState(() {
-      _ocrIndexing = true;
-      _ocrIndexed = 0;
-      _ocrIndexTotal = 0;
-      _ocrIndexMessage = 'Preparing on-device PDF text index…';
-    });
-    try {
-      final summary = await _tools.indexPendingPdfsForSearch(
-        shouldCancel: () => !mounted || !widget.ocrSearchAvailable ||
-            !_searchInsideText || run != _ocrIndexEpoch,
-        onProgress: (completed, total) {
-          if (!mounted || run != _ocrIndexEpoch) return;
-          setState(() { _ocrIndexed = completed; _ocrIndexTotal = total; });
-          // Refresh results incrementally, not once for every single PDF.
-          if (completed % 10 == 0 || completed == total) unawaited(_load());
-        },
-      );
-      if (mounted && run == _ocrIndexEpoch) {
-        setState(() => _ocrIndexMessage =
-            'OCR indexing finished: ${summary.indexed} indexed, '
-            '${summary.failed} unavailable/failed, ${summary.skipped} skipped.');
-      }
-    } on OcrIndexCancelled {
-      // Switching back to file names or leaving the screen cancels OCR work.
-    } catch (error) {
-      if (mounted && run == _ocrIndexEpoch) {
-        setState(() => _ocrIndexMessage = 'OCR indexing unavailable: $error');
-      }
-    } finally {
-      if (mounted) {
-        setState(() => _ocrIndexing = false);
-        if (run == _ocrIndexEpoch) {
-          unawaited(_load());
-        } else if (widget.ocrSearchAvailable && _searchInsideText &&
-            _search.text.trim().isNotEmpty) {
-          // Rapid mode toggles cannot strand an OCR query without indexing.
-          unawaited(_beginOcrIndexing());
-        }
-      }
-    }
-  }
-
-  Future<void> _beginPhoneOcrIndexing() async {
-    if (!mounted || !widget.ocrSearchAvailable || !_searchInsideText ||
-        _search.text.trim().isEmpty || _phoneOcrBusy || widget.phoneOnly) return;
-    final run = ++_phoneOcrEpoch;
-    setState(() {
-      _phoneOcrBusy = true;
-      _phoneOcrDone = 0;
-      _phoneOcrTotal = 0;
-      _phoneOcrMessage = null;
-    });
-    try {
-      final summary = await _phoneOcrIndex.indexEntries(
-        _phoneEntries,
-        shouldCancel: () => !mounted || !_searchInsideText ||
-            !widget.ocrSearchAvailable || run != _phoneOcrEpoch,
-        onProgress: (completed, total) {
-          if (!mounted || run != _phoneOcrEpoch) return;
-          setState(() {
-            _phoneOcrDone = completed;
-            _phoneOcrTotal = total;
-          });
-        },
-      );
-      if (mounted && run == _phoneOcrEpoch) {
-        setState(() => _phoneOcrMessage = summary.failed == 0
-            ? 'Phone OCR results ready'
-            : '${summary.failed} Phone PDFs could not be read.');
-      }
-    } on OcrIndexCancelled {
-      // Phone OCR text is temporary and never stored in the Grid database.
-    } catch (error) {
-      if (mounted && run == _phoneOcrEpoch) {
-        setState(() => _phoneOcrMessage = 'Phone OCR unavailable: $error');
-      }
-    } finally {
-      if (mounted) {
-        setState(() => _phoneOcrBusy = false);
-        if (run != _phoneOcrEpoch && _searchInsideText &&
-            widget.ocrSearchAvailable && _search.text.trim().isNotEmpty) {
-          unawaited(_beginPhoneOcrIndexing());
-        }
-      }
-    }
-  }
 
   Future<void> _restoreCachedHomeSnapshot() async {
     if (_isStartupHome) StartupTimeline.mark('home_cache_read_start');
@@ -372,10 +232,6 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       if (!mounted) return;
       _homePhoneSearchVisibleCount = _homePhoneSearchPageSize;
       _load();
-      if (_searchInsideText && widget.ocrSearchAvailable) {
-        unawaited(_beginOcrIndexing());
-        unawaited(_beginPhoneOcrIndexing());
-      }
     });
   }
 
@@ -532,9 +388,6 @@ class _DocumentsScreenState extends State<DocumentsScreen>
     _libraryRefreshDebounce?.cancel();
     _phoneRefreshDebounce?.cancel();
     _loadGeneration++;
-    _ocrIndexEpoch++;
-    _phoneOcrEpoch++;
-    _phoneOcrIndex.clear();
     _searchDebounce?.cancel();
     _search.removeListener(_onSearchChanged);
     _scrollController.removeListener(_onScroll);
@@ -553,24 +406,6 @@ class _DocumentsScreenState extends State<DocumentsScreen>
     if (_isStartupHome) StartupTimeline.mark('home_summary_start');
     final summaryFuture = _repository.dashboardSummary();
     try {
-      if (_searchInsideText && _search.text.trim().isNotEmpty) {
-        final allDocsFuture = _repository.list(recentOnly: widget.recentOnly);
-        final matchesFuture = _tools.searchText(_search.text);
-        final allDocs = await allDocsFuture;
-        final matches = await matchesFuture;
-        final matchedIds = matches.map((row) => row['id'] as String).toSet();
-        final docs = allDocs.where((document) =>
-          (!widget.favoritesOnly || document.isFavorite) &&
-          matchedIds.contains(document.id)).toList();
-        if (!mounted || generation != _loadGeneration) return;
-        setState(() {
-          _documents = docs;
-          _nextCursor = null;
-          _hasMore = false;
-          _loading = false;
-          _error = null;
-        });
-      } else {
         final page = await _repository.listPage(
           query: _search.text,
           favoritesOnly: widget.favoritesOnly,
@@ -585,7 +420,6 @@ class _DocumentsScreenState extends State<DocumentsScreen>
           _loading = false;
           _error = null;
         });
-      }
       if (_isStartupHome) StartupTimeline.mark('home_page_ready');
       // Summary is secondary UI. Update it when ready without delaying the
       // first page, and ignore stale completions after a newer refresh.
@@ -1201,10 +1035,6 @@ class _DocumentsScreenState extends State<DocumentsScreen>
     } finally {
       if (_isStartupHome) StartupTimeline.mark('home_phone_scan_finished');
       if (mounted) setState(() => _phoneScanLoading = false);
-      if (mounted && widget.ocrSearchAvailable && _searchInsideText &&
-          _search.text.trim().isNotEmpty) {
-        unawaited(_beginPhoneOcrIndexing());
-      }
       if (mounted) {
         if (_phoneScanPending) {
           _phoneScanPending = false;
@@ -1226,7 +1056,6 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         rootName: rootName, entries: entries, onOpenPdf: _openExternalStoragePdf,
         onMovePdf: _movePhonePdfToGrid,
         onMoveWithinPhone: _movePhonePdfWithinPhone,
-        ocrSearchAvailable: widget.ocrSearchAvailable,
         onRenamePdf: _renamePhonePdf,
         onSharePdf: _sharePhonePdf,
         onShareSelectedPdfs: _sharePhoneSelectedPdfs,
@@ -2858,7 +2687,6 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         onOpenPdf: _openExternalStoragePdf,
         onMovePdf: _movePhonePdfToGrid,
         onMoveWithinPhone: _movePhonePdfWithinPhone,
-        ocrSearchAvailable: widget.ocrSearchAvailable,
         onRenamePdf: _renamePhonePdf,
         onSharePdf: _sharePhonePdf,
         onShareSelectedPdfs: _sharePhoneSelectedPdfs,
@@ -2919,17 +2747,12 @@ class _DocumentsScreenState extends State<DocumentsScreen>
                   child: TextField(
                     controller: _search,
                     decoration: InputDecoration(
-                      hintText: _searchInsideText ? 'Search text inside PDFs' : 'Search PDF names',
+                      hintText: 'Search PDF names',
                       prefixIcon: const Icon(Icons.search),
                       suffixIconConstraints: const BoxConstraints(minHeight: 48, minWidth: 0),
                       suffixIcon: Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          if (widget.ocrSearchAvailable)
-                            OcrSearchModeControl(
-                              searchInsidePdf: _searchInsideText,
-                              onChanged: _setOcrSearchMode,
-                            ),
                           if (_search.text.isNotEmpty)
                             IconButton(
                               tooltip: 'Clear search',
@@ -2949,24 +2772,6 @@ class _DocumentsScreenState extends State<DocumentsScreen>
                   icon: Icon(_gridView ? Icons.view_list_outlined : Icons.grid_view_outlined),
                 ),
 
-              ],
-            ),
-          ),
-        if (!widget.favoritesOnly && widget.ocrSearchAvailable && _searchInsideText)
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                if (_ocrIndexing) LinearProgressIndicator(
-                  value: _ocrIndexTotal == 0 ? null : _ocrIndexed / _ocrIndexTotal,
-                ),
-                if (_ocrIndexing) const SizedBox(height: 6),
-                Text(_ocrIndexing
-                    ? 'Indexing PDF text locally: $_ocrIndexed / $_ocrIndexTotal'
-                    : _ocrIndexMessage ??
-                        'Enter a search term to index PDFs locally for OCR search.',
-                  style: Theme.of(context).textTheme.bodySmall),
               ],
             ),
           ),
@@ -3183,9 +2988,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
           ),
         if (!widget.favoritesOnly && _search.text.trim().isNotEmpty)
           Builder(builder: (context) {
-            final matches = _searchInsideText
-                ? _phoneOcrIndex.matches(_phoneEntries, _search.text)
-                : _phoneStorageSearchMatches(_search.text);
+            final matches = _phoneStorageSearchMatches(_search.text);
             final visibleCount = matches.length < _homePhoneSearchVisibleCount
                 ? matches.length : _homePhoneSearchVisibleCount;
             return Column(
@@ -3208,16 +3011,6 @@ class _DocumentsScreenState extends State<DocumentsScreen>
                   ]),
                 ),
                 if (_homeSearchPhoneSelected) ...[
-                  if (_searchInsideText && _phoneOcrBusy)
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-                      child: Text('Reading Phone PDFs locally: $_phoneOcrDone / $_phoneOcrTotal'),
-                    ),
-                  if (_searchInsideText && !_phoneOcrBusy && _phoneOcrMessage != null)
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-                      child: Text(_phoneOcrMessage!),
-                    ),
                   // Background reconciliation must never replace valid rows
                   // with an empty "Scanning..." card.
                   if (matches.isEmpty && _phoneScanLoading)
@@ -3233,13 +3026,11 @@ class _DocumentsScreenState extends State<DocumentsScreen>
                         ],
                       ),
                     )
-                  else if (matches.isEmpty && !(_searchInsideText && _phoneOcrBusy))
+                  else if (matches.isEmpty)
                     Padding(
                       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
                       child: Text(
-                        _searchInsideText
-                          ? 'No matching PDF text in Phone Storage.'
-                          : 'No matching PDFs in the scanned Phone Storage locations.',
+                        'No matching PDFs in the scanned Phone Storage locations.',
                         textAlign: TextAlign.center,
                       ),
                     ),
@@ -3268,7 +3059,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
                     child: Align(
                       alignment: Alignment.centerLeft,
                       child: Text(
-                        '${_searchInsideText ? 'Grid OCR' : 'Grid Storage'} · ${_documents.length}${_hasMore ? '+' : ''} matches',
+                        'Grid Storage · ${_documents.length}${_hasMore ? '+' : ''} matches',
                         style: Theme.of(context).textTheme.labelLarge,
                       ),
                     ),

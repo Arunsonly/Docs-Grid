@@ -12,14 +12,13 @@ import '../../core/backup/backup_automation.dart';
 import '../../core/diagnostics/diagnostic_log_store.dart';
 import '../../core/storage/byte_stream_file.dart';
 import '../../core/storage/storage_location_service.dart';
-import '../documents/data/document_repository.dart';
 import 'document_tools_service.dart';
 import 'backup_chain.dart';
 import 'pdf_recovery_failure_report.dart';
 import 'recovery_result_dialog.dart';
 
 class DocumentToolsScreen extends StatefulWidget {
-  const DocumentToolsScreen({super.key, this.quickAction, this.section = 'tools',
+  const DocumentToolsScreen({super.key, this.quickAction, this.section = 'backup_restore',
     this.service, this.forceAndroidBackupForTesting = false,
     this.initialRecoverySource});
   final String? quickAction;
@@ -40,13 +39,8 @@ class DocumentToolsScreen extends StatefulWidget {
 class _DocumentToolsScreenState extends State<DocumentToolsScreen>
     with WidgetsBindingObserver {
   late final DocumentToolsService _tools;
-  final _search = TextEditingController();
-  bool _searching = false;
-  int _searchGeneration = 0;
-  List<Map<String, Object?>> _results = [];
   bool _busy = false;
   String? _message;
-  bool _hasSearched = false;
   bool _awaitingAllFilesPermission = false;
   bool _resumeAutoDetect = true;
   Map<String, String>? _resumeRecoverySource;
@@ -1175,170 +1169,6 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
     ));
   }, recoveryOperation: true);
 
-  Future<void> _openSearchResult(Map<String, Object?> result) async {
-    final uri = result['storage_uri']?.toString() ?? '';
-    if (uri.isEmpty) return;
-    try {
-      await StorageLocationService.instance.openPdf(uri, gridPdf: true);
-    } catch (error) {
-      if (mounted) setState(() => _message = 'Could not open matching PDF: $error');
-    }
-  }
-
-  Future<void> _searchText() async {
-    final query = _search.text.trim();
-    if (_searching || query.isEmpty) return;
-    final generation = ++_searchGeneration;
-    setState(() {
-      _searching = true;
-      _message = null;
-    });
-    try {
-      final rows = await _tools.searchText(query);
-      if (!mounted || generation != _searchGeneration) return;
-      setState(() {
-        _results = rows;
-        _hasSearched = true;
-        _message = null;
-      });
-    } catch (error, stackTrace) {
-      // Keep the full diagnostic in logcat/Flutter logs. The visible message
-      // remains concise; swallowing this stack made native/plugin failures
-      // impossible to distinguish from widget lifecycle failures.
-      debugPrint('DocsGrid OCR search failed for query "$query": $error');
-      debugPrintStack(stackTrace: stackTrace);
-      if (mounted && generation == _searchGeneration) {
-        setState(() => _message = 'Text search failed. Please retry; diagnostic details were recorded.');
-      }
-    } finally {
-      if (mounted && generation == _searchGeneration) {
-        setState(() => _searching = false);
-      }
-    }
-  }
-
-  Future<void> _indexDocuments() => _run(() async {
-    final db = await AppDatabase.instance.database;
-    final rows = await db.query('documents',
-      columns: ['id', 'name', 'storage_uri', 'extracted_text_status'],
-      where: 'deleted_at IS NULL');
-    var done = 0;
-    var noText = 0;
-    var skipped = 0;
-    var alreadyIndexed = 0;
-    for (final row in rows) {
-      // Stop background OCR work when the owning route is dismissed.
-      if (!mounted) return;
-      if (row['extracted_text_status'] == 'indexed') {
-        alreadyIndexed++;
-        continue;
-      }
-      final uri = row['storage_uri'] as String?;
-      if (uri == null || uri.isEmpty) {
-        skipped++;
-        continue;
-      }
-      try {
-        final characters = await _tools.indexPdfTextFromUri(
-          row['id'] as String,
-          uri,
-          shouldCancel: () => !mounted,
-        );
-        if (characters == 0) {
-          noText++;
-        } else {
-          done++;
-        }
-      } on OcrIndexCancelled {
-        // Route disposal is an expected cancellation, not a failed document.
-        return;
-      } catch (error, stackTrace) {
-        skipped++;
-        debugPrint('DocsGrid OCR indexing failed for document ${row['id']}: $error');
-        debugPrintStack(stackTrace: stackTrace);
-      }
-    }
-    if (mounted) {
-      setState(() => _message =
-        'OCR indexing finished: $done searchable, $noText had no readable text, $alreadyIndexed already indexed, $skipped failed. '
-        'Scanned/image-only PDFs may need clearer pages or a supported OCR language.');
-    }
-  });
-
-
-  Future<void> _reviewDuplicateGroup(List<String> documentIds, String duplicateType) async {
-    if (documentIds.length < 2) return;
-    final db = await AppDatabase.instance.database;
-    final placeholders = List.filled(documentIds.length, '?').join(',');
-    final rows = await db.query('documents',
-      where: 'id IN ($placeholders) AND deleted_at IS NULL',
-      whereArgs: documentIds,
-      orderBy: 'created_at ASC');
-    final docs = rows.map(DocumentRecord.fromMap).toList();
-    if (docs.length < 2 || !mounted) return;
-    await showDialog<void>(context: context, builder: (dialogContext) => StatefulBuilder(
-      builder: (context, refresh) => AlertDialog(
-        title: Text('Duplicate PDFs · $duplicateType'),
-        content: SizedBox(width: 440, height: 380, child: Column(children: [
-          const Text('Review each matching PDF. Move unwanted copies to Recycle Bin one at a time.'),
-          const SizedBox(height: 8),
-          Expanded(child: docs.isEmpty
-            ? const Center(child: Text('No remaining duplicates in this group.'))
-            : ListView.separated(
-              itemCount: docs.length,
-              separatorBuilder: (_, _) => const Divider(height: 1),
-              itemBuilder: (context, index) {
-                final doc = docs[index];
-                return ListTile(
-                  contentPadding: EdgeInsets.zero,
-                  leading: const Icon(Icons.picture_as_pdf_outlined),
-                  title: Text('${doc.name}.pdf', maxLines: 1, overflow: TextOverflow.ellipsis),
-                  subtitle: Text(_formatSize(doc.sizeBytes)),
-                  onTap: () async {
-                    final uri = doc.storagePath;
-                    await StorageLocationService.instance.openPdf(uri, gridPdf: true);
-                  },
-                  trailing: PopupMenuButton<String>(
-                    onSelected: (action) async {
-                      if (action == 'open') {
-                        final uri = doc.storagePath;
-                        await StorageLocationService.instance.openPdf(uri, gridPdf: true);
-                      } else if (action == 'share') {
-                        await _tools.shareStoredPdf(doc.storagePath, '${doc.name}.pdf');
-                      } else if (action == 'trash') {
-                        final confirmed = await showDialog<bool>(
-                          context: dialogContext,
-                          builder: (confirmContext) => AlertDialog(
-                            title: const Text('Move this copy to Recycle Bin?'),
-                            content: Text('${doc.name}.pdf will remain recoverable in Recycle Bin.'),
-                            actions: [
-                              TextButton(onPressed: () => Navigator.pop(confirmContext, false), child: const Text('Cancel')),
-                              FilledButton(onPressed: () => Navigator.pop(confirmContext, true), child: const Text('Move')),
-                            ],
-                          ),
-                        );
-                        if (confirmed == true) {
-                          await DocumentRepository().moveToTrash(doc);
-                          refresh(() => docs.removeWhere((item) => item.id == doc.id));
-                          if (mounted) setState(() => _message = 'Moved one duplicate to Recycle Bin. Remaining matches stay open.');
-                        }
-                      }
-                    },
-                    itemBuilder: (_) => const [
-                      PopupMenuItem(value: 'open', child: Text('Open PDF')),
-                      PopupMenuItem(value: 'share', child: Text('Share PDF')),
-                      PopupMenuItem(value: 'trash', child: Text('Move this copy to Recycle Bin')),
-                    ],
-                  ),
-                );
-              },
-            )),
-        ])),
-        actions: [TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Back'))],
-      ),
-    ));
-  }
-
   String _formatSize(int bytes) {
     if (bytes < 1024) return '$bytes B';
     if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
@@ -1346,28 +1176,6 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
       return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
     }
     return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
-  }
-
-  Future<void> _showDuplicates() async {
-    final groups = await _tools.findDuplicateGroups();
-    if (!mounted) return;
-    await showDialog<void>(context: context, builder: (context) => AlertDialog(
-      title: const Text('Check Duplicate File'),
-      content: SizedBox(width: 420, child: groups.isEmpty
-        ? const Text('No duplicates found. Run OCR indexing first to detect matching scanned/text content.')
-        : ListView(shrinkWrap: true, children: groups.map((g) => ListTile(
-            leading: Icon(g['duplicate_type'] == 'SHA-256' ? Icons.fingerprint : Icons.text_snippet_outlined),
-            title: Text('${g['copies']} matching PDF files · ${g['duplicate_type']}'),
-            subtitle: Text((g['names'] ?? '').toString()),
-            trailing: const Icon(Icons.chevron_right),
-            onTap: () {
-              Navigator.pop(context);
-              final ids = (g['document_ids'] ?? '').toString().split(',').where((id) => id.isNotEmpty).toList();
-              _reviewDuplicateGroup(ids, g['duplicate_type'] as String);
-            },
-          )).toList())),
-      actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('Close'))],
-    ));
   }
 
   @override
@@ -1397,9 +1205,6 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    // Invalidate pending search completions before the route is deactivated.
-    _searchGeneration++;
-    _search.dispose();
     super.dispose();
   }
 
@@ -1413,51 +1218,6 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
         padding: const EdgeInsets.only(bottom: 12),
         child: Text(_message!, style: Theme.of(context).textTheme.bodyMedium),
       ),
-      if (widget.section == 'tools') ...[
-        Card(child: Column(children: [
-          ListTile(leading: const Icon(Icons.text_snippet_outlined),
-            title: const Text('OCR Search Inside PDF'),
-            trailing: IconButton(tooltip: 'Start indexing', onPressed: _busy ? null : _indexDocuments,
-              icon: const Icon(Icons.play_arrow))),
-          Padding(padding: const EdgeInsets.fromLTRB(16, 0, 16, 16), child: Column(children: [
-            TextField(controller: _search, decoration: InputDecoration(
-              labelText: 'Search text inside indexed PDFs',
-              suffixIcon: IconButton(
-                key: const ValueKey('ocr-search-button'),
-                onPressed: _searching ? null : _searchText,
-                icon: _searching
-                    ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
-                    : const Icon(Icons.search))),
-              onSubmitted: (_) => _searchText()),
-            const SizedBox(height: 6),
-            const Align(
-              alignment: Alignment.centerLeft,
-              child: Text(
-                'OCR languages: Android supports English and Hindi. iPhone currently supports Latin-script text only.',
-                style: TextStyle(fontSize: 12),
-              ),
-            ),
-            if (_results.isNotEmpty) ...[
-              const SizedBox(height: 8),
-              ..._results.map((r) => ListTile(dense: true,
-                leading: const Icon(Icons.picture_as_pdf_outlined),
-                title: Text((r['name'] ?? '').toString()),
-                subtitle: Text('Found on page ${r['match_page'] ?? 1} · Tap to open PDF'),
-                trailing: IconButton(tooltip: 'Open PDF', icon: const Icon(Icons.open_in_new), onPressed: () => _openSearchResult(r)),
-                onTap: () => _openSearchResult(r))),
-            ] else if (_hasSearched && _search.text.trim().isNotEmpty) ...[
-              const SizedBox(height: 8),
-              const Align(alignment: Alignment.centerLeft,
-                child: Text('No match found in indexed PDFs.')),
-            ],
-          ])),
-          const Divider(height: 1),
-          ListTile(leading: const Icon(Icons.copy_all_outlined),
-            title: const Text('Duplicate review'),
-            trailing: const Icon(Icons.chevron_right),
-            onTap: _busy ? null : _showDuplicates),
-        ])),
-      ],
       if (widget.section == 'backup' || widget.section == 'restore' ||
           widget.section == 'backup_restore') ...[
         if (Platform.isIOS) ...[

@@ -27,33 +27,23 @@ void main() {
     expect(home, contains('Phone Storage'));
     expect(home, contains('_search.text.trim().isEmpty)'));
     expect(home, contains('if (!widget.favoritesOnly && _search.text.trim().isNotEmpty)'));
-    expect(home.indexOf('OcrSearchModeControl('),
-        lessThan(home.indexOf('final matches = _searchInsideText')));
+    expect(home, isNot(contains('OcrSearchModeControl(')));
   });
 
-  test('Grid OCR mode does not run the filename filter on text matches', () {
-    final grid = File('lib/features/folders/presentation/folders_screen.dart')
-        .readAsStringSync();
-    expect(grid, contains('_searchGridOcr(query)'));
-    expect(grid, contains('_ocrTools.searchText(query)'));
-    expect(grid, contains('query.isEmpty || _ocrSelected ||'));
-    expect(grid, contains('if (widget.ocrSearchAvailable)'));
+  test('Grid uses filename queries and retains folder matching', () {
+    final grid = File('lib/features/folders/presentation/folders_screen.dart').readAsStringSync();
+    expect(grid, contains('_documents.list(query: query)'));
+    expect(grid, contains('folder.name.toLowerCase().contains(query)'));
+    expect(grid, contains('document.name.toLowerCase().contains(query)'));
+    expect(grid, isNot(contains('OcrSearchModeControl(')));
   });
 
-  test('Phone and Home OCR use transient Phone text and no popup chooser', () {
-    final control = File(
-      'lib/features/documents/presentation/ocr_search_mode_control.dart')
-        .readAsStringSync();
-    expect(control, contains('onTap: () => onChanged(!searchInsidePdf)'));
-    expect(control, isNot(contains('PopupMenuButton')));
-    final phone = File(
-      'lib/features/documents/presentation/phone_storage_browser_screen.dart')
-        .readAsStringSync();
-    expect(phone, contains('PhoneOcrSearchIndex('));
-    expect(phone, contains('_ocrIndex.matches(_pdfs, query)'));
-    final home = File(
-      'lib/features/documents/presentation/documents_screen.dart')
-        .readAsStringSync();
-    expect(home, contains('_phoneOcrIndex.matches(_phoneEntries, _search.text)'));
+  test('Phone and Home retain filename search without OCR controls', () {
+    final phone = File('lib/features/documents/presentation/phone_storage_browser_screen.dart').readAsStringSync();
+    final home = File('lib/features/documents/presentation/documents_screen.dart').readAsStringSync();
+    expect(phone, contains('Search phone folders or PDF names'));
+    expect(phone, contains('name.contains(query)'));
+    expect(phone, isNot(contains('PhoneOcrSearchIndex')));
+    expect(home, contains('_phoneStorageSearchMatches(_search.text)'));
   });
 }

@@ -199,48 +199,6 @@ jobs:
           gradle.write_text(s)
           print(f'Enabled core library desugaring in {gradle}')
           PY
-      - name: Include the Devanagari OCR engine used by DocsGrid in Release builds
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          import re
-          candidates = [Path('android/app/build.gradle.kts'), Path('android/app/build.gradle')]
-          gradle = next((path for path in candidates if path.exists()), None)
-          if gradle is None:
-              raise SystemExit('Generated Android app Gradle file is missing')
-          source = gradle.read_text()
-          # DocsGrid requests TextRecognitionScript.devanagiri at runtime.
-          # Unlike unused optional scripts, this ML Kit package must be
-          # installed, not silenced via -dontwarn.
-          if gradle.suffix == '.kts':
-              dependency = 'implementation("com.google.mlkit:text-recognition-devanagari:16.0.0")'
-              proguard = 'proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")'
-          else:
-              dependency = "implementation 'com.google.mlkit:text-recognition-devanagari:16.0.0'"
-              proguard = "proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'"
-          if dependency not in source:
-              match = re.search(r'dependencies\s*\{', source)
-              if match:
-                  source = source[:match.end()] + '\n    ' + dependency + source[match.end():]
-              else:
-                  source += '\ndependencies {\n    ' + dependency + '\n}\n'
-          source, count = re.subn(
-              r'(release\s*\{)',
-              lambda match: match.group(1) + '\n            ' + proguard,
-              source, count=1,
-          )
-          if count != 1:
-              raise SystemExit('Could not find the release build type')
-          gradle.write_text(source)
-          rules = Path('android/app/proguard-rules.pro')
-          rules.write_text('''# Optional ML Kit scripts never invoked by DocsGrid.
-          # DO NOT silence Devanagari: DocsGrid uses it for Hindi OCR.
-          -dontwarn com.google.mlkit.vision.text.chinese.**
-          -dontwarn com.google.mlkit.vision.text.japanese.**
-          -dontwarn com.google.mlkit.vision.text.korean.**
-          ''')
-          print('Preserved Devanagari OCR dependency; scoped optional R8 rules.')
-          PY
       - name: Configure Android storage and notification permissions
         run: |
           python3 - <<'PY'
@@ -519,7 +477,7 @@ jobs:
           PY
       - name: Install iOS Files host integration
         run: cp platform/ios/AppDelegate.swift ios/Runner/AppDelegate.swift
-      - name: Set iOS deployment target for on-device ML Kit
+      - name: Set existing iOS deployment target
         run: |
           python3 - <<'PY'
           from pathlib import Path

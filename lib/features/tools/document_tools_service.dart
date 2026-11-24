@@ -2,16 +2,13 @@ import '../../core/database/document_defaults.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:isolate';
 import 'package:flutter/material.dart';
 
 import 'package:archive/archive.dart';
 import 'package:archive/archive_io.dart' show InputFileStream, OutputFileStream, ZipFileEncoder;
 import 'package:crypto/crypto.dart';
-import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
-import 'package:pdfx/pdfx.dart' as pdfx;
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite/sqflite.dart';
@@ -37,32 +34,6 @@ import 'portable_snapshot_retention.dart';
 import 'portable_snapshot_rows_validator.dart';
 
 
-/// Pure, isolate-safe OCR grouping. Input contains only SQLite scalar values;
-/// this function never touches plugins, files, widgets, or database handles.
-List<Map<String, Object?>> _groupOcrDuplicateRows(
-  List<Map<String, Object?>> rows,
-) {
-  final groups = <String, List<Map<String, Object?>>>{};
-  for (final row in rows) {
-    final normalized = DocumentToolsService.normalizeDuplicateText(
-      row['extracted_text']?.toString() ?? '',
-    );
-    if (normalized.length < 80) continue;
-    final key = sha256.convert(utf8.encode(normalized)).toString();
-    groups.putIfAbsent(key, () => []).add(row);
-  }
-  return groups.entries
-      .where((entry) => entry.value.length > 1)
-      .map((entry) => <String, Object?>{
-            'group_key': entry.key,
-            'duplicate_type': 'OCR text',
-            'copies': entry.value.length,
-            'document_ids': entry.value.map((row) => row['id']).join(','),
-            'names': entry.value.map((row) => row['name']).join(' | '),
-          })
-      .toList();
-}
-
 /// Restore behavior for portable DocsGrid archives.
 enum BackupRestoreMode { merge, fullReplacement, selective }
 
@@ -78,16 +49,7 @@ enum BackupRestoreSection {
   ocrIndexes,
 }
 
-/// Results of user-initiated, on-device PDF OCR indexing.
-class OcrSearchIndexSummary {
-  const OcrSearchIndexSummary({required this.indexed, required this.failed,
-    required this.skipped});
-  final int indexed;
-  final int failed;
-  final int skipped;
-}
-
-/// Local-only utilities for indexing, scanning, sharing and portable backups.
+/// Local-only utilities for sharing, recovery and portable backups.
 /// This service never uploads document contents to a remote server.
 class DocumentToolsService {
   DocumentToolsService({AppDatabase? database,
@@ -115,17 +77,6 @@ class DocumentToolsService {
   @visibleForTesting
   static String safeRestorePathToken(String value) =>
       sha256.convert(utf8.encode(value)).toString();
-
-  /// Escapes text for a literal SQLite LIKE substring query.
-  @visibleForTesting
-  static String escapeLikeQuery(String value) {
-    final slash = String.fromCharCode(92);
-    return value
-        .replaceAll(slash, '$slash$slash')
-        .replaceAll('%', '$slash%')
-        .replaceAll('_', '${slash}_');
-  }
-  static final Set<String> _indexingDocumentIds = <String>{};
 
   /// Whitelisted legacy library locations. Recovery must never broaden this
   /// list to the Phone tab's general shared-storage roots.
@@ -158,34 +109,6 @@ class DocumentToolsService {
       .map((segment) => segment.trim())
       .where((segment) => segment.isNotEmpty)
       .join('/');
-
-  /// Normalizes OCR text for exact-content duplicate comparison.
-  /// Keeps letters and numbers from all scripts, including Devanagari.
-  @visibleForTesting
-  static String normalizeDuplicateText(String raw) => raw
-      .toLowerCase()
-      .replaceAll(RegExp(r'--- page \d+ ---', caseSensitive: false), ' ')
-      .replaceAll(RegExp(r'[^\p{L}\p{M}\p{N}]+', unicode: true), ' ')
-      .trim()
-      .replaceAll(RegExp(r'\s+'), ' ');
-
-  /// Finds exact file duplicates and OCR-text duplicates locally.
-  Future<List<Map<String, Object?>>> findDuplicateGroups() async {
-    final db = await _database.database;
-    final exact = await _verifiedExactDuplicateGroups();
-    final indexed = await db.rawQuery('''
-      SELECT d.id, d.name, i.extracted_text
-      FROM documents d JOIN document_text_index i ON i.document_id = d.id
-      WHERE d.deleted_at IS NULL AND i.extracted_text IS NOT NULL
-    ''');
-    // OCR text normalization and digest grouping are CPU-bound pure Dart
-    // work. Run them off the UI isolate; database and platform file access
-    // remain on the main isolate and are completed before this hand-off.
-    final ocr = await Isolate.run(() => _groupOcrDuplicateRows(indexed));
-    final groups = <Map<String, Object?>>[...exact, ...ocr];
-    groups.sort((a, b) => (b['copies'] as int).compareTo(a['copies'] as int));
-    return groups;
-  }
 
   Future<List<Map<String, Object?>>> _verifiedExactDuplicateGroups() async {
     final db = await _database.database;
@@ -244,348 +167,6 @@ class DocumentToolsService {
     // Deliberately do not delete files. User must review each duplicate and
     // use the normal Recycle Bin flow so original files remain recoverable.
     throw StateError('Use Recycle Bin to remove reviewed copies individually. No file was deleted.');
-  }
-
-  /// Only call after the user explicitly selects OCR mode and enters a query.
-  /// Merely enabling OCR in Settings must never scan or read PDF contents.
-  /// Existing successful/empty indexes are reused; unreadable PDFs are skipped.
-  Future<OcrSearchIndexSummary> indexPendingPdfsForSearch({
-    bool Function()? shouldCancel,
-    void Function(int completed, int total)? onProgress,
-  }) async {
-    final db = await _database.database;
-    final rows = await db.query(
-      'documents',
-      columns: ['id', 'storage_uri', 'extracted_text_status'],
-      where: "deleted_at IS NULL AND (extracted_text_status IS NULL OR "
-          "extracted_text_status IN ('pending', 'failed', 'indexing'))",
-      orderBy: 'created_at ASC',
-    );
-    final pending = rows.where((row) {
-      final uri = row['storage_uri'] as String?;
-      return uri != null && uri.isNotEmpty && !uri.startsWith('missing://');
-    }).toList();
-    var indexed = 0;
-    var failed = 0;
-    var skipped = 0;
-    for (var i = 0; i < pending.length; i++) {
-      if (shouldCancel?.call() ?? false) throw const OcrIndexCancelled();
-      final row = pending[i];
-      try {
-        await indexPdfTextFromUri(
-          row['id'] as String,
-          row['storage_uri'] as String,
-          shouldCancel: shouldCancel,
-        );
-        indexed++;
-      } on OcrIndexCancelled {
-        rethrow;
-      } catch (_) {
-        // A missing, revoked or damaged PDF must never interrupt other results.
-        failed++;
-      }
-      if (shouldCancel?.call() ?? false) throw const OcrIndexCancelled();
-      onProgress?.call(i + 1, pending.length);
-    }
-    skipped = rows.length - pending.length;
-    return OcrSearchIndexSummary(indexed: indexed, failed: failed, skipped: skipped);
-  }
-
-  Future<int> indexPdfText(
-    String documentId,
-    String path, {
-    bool Function()? shouldCancel,
-  }) async {
-    if (!_indexingDocumentIds.add(documentId)) {
-      throw StateError('This document is already being indexed.');
-    }
-    try {
-      final db = await _database.database;
-      final previousIndex = await db.query(
-        'document_text_index',
-        columns: ['document_id'],
-        where: 'document_id = ?',
-        whereArgs: [documentId],
-        limit: 1,
-      );
-      try {
-        await db.update(
-          'documents',
-          {'extracted_text_status': 'indexing'},
-          where: 'id = ? AND deleted_at IS NULL',
-          whereArgs: [documentId],
-        );
-        return await _indexPdfTextInternal(documentId, path, shouldCancel: shouldCancel);
-      } catch (_) {
-        // Keep an older successful index usable if a re-index attempt fails.
-        try {
-          await db.update(
-            'documents',
-            {'extracted_text_status': previousIndex.isEmpty ? 'failed' : 'indexed'},
-            where: 'id = ? AND deleted_at IS NULL',
-            whereArgs: [documentId],
-          );
-        } catch (_) {
-          // Preserve the original OCR failure if status recovery also fails.
-        }
-        rethrow;
-      }
-    } finally {
-      _indexingDocumentIds.remove(documentId);
-    }
-  }
-
-  Future<int> _indexPdfTextInternal(
-    String documentId,
-    String path, {
-    bool Function()? shouldCancel,
-  }) async {
-    final db = await _database.database;
-    final documentRows = await db.query(
-      'documents',
-      columns: ['id'],
-      where: 'id = ? AND deleted_at IS NULL',
-      whereArgs: [documentId],
-      limit: 1,
-    );
-    if (documentRows.isEmpty) throw StateError('Document no longer exists in the library.');
-    final file = File(path);
-    if (!await file.exists()) throw StateError('PDF is not available on this device.');
-    final header = await file.openRead(0, 5).fold<List<int>>(<int>[], (a, b) => a..addAll(b));
-    if (header.length < 5 || String.fromCharCodes(header) != '%PDF-') {
-      throw StateError('The selected file is not a valid PDF.');
-    }
-    final document = await pdfx.PdfDocument.openFile(path);
-    final pageCount = document.pagesCount;
-    TextRecognizer? recognizer;
-    TextRecognizer? devanagariRecognizer;
-    final pages = StringBuffer();
-    try {
-      if (shouldCancel?.call() ?? false) throw const OcrIndexCancelled();
-      recognizer = TextRecognizer(script: TextRecognitionScript.latin);
-      if (Platform.isAndroid) {
-        devanagariRecognizer = TextRecognizer(script: TextRecognitionScript.devanagiri);
-      }
-      for (var pageNumber = 1; pageNumber <= document.pagesCount; pageNumber++) {
-        if (shouldCancel?.call() ?? false) throw const OcrIndexCancelled();
-        final page = await document.getPage(pageNumber);
-        try {
-          final rendered = await page.render(
-            width: (page.width * 1.5).clamp(900, 1800).toDouble(),
-            height: (page.height * 1.5).clamp(900, 2400).toDouble(),
-            format: pdfx.PdfPageImageFormat.png,
-          );
-          if (shouldCancel?.call() ?? false) throw const OcrIndexCancelled();
-          if (rendered == null) continue;
-          final temp = await getTemporaryDirectory();
-          final image = File(p.join(temp.path, 'ocr_${_uuid.v4()}.png'));
-          try {
-            await image.writeAsBytes(rendered.bytes, flush: true);
-            final input = InputImage.fromFilePath(image.path);
-            final latinResult = await recognizer.processImage(input);
-            if (shouldCancel?.call() ?? false) throw const OcrIndexCancelled();
-            final extracted = <String>[latinResult.text];
-            if (devanagariRecognizer != null) {
-              final devanagariResult = await devanagariRecognizer.processImage(input);
-              if (shouldCancel?.call() ?? false) throw const OcrIndexCancelled();
-              if (devanagariResult.text.isNotEmpty) extracted.add(devanagariResult.text);
-            }
-            final pageText = extracted.where((value) => value.trim().isNotEmpty).join('\n');
-            pages.write('--- Page $pageNumber ---\n$pageText\n\n');
-          } finally {
-            if (await image.exists()) await image.delete();
-          }
-        } finally {
-          await page.close();
-        }
-      }
-    } finally {
-      // A failure while closing one native resource must never prevent the
-      // remaining recognizer/PDF handles from being released.
-      try {
-        await recognizer?.close();
-      } finally {
-        try {
-          await devanagariRecognizer?.close();
-        } finally {
-          await document.close();
-        }
-      }
-    }
-    if (shouldCancel?.call() ?? false) throw const OcrIndexCancelled();
-    final text = pages.toString().trim();
-    await db.transaction((txn) async {
-      await txn.insert('document_text_index', {
-        'document_id': documentId,
-        'extracted_text': text,
-        'indexed_at': DateTime.now().toUtc().toIso8601String(),
-        'page_count': pageCount,
-      }, conflictAlgorithm: ConflictAlgorithm.replace);
-      await txn.update(
-        'documents',
-        {'extracted_text_status': text.isEmpty ? 'empty' : 'indexed'},
-        where: 'id = ? AND deleted_at IS NULL',
-        whereArgs: [documentId],
-      );
-    });
-    return text.length;
-  }
-
-
-  /// Reads a Phone PDF only after the user explicitly selects OCR Search.
-  /// No document row, OCR database entry or network upload is created.
-  /// Original PDF bytes remain unchanged, including on cancellation.
-  Future<String> extractPhonePdfTextFromUri(
-    String storageUri, {
-    bool Function()? shouldCancel,
-  }) async {
-    if (shouldCancel?.call() ?? false) throw const OcrIndexCancelled();
-    File source;
-    File? staged;
-    if (storageUri.startsWith('content://') ||
-        storageUri.startsWith('file://')) {
-      final temporary = await getTemporaryDirectory();
-      staged = File(p.join(temporary.path, 'phone_ocr_${_uuid.v4()}.pdf'));
-      source = staged;
-      try {
-        await StorageLocationService.instance.copyPdfToPath(
-          sourceUri: storageUri,
-          destinationPath: source.path,
-        );
-      } catch (_) {
-        try { if (await source.exists()) await source.delete(); } catch (_) {}
-        rethrow;
-      }
-    } else {
-      source = File(storageUri);
-    }
-
-    pdfx.PdfDocument? document;
-    TextRecognizer? latin;
-    TextRecognizer? devanagari;
-    final buffer = StringBuffer();
-    try {
-      if (shouldCancel?.call() ?? false) throw const OcrIndexCancelled();
-      if (!await source.exists()) {
-        throw StateError('Phone PDF is no longer accessible.');
-      }
-      final header = await source.openRead(0, 5)
-          .fold<List<int>>(<int>[], (bytes, next) => bytes..addAll(next));
-      if (header.length < 5 || String.fromCharCodes(header) != '%PDF-') {
-        throw StateError('The Phone file is not a valid PDF.');
-      }
-      document = await pdfx.PdfDocument.openFile(source.path);
-      latin = TextRecognizer(script: TextRecognitionScript.latin);
-      if (Platform.isAndroid) {
-        devanagari = TextRecognizer(script: TextRecognitionScript.devanagiri);
-      }
-      for (var number = 1; number <= document.pagesCount; number++) {
-        if (shouldCancel?.call() ?? false) throw const OcrIndexCancelled();
-        final page = await document.getPage(number);
-        try {
-          final rendered = await page.render(
-            width: (page.width * 1.5).clamp(900, 1800).toDouble(),
-            height: (page.height * 1.5).clamp(900, 2400).toDouble(),
-            format: pdfx.PdfPageImageFormat.png,
-          );
-          if (rendered == null) continue;
-          if (shouldCancel?.call() ?? false) throw const OcrIndexCancelled();
-          final tempDir = await getTemporaryDirectory();
-          final image = File(p.join(tempDir.path, 'phone_ocr_page_${_uuid.v4()}.png'));
-          try {
-            await image.writeAsBytes(rendered.bytes, flush: true);
-            final input = InputImage.fromFilePath(image.path);
-            final latinText = await latin.processImage(input);
-            if (shouldCancel?.call() ?? false) throw const OcrIndexCancelled();
-            final pieces = <String>[latinText.text];
-            if (devanagari != null) {
-              final hindiText = await devanagari.processImage(input);
-              if (shouldCancel?.call() ?? false) throw const OcrIndexCancelled();
-              if (hindiText.text.trim().isNotEmpty) pieces.add(hindiText.text);
-            }
-            buffer.write('--- Page $number ---\\n');
-            buffer.writeln(pieces.where((value) => value.trim().isNotEmpty)
-                .join('\\n'));
-          } finally {
-            try { if (await image.exists()) await image.delete(); } catch (_) {}
-          }
-        } finally {
-          await page.close();
-        }
-      }
-      if (shouldCancel?.call() ?? false) throw const OcrIndexCancelled();
-      return buffer.toString();
-    } finally {
-      try {
-        await latin?.close();
-      } finally {
-        try {
-          await devanagari?.close();
-        } finally {
-          try {
-            await document?.close();
-          } finally {
-            if (staged != null) {
-              try { if (await staged.exists()) await staged.delete(); } catch (_) {}
-            }
-          }
-        }
-      }
-    }
-  }
-
-  Future<int> indexPdfTextFromUri(
-    String documentId,
-    String storageUri, {
-    bool Function()? shouldCancel,
-  }) async {
-    if (storageUri.startsWith('content://') || storageUri.startsWith('file://')) {
-      final temp = await getTemporaryDirectory();
-      final file = File(p.join(temp.path, 'ocr_source_${_uuid.v4()}.pdf'));
-      try {
-        await StorageLocationService.instance.copyPdfToPath(
-          sourceUri: storageUri,
-          destinationPath: file.path,
-        );
-        if (shouldCancel?.call() ?? false) throw const OcrIndexCancelled();
-        return await indexPdfText(documentId, file.path, shouldCancel: shouldCancel);
-      } finally {
-        if (await file.exists()) await file.delete();
-      }
-    }
-    final path = storageUri.startsWith('file://')
-        ? Uri.parse(storageUri).toFilePath()
-        : storageUri;
-    return indexPdfText(documentId, path, shouldCancel: shouldCancel);
-  }
-
-  Future<List<Map<String, Object?>>> searchText(String query) async {
-    final q = query.trim();
-    if (q.isEmpty) return [];
-    final db = await _database.database;
-    final rows = await db.rawQuery('''
-      SELECT d.id, d.name, d.storage_uri, i.extracted_text,
-             instr(lower(i.extracted_text), lower(?)) AS match_position
-      FROM document_text_index i
-      JOIN documents d ON d.id = i.document_id
-      WHERE d.deleted_at IS NULL
-        AND instr(lower(i.extracted_text), lower(?)) > 0
-      ORDER BY match_position ASC, d.name COLLATE NOCASE
-    ''', [q, q]);
-    // sqflite may return immutable QueryRow instances. Copy each result before
-    // enriching it with the resolved OCR page number.
-    final results = rows.map((row) => Map<String, Object?>.from(row)).toList();
-    // OCR stores an explicit page marker before every page. Resolve the page
-    // containing the first match so search results are actionable, not just a
-    // generic "text found" indication.
-    for (final row in results) {
-      final text = row['extracted_text']?.toString() ?? '';
-      final position = (row['match_position'] as int? ?? 1) - 1;
-      final prefix = text.substring(0, position.clamp(0, text.length));
-      final markers = RegExp(r'--- Page (\d+) ---').allMatches(prefix).toList();
-      row['match_page'] = markers.isEmpty ? 1 : int.parse(markers.last.group(1)!);
-    }
-    return results;
   }
 
   Future<void> shareStoredPdf(String storageUri, String displayName) async {
@@ -4480,9 +4061,3 @@ class _ValidatedBackup {
 
 
 
-/// Raised when the OCR owner route is dismissed before indexing completes.
-class OcrIndexCancelled implements Exception {
-  const OcrIndexCancelled();
-  @override
-  String toString() => 'OCR indexing was cancelled because its screen was closed.';
-}
