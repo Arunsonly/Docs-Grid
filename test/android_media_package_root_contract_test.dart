@@ -31,6 +31,29 @@ void main() {
     expect(native, isNot(contains('val root = java.io.File(mediaRoot, "com.docsgrid")')));
   });
 
+  test('operational folders are private for both local and SAF storage', () {
+    for (final name in ['Cache', 'Thumbnails', 'Temp', 'Logs', 'Exports']) {
+      expect(native, isNot(contains('java.io.File(system, "$name")')));
+      expect(native, isNot(contains('ensureDirectory(systemUri, "$name")')));
+    }
+    expect(native, contains('selectedLocations.putAll(privateOperationalLocations())'));
+    expect(native, contains(') + privateOperationalLocations())'));
+    expect(native, contains('java.io.File(filesDir, "docsgrid")'));
+    expect(native, contains('java.io.File(cacheDir, "docsgrid/Temp")'));
+    expect(native, contains('pruneEmptyLegacyOperationalFolders(system)'));
+    expect(native, contains('directory.list()?.isEmpty() == true'));
+    expect(native, contains('directory.canonicalFile == directory.absoluteFile'));
+    final logs = File('lib/core/diagnostics/diagnostic_log_store.dart')
+        .readAsStringSync();
+    expect(logs, contains('_defaultPrivateDirectory, () async => null,'));
+    expect(logs, isNot(contains("locations['logsUri']")));
+    final tools = File('lib/features/tools/document_tools_service.dart')
+        .readAsStringSync();
+    expect(tools, contains('final temp = await getTemporaryDirectory();'));
+    expect(tools, contains('final temporaryDirectory = await getTemporaryDirectory();'));
+    expect(tools, isNot(contains("['tempUri']")));
+  });
+
   test('Phone MediaStore and recursive browsing never duplicate new Grid files', () {
     expect(native, contains('val activeManagedRoot = "android/media/'));
     expect(native, contains(r'normalized.startsWith("$activeManagedRoot/")'));

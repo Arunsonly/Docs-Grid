@@ -5,17 +5,14 @@ import 'package:flutter/services.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
-import '../storage/storage_location_service.dart';
-
 /// Small, local-only, bounded diagnostic journal.
-/// The private copy works without Android storage permission; when the
-/// portable System/Logs location is available, entries are mirrored there.
+/// Production logs remain app-private, independent of shared storage permission.
 /// Logs never contain PDF bytes, document names or raw filesystem URIs.
 class DiagnosticLogStore {
   DiagnosticLogStore._(this._privateDirectory, this._portableDirectory);
 
   static final DiagnosticLogStore instance = DiagnosticLogStore._(
-    _defaultPrivateDirectory, _defaultPortableDirectory,
+    _defaultPrivateDirectory, () async => null,
   );
 
   /// Does not touch platform plugins; safe for deterministic file tests.
@@ -37,25 +34,6 @@ class DiagnosticLogStore {
   static Future<Directory> _defaultPrivateDirectory() async {
     final app = await getApplicationSupportDirectory();
     return Directory(p.join(app.path, 'DocsGrid', 'Logs'));
-  }
-
-  static Future<Directory?> _defaultPortableDirectory() async {
-    if (!Platform.isAndroid) return null;
-    try {
-      final storage = StorageLocationService.instance;
-      var locations = await storage.cachedPortableDataLocations();
-      if (locations['logsUri'] == null) {
-        locations = await storage.portableDataLocationsIfAvailable();
-      }
-      final uri = locations['logsUri'];
-      if (uri == null || !uri.startsWith('file://')) return null;
-      final directory = Directory(Uri.parse(uri).toFilePath());
-      // Do not silently create or change the user's selected SAF tree.
-      return await directory.exists() ? directory : null;
-    } catch (_) {
-      // Private logging must work even when portable storage is inaccessible.
-      return null;
-    }
   }
 
   /// Keep actionable error categories but redact user content from provider

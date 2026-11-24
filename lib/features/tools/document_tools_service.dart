@@ -959,10 +959,9 @@ class DocumentToolsService {
           : fallbackBackupPath,
     );
     await backups.create(recursive: true);
-    final temporaryUri = portableLocations['tempUri'];
-    final temp = temporaryUri != null && temporaryUri.startsWith('file://')
-        ? Directory(Uri.parse(temporaryUri).toFilePath())
-        : await getTemporaryDirectory();
+    // Backup staging must remain private even if an older cached portable
+    // location still contains a shared System/Temp path.
+    final temp = await getTemporaryDirectory();
     await temp.create(recursive: true);
     final staging = await temp.createTemp('docsgrid_backup_');
     final output = seriesPlan?.output ?? File(p.join(
@@ -4185,13 +4184,8 @@ Future<int?> _restoreBackupLocked(
 
       final rawFiles = manifest['files'];
       if (rawFiles is! List) throw StateError('Backup file manifest is invalid.');
-      final locations = Platform.isAndroid
-          ? await StorageLocationService.instance.portableDataLocationsIfAvailable()
-          : const <String, String>{};
-      final temporaryUri = locations['tempUri'];
-      final temporaryDirectory = temporaryUri != null && temporaryUri.startsWith('file://')
-          ? Directory(Uri.parse(temporaryUri).toFilePath())
-          : Directory.systemTemp;
+      // Restore staging contains user PDFs and metadata; never use shared Temp.
+      final temporaryDirectory = await getTemporaryDirectory();
       await temporaryDirectory.create(recursive: true);
       staging = await temporaryDirectory.createTemp('docsgrid_restore_');
       final stagedPdfPaths = <String, String>{};

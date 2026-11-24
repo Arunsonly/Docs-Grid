@@ -761,20 +761,12 @@ class MainActivity : FlutterActivity() {
                                         // database_uri that may point at Android/media/com.docsgrid.
                                         val databaseUri = ensureDirectory(systemUri, "Database")
                                         selectedLocations["databaseUri"] = databaseUri.toString()
-                                        val cacheUri = ensureDirectory(systemUri, "Cache")
-                                        val pagePreviewsUri = ensureDirectory(cacheUri, "PagePreviews")
-                                        val searchIndexUri = ensureDirectory(cacheUri, "SearchIndex")
-                                        val folderIndexUri = ensureDirectory(cacheUri, "FolderIndex")
                                         val backupsUri = ensureDirectory(systemUri, "Backups")
                                         val fullBackupsUri = ensureDirectory(backupsUri, "Full")
                                         val databaseBackupsUri = ensureDirectory(backupsUri, "Database")
                                         val recoveryUri = Uri.parse(savedRecovery)
                                         val restoreReportsUri = ensureDirectory(recoveryUri, "Reports")
                                         val restoreCheckpointsUri = ensureDirectory(recoveryUri, "Checkpoints")
-                                        selectedLocations["cacheUri"] = cacheUri.toString()
-                                        selectedLocations["pagePreviewsUri"] = pagePreviewsUri.toString()
-                                        selectedLocations["searchIndexUri"] = searchIndexUri.toString()
-                                        selectedLocations["folderIndexUri"] = folderIndexUri.toString()
                                         selectedLocations["backupsUri"] = backupsUri.toString()
                                         selectedLocations["fullBackupsUri"] = fullBackupsUri.toString()
                                         selectedLocations["databaseBackupsUri"] = databaseBackupsUri.toString()
@@ -782,10 +774,6 @@ class MainActivity : FlutterActivity() {
                                         selectedLocations["restoreCheckpointsUri"] = restoreCheckpointsUri.toString()
                                         saved.edit()
                                             .putString("database_uri", databaseUri.toString())
-                                            .putString("cache_uri", cacheUri.toString())
-                                            .putString("page_previews_uri", pagePreviewsUri.toString())
-                                            .putString("search_index_uri", searchIndexUri.toString())
-                                            .putString("folder_index_uri", folderIndexUri.toString())
                                             .putString("backups_uri", backupsUri.toString())
                                             .putString("full_backups_uri", fullBackupsUri.toString())
                                             .putString("database_backups_uri", databaseBackupsUri.toString())
@@ -796,6 +784,7 @@ class MainActivity : FlutterActivity() {
                                         // Older or limited SAF providers may not support all
                                         // optional subfolders. Existing core URIs remain valid.
                                     }
+                                    selectedLocations.putAll(privateOperationalLocations())
                                     result.success(selectedLocations)
                                     return
                                 }
@@ -845,20 +834,9 @@ class MainActivity : FlutterActivity() {
                                 val databaseBackupsFolder = java.io.File(backupsFolder, "Database")
                                 val restoreReportsFolder = java.io.File(recoveryFolder, "Reports")
                                 val restoreCheckpointsFolder = java.io.File(recoveryFolder, "Checkpoints")
-                                val tempFolder = java.io.File(system, "Temp")
-                                val logsFolder = java.io.File(system, "Logs")
-                                val exportsFolder = java.io.File(system, "Exports")
-                                // Preserve the original System/Thumbnails path for existing caches.
-                                val thumbnailsFolder = java.io.File(system, "Thumbnails")
-                                val cacheFolder = java.io.File(system, "Cache")
-                                val pagePreviewsFolder = java.io.File(cacheFolder, "PagePreviews")
-                                val searchIndexFolder = java.io.File(cacheFolder, "SearchIndex")
-                                val folderIndexFolder = java.io.File(cacheFolder, "FolderIndex")
                                 val required = listOf(root, myFiles, unfiled, folders, shared, system,
                                     databaseFolder, recoveryFolder, backupsFolder, fullBackupsFolder,
-                                    databaseBackupsFolder, restoreReportsFolder, restoreCheckpointsFolder,
-                                    tempFolder, logsFolder, exportsFolder, thumbnailsFolder,
-                                    cacheFolder, pagePreviewsFolder, searchIndexFolder, folderIndexFolder)
+                                    databaseBackupsFolder, restoreReportsFolder, restoreCheckpointsFolder)
                                 required.forEach { directory ->
                                     if (!directory.exists() && !directory.mkdirs() && !directory.isDirectory) {
                                         throw IllegalStateException("Could not create DocsGrid storage folder: ${directory.name}")
@@ -885,15 +863,8 @@ class MainActivity : FlutterActivity() {
                                     .putString("database_backups_uri", Uri.fromFile(databaseBackupsFolder).toString())
                                     .putString("restore_reports_uri", Uri.fromFile(restoreReportsFolder).toString())
                                     .putString("restore_checkpoints_uri", Uri.fromFile(restoreCheckpointsFolder).toString())
-                                    .putString("cache_uri", Uri.fromFile(cacheFolder).toString())
-                                    .putString("page_previews_uri", Uri.fromFile(pagePreviewsFolder).toString())
-                                    .putString("search_index_uri", Uri.fromFile(searchIndexFolder).toString())
-                                    .putString("folder_index_uri", Uri.fromFile(folderIndexFolder).toString())
-                                    .putString("temp_uri", Uri.fromFile(tempFolder).toString())
-                                    .putString("logs_uri", Uri.fromFile(logsFolder).toString())
-                                    .putString("exports_uri", Uri.fromFile(exportsFolder).toString())
-                                    .putString("thumbnails_uri", Uri.fromFile(thumbnailsFolder).toString())
                                     .apply()
+                                pruneEmptyLegacyOperationalFolders(system)
                                 result.success(mapOf(
                                     "rootUri" to Uri.fromFile(root).toString(),
                                     "legacyRootUri" to Uri.fromFile(legacyRoot).toString(),
@@ -906,16 +877,8 @@ class MainActivity : FlutterActivity() {
                                     "fullBackupsUri" to Uri.fromFile(fullBackupsFolder).toString(),
                                     "databaseBackupsUri" to Uri.fromFile(databaseBackupsFolder).toString(),
                                     "restoreReportsUri" to Uri.fromFile(restoreReportsFolder).toString(),
-                                    "restoreCheckpointsUri" to Uri.fromFile(restoreCheckpointsFolder).toString(),
-                                    "cacheUri" to Uri.fromFile(cacheFolder).toString(),
-                                    "pagePreviewsUri" to Uri.fromFile(pagePreviewsFolder).toString(),
-                                    "searchIndexUri" to Uri.fromFile(searchIndexFolder).toString(),
-                                    "folderIndexUri" to Uri.fromFile(folderIndexFolder).toString(),
-                                    "tempUri" to Uri.fromFile(tempFolder).toString(),
-                                    "logsUri" to Uri.fromFile(logsFolder).toString(),
-                                    "exportsUri" to Uri.fromFile(exportsFolder).toString(),
-                                    "thumbnailsUri" to Uri.fromFile(thumbnailsFolder).toString()
-                                ))
+                                    "restoreCheckpointsUri" to Uri.fromFile(restoreCheckpointsFolder).toString()
+                                ) + privateOperationalLocations())
                             }
                             "getSelectedFolder" -> {
                                 val prefs = getSharedPreferences("docsgrid_storage", MODE_PRIVATE)
@@ -1697,6 +1660,59 @@ class MainActivity : FlutterActivity() {
             } catch (_: IllegalArgumentException) {
                 uri
             }
+        }
+    }
+
+    // Operational files are not part of the portable document/backup tree.
+    // Use internal app directories, never Android/media or externalFilesDir.
+    private fun privateOperationalLocations(): Map<String, String> {
+        val support = java.io.File(filesDir, "docsgrid")
+        val cache = java.io.File(support, "Cache")
+        val locations = mapOf(
+            "cacheUri" to cache,
+            "pagePreviewsUri" to java.io.File(cache, "PagePreviews"),
+            "searchIndexUri" to java.io.File(cache, "SearchIndex"),
+            "folderIndexUri" to java.io.File(cache, "FolderIndex"),
+            "thumbnailsUri" to java.io.File(cache, "Thumbnails"),
+            "tempUri" to java.io.File(cacheDir, "docsgrid/Temp"),
+            "logsUri" to java.io.File(filesDir, "DocsGrid/Logs"),
+            "exportsUri" to java.io.File(support, "Exports")
+        )
+        locations.values.forEach { directory ->
+            if (!directory.isDirectory && !directory.mkdirs() && !directory.isDirectory) {
+                throw IllegalStateException("Could not initialize private DocsGrid storage.")
+            }
+        }
+        // Invalidate old native preference paths, including on SAF upgrades.
+        val prefs = getSharedPreferences("docsgrid_storage", MODE_PRIVATE).edit()
+        val keys = mapOf("cacheUri" to "cache_uri", "pagePreviewsUri" to "page_previews_uri",
+            "searchIndexUri" to "search_index_uri", "folderIndexUri" to "folder_index_uri",
+            "thumbnailsUri" to "thumbnails_uri", "tempUri" to "temp_uri",
+            "logsUri" to "logs_uri", "exportsUri" to "exports_uri")
+        locations.forEach { (key, directory) ->
+            prefs.putString(keys.getValue(key), Uri.fromFile(directory).toString())
+        }
+        prefs.apply()
+        return locations.mapValues { (_, directory) -> Uri.fromFile(directory).toString() }
+    }
+
+    // Never remove existing PDFs, exports, logs or unfinished recovery data.
+    // File.delete() is non-recursive: even a concurrent new file prevents
+    // removal. Unknown contents and symlinked paths are left untouched.
+    private fun pruneEmptyLegacyOperationalFolders(system: java.io.File) {
+        try {
+            if (system.canonicalFile != system.absoluteFile) return
+            val legacy = listOf("Cache/PagePreviews", "Cache/SearchIndex",
+                "Cache/FolderIndex", "Cache", "Thumbnails", "Temp", "Logs", "Exports")
+            legacy.forEach { relative ->
+                val directory = java.io.File(system, relative)
+                if (directory.canonicalFile == directory.absoluteFile &&
+                    directory.isDirectory && directory.list()?.isEmpty() == true) {
+                    directory.delete()
+                }
+            }
+        } catch (_: Exception) {
+            // Cleanup is optional; never fail storage initialization.
         }
     }
 
