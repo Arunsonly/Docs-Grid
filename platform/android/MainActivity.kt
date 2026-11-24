@@ -770,12 +770,33 @@ class MainActivity : FlutterActivity() {
                                 if (!hasAllFilesAccess) {
                                     throw IllegalStateException("Allow Full internal storage access in DocsGrid Settings, then retry portable storage setup.")
                                 }
-                                val mediaRoot = java.io.File(
-                                    android.os.Environment.getExternalStorageDirectory(),
-                                    "Android/media"
-                                )
+                                // Fresh Android installations use the top-level shared
+                                // Internal Storage/DocsGrid folder, not Documents/DocsGrid
+                                // or Android/media. Existing installations must keep
+                                // their current, populated storage until an explicit
+                                // verified migration; do not move or delete old PDFs.
+                                val internalRoot = android.os.Environment
+                                    .getExternalStorageDirectory().canonicalFile
+                                val mediaRoot = java.io.File(internalRoot, "Android/media")
                                 val legacyRoot = java.io.File(mediaRoot, "DocsGrid")
-                                val root = java.io.File(mediaRoot, packageName)
+                                val previousRoot = java.io.File(mediaRoot, packageName).canonicalFile
+                                val preferredRoot = java.io.File(internalRoot, "DocsGrid").canonicalFile
+                                val existingSavedRoot = savedRoot
+                                    ?.takeIf { it.startsWith("file://") }
+                                    ?.let { uri -> runCatching {
+                                        java.io.File(Uri.parse(uri).path ?: "").canonicalFile
+                                    }.getOrNull() }
+                                    ?.takeIf { it == previousRoot || it == preferredRoot }
+                                val root = when {
+                                    existingSavedRoot?.isDirectory == true -> existingSavedRoot
+                                    preferredRoot.isDirectory &&
+                                        (java.io.File(preferredRoot, "My Files").exists() ||
+                                         java.io.File(preferredRoot, "System").exists()) -> preferredRoot
+                                    previousRoot.isDirectory &&
+                                        (java.io.File(previousRoot, "My Files").exists() ||
+                                         java.io.File(previousRoot, "System").exists()) -> previousRoot
+                                    else -> preferredRoot
+                                }
                                 val myFiles = java.io.File(root, "My Files")
                                 val unfiled = java.io.File(myFiles, "Unfiled")
                                 val folders = java.io.File(myFiles, "Folders")
