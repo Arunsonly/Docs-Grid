@@ -595,7 +595,7 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
       await prefs.remove('docsgrid_restore_prompt_snoozed_until');
       await Navigator.of(context).push(MaterialPageRoute(builder: (_) => Scaffold(
         appBar: AppBar(title: const Text('Recover existing PDFs')),
-        body: const DocumentToolsScreen(
+        body: DocumentToolsScreen(
           quickAction: Platform.isIOS ? 'recover_selected_pdfs' : 'recover_loose_pdfs',
           section: 'backup_restore',
         ),
