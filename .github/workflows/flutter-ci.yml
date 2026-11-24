@@ -279,6 +279,8 @@ jobs:
         run: |
           python3 -m unittest discover -s scripts -p 'test_quality_coverage.py' -v
           python3 scripts/quality_coverage.py --inventory
+      - name: Retired feature source and dependency audit
+        run: python3 scripts/audit_retired_features.py --output quality-reports/source-audit.json
       - name: Verify checked-in DocsGrid launcher icon
         run: |
           python3 - <<'PY'
@@ -292,7 +294,10 @@ jobs:
       - name: Generate DocsGrid launcher icons
         run: dart run flutter_launcher_icons
       - name: Analyze
-        run: flutter analyze --no-fatal-infos
+        run: |
+          set -o pipefail
+          mkdir -p quality-reports
+          flutter analyze --no-fatal-infos 2>&1 | tee quality-reports/analyzer.txt
       - name: Ensure system SQLite for FFI tests
         if: runner.os == 'Linux'
         run: |
@@ -316,7 +321,15 @@ jobs:
       - name: End-to-end integration workflow tests
         run: flutter test test/integration --reporter expanded
       - name: Performance benchmark (10k documents)
-        run: flutter test test/performance --reporter expanded
+        run: |
+          set -o pipefail
+          mkdir -p quality-reports
+          flutter test test/performance --reporter expanded 2>&1 | tee quality-reports/performance.txt
+      - name: Seeded fuzz and ZIP fault injection
+        run: flutter test test/quality_fault_fuzz_test.dart --reporter expanded
+      - name: Targeted mutation testing
+        timeout-minutes: 15
+        run: python3 scripts/quality_mutation.py
       - name: Build debug APK
         run: |
           for attempt in 1 2 3; do
@@ -364,6 +377,15 @@ jobs:
           sha256sum "$APK"
           wc -c "$APK"
           echo "Internal performance-evaluation build only; DO NOT publish to Play."
+      - name: Retired feature APK binary audit
+        run: |
+          set -euo pipefail
+          APK=build/app/outputs/flutter-apk/app-release.apk
+          AAPT="$(find "${ANDROID_SDK_ROOT:-$ANDROID_HOME}/build-tools" -name aapt -type f | sort -V | tail -n 1)"
+          test -x "$AAPT"
+          mkdir -p quality-reports
+          "$AAPT" dump permissions "$APK" > quality-reports/apk-permissions.txt
+          python3 scripts/audit_retired_features.py --apk "$APK" --permissions quality-reports/apk-permissions.txt --output quality-reports/apk-audit.json
       - name: Upload verified Release APK
         uses: actions/upload-artifact@v4
         with:
@@ -371,7 +393,14 @@ jobs:
           path: build/app/outputs/flutter-apk/app-release.apk
           if-no-files-found: error
           retention-days: 14
-
+      - name: Upload detailed quality evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docsgrid-quality-evidence-Linux
+          path: quality-reports/
+          if-no-files-found: warn
+          retention-days: 14
 
   android_release_startup:
     name: Release APK process-cold launch benchmark (Android emulator)
@@ -428,6 +457,7 @@ jobs:
           script: |
             python3 scripts/smoke_android_fresh_grid.py --apk artifacts/release/app-release.apk --output startup-results/fresh-grid.json
             python3 scripts/benchmark_android_cold_launch.py --apk artifacts/release/app-release.apk --output startup-results/cold-launch.json --iterations 7 --warmups 1
+            python3 scripts/profile_android_resources.py --output startup-results/resources.json
       - name: Upload startup timing baseline and sample data
         if: always()
         uses: actions/upload-artifact@v4
@@ -523,7 +553,10 @@ jobs:
       - name: Generate DocsGrid launcher icons
         run: dart run flutter_launcher_icons
       - name: Analyze
-        run: flutter analyze --no-fatal-infos
+        run: |
+          set -o pipefail
+          mkdir -p quality-reports
+          flutter analyze --no-fatal-infos 2>&1 | tee quality-reports/analyzer.txt
       - name: Widget and unit tests with line coverage
         run: flutter test --coverage
       - name: Validate and summarize coverage
@@ -539,9 +572,22 @@ jobs:
       - name: End-to-end integration workflow tests
         run: flutter test test/integration --reporter expanded
       - name: Performance benchmark (10k documents)
-        run: flutter test test/performance --reporter expanded
+        run: |
+          set -o pipefail
+          mkdir -p quality-reports
+          flutter test test/performance --reporter expanded 2>&1 | tee quality-reports/performance.txt
+      - name: Seeded fuzz and ZIP fault injection
+        run: flutter test test/quality_fault_fuzz_test.dart --reporter expanded
       - name: Build iOS without code signing
         run: flutter build ios --no-codesign
+      - name: Upload detailed quality evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docsgrid-quality-evidence-macOS
+          path: quality-reports/
+          if-no-files-found: warn
+          retention-days: 14
 
   quality_gate:
     name: DocsGrid Quality Gate
