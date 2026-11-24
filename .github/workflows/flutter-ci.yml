@@ -436,17 +436,15 @@ jobs:
           profile: pixel_6
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -no-snapshot
-          script: >-
-            python3 scripts/benchmark_android_cold_launch.py
-            --apk artifacts/release/app-release.apk
-            --output startup-results/cold-launch.json
-            --iterations 7 --warmups 1
+          script: |
+            python3 scripts/smoke_android_fresh_grid.py --apk artifacts/release/app-release.apk --output startup-results/fresh-grid.json
+            python3 scripts/benchmark_android_cold_launch.py --apk artifacts/release/app-release.apk --output startup-results/cold-launch.json --iterations 7 --warmups 1
       - name: Upload startup timing baseline and sample data
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: docsgrid-android-cold-launch-baseline
-          path: startup-results/cold-launch.json
+          path: startup-results/*.json
           if-no-files-found: warn
           retention-days: 14
 

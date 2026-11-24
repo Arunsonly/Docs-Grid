@@ -5,6 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../../core/widgets/storage_sort_controls.dart';
 import '../../../core/storage/portable_snapshot_events.dart';
+import '../../../core/diagnostics/diagnostic_log_store.dart';
 
 import '../../documents/data/document_repository.dart';
 import '../../documents/presentation/document_thumbnail.dart';
@@ -175,6 +176,9 @@ class _FoldersScreenState extends State<FoldersScreen>
     if (!_gridScreenForeground) {
       _idleFolderPrefetchTimer?.cancel();
     } else {
+      // The permission/settings screen may have been opened while Grid was
+      // loading. Recheck on return even when SQLite emitted no mutation.
+      _gridContentRefreshPending = true;
       _scheduleGridContentRefresh();
       _queueIdleFolderPrefetch();
     }
@@ -510,8 +514,9 @@ class _FoldersScreenState extends State<FoldersScreen>
     timer = Timer(widget.loadTimeout, () {
       _gridLoadTimeouts.remove(timer);
       if (!result.isCompleted) {
-        result.completeError(TimeoutException(
-            '$label did not finish. Please retry.'));
+        final error = TimeoutException('$label did not finish. Please retry.');
+        unawaited(DiagnosticLogStore.instance.recordError(label, error));
+        result.completeError(error);
       }
     });
     _gridLoadTimeouts.add(timer);
@@ -522,7 +527,10 @@ class _FoldersScreenState extends State<FoldersScreen>
     }, onError: (Object error, StackTrace trace) {
       timer.cancel();
       _gridLoadTimeouts.remove(timer);
-      if (!result.isCompleted) result.completeError(error, trace);
+      if (!result.isCompleted) {
+        unawaited(DiagnosticLogStore.instance.recordError(label, error));
+        result.completeError(error, trace);
+      }
     });
     return result.future;
   }
