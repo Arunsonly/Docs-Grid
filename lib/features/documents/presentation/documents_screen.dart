@@ -2534,6 +2534,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         heightFactor: 0.75,
         child: PhoneMoveFolderPicker(
           roots: roots,
+          excludedGrid: _gridBoundary,
           sourceFolderPath: '',
           listDirectory: storage.listDirectory,
           createDirectory: (parent, folderName) =>
@@ -2840,6 +2841,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         heightFactor: 0.75,
         child: PhoneMoveFolderPicker(
           roots: roots,
+          excludedGrid: _gridBoundary,
           sourceFolderPath: sourceFolderPath,
           listDirectory: storage.listDirectory,
           createDirectory: (parent, folderName) =>
