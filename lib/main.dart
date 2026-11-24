@@ -987,7 +987,7 @@ class _SettingsScreenState extends State<_SettingsScreen> {
           ListTile(
             leading: const Icon(Icons.auto_awesome_outlined),
             title: const Text('Smart Collections', style: TextStyle(fontWeight: FontWeight.w600)),
-            subtitle: const Text('Automatic or manual collections of Grid PDFs'),
+            subtitle: const Text('Automatic collections by category and tags'),
             trailing: const Icon(Icons.chevron_right),
             onTap: () => Navigator.of(context).push(MaterialPageRoute(
               builder: (_) => const SmartCollectionsScreen(),

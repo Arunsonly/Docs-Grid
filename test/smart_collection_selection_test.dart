@@ -22,17 +22,21 @@ void main() {
     expect(await filter.count(db), expected.length);
     expect((await filter.results(db)).map((r) => r['id']), unorderedEquals(expected));
   }
-  test('auto, manual and hybrid stay distinct; trash is never included', () async {
+  test('all collections automatically match category and tags, including older rows', () async {
     final rule = {'category_id':'insurance','tag_ids_json':'["pending"]'};
     await check(rule, ['a','b']);
-    await check({...rule,'selection_mode':'manual','included_ids_json':'["a","trash"]'}, ['a']);
-    final hybrid = {...rule,'selection_mode':'hybrid','included_ids_json':'["c"]','excluded_ids_json':'["b"]'};
-    await check(hybrid, ['a','c']);
+    await check({...rule,'selection_mode':'manual','included_ids_json':'["a","trash"]',
+      'query_text':'not a matching name','favorites_only':1,'recent_only':1}, ['a','b']);
+    final oldHybrid = {...rule,'selection_mode':'hybrid','included_ids_json':'["c"]','excluded_ids_json':'["b"]'};
+    await check(oldHybrid, ['a','b']);
     await db.insert('documents', {'id':'new','name':'Unrelated name','category_id':'insurance'});
     await db.insert('document_tags', {'document_id':'new','tag_id':'pending'});
-    await check(hybrid, ['a','c','new']);
+    await check(oldHybrid, ['a','b','new']);
     await db.update('documents', {'name':'Renamed'}, where:'id = ?', whereArgs:['a']);
-    await check({...rule,'selection_mode':'manual','included_ids_json':'["a"]'}, ['a']);
+    await check(rule, ['a','b','new']);
+    await db.delete('document_tags', where:'document_id = ?', whereArgs:['a']);
+    await check(rule, ['b','new']);
+    await check({}, ['a','b','c','new']);
   });
   test('backup remaps saved IDs', () {
     final mapped = SmartCollectionSelection.remap({

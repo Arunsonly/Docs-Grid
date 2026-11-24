@@ -14,7 +14,10 @@ void main() {
     expect(source, contains("Text('Save all PDFs'"));
     expect(source, isNot(contains('PDF name contains (optional)')));
     expect(source, contains('SmartCollectionSelection(collection).count'));
-    expect(source, contains('Smart + Manual'));
+    expect(source, isNot(contains('Smart + Manual')));
+    expect(source, isNot(contains('Selection mode')));
+    expect(source, isNot(contains('Choose PDFs')));
+    expect(source, contains("'selection_mode': 'automatic'"));
     expect(source, contains("'favorites_only': 0"));
     expect(source, contains("'recent_only': 0"));
   });
