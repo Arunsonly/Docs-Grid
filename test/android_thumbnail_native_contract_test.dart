@@ -29,10 +29,17 @@ void main() {
     expect(storage, contains("await copyPdfToPath("));
     expect(storage, contains("'gridPdf': true"));
     expect(storage, contains("if (gridPdf && Platform.isAndroid)"));
-    for (final screen in [folders, documents, collections, tools]) {
+    // The retired OCR tools menu no longer exposes a PDF-opening action.
+    // Retain the same chooser contract for every remaining Grid PDF entry point.
+    for (final screen in [folders, documents, collections]) {
       expect(screen, contains('gridPdf: true'));
       expect(screen, isNot(contains('DocumentPdfViewerScreen(')));
     }
+    // Backup and Recovery must not resurrect the retired OCR opening routes.
+    expect(tools, isNot(contains('_openSearchResult(')));
+    expect(tools, isNot(contains('DocumentPdfViewerScreen(')));
+    expect(tools, isNot(contains('openPdf(')));
+    expect(tools, contains("Text('Emergency Recovery')"));
     expect(folders, isNot(contains('_openGridPdf(')));
     // Phone Storage retains its original, non-Grid opening path.
     expect(documents, contains('Future<void> _openExternalStoragePdf('));

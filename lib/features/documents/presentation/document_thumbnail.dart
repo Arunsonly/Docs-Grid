@@ -172,6 +172,13 @@ class _DocumentThumbnailState extends State<DocumentThumbnail> {
       try {
         final locations = await StorageLocationService.instance
             .portableDataLocationsIfAvailable();
+        // Legacy previews are read-only; new previews always use app support.
+        final root = locations['rootUri'];
+        if (root != null && root.startsWith('file://')) {
+          final system = p.join(Uri.parse(root).toFilePath(), 'System');
+          previousDirs.add(Directory(p.join(system, 'Cache', 'PagePreviews')));
+          previousDirs.add(Directory(p.join(system, 'Thumbnails')));
+        }
         for (final key in const ['pagePreviewsUri', 'thumbnailsUri']) {
           final uri = locations[key];
           if (uri != null && uri.startsWith('file://')) {

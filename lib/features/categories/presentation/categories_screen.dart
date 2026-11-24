@@ -1,3 +1,4 @@
+import '../../../core/database/document_defaults.dart';
 import 'package:flutter/material.dart';
 
 import '../data/category_repository.dart';
@@ -210,18 +211,24 @@ class _CategoriesScreenState extends State<CategoriesScreen> {
                 ? const ListTile(title: Text('No tags yet'), subtitle: Text('Create tags to label documents.'))
                 : Padding(
                     padding: const EdgeInsets.all(12),
-                    child: Wrap(
-                      spacing: 8,
-                      runSpacing: 8,
-                      children: [
-                        for (final tag in _tags)
-                          InputChip(
-                            label: Text(tag.name),
-                            onPressed: () => _renameTag(tag),
-                            onDeleted: () => _deleteTag(tag),
-                          ),
+                    child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+                      for (final group in DocumentDefaults.tagGroups.entries) ...[
+                        Text(group.key, style: Theme.of(context).textTheme.labelLarge),
+                        const SizedBox(height: 4),
+                        Wrap(spacing: 8, runSpacing: 4, children: [
+                          for (final tag in _tags.where((t) => t.isBuiltIn && group.value.contains(t.name)))
+                            Chip(avatar: const Icon(Icons.lock_outline, size: 16), label: Text(tag.name)),
+                        ]),
+                        const SizedBox(height: 12),
                       ],
-                    ),
+                      if (_tags.any((t) => !t.isBuiltIn)) ...[
+                        Text('Custom tags', style: Theme.of(context).textTheme.labelLarge),
+                        Wrap(spacing: 8, runSpacing: 8, children: [
+                          for (final tag in _tags.where((t) => !t.isBuiltIn))
+                            InputChip(label: Text(tag.name), onPressed: () => _renameTag(tag), onDeleted: () => _deleteTag(tag)),
+                        ]),
+                      ],
+                    ]),
                   ),
           ),
           const SizedBox(height: 12),

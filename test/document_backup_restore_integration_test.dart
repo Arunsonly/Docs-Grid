@@ -1013,6 +1013,86 @@ void main() {
   });
 
 
+  test('real SQLite A001/I001 restore uses parent PDF and new metadata',
+      () async {
+    final standalone = await _makeBackup(temp,
+        withFolder: true, withReminder: true);
+    final decoded = ZipDecoder().decodeBytes(await standalone.readAsBytes());
+    final oldManifest = jsonDecode(utf8.decode(
+        decoded.findFile('manifest.json')!.content as List<int>))
+        as Map<String, dynamic>;
+    final fullFolder = Directory(temp.path + '/Full/A001');
+    await fullFolder.create(recursive: true);
+    final fingerprints = [
+      {
+        'id': 'document-1', 'sha256': _pdfHash,
+        'sizeBytes': _pdfBytes.length, 'modifiedMillis': 0,
+        'deletedAt': null,
+      },
+    ];
+    Future<void> writeSeries(String name, {
+      required bool includePdf,
+      required bool updatedName,
+      required String? parent,
+    }) async {
+      final zip = Archive();
+      final metadata = <Map<String, Object?>>[];
+      for (final entry in decoded.files) {
+        if (entry.name == 'manifest.json') continue;
+        if (entry.name.startsWith('pdfs/')) {
+          if (includePdf) {
+            final bytes = entry.content as List<int>;
+            zip.addFile(ArchiveFile(entry.name, bytes.length, bytes));
+          }
+          continue;
+        }
+        var bytes = entry.content as List<int>;
+        if (entry.name == 'documents.json' && updatedName) {
+          final rows = jsonDecode(utf8.decode(bytes)) as List;
+          (rows.single as Map)['name'] = 'Updated Policy';
+          bytes = utf8.encode(jsonEncode(rows));
+        }
+        zip.addFile(ArchiveFile(entry.name, bytes.length, bytes));
+        metadata.add({
+          'entry': entry.name,
+          'sizeBytes': bytes.length,
+          'sha256': sha256.convert(bytes).toString(),
+        });
+      }
+      final manifest = <String, Object?>{
+        ...oldManifest,
+        'backupType': parent == null ? 'full' : 'incremental',
+        'backupId': 'backup-' + name,
+        'seriesId': 'A001', 'backupName': name,
+        'parentName': parent,
+        'parentBackupId': parent == null ? null : 'backup-' + parent,
+        'metadataFiles': metadata,
+        'files': includePdf ? oldManifest['files'] : <Object>[],
+        'documentFingerprints': fingerprints,
+        'deletedDocumentIds': <String>[],
+      };
+      final bytes = utf8.encode(jsonEncode(manifest));
+      zip.addFile(ArchiveFile('manifest.json', bytes.length, bytes));
+      await File(fullFolder.path + '/' + name + '.zip')
+          .writeAsBytes(ZipEncoder().encode(zip), flush: true);
+    }
+    await writeSeries('A001', includePdf: true,
+        updatedName: false, parent: null);
+    await writeSeries('I001', includePdf: false,
+        updatedName: true, parent: 'A001');
+    final incremental = File(fullFolder.path + '/I001.zip');
+    final incArchive = ZipDecoder().decodeBytes(await incremental.readAsBytes());
+    expect(incArchive.findFile('pdfs/document-1.pdf'), isNull);
+    expect(await service.restoreBackup(incremental,
+        confirm: (_) async => true), 1);
+    final documents = await db.query('documents');
+    final reminders = await db.query('reminders');
+    expect(documents, hasLength(1));
+    expect(documents.single['name'], 'Updated Policy');
+    expect(reminders, hasLength(1));
+    expect(reminders.single['document_id'], documents.single['id']);
+  });
+
   test('real full Backup Restore updates Home cache on relaunch and later changes', () async {
     SharedPreferences.setMockInitialValues({});
     final cache = HomeDashboardCache();

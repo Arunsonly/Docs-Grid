@@ -28,11 +28,11 @@ void main() {
     expect(home, contains('_search.text.trim().isNotEmpty && _homeSearchPhoneSelected) return;'));
   });
 
-  test('Home dashboard and existing search/OCR entry points are preserved', () {
+  test('Home dashboard and filename search are preserved without OCR', () {
     expect(home, contains('_search.addListener(_onSearchChanged)'));
-    expect(home, contains('OcrSearchModeControl('));
-    expect(home, contains('_setOcrSearchMode'));
-    expect(home, contains('_phoneOcrIndex.matches(_phoneEntries, _search.text)'));
+    expect(home, isNot(contains('OcrSearchModeControl(')));
+    expect(home, isNot(contains('_setOcrSearchMode')));
+    expect(home, contains('_phoneStorageSearchMatches(_search.text)'));
     expect(home, contains('_search.text.trim().isEmpty)'));
     expect(home, contains('if (!widget.favoritesOnly && !widget.recentOnly &&'));
     expect(home, contains('widget.phoneOnly'));
@@ -49,8 +49,8 @@ void main() {
     expect(home, contains('await _movePhonePdfToGrid(uri, name)'));
     expect(home, contains('await _trashPhonePdf(uri, name)'));
     expect(home, contains('onTap: () => _openExternalStoragePdf(uri, name)'));
-    expect(home, contains('OcrSearchModeControl('));
-    expect(home, contains('_phoneOcrIndex.matches(_phoneEntries, _search.text)'));
+    expect(home, isNot(contains('OcrSearchModeControl(')));
+    expect(home, contains('_phoneStorageSearchMatches(_search.text)'));
     expect(home, contains('_phoneStorageSearchMatches(_search.text)'));
   });
 }
