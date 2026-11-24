@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../../core/storage/storage_location_service.dart';
+import '../../../core/storage/grid_storage_boundary.dart';
 
 class PhoneFolderDestination {
   const PhoneFolderDestination({required this.uri, required this.path});
@@ -17,12 +18,14 @@ class PhoneMoveFolderPicker extends StatefulWidget {
     required this.listDirectory,
     required this.createDirectory,
     this.sourceFolderPath = '',
+    this.excludedGrid,
   });
 
   final List<Map<String, String>> roots;
   final Future<List<Map<String, Object?>>> Function(String uri) listDirectory;
   final Future<String> Function(String parentUri, String name) createDirectory;
   final String sourceFolderPath;
+  final GridStorageBoundary? excludedGrid;
 
   @override
   State<PhoneMoveFolderPicker> createState() => _PhoneMoveFolderPickerState();
@@ -37,7 +40,8 @@ class _PhoneMoveFolderPickerState extends State<PhoneMoveFolderPicker> {
 
   bool _safeFolderUri(String uri) =>
       uri.isNotEmpty &&
-      !StorageLocationService.isRestrictedPhoneMoveDestination(uri);
+      !StorageLocationService.isRestrictedPhoneMoveDestination(uri) &&
+      !(widget.excludedGrid?.isManagedPath(uri) ?? false);
 
   PhoneFolderDestination? get _selected =>
       _ancestors.isEmpty ? null : _ancestors.last;

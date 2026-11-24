@@ -6,17 +6,29 @@ import 'package:crypto/crypto.dart';
 import 'package:docs_grid/features/tools/document_tools_service.dart';
 import 'package:docs_grid/features/tools/portable_snapshot_rows_validator.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter/services.dart';
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
   late Directory tempDirectory;
   late DocumentToolsService service;
+
+  const pathChannel = MethodChannel('plugins.flutter.io/path_provider');
+  final messenger = TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
 
   setUp(() async {
     tempDirectory = await Directory.systemTemp.createTemp('docsgrid-backup-test-');
     service = DocumentToolsService();
+    // Match the production private staging contract in host-side tests.
+    // Keep every ZIP/PDF validation assertion and the actual filesystem I/O.
+    messenger.setMockMethodCallHandler(pathChannel, (call) async {
+      if (call.method == 'getTemporaryDirectory') return tempDirectory.path;
+      throw MissingPluginException('Unexpected path_provider method: ${call.method}');
+    });
   });
 
   tearDown(() async {
+    messenger.setMockMethodCallHandler(pathChannel, null);
     if (await tempDirectory.exists()) {
       await tempDirectory.delete(recursive: true);
     }

@@ -1,0 +1,7 @@
+# iOS recovery parity — isolated development branch
+
+Baseline: b0eb219ef03994bfd1ae28af99c8d3e72bd91a1c (V3 all CI jobs passed before these changes). Android native implementation, database schema, Android storage layout and Android scheduling are unchanged.
+
+Implemented: iOS first-run ZIP and selected PDF folder routes; separate read-only recovery/export bookmarks; verified copies rather than mutable source references; local archive inventory/cleanup and external export; iOS Files date metadata; native notification sound check; foreground daily database backup. App-private archives alone do not survive Delete App. Recovery Protection offers an opt-in independent Files folder with a separate bookmark; newly created Full and Database ZIPs are copied and checked by SHA-256 without changing live storage. Automatic foreground database backups are also copied when configured. The UI shows the last verified Full and Database publication separately. This is backup-based recovery, not a continuously synchronized live PDF mirror. New PDFs require a new Full Backup; cloud upload completion is not claimed.
+
+Remaining release gates: test real iPhone offload/delete/reinstall, Files provider permissions/cloud downloads, large ZIP and PDF, cross-platform ZIP restore, iPad sharing, iOS notification capacity and sound, security-scoped file coordination, native Share Extension/App Group, Hindi OCR, Apple signing/TestFlight. No claim of full iOS parity or device verification until those gates pass.

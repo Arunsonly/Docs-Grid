@@ -5,6 +5,7 @@ import 'package:sqflite/sqflite.dart';
 import 'package:uuid/uuid.dart';
 
 import '../../../core/database/app_database.dart';
+import '../../../core/database/document_defaults.dart';
 import '../../../core/storage/portable_snapshot_events.dart';
 
 class CategoryRecord {
@@ -30,6 +31,8 @@ class TagRecord {
 
   final String id;
   final String name;
+
+  bool get isBuiltIn => DocumentDefaults.isDefaultTagId(id);
 
   factory TagRecord.fromMap(Map<String, Object?> row) =>
       TagRecord(id: row['id'] as String, name: row['name'] as String);
@@ -147,6 +150,7 @@ class CategoryRepository {
   }
 
   Future<void> renameTag(TagRecord tag, String name) async {
+    if (tag.isBuiltIn) throw StateError('Built-in tags cannot be renamed.');
     final db = await _database.database;
     final cleaned = validateName(name);
     await db.transaction((txn) async {
@@ -165,6 +169,7 @@ class CategoryRepository {
   }
 
   Future<void> deleteTag(TagRecord tag) async {
+    if (tag.isBuiltIn) throw StateError('Built-in tags cannot be deleted.');
     final db = await _database.database;
     await db.transaction((txn) async {
       final count = await txn.delete('tags', where: 'id = ?', whereArgs: [tag.id]);

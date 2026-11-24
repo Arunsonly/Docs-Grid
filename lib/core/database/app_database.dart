@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'document_defaults.dart';
 
 import 'package:flutter/foundation.dart';
 import '../storage/durable_file_operations.dart';
@@ -12,7 +13,7 @@ class AppDatabase {
   @visibleForTesting
   AppDatabase.forTesting(Future<Database> Function() opener) : this._(opener: opener);
 
-  static const int schemaVersion = 12;
+  static const int schemaVersion = 13;
   static final AppDatabase instance = AppDatabase._();
   final Future<Database> Function()? _opener;
 
@@ -140,6 +141,7 @@ class AppDatabase {
         await _createV10PortableSnapshotState(db);
         await _createV11TrashState(db);
         await _createV12FileOperations(db);
+        await _createV13CollectionSelection(db);
         await db.insert('schema_migrations', {
           'version': 1,
           'applied_at': DateTime.now().toUtc().toIso8601String(),
@@ -188,11 +190,16 @@ class AppDatabase {
           'version': 12,
           'applied_at': DateTime.now().toUtc().toIso8601String(),
         });
+        await db.insert('schema_migrations', {
+          'version': 13,
+          'applied_at': DateTime.now().toUtc().toIso8601String(),
+        });
       },
       onUpgrade: upgradeForTesting,
       onOpen: (db) async {
         if (await db.getVersion() >= 12) {
           await DurableFileOperations.reconcileFinished(db);
+          await db.transaction((txn) => DocumentDefaults.seed(txn));
         }
       },
       onDowngrade: (db, oldVersion, newVersion) async {
@@ -279,6 +286,18 @@ class AppDatabase {
       await db.insert('schema_migrations', {'version': 12, 'applied_at': applied},
           conflictAlgorithm: ConflictAlgorithm.ignore);
     }
+    if (oldVersion < 13 && newVersion >= 13) {
+      await _createV13CollectionSelection(db);
+      await db.insert('schema_migrations', {'version': 13, 'applied_at': applied},
+          conflictAlgorithm: ConflictAlgorithm.ignore);
+    }
+  }
+
+  Future<void> _createV13CollectionSelection(DatabaseExecutor db) async {
+    final columns = (await db.rawQuery('PRAGMA table_info(smart_collections)')).map((row) => row['name']).toSet();
+    if (!columns.contains('selection_mode')) await db.execute("ALTER TABLE smart_collections ADD COLUMN selection_mode TEXT NOT NULL DEFAULT 'automatic'");
+    if (!columns.contains('included_ids_json')) await db.execute("ALTER TABLE smart_collections ADD COLUMN included_ids_json TEXT NOT NULL DEFAULT '[]'");
+    if (!columns.contains('excluded_ids_json')) await db.execute("ALTER TABLE smart_collections ADD COLUMN excluded_ids_json TEXT NOT NULL DEFAULT '[]'");
   }
 
   Future<void> _createV4PerformanceSchema(DatabaseExecutor db) async {
@@ -514,7 +533,10 @@ class AppDatabase {
     final customCategories = Sqflite.firstIntValue(
       await db.rawQuery('SELECT COUNT(*) FROM categories WHERE is_builtin = 0'),
     ) ?? 0;
-    return customCategories > 0;
+    if (customCategories > 0) return true;
+    final tags = await db.query('tags', columns: ['id']);
+    if (tags.any((row) => !DocumentDefaults.isDefaultTagId(row['id'] as String))) return true;
+    return (Sqflite.firstIntValue(await db.rawQuery('SELECT COUNT(*) FROM smart_collections')) ?? 0) > 0;
   }
 
   Future<int> portableSnapshotRevision() async {

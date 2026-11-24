@@ -10,6 +10,8 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+  schedule:
+    - cron: '30 2 * * 0'
 
 permissions:
   contents: read
@@ -130,6 +132,13 @@ jobs:
                                 r'<application\1android:label="DocsGrid"', text, count=1)
           if count != 1:
               raise SystemExit('Could not set Android application label')
+          # Request Android's optional Keep app data choice during uninstall.
+          # The choice is OS-controlled and does not guarantee shared media survival.
+          if 'android:hasFragileUserData=' not in text:
+              text = text.replace('android:label="DocsGrid"',
+                                  'android:label="DocsGrid" android:hasFragileUserData="true"', 1)
+          if 'android:hasFragileUserData="true"' not in text:
+              raise SystemExit('DocsGrid fragile-user-data manifest setting was not applied')
           android.write_text(text)
           ios = Path('ios/Runner/Info.plist')
           text = ios.read_text()
@@ -292,6 +301,26 @@ jobs:
           cp platform/android/MainActivity.kt android/app/src/main/kotlin/com/docsgrid/docs_grid/MainActivity.kt
       - name: Install packages
         run: flutter pub get
+      - name: OSV dependency scan (resolved Dart packages)
+        timeout-minutes: 8
+        run: |
+          set -euo pipefail
+          test -s pubspec.lock
+          mkdir -p quality-reports
+          # Scan the exact resolved lockfile; no app dependency changes.
+          docker run --rm -v "$PWD/pubspec.lock:/src/pubspec.lock:ro" ghcr.io/google/osv-scanner:v2.7.1 scan source --lockfile=/src/pubspec.lock --format=json > quality-reports/osv.json
+      - name: Upload dependency scan evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docsgrid-osv-dependency-scan
+          path: quality-reports/osv.json
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Check regression inventory and quality tooling
+        run: |
+          python3 -m unittest discover -s scripts -p 'test_quality_coverage.py' -v
+          python3 scripts/quality_coverage.py --inventory
       - name: Verify checked-in DocsGrid launcher icon
         run: |
           python3 - <<'PY'
@@ -314,8 +343,18 @@ jobs:
           else
             sudo apt-get install -y libsqlite3-dev
           fi
-      - name: Widget and unit tests
-        run: flutter test
+      - name: Widget and unit tests with line coverage
+        run: flutter test --coverage
+      - name: Validate and summarize coverage
+        run: python3 scripts/quality_coverage.py coverage/lcov.info
+      - name: Upload line coverage evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docsgrid-coverage-${{ runner.os }}
+          path: coverage/lcov.info
+          if-no-files-found: error
+          retention-days: 14
       - name: End-to-end integration workflow tests
         run: flutter test test/integration --reporter expanded
       - name: Performance benchmark (10k documents)
@@ -379,7 +418,6 @@ jobs:
   android_release_startup:
     name: Release APK process-cold launch benchmark (Android emulator)
     needs: android
-    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
     # GitHub-hosted Linux x86_64 runners expose KVM for accelerated Android tests.
     # Avoid macOS ARM nested-HVF restrictions and slow Intel macOS emulation.
     runs-on: ubuntu-24.04
@@ -429,17 +467,15 @@ jobs:
           profile: pixel_6
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -no-snapshot
-          script: >-
-            python3 scripts/benchmark_android_cold_launch.py
-            --apk artifacts/release/app-release.apk
-            --output startup-results/cold-launch.json
-            --iterations 7 --warmups 1
+          script: |
+            python3 scripts/smoke_android_fresh_grid.py --apk artifacts/release/app-release.apk --output startup-results/fresh-grid.json
+            python3 scripts/benchmark_android_cold_launch.py --apk artifacts/release/app-release.apk --output startup-results/cold-launch.json --iterations 7 --warmups 1
       - name: Upload startup timing baseline and sample data
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: docsgrid-android-cold-launch-baseline
-          path: startup-results/cold-launch.json
+          path: startup-results/*.json
           if-no-files-found: warn
           retention-days: 14
 
@@ -532,11 +568,53 @@ jobs:
         run: dart run flutter_launcher_icons
       - name: Analyze
         run: flutter analyze --no-fatal-infos
-      - name: Widget and unit tests
-        run: flutter test
+      - name: Widget and unit tests with line coverage
+        run: flutter test --coverage
+      - name: Validate and summarize coverage
+        run: python3 scripts/quality_coverage.py coverage/lcov.info
+      - name: Upload line coverage evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docsgrid-coverage-${{ runner.os }}
+          path: coverage/lcov.info
+          if-no-files-found: error
+          retention-days: 14
       - name: End-to-end integration workflow tests
         run: flutter test test/integration --reporter expanded
       - name: Performance benchmark (10k documents)
         run: flutter test test/performance --reporter expanded
       - name: Build iOS without code signing
         run: flutter build ios --no-codesign
+
+  quality_gate:
+    name: DocsGrid Quality Gate
+    needs: [android, ios, android_release_startup]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Enforce all required platform checks
+        env:
+          ANDROID_RESULT: ${{ needs.android.result }}
+          IOS_RESULT: ${{ needs.ios.result }}
+          STARTUP_RESULT: ${{ needs.android_release_startup.result }}
+        run: |
+          set -euo pipefail
+          failed=0
+          {
+            echo '## DocsGrid Quality Gate'
+            echo '| Required check | Result |'
+            echo '| --- | --- |'
+            for pair in "Android:$ANDROID_RESULT" "iOS:$IOS_RESULT" "Android startup:$STARTUP_RESULT"; do
+              name="${pair%%:*}"
+              result="${pair#*:}"
+              echo "| $name | $result |"
+              if [ "$result" != success ]; then
+                echo "::error::$name required check did not pass: $result" >&2
+                failed=1
+              fi
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$failed" -ne 0 ]; then exit 1; fi
+          echo 'All required automated checks passed, including Dart dependency scan and coverage evidence. Device testing and signing are separate release requirements.'
