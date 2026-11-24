@@ -57,6 +57,26 @@ void main() {
     expect(native, contains('Recovery is read-only'));
   });
 
+  test('direct Internal Storage/DocsGrid is protected from Phone Move', () {
+    for (final managed in [
+      'file:///storage/emulated/0/DocsGrid',
+      'file:///storage/emulated/0/DocsGrid/My%20Files/Folders/A',
+      'content://com.android.externalstorage.documents/tree/primary%3ADocsGrid',
+    ]) {
+      expect(StorageLocationService.isDirectInternalGridRootUri(managed), isTrue);
+      expect(StorageLocationService.isRestrictedPhoneMoveDestination(managed),
+          isTrue);
+    }
+    for (final unrelated in [
+      'file:///storage/emulated/0/DocsGridExtra',
+      'file:///storage/1234-5678/DocsGrid',
+      'file:///storage/emulated/0/Download/DocsGrid',
+    ]) {
+      expect(StorageLocationService.isDirectInternalGridRootUri(unrelated),
+          isFalse);
+    }
+  });
+
   test('canonical classification handles local and SAF paths and rejects lookalikes', () {
     for (final path in [
       'file:///storage/emulated/0/Android/media/com.docsgrid.mobile',
