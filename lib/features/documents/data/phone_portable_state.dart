@@ -110,6 +110,14 @@ class PhonePortableState {
   static const recentKey = 'docsgrid_phone_recent_v1';
   static const phoneSortKey = 'docsgrid_phone_sort_preference_v1';
   static const gridSortKey = 'docsgrid_grid_sort_preference_v1';
+  // Explicit allowlist: never export storage grants, restore-state flags,
+  // cached previews, system paths, telemetry or backup-status keys.
+  static const displayPreferenceKeys = <String>[
+    'dark_mode',
+    'docsgrid_document_grid_view_v1',
+    'docsgrid_grid_tab_tiles_v1',
+    'docsgrid_enable_ocr_search_v1',
+  ];
 
   static List<Map<String, Object?>> _readRecords(List<String>? raw) {
     final records = <Map<String, Object?>>[];
@@ -149,6 +157,10 @@ class PhonePortableState {
 
     return <String, Object?>{
       'format': format, 'version': version,
+      'displayPrefs': <String, bool>{
+        for (final key in displayPreferenceKeys)
+          if (prefs.getBool(key) != null) key: prefs.getBool(key)!,
+      },
       'stars': await withIds(starKey),
       'recent': await withIds(recentKey),
       if (prefs.getString(phoneSortKey) != null)
@@ -182,6 +194,17 @@ class PhonePortableState {
         accepted.add(Map<String, Object?>.from(raw));
       }
       result[field] = accepted;
+    }
+    final display = source['displayPrefs'];
+    if (display != null) {
+      if (display is! Map || display.length > displayPreferenceKeys.length ||
+          display.entries.any((entry) =>
+              entry.key is! String ||
+              !displayPreferenceKeys.contains(entry.key) ||
+              entry.value is! bool)) {
+        throw FormatException('Invalid portable display preferences.');
+      }
+      result['displayPrefs'] = Map<String, bool>.from(display);
     }
     for (final key in ['phoneSort', 'gridSort']) {
       final raw = source[key];
@@ -238,6 +261,13 @@ class PhonePortableState {
     if (!await prefs.setStringList(
         pendingKey, byId.values.map(jsonEncode).toList())) {
       throw StateError('Phone references could not be staged for relinking');
+    }
+    for (final entry in (saved['displayPrefs'] as Map<String, bool>?
+        ?? const <String, bool>{}).entries) {
+      if (prefs.getBool(entry.key) == null &&
+          !await prefs.setBool(entry.key, entry.value)) {
+        throw StateError('Could not restore a display preference.');
+      }
     }
     for (final key in ['phoneSort', 'gridSort']) {
       final actualKey = key == 'phoneSort' ? phoneSortKey : gridSortKey;

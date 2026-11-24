@@ -10,6 +10,8 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+  schedule:
+    - cron: '30 2 * * 0'
 
 permissions:
   contents: read
@@ -130,6 +132,13 @@ jobs:
                                 r'<application\1android:label="DocsGrid"', text, count=1)
           if count != 1:
               raise SystemExit('Could not set Android application label')
+          # Request Android's optional Keep app data choice during uninstall.
+          # The choice is OS-controlled and does not guarantee shared media survival.
+          if 'android:hasFragileUserData=' not in text:
+              text = text.replace('android:label="DocsGrid"',
+                                  'android:label="DocsGrid" android:hasFragileUserData="true"', 1)
+          if 'android:hasFragileUserData="true"' not in text:
+              raise SystemExit('DocsGrid fragile-user-data manifest setting was not applied')
           android.write_text(text)
           ios = Path('ios/Runner/Info.plist')
           text = ios.read_text()
@@ -190,56 +199,14 @@ jobs:
           gradle.write_text(s)
           print(f'Enabled core library desugaring in {gradle}')
           PY
-      - name: Include the Devanagari OCR engine used by DocsGrid in Release builds
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          import re
-          candidates = [Path('android/app/build.gradle.kts'), Path('android/app/build.gradle')]
-          gradle = next((path for path in candidates if path.exists()), None)
-          if gradle is None:
-              raise SystemExit('Generated Android app Gradle file is missing')
-          source = gradle.read_text()
-          # DocsGrid requests TextRecognitionScript.devanagiri at runtime.
-          # Unlike unused optional scripts, this ML Kit package must be
-          # installed, not silenced via -dontwarn.
-          if gradle.suffix == '.kts':
-              dependency = 'implementation("com.google.mlkit:text-recognition-devanagari:16.0.0")'
-              proguard = 'proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")'
-          else:
-              dependency = "implementation 'com.google.mlkit:text-recognition-devanagari:16.0.0'"
-              proguard = "proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'"
-          if dependency not in source:
-              match = re.search(r'dependencies\s*\{', source)
-              if match:
-                  source = source[:match.end()] + '\n    ' + dependency + source[match.end():]
-              else:
-                  source += '\ndependencies {\n    ' + dependency + '\n}\n'
-          source, count = re.subn(
-              r'(release\s*\{)',
-              lambda match: match.group(1) + '\n            ' + proguard,
-              source, count=1,
-          )
-          if count != 1:
-              raise SystemExit('Could not find the release build type')
-          gradle.write_text(source)
-          rules = Path('android/app/proguard-rules.pro')
-          rules.write_text('''# Optional ML Kit scripts never invoked by DocsGrid.
-          # DO NOT silence Devanagari: DocsGrid uses it for Hindi OCR.
-          -dontwarn com.google.mlkit.vision.text.chinese.**
-          -dontwarn com.google.mlkit.vision.text.japanese.**
-          -dontwarn com.google.mlkit.vision.text.korean.**
-          ''')
-          print('Preserved Devanagari OCR dependency; scoped optional R8 rules.')
-          PY
-      - name: Configure Android camera and notification permissions
+      - name: Configure Android storage and notification permissions
         run: |
           python3 - <<'PY'
           from pathlib import Path
           p = Path('android/app/src/main/AndroidManifest.xml')
           s = p.read_text()
           marker = '<application'
-          permissions = '    <uses-permission android:name="android.permission.CAMERA"/>\n    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>\n    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>\n    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"/>\n    '
+          permissions = '    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>\n    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>\n    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"/>\n    '
           s = s.replace(marker, permissions + marker, 1)
           receivers = '''\n    <receiver android:exported="false" android:name="com.dexterous.flutterlocalnotifications.ScheduledNotificationReceiver"/>\n    <receiver android:enabled="true" android:exported="false" android:name="com.dexterous.flutterlocalnotifications.ScheduledNotificationBootReceiver">\n        <intent-filter>\n            <action android:name="android.intent.action.BOOT_COMPLETED"/>\n            <action android:name="android.intent.action.MY_PACKAGE_REPLACED"/>\n            <action android:name="android.intent.action.QUICKBOOT_POWERON"/>\n        </intent-filter>\n    </receiver>\n    '''
           if 'ScheduledNotificationReceiver' not in s:
@@ -292,6 +259,28 @@ jobs:
           cp platform/android/MainActivity.kt android/app/src/main/kotlin/com/docsgrid/docs_grid/MainActivity.kt
       - name: Install packages
         run: flutter pub get
+      - name: OSV dependency scan (resolved Dart packages)
+        timeout-minutes: 8
+        run: |
+          set -euo pipefail
+          test -s pubspec.lock
+          mkdir -p quality-reports
+          # Scan the exact resolved lockfile; no app dependency changes.
+          docker run --rm -v "$PWD/pubspec.lock:/src/pubspec.lock:ro" ghcr.io/google/osv-scanner:v2.7.1 scan source --lockfile=/src/pubspec.lock --format=json > quality-reports/osv.json
+      - name: Upload dependency scan evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docsgrid-osv-dependency-scan
+          path: quality-reports/osv.json
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Check regression inventory and quality tooling
+        run: |
+          python3 -m unittest discover -s scripts -p 'test_quality_coverage.py' -v
+          python3 scripts/quality_coverage.py --inventory
+      - name: Retired feature source and dependency audit
+        run: python3 scripts/audit_retired_features.py --output quality-reports/source-audit.json
       - name: Verify checked-in DocsGrid launcher icon
         run: |
           python3 - <<'PY'
@@ -305,7 +294,10 @@ jobs:
       - name: Generate DocsGrid launcher icons
         run: dart run flutter_launcher_icons
       - name: Analyze
-        run: flutter analyze --no-fatal-infos
+        run: |
+          set -o pipefail
+          mkdir -p quality-reports
+          flutter analyze --no-fatal-infos 2>&1 | tee quality-reports/analyzer.txt
       - name: Ensure system SQLite for FFI tests
         if: runner.os == 'Linux'
         run: |
@@ -314,12 +306,33 @@ jobs:
           else
             sudo apt-get install -y libsqlite3-dev
           fi
-      - name: Widget and unit tests
-        run: flutter test
+      - name: Widget and unit tests with line coverage
+        run: |
+          set -o pipefail
+          mkdir -p quality-reports
+          flutter test --coverage --reporter expanded 2>&1 | tee quality-reports/tests.txt
+      - name: Validate and summarize coverage
+        run: python3 scripts/quality_coverage.py coverage/lcov.info
+      - name: Upload line coverage evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docsgrid-coverage-${{ runner.os }}
+          path: coverage/lcov.info
+          if-no-files-found: error
+          retention-days: 14
       - name: End-to-end integration workflow tests
         run: flutter test test/integration --reporter expanded
       - name: Performance benchmark (10k documents)
-        run: flutter test test/performance --reporter expanded
+        run: |
+          set -o pipefail
+          mkdir -p quality-reports
+          flutter test test/performance --reporter expanded 2>&1 | tee quality-reports/performance.txt
+      - name: Seeded fuzz and ZIP fault injection
+        run: flutter test test/quality_fault_fuzz_test.dart --reporter expanded
+      - name: Targeted mutation testing
+        timeout-minutes: 15
+        run: python3 scripts/quality_mutation.py
       - name: Build debug APK
         run: |
           for attempt in 1 2 3; do
@@ -367,6 +380,15 @@ jobs:
           sha256sum "$APK"
           wc -c "$APK"
           echo "Internal performance-evaluation build only; DO NOT publish to Play."
+      - name: Retired feature APK binary audit
+        run: |
+          set -euo pipefail
+          APK=build/app/outputs/flutter-apk/app-release.apk
+          AAPT="$(find "${ANDROID_SDK_ROOT:-$ANDROID_HOME}/build-tools" -name aapt -type f | sort -V | tail -n 1)"
+          test -x "$AAPT"
+          mkdir -p quality-reports
+          "$AAPT" dump permissions "$APK" > quality-reports/apk-permissions.txt
+          python3 scripts/audit_retired_features.py --apk "$APK" --permissions quality-reports/apk-permissions.txt --output quality-reports/apk-audit.json
       - name: Upload verified Release APK
         uses: actions/upload-artifact@v4
         with:
@@ -374,12 +396,18 @@ jobs:
           path: build/app/outputs/flutter-apk/app-release.apk
           if-no-files-found: error
           retention-days: 14
-
+      - name: Upload detailed quality evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docsgrid-quality-evidence-Linux
+          path: quality-reports/
+          if-no-files-found: warn
+          retention-days: 14
 
   android_release_startup:
     name: Release APK process-cold launch benchmark (Android emulator)
     needs: android
-    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
     # GitHub-hosted Linux x86_64 runners expose KVM for accelerated Android tests.
     # Avoid macOS ARM nested-HVF restrictions and slow Intel macOS emulation.
     runs-on: ubuntu-24.04
@@ -429,17 +457,16 @@ jobs:
           profile: pixel_6
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -no-snapshot
-          script: >-
-            python3 scripts/benchmark_android_cold_launch.py
-            --apk artifacts/release/app-release.apk
-            --output startup-results/cold-launch.json
-            --iterations 7 --warmups 1
+          script: |
+            python3 scripts/smoke_android_fresh_grid.py --apk artifacts/release/app-release.apk --output startup-results/fresh-grid.json
+            python3 scripts/benchmark_android_cold_launch.py --apk artifacts/release/app-release.apk --output startup-results/cold-launch.json --iterations 7 --warmups 1
+            python3 scripts/profile_android_resources.py --output startup-results/resources.json
       - name: Upload startup timing baseline and sample data
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: docsgrid-android-cold-launch-baseline
-          path: startup-results/cold-launch.json
+          path: startup-results/*.json
           if-no-files-found: warn
           retention-days: 14
 
@@ -454,14 +481,12 @@ jobs:
           cache: true
       - name: Generate native platform scaffolding
         run: flutter create --no-pub --platforms=android,ios --org com.docsgrid .
-      - name: Configure iOS camera and photo usage descriptions
+      - name: Configure iOS PDF document types
         run: |
           python3 - <<'PY'
           from pathlib import Path
           p = Path('ios/Runner/Info.plist')
           s = p.read_text()
-          keys = '''\n          <key>NSCameraUsageDescription</key>\n          <string>DocsGrid uses the camera to scan document pages into PDFs.</string>\n          <key>NSPhotoLibraryUsageDescription</key>\n          <string>DocsGrid uses selected photos to create PDF documents.</string>\n          '''
-          s = s.replace('</dict>', keys + '\n</dict>', 1)
           if '<key>CFBundleDocumentTypes</key>' not in s:
               document_types = '''
               <key>CFBundleDocumentTypes</key>
@@ -485,7 +510,7 @@ jobs:
           PY
       - name: Install iOS Files host integration
         run: cp platform/ios/AppDelegate.swift ios/Runner/AppDelegate.swift
-      - name: Set iOS deployment target for on-device ML Kit
+      - name: Set existing iOS deployment target
         run: |
           python3 - <<'PY'
           from pathlib import Path
@@ -531,12 +556,114 @@ jobs:
       - name: Generate DocsGrid launcher icons
         run: dart run flutter_launcher_icons
       - name: Analyze
-        run: flutter analyze --no-fatal-infos
-      - name: Widget and unit tests
-        run: flutter test
+        run: |
+          set -o pipefail
+          mkdir -p quality-reports
+          flutter analyze --no-fatal-infos 2>&1 | tee quality-reports/analyzer.txt
+      - name: Widget and unit tests with line coverage
+        run: |
+          set -o pipefail
+          mkdir -p quality-reports
+          flutter test --coverage --reporter expanded 2>&1 | tee quality-reports/tests.txt
+      - name: Validate and summarize coverage
+        run: python3 scripts/quality_coverage.py coverage/lcov.info
+      - name: Upload line coverage evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docsgrid-coverage-${{ runner.os }}
+          path: coverage/lcov.info
+          if-no-files-found: error
+          retention-days: 14
       - name: End-to-end integration workflow tests
         run: flutter test test/integration --reporter expanded
       - name: Performance benchmark (10k documents)
-        run: flutter test test/performance --reporter expanded
+        run: |
+          set -o pipefail
+          mkdir -p quality-reports
+          flutter test test/performance --reporter expanded 2>&1 | tee quality-reports/performance.txt
+      - name: Seeded fuzz and ZIP fault injection
+        run: flutter test test/quality_fault_fuzz_test.dart --reporter expanded
       - name: Build iOS without code signing
         run: flutter build ios --no-codesign
+      - name: Upload detailed quality evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docsgrid-quality-evidence-macOS
+          path: quality-reports/
+          if-no-files-found: warn
+          retention-days: 14
+
+  quality_gate:
+    name: DocsGrid Quality Gate
+    needs: [android, ios, android_release_startup]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Enforce all required platform checks
+        id: enforce
+        env:
+          ANDROID_RESULT: ${{ needs.android.result }}
+          IOS_RESULT: ${{ needs.ios.result }}
+          STARTUP_RESULT: ${{ needs.android_release_startup.result }}
+        run: |
+          set -euo pipefail
+          failed=0
+          {
+            echo '## DocsGrid Quality Gate'
+            echo '| Required check | Result |'
+            echo '| --- | --- |'
+            for pair in "Android:$ANDROID_RESULT" "iOS:$IOS_RESULT" "Android startup:$STARTUP_RESULT"; do
+              name="${pair%%:*}"
+              result="${pair#*:}"
+              echo "| $name | $result |"
+              if [ "$result" != success ]; then
+                echo "::error::$name required check did not pass: $result" >&2
+                failed=1
+              fi
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$failed" -ne 0 ]; then exit 1; fi
+          echo 'All required automated checks passed, including Dart dependency scan and coverage evidence. Device testing and signing are separate release requirements.'
+
+      - name: Download platform quality evidence
+        if: always()
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: docsgrid-quality-evidence-*
+          path: quality-collected
+      - name: Download coverage evidence
+        if: always()
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: docsgrid-coverage-*
+          path: quality-collected
+      - name: Download emulator evidence
+        if: always()
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: docsgrid-android-cold-launch-baseline
+          path: quality-collected/startup
+      - name: Generate detailed quality report (including not tested)
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GATE_OUTCOME: ${{ steps.enforce.outcome }}
+        run: python3 scripts/quality_report.py
+      - name: Upload detailed quality report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docsgrid-complete-quality-report
+          path: quality-report/
+          if-no-files-found: error
+          retention-days: 14

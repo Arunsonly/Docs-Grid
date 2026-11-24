@@ -234,4 +234,36 @@ void main() {
         'page_size=40 page_p50_us=$pageP50 page_p95_us=$pageP95 '
         'summary_us=${summaryWatch.elapsedMicroseconds}');
   });
+  test('active filename search: 10,000 documents, warm p50/p95', () async {
+    const count = 10000;
+    const stamp = '2026-11-09T00:00:00.000Z';
+    await database.transaction((txn) async {
+      final batch = txn.batch();
+      for (var i = 0; i < count; i++) {
+        batch.insert('documents', {
+          'id': 'search-$i',
+          'name': i % 100 == 0 ? 'BENCHMARK-HIT-$i.pdf' : 'Ordinary policy $i.pdf',
+          'mime_type': 'application/pdf', 'size_bytes': 100,
+          'created_at': stamp, 'updated_at': stamp, 'metadata_json': '{}',
+        });
+      }
+      await batch.commit(noResult: true);
+    });
+    final warm = await repository.list(query: 'BENCHMARK-HIT-');
+    expect(warm, hasLength(100));
+    final samples = <int>[];
+    for (var i = 0; i < 25; i++) {
+      final watch = Stopwatch()..start();
+      final results = await repository.list(query: 'BENCHMARK-HIT-');
+      watch.stop();
+      expect(results, hasLength(100));
+      samples.add(watch.elapsedMicroseconds);
+    }
+    samples.sort();
+    final p50 = samples[samples.length ~/ 2];
+    final p95 = samples[(samples.length * .95).floor().clamp(0, samples.length - 1)];
+    expect(p95, lessThan(5000000), reason: 'Filename search p95 exceeded 5 seconds');
+    // ignore: avoid_print
+    print('DOCSGRID_FILENAME_SEARCH docs=$count p50_us=$p50 p95_us=$p95');
+  });
 }
