@@ -307,7 +307,10 @@ jobs:
             sudo apt-get install -y libsqlite3-dev
           fi
       - name: Widget and unit tests with line coverage
-        run: flutter test --coverage
+        run: |
+          set -o pipefail
+          mkdir -p quality-reports
+          flutter test --coverage --reporter expanded 2>&1 | tee quality-reports/tests.txt
       - name: Validate and summarize coverage
         run: python3 scripts/quality_coverage.py coverage/lcov.info
       - name: Upload line coverage evidence
@@ -558,7 +561,10 @@ jobs:
           mkdir -p quality-reports
           flutter analyze --no-fatal-infos 2>&1 | tee quality-reports/analyzer.txt
       - name: Widget and unit tests with line coverage
-        run: flutter test --coverage
+        run: |
+          set -o pipefail
+          mkdir -p quality-reports
+          flutter test --coverage --reporter expanded 2>&1 | tee quality-reports/tests.txt
       - name: Validate and summarize coverage
         run: python3 scripts/quality_coverage.py coverage/lcov.info
       - name: Upload line coverage evidence
@@ -594,9 +600,14 @@ jobs:
     needs: [android, ios, android_release_startup]
     if: ${{ always() }}
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
     steps:
+      - uses: actions/checkout@v4
       - name: Enforce all required platform checks
+        id: enforce
         env:
           ANDROID_RESULT: ${{ needs.android.result }}
           IOS_RESULT: ${{ needs.ios.result }}
@@ -620,3 +631,39 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           if [ "$failed" -ne 0 ]; then exit 1; fi
           echo 'All required automated checks passed, including Dart dependency scan and coverage evidence. Device testing and signing are separate release requirements.'
+
+      - name: Download platform quality evidence
+        if: always()
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: docsgrid-quality-evidence-*
+          path: quality-collected
+      - name: Download coverage evidence
+        if: always()
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: docsgrid-coverage-*
+          path: quality-collected
+      - name: Download emulator evidence
+        if: always()
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: docsgrid-android-cold-launch-baseline
+          path: quality-collected/startup
+      - name: Generate detailed quality report (including not tested)
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GATE_OUTCOME: ${{ steps.enforce.outcome }}
+        run: python3 scripts/quality_report.py
+      - name: Upload detailed quality report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docsgrid-complete-quality-report
+          path: quality-report/
+          if-no-files-found: error
+          retention-days: 14
