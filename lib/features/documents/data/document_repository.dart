@@ -906,38 +906,6 @@ class DocumentRepository {
     return migrated;
   }
 
-  /// Checks whether database rows still reference older writable DocsGrid roots.
-  Future<bool> hasLegacyStorageReferences() async {
-    final db = await _database.database;
-    final documents = await db.query('documents', columns: ['storage_uri']);
-    final folders = await db.query(
-      'folders',
-      columns: ['storage_uri_or_relative_path'],
-    );
-    return documents.any((row) =>
-            StorageLocationService.isLegacyDocsGridStorageLocation(
-              row['storage_uri'] as String?,
-            )) ||
-        folders.any((row) =>
-            StorageLocationService.isLegacyDocsGridStorageLocation(
-              row['storage_uri_or_relative_path'] as String?,
-            ));
-  }
-
-  /// Copies older DocsGrid records into the canonical location when explicitly
-  /// requested; no migration source PDFs are deleted.
-  Future<int> migrateLegacyStorageToCanonicalIfNeeded() async {
-    if (!Platform.isAndroid) return 0;
-    final storage = StorageLocationService.instance;
-    if (!await storage.hasAllFilesAccess()) return 0;
-    final locations = await storage.portableDataLocationsIfAvailable();
-    if (!StorageLocationService.isCanonicalPortableRootUri(locations['rootUri'])) {
-      return 0;
-    }
-    if (!await hasLegacyStorageReferences()) return 0;
-    return migrateExistingLibraryToSelectedStorage();
-  }
-
   /// Reconnects a missing or inaccessible PDF to a user-selected copy.
   /// If the record has a SHA-256 value, the replacement must match exactly.
   Future<void> relinkDocument(DocumentRecord document) async {

@@ -87,36 +87,26 @@ void main() {
     if (await temporary.exists()) await temporary.delete(recursive: true);
   });
 
-  test('starts A001, then I001 and I002 with explicit parents', () async {
-    final first = await BackupChain.next(full);
-    expect(first.series, 'A001');
-    expect(first.name, 'A001');
-    expect(first.isFull, true);
-    await makeArchive(first.directory, 'A001', 'A001',
+  test('legacy reader verifies Full and incremental parent sequence', () async {
+    final folder = Directory(p.join(full.path, 'A001'));
+    await makeArchive(folder, 'A001', 'A001',
         parent: null, documents: ['one'], payloadDocuments: ['one']);
-    final second = await BackupChain.next(full);
-    expect(second.label, 'A001/I001');
-    expect(second.parent, 'A001');
-    expect(second.previous['one']?['sha256'], pdfHash(pdfBytes('one')));
-    await makeArchive(second.directory, 'A001', 'I001',
-        parent: 'A001', documents: ['one', 'two'],
-        payloadDocuments: ['two']);
-    final third = await BackupChain.next(full);
-    expect(third.label, 'A001/I002');
-    expect(third.parent, 'I001');
-    expect(third.previous.length, 2);
+    await makeArchive(folder, 'A001', 'I001',
+        parent: 'A001', documents: ['one', 'two'], payloadDocuments: ['two']);
+    await makeArchive(folder, 'A001', 'I002',
+        parent: 'I001', documents: ['one', 'two'], payloadDocuments: []);
+    final members = await BackupChain.verified(folder);
+    expect(members.map((file) => p.basename(file.path)), ['A001.zip', 'I001.zip', 'I002.zip']);
+    final last = await BackupChain.manifest(members.last);
+    expect(last['parentName'], 'I001');
+    expect(BackupChain.fingerprints(last).length, 2);
   });
 
-  test('new Full series allocation follows numeric order past A999', () async {
-    await Directory(p.join(full.path, 'A999')).create();
+  test('legacy series discovery follows numeric order past A999', () async {
     await Directory(p.join(full.path, 'A1000')).create();
-
-    final plan = await BackupChain.next(full, newFull: true);
-    expect(plan.series, 'A1001');
-    expect(plan.name, 'A1001');
-    expect(plan.parent, isNull);
-    expect(await Directory(p.join(full.path, 'A999')).exists(), true);
-    expect(await Directory(p.join(full.path, 'A1000')).exists(), true);
+    await Directory(p.join(full.path, 'A999')).create();
+    final folders = await BackupChain.folders(full);
+    expect(folders.map((folder) => p.basename(folder.path)), ['A999', 'A1000']);
   });
 
   test('only new payloads are saved, but last restore recovers all bytes', () async {

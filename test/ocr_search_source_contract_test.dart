@@ -33,5 +33,6 @@ void main() {
     final repository = File('lib/features/documents/data/document_repository.dart')
         .readAsStringSync();
     expect(repository, contains('Future<int> migrateExistingLibraryToSelectedStorage('));
+    expect(repository, isNot(contains('migrateLegacyStorageToCanonicalIfNeeded(')));
   });
 }

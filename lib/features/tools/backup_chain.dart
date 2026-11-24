@@ -10,20 +10,6 @@ import 'backup_archive_limits.dart';
 
 /// On disk: Full/A001/A001.zip, Full/A001/I001.zip, Full/A001/I002.zip.
 /// In the UI: A001, A001/I001, A001/I002.
-class BackupChainPlan {
-  const BackupChainPlan(this.directory, this.series, this.name, this.parent,
-      this.parentBackupId, this.previous);
-  final Directory directory;
-  final String series;
-  final String name;
-  final String? parent;
-  final String? parentBackupId;
-  final Map<String, Map<String, Object?>> previous;
-  bool get isFull => parent == null;
-  String get label => isFull ? series : series + '/' + name;
-  File get output => File(p.join(directory.path, name + '.zip'));
-}
-
 class BackupChainUsage {
   const BackupChainUsage(this.name, this.bytes, this.files);
   final String name;
@@ -40,7 +26,7 @@ class BackupChain {
   static bool validSeriesName(String value) => _series.hasMatch(value);
 
   // A999 must precede A1000 (and I999 must precede I1000).
-  // Lexicographic sorting would break both next-series allocation and
+  // Lexicographic sorting would break ordering and
   // verification of an otherwise complete incremental parent chain.
   static int _compareSerials(String left, String right) {
     final order = BigInt.parse(left.substring(1))
@@ -148,26 +134,6 @@ class BackupChain {
       parentBackupId = m['backupId'] as String;
     }
     return items;
-  }
-
-  static Future<BackupChainPlan> next(
-      Directory root, {bool newFull = false}) async {
-    final current = await folders(root);
-    if (current.isEmpty || newFull) {
-      final number = current.isEmpty
-          ? 1 : int.parse(p.basename(current.last.path).substring(1)) + 1;
-      final series = serial('A', number);
-      return BackupChainPlan(Directory(p.join(root.path, series)),
-          series, series, null, null, const {});
-    }
-    final latest = current.last;
-    final members = await verified(latest);
-    final previous = await manifest(members.last);
-    return BackupChainPlan(
-      latest, p.basename(latest.path), serial('I', members.length),
-      p.basenameWithoutExtension(members.last.path),
-      previous['backupId'] as String, fingerprints(previous),
-    );
   }
 
   static Future<List<BackupChainUsage>> usage(Directory root) async {

@@ -242,48 +242,6 @@ class DocumentToolsService {
     await SharePlus.instance.share(ShareParams(files: [XFile(path)], text: text));
   }
 
-  /// Serialize public backup publication and retention with restore.
-  /// Manual PDF backups are explicitly initiated by the user. They are never
-  /// scheduled or pruned by the daily database-backup retention policy.
-  Future<File> createManualBackup({
-    void Function(int, int)? onProgress,
-    void Function(String)? onStage,
-    bool newFull = false,
-  }) => _withRecoveryLock(() async {
-    onStage?.call('Checking backup storage and parent chain…');
-    await StorageMigrationGate.waitUntilReady();
-    final locations = await StorageLocationService.instance
-        .portableDataLocationsIfAvailable();
-    final rootUri = locations['fullBackupsUri'];
-    if (rootUri == null || !rootUri.startsWith('file://')) {
-      throw StateError('Manual incremental backups require a readable local '
-          'DocsGrid Full backup folder. Restore and SAF exports stay available.');
-    }
-    final root = Directory(Uri.parse(rootUri).toFilePath());
-    await root.create(recursive: true);
-    final plan = await BackupChain.next(root, newFull: newFull);
-    if (await plan.output.exists()) {
-      throw StateError('Backup name already exists. Nothing was replaced.');
-    }
-    await plan.directory.create(recursive: true);
-    try {
-      return await _createBackupLocked(
-        onProgress: onProgress, onStage: onStage,
-        includePdfs: true, seriesPlan: plan,
-      );
-    } catch (_) {
-      if (plan.isFull) {
-        try {
-          if (await plan.directory.exists() &&
-              await plan.directory.list().isEmpty) {
-            await plan.directory.delete();
-          }
-        } catch (_) {}
-      }
-      rethrow;
-    }
-  });
-
   /// Read-only estimate for the confirmation sheet. ZIP metadata and
   /// filesystem changes can affect the final size; creation still verifies
   /// the live revision and every archived PDF.
@@ -313,7 +271,7 @@ class DocumentToolsService {
   }
 
   /// New backups are standalone Full ZIPs. Keep the legacy A-series
-  /// engine intact for existing archives and their recovery/export.
+  /// reader intact for existing archives and their recovery/export.
   Future<File> createStandaloneFullBackup({
     void Function(int, int)? onProgress,
     void Function(String)? onStage,
@@ -559,7 +517,6 @@ class DocumentToolsService {
     bool includePdfs = true,
     bool backgroundSafe = false,
     bool rescueCheckpoint = false,
-    BackupChainPlan? seriesPlan,
     void Function(String)? onStage,
   }) async {
     // UI stages are informational: never mark the backup complete before
@@ -600,14 +557,7 @@ class DocumentToolsService {
     final manifest = <String, Object?>{
       'format': 'DocsGridBackup',
       'version': 1,
-      'backupType': rescueCheckpoint ? 'rescue' : seriesPlan != null && !seriesPlan.isFull
-          ? 'incremental' : includePdfs ? 'full' : 'database',
-      if (seriesPlan != null) 'seriesId': seriesPlan.series,
-      if (seriesPlan != null) 'backupName': seriesPlan.name,
-      if (seriesPlan != null) 'parentName': seriesPlan.parent,
-      if (seriesPlan != null) 'parentBackupId': seriesPlan.parentBackupId,
-      if (seriesPlan != null) 'documentFingerprints': <Map<String, Object?>>[],
-      if (seriesPlan != null) 'deletedDocumentIds': <String>[],
+      'backupType': rescueCheckpoint ? 'rescue' : includePdfs ? 'full' : 'database',
       if (rescueCheckpoint) 'missingPdfs': <Map<String, Object?>>[],
       'backupId': _uuid.v4(),
       'app': 'DocsGrid',
@@ -642,7 +592,7 @@ class DocumentToolsService {
     final temp = await getTemporaryDirectory();
     await temp.create(recursive: true);
     final staging = await temp.createTemp('docsgrid_backup_');
-    final output = seriesPlan?.output ?? File(p.join(
+    final output = File(p.join(
       backups.path,
       'DocsGrid_${DateTime.now().toUtc().millisecondsSinceEpoch}_${_uuid.v4()}.zip',
     ));
@@ -769,61 +719,6 @@ class DocumentToolsService {
             );
             if (docs.isEmpty) break;
             for (final row in docs) {
-            // A previous verified ZIP already owns the unchanged PDF bytes.
-            // Fast-path verified local size/mtime, with hash verification when
-            // either changes. SAF providers are always re-hashed, never trusted
-            // solely by their display name or a possibly stale timestamp.
-            if (seriesPlan != null && !seriesPlan.isFull) {
-              final uri = row['storage_uri'] as String?;
-              final id = row['id'] as String;
-              final expected = row['sha256'] as String?;
-              final previous = seriesPlan.previous[id];
-              if (row['deleted_at'] != null && previous != null &&
-                  previous['sha256'] == expected) {
-                (manifest['documentFingerprints'] as List).add({
-                  ...previous,
-                  'deletedAt': row['deleted_at'],
-                });
-                completed++;
-                onProgress?.call(completed, totalDocs);
-                continue;
-              }
-              if (uri != null && expected != null &&
-                  previous?['sha256'] == expected) {
-                var sameBytes = false;
-                var modified = -1;
-                var size = (row['size_bytes'] as num?)?.toInt() ?? -1;
-                if (uri.startsWith('content://')) {
-                  sameBytes = await storage.sha256Pdf(uri) == expected;
-                } else {
-                  final local = File(uri.startsWith('file://')
-                      ? Uri.parse(uri).toFilePath() : uri);
-                  final stat = await local.stat();
-                  if (stat.type != FileSystemEntityType.file) {
-                    throw StateError('An existing PDF is unavailable; backup stopped.');
-                  }
-                  modified = stat.modified.millisecondsSinceEpoch;
-                  size = stat.size;
-                  sameBytes = size == previous!['sizeBytes'] &&
-                      modified == previous['modifiedMillis'];
-                  if (!sameBytes) {
-                    sameBytes =
-                        (await sha256.bind(local.openRead()).first).toString() ==
-                        expected;
-                  }
-                }
-                if (sameBytes) {
-                  (manifest['documentFingerprints'] as List).add({
-                    'id': id, 'sha256': expected, 'sizeBytes': size,
-                    'modifiedMillis': modified,
-                    'deletedAt': (row['deleted_at'] as String?),
-                  });
-                  completed++;
-                  onProgress?.call(completed, totalDocs);
-                  continue;
-                }
-              }
-            }
             // Only confirmed source-file problems may be written to a
             // rescue ledger. Never disguise ZIP-write, low-disk or coding
             // errors as missing PDFs: those must abort the rescue checkpoint.
@@ -890,17 +785,6 @@ class DocumentToolsService {
                 'documentId': row['id'], 'entry': entry, 'sha256': digest,
                 'originalName': row['name'],
               });
-              if (seriesPlan != null) {
-                final localStat = uri.startsWith('content://')
-                    ? null : await file.stat();
-                (manifest['documentFingerprints'] as List).add({
-                  'id': row['id'], 'sha256': digest,
-                  'sizeBytes': await file.length(),
-                  'modifiedMillis':
-                      localStat?.modified.millisecondsSinceEpoch ?? -1,
-                  'deletedAt': row['deleted_at'],
-                });
-              }
             } finally {
               if (stagedProviderFile != null && await stagedProviderFile.exists()) {
                 await stagedProviderFile.delete();
@@ -921,19 +805,6 @@ class DocumentToolsService {
           }
         }
 
-      if (seriesPlan != null && !seriesPlan.isFull) {
-        final currentIds = (manifest['documentFingerprints'] as List)
-            .map((row) => (row as Map)['id'] as String).toSet();
-        final currentFingerprints = <String, Map>{
-          for (final row in manifest['documentFingerprints'] as List)
-            (row as Map)['id'] as String: row,
-        };
-        (manifest['deletedDocumentIds'] as List).addAll(
-            seriesPlan.previous.keys.where((id) =>
-                !currentIds.contains(id) ||
-                (seriesPlan.previous[id]?['deletedAt'] == null &&
-                    currentFingerprints[id]?['deletedAt'] != null)));
-      }
       final currentRevision = await _database.portableSnapshotRevision();
       if (currentRevision != capturedRevision) {
         throw StateError(

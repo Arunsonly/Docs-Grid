@@ -406,20 +406,20 @@ class _DocumentsScreenState extends State<DocumentsScreen>
     if (_isStartupHome) StartupTimeline.mark('home_summary_start');
     final summaryFuture = _repository.dashboardSummary();
     try {
-        final page = await _repository.listPage(
-          query: _search.text,
-          favoritesOnly: widget.favoritesOnly,
-          recentOnly: widget.recentOnly,
-          pageSize: 40,
-        );
-        if (!mounted || generation != _loadGeneration) return;
-        setState(() {
-          _documents = page.items;
-          _nextCursor = page.nextCursor;
-          _hasMore = page.hasMore;
-          _loading = false;
-          _error = null;
-        });
+      final page = await _repository.listPage(
+        query: _search.text,
+        favoritesOnly: widget.favoritesOnly,
+        recentOnly: widget.recentOnly,
+        pageSize: 40,
+      );
+      if (!mounted || generation != _loadGeneration) return;
+      setState(() {
+        _documents = page.items;
+        _nextCursor = page.nextCursor;
+        _hasMore = page.hasMore;
+        _loading = false;
+        _error = null;
+      });
       if (_isStartupHome) StartupTimeline.mark('home_page_ready');
       // Summary is secondary UI. Update it when ready without delaying the
       // first page, and ignore stale completions after a newer refresh.
