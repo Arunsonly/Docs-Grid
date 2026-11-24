@@ -533,7 +533,10 @@ class AppDatabase {
     final customCategories = Sqflite.firstIntValue(
       await db.rawQuery('SELECT COUNT(*) FROM categories WHERE is_builtin = 0'),
     ) ?? 0;
-    return customCategories > 0;
+    if (customCategories > 0) return true;
+    final tags = await db.query('tags', columns: ['id']);
+    if (tags.any((row) => !DocumentDefaults.isDefaultTagId(row['id'] as String))) return true;
+    return (Sqflite.firstIntValue(await db.rawQuery('SELECT COUNT(*) FROM smart_collections')) ?? 0) > 0;
   }
 
   Future<int> portableSnapshotRevision() async {

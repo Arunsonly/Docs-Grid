@@ -103,6 +103,9 @@ import CryptoKit
                 } else {
                     result([])
                 }
+            case "getFreeStorageBytes":
+                let attributes = try FileManager.default.attributesOfFileSystem(forPath: NSHomeDirectory())
+                result(attributes[.systemFreeSize] as? NSNumber)
             case "getPortableDataLocations":
                 guard let selected = try selectedFolder(), let root = URL(string: selected["uri"] ?? "") else {
                     throw storageError("Choose a DocsGrid storage folder first.")

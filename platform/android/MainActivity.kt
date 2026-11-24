@@ -701,6 +701,9 @@ class MainActivity : FlutterActivity() {
                                     startActivityForResult(intent, requestChooseFolder)
                                 }
                             }
+                            "getFreeStorageBytes" -> {
+                                result.success(android.os.StatFs(android.os.Environment.getDataDirectory().path).availableBytes)
+                            }
                             "getDocsGridInstallTime" -> {
                                 @Suppress("DEPRECATION")
                                 val info = packageManager.getPackageInfo(packageName, 0)

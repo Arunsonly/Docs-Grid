@@ -75,7 +75,7 @@ class _StorageInformationScreenState extends State<StorageInformationScreen> {
         if(entry['isDirectory']==true) {
           pending.add(child);
         } else if(visited.add(child)) {
-          final size=entry['sizeBytes'];
+          final size=entry['size'];
           if(size is! num || size<0) return null;
           bytes+=size.toInt();
           if((entry['name'] as String).toLowerCase().endsWith('.zip')) zipFiles++;
@@ -161,6 +161,10 @@ class _StorageInformationScreenState extends State<StorageInformationScreen> {
       _error!=null||d==null?Center(child:TextButton(onPressed:_load,child:const Text('Could not read storage. Retry'))):
       ListView(padding:const EdgeInsets.all(16),children:[
         Text('DOCSGRID STORAGE USAGE',style:Theme.of(context).textTheme.labelLarge),
+        if (d['backupBytes'] is num) ...[
+          Text(_size((d['pdfBytes'] as num)+(d['backupBytes'] as num)+(d['cache'] as num)+(d['db'] as num)), style:Theme.of(context).textTheme.headlineMedium),
+          const Text('Accounted usage (registered PDFs + measured storage)'),
+        ],
         Card(child:Column(children:[
           ListTile(leading:const Icon(Icons.picture_as_pdf_outlined),title:const Text('PDF Documents'),subtitle:const Text('Registered active Grid PDFs'),trailing:Text(_size(d['pdfBytes']))),
           const Divider(height:1),

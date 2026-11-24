@@ -3981,6 +3981,7 @@ Future<int?> _restoreBackupLocked(
       for (final row in rowsByTable['settings']!) {
         await txn.insert('settings', row, conflictAlgorithm: ConflictAlgorithm.ignore);
       }
+      await DocumentDefaults.seed(txn);
     });
     } catch (_) {
       await rollbackCreatedFolders();
