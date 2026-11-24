@@ -386,7 +386,6 @@ jobs:
   android_release_startup:
     name: Release APK process-cold launch benchmark (Android emulator)
     needs: android
-    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
     # GitHub-hosted Linux x86_64 runners expose KVM for accelerated Android tests.
     # Avoid macOS ARM nested-HVF restrictions and slow Intel macOS emulation.
     runs-on: ubuntu-24.04
@@ -545,3 +544,35 @@ jobs:
         run: flutter test test/performance --reporter expanded
       - name: Build iOS without code signing
         run: flutter build ios --no-codesign
+
+  quality_gate:
+    name: DocsGrid Quality Gate
+    needs: [android, ios, android_release_startup]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Enforce all required platform checks
+        env:
+          ANDROID_RESULT: ${{ needs.android.result }}
+          IOS_RESULT: ${{ needs.ios.result }}
+          STARTUP_RESULT: ${{ needs.android_release_startup.result }}
+        run: |
+          set -euo pipefail
+          failed=0
+          {
+            echo '## DocsGrid Quality Gate'
+            echo '| Required check | Result |'
+            echo '| --- | --- |'
+            for pair in "Android:$ANDROID_RESULT" "iOS:$IOS_RESULT" "Android startup:$STARTUP_RESULT"; do
+              name="${pair%%:*}"
+              result="${pair#*:}"
+              echo "| $name | $result |"
+              if [ "$result" != success ]; then
+                echo "::error::$name required check did not pass: $result" >&2
+                failed=1
+              fi
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$failed" -ne 0 ]; then exit 1; fi
+          echo 'All required automated checks passed. Device testing and signing are separate release requirements.'
