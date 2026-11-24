@@ -14,9 +14,12 @@ void main() {
         .readAsStringSync();
   });
 
-  test('the automatic Android/media folder always uses installed package ID', () {
+  test('new Android installs use Internal Storage/DocsGrid without moving legacy data', () {
     expect(workflow, contains('applicationId = "com.docsgrid.mobile"'));
-    expect(native, contains('val root = java.io.File(mediaRoot, packageName)'));
+    expect(native, contains('val preferredRoot = java.io.File(internalRoot, "DocsGrid").canonicalFile'));
+    expect(native, contains('val previousRoot = java.io.File(mediaRoot, packageName).canonicalFile'));
+    expect(native, contains('existingSavedRoot != null && existingSavedRoot.isDirectory'));
+    expect(native, contains('previousRoot.isDirectory &&'));
     expect(native, contains('val myFiles = java.io.File(root, "My Files")'));
     expect(native, contains('val unfiled = java.io.File(myFiles, "Unfiled")'));
     expect(native, contains('val folders = java.io.File(myFiles, "Folders")'));
@@ -30,11 +33,18 @@ void main() {
     expect(native, contains('val activeManagedRoot = "android/media/'));
     expect(native, contains(r'normalized.startsWith("$activeManagedRoot/")'));
     expect(native, contains('normalized == activeManagedRoot'));
-    expect(storage, contains("path == 'Android/media/com.docsgrid.mobile'"));
-    expect(storage, contains("path.startsWith('Android/media/com.docsgrid.mobile/')"));
-    // Old Grid paths are excluded too, not treated as ordinary Phone PDFs.
+    // Central Dart boundary guards both selected SAF and actual file://
+    // managed roots; recursion never descends into its excluded tree.
+    expect(storage, contains('GridStorageBoundary? excludeGrid'));
+    expect(storage, contains('excludeGrid?.isManagedPath(path,'));
+    expect(native, contains('managedPrimaryRelative'));
+    expect(native, contains('normalized.startsWith("$managedPrimaryRelative/")'));
+    // Old Grid paths stay excluded after a user selects the new root.
     expect(native, contains('normalized.startsWith("android/media/com.docsgrid/")'));
-    expect(storage, contains("path == 'Android/media/com.docsgrid'"));
+    final boundary = File('lib/core/storage/grid_storage_boundary.dart')
+        .readAsStringSync();
+    expect(boundary, contains("'android/media/com.docsgrid.mobile'"));
+    expect(boundary, contains("'android/media/com.docsgrid'"));
   });
 
   test('existing recovery folder picker still accepts both historical names', () {
