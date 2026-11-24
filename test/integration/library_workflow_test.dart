@@ -49,7 +49,7 @@ void main() {
     await directory.delete(recursive: true);
   });
 
-  test('PDF library workflow: index -> OCR search -> duplicate review', () async {
+  test('PDF library workflow: exact duplicates and legacy metadata retained', () async {
     const stamp = '2026-11-09T00:00:00.000Z';
     final bytes = '%PDF-1.4\nPolicy number 987654321\n%%EOF';
     final digest = sha256.convert(bytes.codeUnits).toString();
@@ -74,22 +74,17 @@ void main() {
       });
     }
 
-    final search = await tools.searchText('987654321');
-    expect(search.map((row) => row['id']).toSet(), {'a', 'b'});
-    expect(search.every((row) => row['match_page'] == 1), isTrue);
-
-    final duplicateGroups = await tools.findDuplicateGroups();
+    final duplicateGroups = await tools.findExactDuplicates();
     expect(duplicateGroups, isNotEmpty);
     expect(duplicateGroups.any((group) =>
       group['duplicate_type'] == 'SHA-256' && group['copies'] == 2), isTrue);
-    expect(duplicateGroups.any((group) =>
-      group['duplicate_type'] == 'OCR text' && group['copies'] == 2), isTrue);
+    expect(await database.query('document_text_index'), hasLength(2));
 
-    // Soft-deleted items must disappear from search and duplicate results.
+    // Soft-deleted items must disappear from verified exact duplicate results.
     await database.update('documents', {'deleted_at': stamp},
       where: 'id = ?', whereArgs: ['b']);
-    expect((await tools.searchText('987654321')).map((r) => r['id']), ['a']);
-    final afterDelete = await tools.findDuplicateGroups();
+    expect(await database.query('document_text_index'), hasLength(2));
+    final afterDelete = await tools.findExactDuplicates();
     expect(afterDelete.every((group) => group['copies'] == 1), isTrue);
   });
 }

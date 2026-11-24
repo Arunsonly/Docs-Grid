@@ -24,16 +24,5 @@ void main() {
       );
     });
 
-    test('OCR search escapes SQL LIKE wildcards and backslashes', () {
-      final slash = String.fromCharCode(92);
-      expect(
-        DocumentToolsService.escapeLikeQuery('a%b_c${slash}d'),
-        ['a', slash, '%b', slash, '_c', slash, slash, 'd'].join(),
-      );
-    });
-
-    test('OCR search leaves ordinary text unchanged', () {
-      expect(DocumentToolsService.escapeLikeQuery('Policy 2026'), 'Policy 2026');
-    });
   });
 }

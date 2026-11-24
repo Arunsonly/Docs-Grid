@@ -1,3 +1,4 @@
+import '../../documents/presentation/pdf_details_dialog.dart';
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -5,10 +6,10 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../../core/widgets/storage_sort_controls.dart';
 import '../../../core/storage/portable_snapshot_events.dart';
+import '../../../core/diagnostics/diagnostic_log_store.dart';
 
 import '../../documents/data/document_repository.dart';
 import '../../documents/presentation/document_thumbnail.dart';
-import '../../documents/presentation/ocr_search_mode_control.dart';
 import '../../tools/document_tools_service.dart';
 import '../../../core/storage/storage_location_service.dart';
 import '../../../core/storage/folder_preview_cache.dart';
@@ -23,22 +24,22 @@ class FoldersScreen extends StatefulWidget {
     super.key,
     this.folderRepository,
     this.documentRepository,
-    this.ocrSearchAvailable = false,
-    this.ocrTools,
     this.onOpenSettings,
     this.active = true,
     this.onBackAtRoot,
+    this.loadTimeout = const Duration(seconds: 20),
   });
 
   // Optional dependencies permit complete widget regression tests without
   // changing normal app construction or storage ownership.
   final FolderRepository? folderRepository;
   final DocumentRepository? documentRepository;
-  final bool ocrSearchAvailable;
-  final DocumentToolsService? ocrTools;
   final VoidCallback? onOpenSettings;
   final bool active;
   final VoidCallback? onBackAtRoot;
+  /// A blocked SQLite/provider read must never leave Grid spinning forever.
+  /// Widget tests can shorten this without changing production timing.
+  final Duration loadTimeout;
 
   @override
   State<FoldersScreen> createState() => _FoldersScreenState();
@@ -50,8 +51,6 @@ class _FoldersScreenState extends State<FoldersScreen>
       widget.folderRepository ?? FolderRepository();
   late final DocumentRepository _documents =
       widget.documentRepository ?? DocumentRepository();
-  late final DocumentToolsService _ocrTools =
-      widget.ocrTools ?? DocumentToolsService();
   final CategoryRepository _categories = CategoryRepository();
   final List<Folder> _ancestors = [];
   String? _currentFolderId;
@@ -61,12 +60,6 @@ class _FoldersScreenState extends State<FoldersScreen>
   final Set<String> _selectedFolderIds = <String>{};
   final TextEditingController _searchController = TextEditingController();
   String _searchQuery = '';
-  bool _ocrSelected = false;
-  bool _ocrBusy = false;
-  int _ocrEpoch = 0;
-  int _ocrDone = 0;
-  int _ocrTotal = 0;
-  String? _ocrMessage;
   StorageSortField _sortField = StorageSortField.name;
   bool _sortAscending = true;
   // Respect the existing user-defined folder order until sorting is chosen.
@@ -117,7 +110,9 @@ class _FoldersScreenState extends State<FoldersScreen>
   Timer? _gridPreviewInvalidationDebounce;
   Set<String?>? _queuedGridPreviewIds = <String?>{};
   Completer<void>? _gridPreviewInvalidationDone;
-  bool _gridPreviewRebuildScheduled = false;
+  bool _gridContentRefreshPending = false;
+  bool _gridContentRefreshScheduled = false;
+  Object? _gridReadToken;
   // Only prepare metadata of the first two likely child folders, and only
   // after the current screen has loaded and the user has stopped scrolling.
   Timer? _idleFolderPrefetchTimer;
@@ -127,6 +122,9 @@ class _FoldersScreenState extends State<FoldersScreen>
   bool _gridScreenForeground = true;
   final Set<String> _attemptedChildPrefetches = {};
   static const int _maxPrefetchChildFolders = 2;
+  // Future.timeout retains an uncancellable timer if a provider future never
+  // resolves. Track our timers instead so route disposal has zero leftovers.
+  final Set<Timer> _gridLoadTimeouts = <Timer>{};
 
   @override
   void initState() {
@@ -141,7 +139,10 @@ class _FoldersScreenState extends State<FoldersScreen>
 
   @override
   void dispose() {
-    _ocrEpoch++;
+    for (final timer in _gridLoadTimeouts) {
+      timer.cancel();
+    }
+    _gridLoadTimeouts.clear();
     _idleFolderPrefetchTimer?.cancel();
     if (_gridPreviewInvalidationDebounce?.isActive == true) {
       _gridPreviewInvalidationDebounce?.cancel();
@@ -162,13 +163,42 @@ class _FoldersScreenState extends State<FoldersScreen>
     if (!_gridScreenForeground) {
       _idleFolderPrefetchTimer?.cancel();
     } else {
+      // The permission/settings screen may have been opened while Grid was
+      // loading. Recheck on return even when SQLite emitted no mutation.
+      _gridContentRefreshPending = true;
+      _scheduleGridContentRefresh();
       _queueIdleFolderPrefetch();
     }
   }
 
+  // Grid lives in an IndexedStack. Invalidating preview metadata alone does
+  // not replace completed FutureBuilders when returning from Phone Storage.
+  // Refresh authoritative SQLite/provider reads, coalescing bursts per frame
+  // and deferring hidden-tab work until the next activation.
+  void _scheduleGridContentRefresh() {
+    if (!mounted || !_gridContentRefreshPending || !widget.active ||
+        !_gridScreenForeground || _gridContentRefreshScheduled ||
+        _gridReadToken != null) return;
+    _gridContentRefreshScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _gridContentRefreshScheduled = false;
+      if (!mounted || !_gridContentRefreshPending || !widget.active ||
+          !_gridScreenForeground || _gridReadToken != null) return;
+      setState(_load);
+    });
+    // addPostFrameCallback alone does not request a frame while idle.
+    WidgetsBinding.instance.ensureVisualUpdate();
+  }
+
   void _onGridFolderChange(GridFolderChange change) {
-    final affected = change.affectedFolderIds;
-    if (affected != null && affected.isEmpty) return;
+    final changed = change.affectedFolderIds;
+    if (changed != null && changed.isEmpty) return;
+    // A move into a child changes its parent's displayed PDF count, even
+    // when the current folder's own document IDs did not change. Global
+    // search results can also change for any nonempty structural event.
+    final affected = changed == null
+        ? null : <String?>{...changed, _currentFolderId};
+    _gridContentRefreshPending = true;
     final revision = ++_folderPreviewRevision;
     final currentKey = FolderPreviewCache.gridKey(_currentFolderId);
     final keys = affected?.map(FolderPreviewCache.gridKey).toSet();
@@ -188,13 +218,7 @@ class _FoldersScreenState extends State<FoldersScreen>
     }
     if (keys == null || keys.contains(currentKey)) {
       _suppressFolderPreviews.add(currentKey);
-      if (!_gridPreviewRebuildScheduled) {
-        _gridPreviewRebuildScheduled = true;
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          _gridPreviewRebuildScheduled = false;
-          if (mounted) setState(() {});
-        });
-      }
+      _scheduleGridContentRefresh();
     }
     // Group bursts of imports/moves into one disk operation per changed
     // folder; avoid rewriting/removing the same metadata hundreds of times.
@@ -382,82 +406,45 @@ class _FoldersScreenState extends State<FoldersScreen>
   @override
   void didUpdateWidget(covariant FoldersScreen oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.ocrSearchAvailable && !widget.ocrSearchAvailable) {
-      _ocrEpoch++;
-      _ocrSelected = false;
-      _ocrMessage = null;
-      _reloadDocumentsOnly();
-    }
-  }
-
-  void _setOcrSelected(bool enabled) {
-    if (!widget.ocrSearchAvailable || _ocrSelected == enabled) return;
-    if (!enabled) _ocrEpoch++;
-    setState(() {
-      _ocrSelected = enabled;
-      _ocrMessage = null;
-      _reloadDocumentsOnly();
-    });
-    if (enabled) unawaited(_indexGridOcr());
-  }
-
-  Future<List<DocumentRecord>> _searchGridOcr(String query) async {
-    final matches = await _ocrTools.searchText(query);
-    final ids = matches.map((row) => row['id'] as String).toSet();
-    if (ids.isEmpty) return const <DocumentRecord>[];
-    final all = await _documents.list();
-    return all.where((document) => ids.contains(document.id))
-        .toList(growable: false);
-  }
-
-  Future<void> _indexGridOcr() async {
-    if (!mounted || !widget.ocrSearchAvailable || !_ocrSelected ||
-        _ocrBusy || _searchQuery.trim().isEmpty) return;
-    final run = ++_ocrEpoch;
-    setState(() {
-      _ocrBusy = true;
-      _ocrDone = 0;
-      _ocrTotal = 0;
-      _ocrMessage = null;
-    });
-    try {
-      final summary = await _ocrTools.indexPendingPdfsForSearch(
-        shouldCancel: () => !mounted || !widget.ocrSearchAvailable ||
-            !_ocrSelected || run != _ocrEpoch,
-        onProgress: (done, total) {
-          if (!mounted || run != _ocrEpoch) return;
-          if (done % 10 == 0 || done == total) {
-            setState(() {
-              _ocrDone = done;
-              _ocrTotal = total;
-              _reloadDocumentsOnly();
-            });
-          }
-        },
-      );
-      if (mounted && run == _ocrEpoch) {
-        setState(() => _ocrMessage = summary.failed == 0
-            ? 'Grid OCR search ready'
-            : '${summary.failed} Grid PDFs could not be read.');
-      }
-    } on OcrIndexCancelled {
-      // User turned off content search.
-    } catch (error) {
-      if (mounted && run == _ocrEpoch) {
-        setState(() => _ocrMessage = 'Grid OCR unavailable: $error');
-      }
-    } finally {
-      if (mounted) {
-        setState(() {
-          _ocrBusy = false;
-          _reloadDocumentsOnly();
-        });
-        if (run != _ocrEpoch && _ocrSelected &&
-            widget.ocrSearchAvailable && _searchQuery.trim().isNotEmpty) {
-          unawaited(_indexGridOcr());
-        }
+    if (oldWidget.active && !widget.active) {
+      _idleFolderPrefetchTimer?.cancel();
+    } else if (!oldWidget.active && widget.active) {
+      // didUpdateWidget is followed by build, so no extra setState/frame is
+      // needed. The first visible Grid frame uses newly assigned futures.
+      if (_gridContentRefreshPending && _gridReadToken == null) {
+        _load();
+      } else {
+        _queueIdleFolderPrefetch();
       }
     }
+  }
+
+
+  Future<T> _boundedGridRead<T>(Future<T> read, String label) {
+    final result = Completer<T>();
+    late final Timer timer;
+    timer = Timer(widget.loadTimeout, () {
+      _gridLoadTimeouts.remove(timer);
+      if (!result.isCompleted) {
+        final error = TimeoutException('$label did not finish. Please retry.');
+        unawaited(DiagnosticLogStore.instance.recordError(label, error));
+        result.completeError(error);
+      }
+    });
+    _gridLoadTimeouts.add(timer);
+    read.then<void>((value) {
+      timer.cancel();
+      _gridLoadTimeouts.remove(timer);
+      if (!result.isCompleted) result.complete(value);
+    }, onError: (Object error, StackTrace trace) {
+      timer.cancel();
+      _gridLoadTimeouts.remove(timer);
+      if (!result.isCompleted) {
+        unawaited(DiagnosticLogStore.instance.recordError(label, error));
+        result.completeError(error, trace);
+      }
+    });
+    return result.future;
   }
 
   void _reloadDocumentsOnly() {
@@ -467,24 +454,39 @@ class _FoldersScreenState extends State<FoldersScreen>
     _resetDocumentPages();
     // Preserve existing global search and exact custom Name/Date sort behavior.
     _pagedDocumentsMode = query.isEmpty && !_explicitSort;
-    _documentsFuture = query.isNotEmpty
-        ? _ocrSelected ? _searchGridOcr(query) : _documents.list(query: query)
+    final read = query.isNotEmpty
+        ? _documents.list(query: query)
         : _pagedDocumentsMode
             ? _getFirstPage(folderId, epoch)
             : _documents.listInFolder(folderId);
+    _documentsFuture = _boundedGridRead(read, 'Grid PDF loading');
   }
 
   void _load() {
+    _gridContentRefreshPending = false;
     _idleFolderPrefetchTimer?.cancel();
     _prefetchFolderCandidates = const [];
     _prefetchFolderEpoch = -1;
     final folderId = _currentFolderId;
-    final folderFuture = _repository.childrenOf(folderId);
+    final folderFuture = _boundedGridRead(
+        _repository.childrenOf(folderId), 'Grid folder loading');
     _foldersFuture = folderFuture;
     _reloadDocumentsOnly();
     final epoch = _folderLoadEpoch;
     final previewRevision = _folderPreviewRevision;
     final documentFuture = _documentsFuture;
+    // Do not restart an in-flight read for every recovered PDF. Keep one
+    // pending refresh, and run it after both bounded reads settle. Attach
+    // error handlers immediately, even while the outer FutureBuilder waits.
+    final token = Object();
+    _gridReadToken = token;
+    unawaited(Future.wait<Object?>([folderFuture, documentFuture])
+        .then<void>((_) {}, onError: (Object _, StackTrace __) {})
+        .whenComplete(() {
+      if (!mounted || !identical(_gridReadToken, token)) return;
+      _gridReadToken = null;
+      _scheduleGridContentRefresh();
+    }));
     if (_searchQuery.trim().isEmpty) {
       // A saved preview is display-only until SQLite/provider validation.
       if (!_suppressFolderPreviews.contains(FolderPreviewCache.gridKey(folderId))) {
@@ -652,7 +654,7 @@ class _FoldersScreenState extends State<FoldersScreen>
 
   void _queueIdleFolderPrefetch() {
     _idleFolderPrefetchTimer?.cancel();
-    if (!_gridScreenForeground || _prefetchingChildFolders ||
+    if (!widget.active || !_gridScreenForeground || _prefetchingChildFolders ||
         _prefetchFolderCandidates.isEmpty || _searchQuery.trim().isNotEmpty ||
         _isReorderingFolders || _isSelectingFolders ||
         _prefetchFolderEpoch != _folderLoadEpoch) return;
@@ -661,7 +663,7 @@ class _FoldersScreenState extends State<FoldersScreen>
     // Debounce interaction; run no speculative SAF/provider reads during
     // an active scroll, initial navigation, or while the app is backgrounded.
     _idleFolderPrefetchTimer = Timer(const Duration(milliseconds: 650), () {
-      if (!mounted || !_gridScreenForeground ||
+      if (!mounted || !widget.active || !_gridScreenForeground ||
           epoch != _folderLoadEpoch) return;
       unawaited(_prefetchChildFolderMetadata(candidates, epoch));
     });
@@ -670,7 +672,7 @@ class _FoldersScreenState extends State<FoldersScreen>
   Future<void> _prefetchChildFolderMetadata(
     List<Folder> candidates, int epoch,
   ) async {
-    if (_prefetchingChildFolders || !mounted ||
+    if (_prefetchingChildFolders || !mounted || !widget.active ||
         !_gridScreenForeground || epoch != _folderLoadEpoch) return;
     _prefetchingChildFolders = true;
     final previewRevision = _folderPreviewRevision;
@@ -1190,7 +1192,7 @@ class _FoldersScreenState extends State<FoldersScreen>
       await _repository.create(name: name, parentId: parentId);
       if (!mounted) return;
       setState(_load);
-      _message('Folder created.');
+      // A newly created folder is visible immediately; no success Snackbar.
     } catch (error) {
       if (!mounted) return;
       _message(error.toString().replaceFirst('Invalid argument(s): ', ''));
@@ -1206,8 +1208,11 @@ class _FoldersScreenState extends State<FoldersScreen>
       if (!mounted) return;
       await _refresh();
       if (!mounted) return;
-      final details = result.errors.isEmpty ? '' : '\n${result.errors.first}';
-      _message('Added ${result.added} · Duplicates ${result.duplicates} · Failed ${result.failed}$details');
+      // Keep duplicate warnings and real failures, not noisy success messages.
+      if (result.duplicates > 0 || result.failed > 0) {
+        final details = result.errors.isEmpty ? '' : '\n${result.errors.first}';
+        _message('Duplicates ${result.duplicates} · Failed ${result.failed}$details');
+      }
     } catch (error) {
       if (mounted) _message('PDF import failed: $error');
     }
@@ -1244,7 +1249,7 @@ class _FoldersScreenState extends State<FoldersScreen>
       final query = _searchQuery.trim().toLowerCase();
       final visibleIds = folders
           .where((folder) => query.isEmpty ||
-              (!_ocrSelected && folder.name.toLowerCase().contains(query)))
+              folder.name.toLowerCase().contains(query))
           .map((folder) => folder.id)
           .toSet();
       if (visibleIds.isEmpty) return;
@@ -1449,7 +1454,6 @@ class _FoldersScreenState extends State<FoldersScreen>
         _selectedFolderIds.clear();
       });
       await _refresh();
-      _message('Moved ${selected.length} folder(s).');
     } catch (error) {
       if (mounted) _message('Could not move folders: $error');
     }
@@ -1472,7 +1476,7 @@ class _FoldersScreenState extends State<FoldersScreen>
     );
     if (confirmed != true) return;
     try {
-      final pdfCount = await _repository.moveManyToRecycleBin(
+      await _repository.moveManyToRecycleBin(
         selected.map((folder) => folder.id).toList(),
       );
       if (!mounted) return;
@@ -1481,7 +1485,6 @@ class _FoldersScreenState extends State<FoldersScreen>
         _selectedFolderIds.clear();
       });
       await _refresh();
-      _message('Moved ${selected.length} folder(s) and $pdfCount PDF(s) to Recycle Bin.');
     } catch (error) {
       if (mounted) _message('Could not delete folders: $error');
     }
@@ -1495,7 +1498,6 @@ class _FoldersScreenState extends State<FoldersScreen>
       if (!mounted) return;
       if (_currentFolderId == folder.id) _currentTitle = name.trim();
       setState(_load);
-      _message('Folder renamed.');
     } catch (error) {
       _message(error.toString().replaceFirst('Invalid argument(s): ', ''));
     }
@@ -1731,7 +1733,9 @@ class _FoldersScreenState extends State<FoldersScreen>
     _clearDocumentSelection();
     await _refresh();
     final failures = result['failures'] as List<String>;
-    _message('Moved ${result['moved']} PDF(s). ${failures.length} failed.');
+    if (failures.isNotEmpty) {
+      _message('${failures.length} selected PDF(s) could not be moved. ${failures.first}');
+    }
   }
 
   Future<void> _addReminder(DocumentRecord document) async {
@@ -1765,7 +1769,6 @@ class _FoldersScreenState extends State<FoldersScreen>
     title.dispose(); note.dispose();
     if (saved != true) return;
     await ReminderRepository().create(title: reminderTitle, note: reminderNote, remindAt: selected, documentId: document.id);
-    if (mounted) _message('Reminder saved for this PDF.');
   }
 
   Future<void> _chooseCategory(DocumentRecord document) async {
@@ -2037,6 +2040,10 @@ class _FoldersScreenState extends State<FoldersScreen>
         tooltip: 'PDF actions',
         onSelected: (action) async {
           try {
+            if (action == 'details') {
+              await PdfDetailsDialog.showGrid(context, document);
+              return;
+            }
             if (action == 'share') {
               await DocumentToolsService().shareStoredPdf(
                 document.storagePath, '${document.name}.pdf',
@@ -2066,6 +2073,7 @@ class _FoldersScreenState extends State<FoldersScreen>
           const PopupMenuItem(value: 'move', child: Text('Move to folder')),
           const PopupMenuItem(value: 'reminder', child: Text('Add to reminder')),
           const PopupMenuItem(value: 'trash', child: Text('Move to Recycle Bin')),
+          const PopupMenuItem(value: 'details', child: Text('Details')),
         ],
       );
 
@@ -2246,28 +2254,17 @@ class _FoldersScreenState extends State<FoldersScreen>
                   onChanged: (value) {
                     setState(() {
                       _searchQuery = value;
-                      if (value.trim().isEmpty) _ocrEpoch++;
                       _reloadDocumentsOnly();
                     });
-                    if (_ocrSelected && value.trim().isNotEmpty) {
-                      unawaited(_indexGridOcr());
-                    }
                   },
                   decoration: InputDecoration(
-                    hintText: _ocrSelected
-                        ? 'Search text inside Grid PDFs'
-                        : 'Search folders or PDF names',
+                    hintText: 'Search folders or PDF names',
                     prefixIcon: const Icon(Icons.search),
                     suffixIconConstraints: const BoxConstraints(
                         minHeight: 48, minWidth: 0),
                     suffixIcon: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        if (widget.ocrSearchAvailable)
-                          OcrSearchModeControl(
-                            searchInsidePdf: _ocrSelected,
-                            onChanged: _setOcrSelected,
-                          ),
                         if (_searchQuery.isNotEmpty)
                           IconButton(
                             tooltip: 'Clear search',
@@ -2275,7 +2272,6 @@ class _FoldersScreenState extends State<FoldersScreen>
                             onPressed: () => setState(() {
                               _searchController.clear();
                               _searchQuery = '';
-                              _ocrEpoch++;
                               _reloadDocumentsOnly();
                             }),
                           ),
@@ -2299,25 +2295,6 @@ class _FoldersScreenState extends State<FoldersScreen>
             ],
           ),
         ),
-        if (widget.ocrSearchAvailable && _ocrSelected)
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                if (_ocrBusy)
-                  LinearProgressIndicator(
-                    value: _ocrTotal == 0 ? null : _ocrDone / _ocrTotal,
-                    minHeight: 2,
-                  ),
-                Text(_ocrBusy
-                    ? 'Indexing Grid PDF text locally: $_ocrDone / $_ocrTotal'
-                    : _ocrMessage ??
-                        'Enter a term to search text inside Grid PDFs.',
-                  style: Theme.of(context).textTheme.bodySmall),
-              ],
-            ),
-          ),
         if (_ancestors.isNotEmpty && !keyboardVisible)
           SizedBox(
             height: 44,
@@ -2358,6 +2335,13 @@ class _FoldersScreenState extends State<FoldersScreen>
                     const Icon(Icons.error_outline, size: 40),
                     const SizedBox(height: 8),
                     const Text('Could not load folders.'),
+                    if (folderSnapshot.error is TimeoutException)
+                      const Padding(
+                        padding: EdgeInsets.symmetric(horizontal: 24, vertical: 8),
+                        child: Text('Grid is taking too long to open. '
+                            'Your files have not been changed. Try again.',
+                            textAlign: TextAlign.center),
+                      ),
                     TextButton(onPressed: _refresh, child: const Text('Try again')),
                   ]),
                 );
@@ -2407,10 +2391,10 @@ class _FoldersScreenState extends State<FoldersScreen>
                   final folderSource = _isReorderingFolders ? _draftFolderOrder : folders;
                   final displayedFolders = folderSource
                       .where((folder) => query.isEmpty ||
-                          (!_ocrSelected && folder.name.toLowerCase().contains(query)))
+                          folder.name.toLowerCase().contains(query))
                       .toList(growable: true);
                   final displayedDocuments = documents
-                      .where((document) => query.isEmpty || _ocrSelected ||
+                      .where((document) => query.isEmpty ||
                           document.name.toLowerCase().contains(query))
                       .toList(growable: true);
                   if (_explicitSort && !_isReorderingFolders) {
@@ -2648,7 +2632,6 @@ class _FoldersScreenState extends State<FoldersScreen>
                       if (!mounted) return;
                       setState(() => _isReorderingFolders = false);
                       await _refresh();
-                      _message('Folder order saved.');
                     } catch (error) {
                       if (mounted) _message('Could not save folder order: $error');
                     }

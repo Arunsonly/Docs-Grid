@@ -217,6 +217,24 @@ void main() {
     expect(find.textContaining('124.0 KB'), findsOneWidget);
   });
 
+  testWidgets('name search never matches PDFs or child folders solely by ancestor path', (tester) async {
+    setTestViewport(tester);
+    await tester.pumpWidget(MaterialApp(home:PhoneStorageBrowserScreen(
+      rootName:'Internal Storage', entries:const [
+        {'name':'Unrelated.pdf','uri':'content://unrelated','folderPath':'Internal/Insurance','isDirectory':false},
+        {'name':'Also unrelated.pdf','uri':'content://child','folderPath':'Internal/Insurance/Child','isDirectory':false},
+        {'name':'Insurance Certificate.pdf','uri':'content://certificate','folderPath':'Internal/Download','isDirectory':false},
+      ], onOpenPdf:(_,__) async {},
+    )));
+    await tester.enterText(find.byType(TextField),'Insurance');
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('phone-folder-Insurance')),findsOneWidget);
+    expect(find.byKey(const ValueKey('phone-folder-Insurance/Child')),findsNothing);
+    expect(find.text('Insurance Certificate.pdf'),findsOneWidget);
+    expect(find.text('Unrelated.pdf'),findsNothing);
+    expect(find.text('Also unrelated.pdf'),findsNothing);
+  });
+
   testWidgets('search finds PDFs across phone folders from the root view',
       (tester) async {
     setTestViewport(tester);
@@ -501,13 +519,13 @@ void main() {
     await tester.pumpAndSettle();
     final expected = [
       'Share PDF', 'Add to Star', 'Rename',
-      'Move', 'Move to Grid', 'Delete', 'File Location',
+      'Move', 'Move to Grid', 'Delete', 'File Location', 'Details',
     ];
     for (var index = 0; index < expected.length - 1; index++) {
       expect(tester.getTopLeft(find.text(expected[index])).dy,
           lessThan(tester.getTopLeft(find.text(expected[index + 1])).dy));
     }
-    expect(find.byType(PopupMenuItem<String>), findsNWidgets(7));
+    expect(find.byType(PopupMenuItem<String>), findsNWidgets(8));
   });
 
   testWidgets('Phone Move callback leaves all other actions unchanged',

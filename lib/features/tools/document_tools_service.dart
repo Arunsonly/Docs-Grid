@@ -1,60 +1,38 @@
+import '../../core/database/document_defaults.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:isolate';
 import 'package:flutter/material.dart';
 
 import 'package:archive/archive.dart';
 import 'package:archive/archive_io.dart' show InputFileStream, OutputFileStream, ZipFileEncoder;
 import 'package:crypto/crypto.dart';
-import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
-import 'package:pdfx/pdfx.dart' as pdfx;
 import 'package:share_plus/share_plus.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:uuid/uuid.dart';
 
 import '../../core/database/app_database.dart';
+import '../../core/diagnostics/diagnostic_log_store.dart';
 import '../../core/storage/storage_location_service.dart';
 import '../../core/storage/storage_migration_gate.dart';
+import '../../core/storage/portable_snapshot_events.dart';
 import '../documents/data/document_repository.dart';
+import '../documents/data/smart_collection_selection.dart';
 import '../documents/data/phone_portable_state.dart';
 import '../folders/data/folder_repository.dart';
 import '../reminders/data/reminder_notifications.dart';
 import 'backup_archive_limits.dart';
+import 'backup_chain.dart';
+import 'pdf_recovery_failure_report.dart';
 import 'backup_schema_compatibility.dart';
 import 'backup_folder_graph_validator.dart';
 import 'portable_snapshot_manifest.dart';
 import 'portable_snapshot_retention.dart';
 import 'portable_snapshot_rows_validator.dart';
 
-
-/// Pure, isolate-safe OCR grouping. Input contains only SQLite scalar values;
-/// this function never touches plugins, files, widgets, or database handles.
-List<Map<String, Object?>> _groupOcrDuplicateRows(
-  List<Map<String, Object?>> rows,
-) {
-  final groups = <String, List<Map<String, Object?>>>{};
-  for (final row in rows) {
-    final normalized = DocumentToolsService.normalizeDuplicateText(
-      row['extracted_text']?.toString() ?? '',
-    );
-    if (normalized.length < 80) continue;
-    final key = sha256.convert(utf8.encode(normalized)).toString();
-    groups.putIfAbsent(key, () => []).add(row);
-  }
-  return groups.entries
-      .where((entry) => entry.value.length > 1)
-      .map((entry) => <String, Object?>{
-            'group_key': entry.key,
-            'duplicate_type': 'OCR text',
-            'copies': entry.value.length,
-            'document_ids': entry.value.map((row) => row['id']).join(','),
-            'names': entry.value.map((row) => row['name']).join(' | '),
-          })
-      .toList();
-}
 
 /// Restore behavior for portable DocsGrid archives.
 enum BackupRestoreMode { merge, fullReplacement, selective }
@@ -71,16 +49,7 @@ enum BackupRestoreSection {
   ocrIndexes,
 }
 
-/// Results of user-initiated, on-device PDF OCR indexing.
-class OcrSearchIndexSummary {
-  const OcrSearchIndexSummary({required this.indexed, required this.failed,
-    required this.skipped});
-  final int indexed;
-  final int failed;
-  final int skipped;
-}
-
-/// Local-only utilities for indexing, scanning, sharing and portable backups.
+/// Local-only utilities for sharing, recovery and portable backups.
 /// This service never uploads document contents to a remote server.
 class DocumentToolsService {
   DocumentToolsService({AppDatabase? database,
@@ -108,17 +77,6 @@ class DocumentToolsService {
   @visibleForTesting
   static String safeRestorePathToken(String value) =>
       sha256.convert(utf8.encode(value)).toString();
-
-  /// Escapes text for a literal SQLite LIKE substring query.
-  @visibleForTesting
-  static String escapeLikeQuery(String value) {
-    final slash = String.fromCharCode(92);
-    return value
-        .replaceAll(slash, '$slash$slash')
-        .replaceAll('%', '$slash%')
-        .replaceAll('_', '${slash}_');
-  }
-  static final Set<String> _indexingDocumentIds = <String>{};
 
   /// Whitelisted legacy library locations. Recovery must never broaden this
   /// list to the Phone tab's general shared-storage roots.
@@ -151,34 +109,6 @@ class DocumentToolsService {
       .map((segment) => segment.trim())
       .where((segment) => segment.isNotEmpty)
       .join('/');
-
-  /// Normalizes OCR text for exact-content duplicate comparison.
-  /// Keeps letters and numbers from all scripts, including Devanagari.
-  @visibleForTesting
-  static String normalizeDuplicateText(String raw) => raw
-      .toLowerCase()
-      .replaceAll(RegExp(r'--- page \d+ ---', caseSensitive: false), ' ')
-      .replaceAll(RegExp(r'[^\p{L}\p{M}\p{N}]+', unicode: true), ' ')
-      .trim()
-      .replaceAll(RegExp(r'\s+'), ' ');
-
-  /// Finds exact file duplicates and OCR-text duplicates locally.
-  Future<List<Map<String, Object?>>> findDuplicateGroups() async {
-    final db = await _database.database;
-    final exact = await _verifiedExactDuplicateGroups();
-    final indexed = await db.rawQuery('''
-      SELECT d.id, d.name, i.extracted_text
-      FROM documents d JOIN document_text_index i ON i.document_id = d.id
-      WHERE d.deleted_at IS NULL AND i.extracted_text IS NOT NULL
-    ''');
-    // OCR text normalization and digest grouping are CPU-bound pure Dart
-    // work. Run them off the UI isolate; database and platform file access
-    // remain on the main isolate and are completed before this hand-off.
-    final ocr = await Isolate.run(() => _groupOcrDuplicateRows(indexed));
-    final groups = <Map<String, Object?>>[...exact, ...ocr];
-    groups.sort((a, b) => (b['copies'] as int).compareTo(a['copies'] as int));
-    return groups;
-  }
 
   Future<List<Map<String, Object?>>> _verifiedExactDuplicateGroups() async {
     final db = await _database.database;
@@ -237,348 +167,6 @@ class DocumentToolsService {
     // Deliberately do not delete files. User must review each duplicate and
     // use the normal Recycle Bin flow so original files remain recoverable.
     throw StateError('Use Recycle Bin to remove reviewed copies individually. No file was deleted.');
-  }
-
-  /// Only call after the user explicitly selects OCR mode and enters a query.
-  /// Merely enabling OCR in Settings must never scan or read PDF contents.
-  /// Existing successful/empty indexes are reused; unreadable PDFs are skipped.
-  Future<OcrSearchIndexSummary> indexPendingPdfsForSearch({
-    bool Function()? shouldCancel,
-    void Function(int completed, int total)? onProgress,
-  }) async {
-    final db = await _database.database;
-    final rows = await db.query(
-      'documents',
-      columns: ['id', 'storage_uri', 'extracted_text_status'],
-      where: "deleted_at IS NULL AND (extracted_text_status IS NULL OR "
-          "extracted_text_status IN ('pending', 'failed', 'indexing'))",
-      orderBy: 'created_at ASC',
-    );
-    final pending = rows.where((row) {
-      final uri = row['storage_uri'] as String?;
-      return uri != null && uri.isNotEmpty && !uri.startsWith('missing://');
-    }).toList();
-    var indexed = 0;
-    var failed = 0;
-    var skipped = 0;
-    for (var i = 0; i < pending.length; i++) {
-      if (shouldCancel?.call() ?? false) throw const OcrIndexCancelled();
-      final row = pending[i];
-      try {
-        await indexPdfTextFromUri(
-          row['id'] as String,
-          row['storage_uri'] as String,
-          shouldCancel: shouldCancel,
-        );
-        indexed++;
-      } on OcrIndexCancelled {
-        rethrow;
-      } catch (_) {
-        // A missing, revoked or damaged PDF must never interrupt other results.
-        failed++;
-      }
-      if (shouldCancel?.call() ?? false) throw const OcrIndexCancelled();
-      onProgress?.call(i + 1, pending.length);
-    }
-    skipped = rows.length - pending.length;
-    return OcrSearchIndexSummary(indexed: indexed, failed: failed, skipped: skipped);
-  }
-
-  Future<int> indexPdfText(
-    String documentId,
-    String path, {
-    bool Function()? shouldCancel,
-  }) async {
-    if (!_indexingDocumentIds.add(documentId)) {
-      throw StateError('This document is already being indexed.');
-    }
-    try {
-      final db = await _database.database;
-      final previousIndex = await db.query(
-        'document_text_index',
-        columns: ['document_id'],
-        where: 'document_id = ?',
-        whereArgs: [documentId],
-        limit: 1,
-      );
-      try {
-        await db.update(
-          'documents',
-          {'extracted_text_status': 'indexing'},
-          where: 'id = ? AND deleted_at IS NULL',
-          whereArgs: [documentId],
-        );
-        return await _indexPdfTextInternal(documentId, path, shouldCancel: shouldCancel);
-      } catch (_) {
-        // Keep an older successful index usable if a re-index attempt fails.
-        try {
-          await db.update(
-            'documents',
-            {'extracted_text_status': previousIndex.isEmpty ? 'failed' : 'indexed'},
-            where: 'id = ? AND deleted_at IS NULL',
-            whereArgs: [documentId],
-          );
-        } catch (_) {
-          // Preserve the original OCR failure if status recovery also fails.
-        }
-        rethrow;
-      }
-    } finally {
-      _indexingDocumentIds.remove(documentId);
-    }
-  }
-
-  Future<int> _indexPdfTextInternal(
-    String documentId,
-    String path, {
-    bool Function()? shouldCancel,
-  }) async {
-    final db = await _database.database;
-    final documentRows = await db.query(
-      'documents',
-      columns: ['id'],
-      where: 'id = ? AND deleted_at IS NULL',
-      whereArgs: [documentId],
-      limit: 1,
-    );
-    if (documentRows.isEmpty) throw StateError('Document no longer exists in the library.');
-    final file = File(path);
-    if (!await file.exists()) throw StateError('PDF is not available on this device.');
-    final header = await file.openRead(0, 5).fold<List<int>>(<int>[], (a, b) => a..addAll(b));
-    if (header.length < 5 || String.fromCharCodes(header) != '%PDF-') {
-      throw StateError('The selected file is not a valid PDF.');
-    }
-    final document = await pdfx.PdfDocument.openFile(path);
-    final pageCount = document.pagesCount;
-    TextRecognizer? recognizer;
-    TextRecognizer? devanagariRecognizer;
-    final pages = StringBuffer();
-    try {
-      if (shouldCancel?.call() ?? false) throw const OcrIndexCancelled();
-      recognizer = TextRecognizer(script: TextRecognitionScript.latin);
-      if (Platform.isAndroid) {
-        devanagariRecognizer = TextRecognizer(script: TextRecognitionScript.devanagiri);
-      }
-      for (var pageNumber = 1; pageNumber <= document.pagesCount; pageNumber++) {
-        if (shouldCancel?.call() ?? false) throw const OcrIndexCancelled();
-        final page = await document.getPage(pageNumber);
-        try {
-          final rendered = await page.render(
-            width: (page.width * 1.5).clamp(900, 1800).toDouble(),
-            height: (page.height * 1.5).clamp(900, 2400).toDouble(),
-            format: pdfx.PdfPageImageFormat.png,
-          );
-          if (shouldCancel?.call() ?? false) throw const OcrIndexCancelled();
-          if (rendered == null) continue;
-          final temp = await getTemporaryDirectory();
-          final image = File(p.join(temp.path, 'ocr_${_uuid.v4()}.png'));
-          try {
-            await image.writeAsBytes(rendered.bytes, flush: true);
-            final input = InputImage.fromFilePath(image.path);
-            final latinResult = await recognizer.processImage(input);
-            if (shouldCancel?.call() ?? false) throw const OcrIndexCancelled();
-            final extracted = <String>[latinResult.text];
-            if (devanagariRecognizer != null) {
-              final devanagariResult = await devanagariRecognizer.processImage(input);
-              if (shouldCancel?.call() ?? false) throw const OcrIndexCancelled();
-              if (devanagariResult.text.isNotEmpty) extracted.add(devanagariResult.text);
-            }
-            final pageText = extracted.where((value) => value.trim().isNotEmpty).join('\n');
-            pages.write('--- Page $pageNumber ---\n$pageText\n\n');
-          } finally {
-            if (await image.exists()) await image.delete();
-          }
-        } finally {
-          await page.close();
-        }
-      }
-    } finally {
-      // A failure while closing one native resource must never prevent the
-      // remaining recognizer/PDF handles from being released.
-      try {
-        await recognizer?.close();
-      } finally {
-        try {
-          await devanagariRecognizer?.close();
-        } finally {
-          await document.close();
-        }
-      }
-    }
-    if (shouldCancel?.call() ?? false) throw const OcrIndexCancelled();
-    final text = pages.toString().trim();
-    await db.transaction((txn) async {
-      await txn.insert('document_text_index', {
-        'document_id': documentId,
-        'extracted_text': text,
-        'indexed_at': DateTime.now().toUtc().toIso8601String(),
-        'page_count': pageCount,
-      }, conflictAlgorithm: ConflictAlgorithm.replace);
-      await txn.update(
-        'documents',
-        {'extracted_text_status': text.isEmpty ? 'empty' : 'indexed'},
-        where: 'id = ? AND deleted_at IS NULL',
-        whereArgs: [documentId],
-      );
-    });
-    return text.length;
-  }
-
-
-  /// Reads a Phone PDF only after the user explicitly selects OCR Search.
-  /// No document row, OCR database entry or network upload is created.
-  /// Original PDF bytes remain unchanged, including on cancellation.
-  Future<String> extractPhonePdfTextFromUri(
-    String storageUri, {
-    bool Function()? shouldCancel,
-  }) async {
-    if (shouldCancel?.call() ?? false) throw const OcrIndexCancelled();
-    File source;
-    File? staged;
-    if (storageUri.startsWith('content://') ||
-        storageUri.startsWith('file://')) {
-      final temporary = await getTemporaryDirectory();
-      staged = File(p.join(temporary.path, 'phone_ocr_${_uuid.v4()}.pdf'));
-      source = staged;
-      try {
-        await StorageLocationService.instance.copyPdfToPath(
-          sourceUri: storageUri,
-          destinationPath: source.path,
-        );
-      } catch (_) {
-        try { if (await source.exists()) await source.delete(); } catch (_) {}
-        rethrow;
-      }
-    } else {
-      source = File(storageUri);
-    }
-
-    pdfx.PdfDocument? document;
-    TextRecognizer? latin;
-    TextRecognizer? devanagari;
-    final buffer = StringBuffer();
-    try {
-      if (shouldCancel?.call() ?? false) throw const OcrIndexCancelled();
-      if (!await source.exists()) {
-        throw StateError('Phone PDF is no longer accessible.');
-      }
-      final header = await source.openRead(0, 5)
-          .fold<List<int>>(<int>[], (bytes, next) => bytes..addAll(next));
-      if (header.length < 5 || String.fromCharCodes(header) != '%PDF-') {
-        throw StateError('The Phone file is not a valid PDF.');
-      }
-      document = await pdfx.PdfDocument.openFile(source.path);
-      latin = TextRecognizer(script: TextRecognitionScript.latin);
-      if (Platform.isAndroid) {
-        devanagari = TextRecognizer(script: TextRecognitionScript.devanagiri);
-      }
-      for (var number = 1; number <= document.pagesCount; number++) {
-        if (shouldCancel?.call() ?? false) throw const OcrIndexCancelled();
-        final page = await document.getPage(number);
-        try {
-          final rendered = await page.render(
-            width: (page.width * 1.5).clamp(900, 1800).toDouble(),
-            height: (page.height * 1.5).clamp(900, 2400).toDouble(),
-            format: pdfx.PdfPageImageFormat.png,
-          );
-          if (rendered == null) continue;
-          if (shouldCancel?.call() ?? false) throw const OcrIndexCancelled();
-          final tempDir = await getTemporaryDirectory();
-          final image = File(p.join(tempDir.path, 'phone_ocr_page_${_uuid.v4()}.png'));
-          try {
-            await image.writeAsBytes(rendered.bytes, flush: true);
-            final input = InputImage.fromFilePath(image.path);
-            final latinText = await latin.processImage(input);
-            if (shouldCancel?.call() ?? false) throw const OcrIndexCancelled();
-            final pieces = <String>[latinText.text];
-            if (devanagari != null) {
-              final hindiText = await devanagari.processImage(input);
-              if (shouldCancel?.call() ?? false) throw const OcrIndexCancelled();
-              if (hindiText.text.trim().isNotEmpty) pieces.add(hindiText.text);
-            }
-            buffer.write('--- Page $number ---\\n');
-            buffer.writeln(pieces.where((value) => value.trim().isNotEmpty)
-                .join('\\n'));
-          } finally {
-            try { if (await image.exists()) await image.delete(); } catch (_) {}
-          }
-        } finally {
-          await page.close();
-        }
-      }
-      if (shouldCancel?.call() ?? false) throw const OcrIndexCancelled();
-      return buffer.toString();
-    } finally {
-      try {
-        await latin?.close();
-      } finally {
-        try {
-          await devanagari?.close();
-        } finally {
-          try {
-            await document?.close();
-          } finally {
-            if (staged != null) {
-              try { if (await staged.exists()) await staged.delete(); } catch (_) {}
-            }
-          }
-        }
-      }
-    }
-  }
-
-  Future<int> indexPdfTextFromUri(
-    String documentId,
-    String storageUri, {
-    bool Function()? shouldCancel,
-  }) async {
-    if (storageUri.startsWith('content://') || storageUri.startsWith('file://')) {
-      final temp = await getTemporaryDirectory();
-      final file = File(p.join(temp.path, 'ocr_source_${_uuid.v4()}.pdf'));
-      try {
-        await StorageLocationService.instance.copyPdfToPath(
-          sourceUri: storageUri,
-          destinationPath: file.path,
-        );
-        if (shouldCancel?.call() ?? false) throw const OcrIndexCancelled();
-        return await indexPdfText(documentId, file.path, shouldCancel: shouldCancel);
-      } finally {
-        if (await file.exists()) await file.delete();
-      }
-    }
-    final path = storageUri.startsWith('file://')
-        ? Uri.parse(storageUri).toFilePath()
-        : storageUri;
-    return indexPdfText(documentId, path, shouldCancel: shouldCancel);
-  }
-
-  Future<List<Map<String, Object?>>> searchText(String query) async {
-    final q = query.trim();
-    if (q.isEmpty) return [];
-    final db = await _database.database;
-    final rows = await db.rawQuery('''
-      SELECT d.id, d.name, d.storage_uri, i.extracted_text,
-             instr(lower(i.extracted_text), lower(?)) AS match_position
-      FROM document_text_index i
-      JOIN documents d ON d.id = i.document_id
-      WHERE d.deleted_at IS NULL
-        AND instr(lower(i.extracted_text), lower(?)) > 0
-      ORDER BY match_position ASC, d.name COLLATE NOCASE
-    ''', [q, q]);
-    // sqflite may return immutable QueryRow instances. Copy each result before
-    // enriching it with the resolved OCR page number.
-    final results = rows.map((row) => Map<String, Object?>.from(row)).toList();
-    // OCR stores an explicit page marker before every page. Resolve the page
-    // containing the first match so search results are actionable, not just a
-    // generic "text found" indication.
-    for (final row in results) {
-      final text = row['extracted_text']?.toString() ?? '';
-      final position = (row['match_position'] as int? ?? 1) - 1;
-      final prefix = text.substring(0, position.clamp(0, text.length));
-      final markers = RegExp(r'--- Page (\d+) ---').allMatches(prefix).toList();
-      row['match_page'] = markers.isEmpty ? 1 : int.parse(markers.last.group(1)!);
-    }
-    return results;
   }
 
   Future<void> shareStoredPdf(String storageUri, String displayName) async {
@@ -654,7 +242,262 @@ class DocumentToolsService {
     await SharePlus.instance.share(ShareParams(files: [XFile(path)], text: text));
   }
 
-  /// Serialize public backup publication and retention with restore.
+  /// Read-only estimate for the confirmation sheet. ZIP metadata and
+  /// filesystem changes can affect the final size; creation still verifies
+  /// the live revision and every archived PDF.
+  Future<Map<String, int>> fullBackupPreview() async {
+    final db = await _database.database;
+    final counts = await db.transaction((txn) async {
+      final result = <String, int>{};
+      for (final table in ['documents', 'folders', 'categories', 'tags', 'reminders']) {
+        result[table] = Sqflite.firstIntValue(
+          await txn.rawQuery('SELECT COUNT(*) FROM $table'),
+        ) ?? 0;
+      }
+      result['pdfBytes'] = Sqflite.firstIntValue(await txn.rawQuery(
+        'SELECT COALESCE(SUM(size_bytes), 0) FROM documents',
+      )) ?? 0;
+      return result;
+    });
+    if (Platform.isAndroid) {
+      try {
+        final usage = await StorageLocationService.instance.phoneStorageUsage();
+        counts['availableBytes'] = usage['availableBytes'] ?? 0;
+      } catch (_) {
+        // Display an estimate without inventing unavailable free space.
+      }
+    }
+    return counts;
+  }
+
+  /// New backups are standalone Full ZIPs. Keep the legacy A-series
+  /// reader intact for existing archives and their recovery/export.
+  Future<File> createStandaloneFullBackup({
+    void Function(int, int)? onProgress,
+    void Function(String)? onStage,
+  }) => _withRecoveryLock(() async {
+    if (Platform.isAndroid) {
+      final locations = await StorageLocationService.instance
+          .portableDataLocationsIfAvailable();
+      final rootUri = locations['fullBackupsUri'];
+      if (rootUri == null || !rootUri.startsWith('file://')) {
+        throw StateError('Full Backup requires an accessible local DocsGrid '
+            'backup folder. Check storage access and try again.');
+      }
+    }
+    return _createBackupLocked(
+      includePdfs: true, onProgress: onProgress, onStage: onStage,
+    );
+  });
+
+  /// A provider failure must never invalidate or delete the local backup.
+  /// Verified provider bytes do not prove completion of cloud upload.
+  Future<bool> publishIosRecoveryArchive(File archive) async {
+    if (!Platform.isIOS) return false;
+    final storage = StorageLocationService.instance;
+    final destination = await storage.iosRecoveryDestination();
+    if (destination == null) return false;
+    final manifest = await BackupChain.manifest(archive);
+    final type = manifest['backupType'];
+    if (type != 'full' && type != 'database') {
+      throw StateError('Only standalone Full and Database ZIPs can be exported automatically.');
+    }
+    final locations = await StorageLocationService.iosPrivateArchiveLocations();
+    final expectedRoot = Uri.parse(locations[type == 'full' ? 'fullBackupsUri' : 'databaseBackupsUri']!).toFilePath();
+    final root = await Directory(expectedRoot).resolveSymbolicLinks();
+    final actual = await archive.resolveSymbolicLinks();
+    if (!p.isWithin(root, actual)) {
+      throw StateError('Recovery export requires an owned local archive.');
+    }
+    final digest = (await sha256.bind(archive.openRead()).first).toString();
+    final copied = await storage.copyFileToStorage(
+      sourcePath: archive.path, parentUri: destination['uri']!,
+      name: p.basename(archive.path), mimeType: 'application/zip',
+    );
+    if (await storage.sha256Pdf(copied) != digest) {
+      throw StateError('External backup verification failed; local ZIP retained.');
+    }
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('docsgrid_ios_external_${type}_verified_at', DateTime.now().toUtc().toIso8601String());
+    await prefs.setString('docsgrid_ios_external_${type}_destination', destination['uri']!);
+    return true;
+  }
+
+  Future<List<BackupChainUsage>> manualBackupUsage() async {
+    final locations = Platform.isIOS
+        ? await StorageLocationService.iosPrivateArchiveLocations()
+        : await StorageLocationService.instance.portableDataLocationsIfAvailable();
+    final uri = locations['fullBackupsUri'];
+    if (uri == null || !uri.startsWith('file://')) return const [];
+    return BackupChain.usage(Directory(Uri.parse(uri).toFilePath()));
+  }
+
+  /// Streams a user-selected A-series folder into temporary local storage.
+  /// Parent identity is verified; no external original is overwritten.
+  /// Caller removes the temporary parent after restore.
+  Future<File> stageSelectedBackupChain(String sourceFolderUri) async {
+    if (!sourceFolderUri.startsWith('content://') &&
+        !sourceFolderUri.startsWith('file://')) {
+      throw ArgumentError('Select a readable backup folder.');
+    }
+    final storage = StorageLocationService.instance;
+    final entries = await storage.listDirectory(sourceFolderUri);
+    final bases = entries.where((entry) =>
+        entry['isDirectory'] != true &&
+        RegExp(r'^A[0-9]{3,}\.zip$').hasMatch(
+            entry['name'] as String? ?? '')).toList();
+    if (bases.length != 1) {
+      throw StateError('Select a folder containing exactly one A-series Full ZIP.');
+    }
+    final series = p.basenameWithoutExtension(bases.single['name'] as String);
+    final temp = await (await getTemporaryDirectory())
+        .createTemp('docsgrid_external_chain_');
+    final destination = Directory(p.join(temp.path, series));
+    await destination.create(recursive: true);
+    try {
+      for (final item in entries) {
+        if (item['isDirectory'] == true) {
+          throw StateError('Backup series contains an unexpected directory.');
+        }
+        final name = item['name'] as String? ?? '';
+        if (name != series + '.zip' &&
+            !RegExp(r'^I[0-9]{3,}\.zip$').hasMatch(name)) {
+          throw StateError('Backup series contains an unknown file.');
+        }
+        await storage.copyStorageFileToPath(
+          sourceUri: item['uri'] as String,
+          destinationPath: p.join(destination.path, name),
+        );
+      }
+      final chain = await BackupChain.verified(destination);
+      return chain.last;
+    } catch (_) {
+      try { await temp.delete(recursive: true); } catch (_) {}
+      rethrow;
+    }
+  }
+
+  /// User-controlled external export. A-series ZIP files are written to a
+  /// real A001 folder (not separate undifferentiated share attachments).
+  /// Never overwrite a previously exported series or alter the live Grid.
+  Future<int> exportManualBackupSeries(
+      String id, String destinationTreeUri) =>
+      _withRecoveryLock(() async {
+    if (!destinationTreeUri.startsWith('content://') &&
+        !(Platform.isIOS && destinationTreeUri.startsWith('file://'))) {
+      throw ArgumentError('Choose a writable external folder.');
+    }
+    final storage = StorageLocationService.instance;
+    final locations = Platform.isIOS
+        ? await StorageLocationService.iosPrivateArchiveLocations()
+        : await storage.portableDataLocationsIfAvailable();
+    final rootUri = locations['fullBackupsUri'];
+    if (rootUri == null || !rootUri.startsWith('file://')) {
+      throw StateError('The local Full Backup folder is not available.');
+    }
+    final root = Directory(Uri.parse(rootUri).toFilePath());
+    final legacy = id.startsWith('DocsGrid_') && id.endsWith('.zip') &&
+        p.basename(id) == id;
+    final List<File> files;
+    if (legacy) {
+      final file = File(p.join(root.path, id));
+      final manifest = await BackupChain.manifest(file);
+      if (manifest['backupType'] != 'full') {
+        throw StateError('Selected archive is not a standalone Full backup.');
+      }
+      await validateBackup(file);
+      files = [file];
+    } else {
+      if (!BackupChain.validSeriesName(id)) {
+        throw ArgumentError('Invalid backup series.');
+      }
+      files = await BackupChain.verified(Directory(p.join(root.path, id)));
+    }
+
+    // Never mix a partial export with an existing series of the same name.
+    final children = await storage.listDirectory(destinationTreeUri);
+    final exportName = legacy ? id : id;
+    if (children.any((entry) => entry['name'] == exportName)) {
+      throw StateError('This destination already contains ' + exportName +
+          '. Select another folder; no existing backup will be overwritten.');
+    }
+    final destination = legacy ? destinationTreeUri :
+        await storage.createDirectory(
+            parentUri: destinationTreeUri, name: id);
+    var copiedBytes = 0;
+    for (final file in files) {
+      final copied = await storage.copyFileToStorage(
+        sourcePath: file.path,
+        parentUri: destination,
+        name: p.basename(file.path),
+        mimeType: 'application/zip',
+      );
+      final originalDigest = (await sha256.bind(file.openRead()).first).toString();
+      final copiedDigest = await storage.sha256Pdf(copied);
+      if (originalDigest != copiedDigest) {
+        throw StateError('Export verification failed. Original backup is safe.');
+      }
+      copiedBytes += await file.length();
+    }
+    return copiedBytes;
+  });
+
+  Future<void> shareManualBackupSeries(String seriesId) async {
+    final locations = Platform.isIOS
+        ? await StorageLocationService.iosPrivateArchiveLocations()
+        : await StorageLocationService.instance.portableDataLocationsIfAvailable();
+    final uri = locations['fullBackupsUri'];
+    if (uri == null || !uri.startsWith('file://')) {
+      throw StateError('Select a readable DocsGrid backup.');
+    }
+    if (seriesId.startsWith('DocsGrid_') && seriesId.endsWith('.zip') &&
+        p.basename(seriesId) == seriesId) {
+      final file = File(p.join(Uri.parse(uri).toFilePath(), seriesId));
+      final manifest = await BackupChain.manifest(file);
+      if (manifest['backupType'] != 'full') {
+        throw StateError('Selected archive is not a standalone Full backup.');
+      }
+      await validateBackup(file);
+      await shareFile(file.path, text: 'DocsGrid standalone backup');
+      return;
+    }
+    if (!BackupChain.validSeriesName(seriesId)) {
+      throw StateError('Invalid backup series.');
+    }
+    final folder = Directory(p.join(Uri.parse(uri).toFilePath(), seriesId));
+    final files = await BackupChain.verified(folder);
+    await SharePlus.instance.share(ShareParams(
+      files: files.map((file) => XFile(file.path)).toList(),
+      text: 'DocsGrid backup series $seriesId — keep every ZIP together in '
+          'one folder named $seriesId. An Incremental alone cannot restore.',
+    ));
+  }
+
+  Future<int> deleteManualBackupSeries(String seriesId) =>
+      _withRecoveryLock(() async {
+    final locations = Platform.isIOS
+        ? await StorageLocationService.iosPrivateArchiveLocations()
+        : await StorageLocationService.instance.portableDataLocationsIfAvailable();
+    final uri = locations['fullBackupsUri'];
+    if (uri == null || !uri.startsWith('file://')) {
+      throw StateError('Backup folder is not accessible.');
+    }
+    final root = Directory(Uri.parse(uri).toFilePath());
+    if (seriesId.startsWith('DocsGrid_') && seriesId.endsWith('.zip') &&
+        p.basename(seriesId) == seriesId) {
+      final file = File(p.join(root.path, seriesId));
+      if (!await file.exists()) throw StateError('Backup is missing.');
+      final manifest = await BackupChain.manifest(file);
+      if (manifest['backupType'] != 'full') {
+        throw StateError('Only standalone legacy Full backups can be cleaned here.');
+      }
+      final bytes = await file.length();
+      await file.delete();
+      return bytes;
+    }
+    return BackupChain.deleteSeries(root, seriesId);
+  });
+
   /// A restore creates its own private rescue checkpoint under the already
   /// held recovery lock, avoiding lock recursion.
   Future<File> createBackup({
@@ -674,7 +517,16 @@ class DocumentToolsService {
     bool includePdfs = true,
     bool backgroundSafe = false,
     bool rescueCheckpoint = false,
+    void Function(String)? onStage,
   }) async {
+    // UI stages are informational: never mark the backup complete before
+    // the existing on-disk ZIP readback and checksum validation succeed.
+    Future<void> stage(String message) async {
+      if (onStage == null) return;
+      onStage(message);
+      // Give Flutter a frame between long, synchronous ZIP writer phases.
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+    }
     await StorageMigrationGate.waitUntilReady();
     final storage = StorageLocationService.instance;
     final portableLocations = Platform.isAndroid
@@ -735,10 +587,9 @@ class DocumentToolsService {
           : fallbackBackupPath,
     );
     await backups.create(recursive: true);
-    final temporaryUri = portableLocations['tempUri'];
-    final temp = temporaryUri != null && temporaryUri.startsWith('file://')
-        ? Directory(Uri.parse(temporaryUri).toFilePath())
-        : await getTemporaryDirectory();
+    // Backup staging must remain private even if an older cached portable
+    // location still contains a shared System/Temp path.
+    final temp = await getTemporaryDirectory();
     await temp.create(recursive: true);
     final staging = await temp.createTemp('docsgrid_backup_');
     final output = File(p.join(
@@ -758,6 +609,7 @@ class DocumentToolsService {
       }
     }
     try {
+      await stage('Saving preferences and database metadata…');
       encoder.create(output.path);
       encoderOpened = true;
 
@@ -850,6 +702,7 @@ class DocumentToolsService {
       });
 
         if (includePdfs) {
+          await stage('Checking PDF contents for this backup…');
           final totalDocs = Sqflite.firstIntValue(
             await db.rawQuery('SELECT COUNT(*) FROM documents'),
           ) ?? 0;
@@ -858,7 +711,8 @@ class DocumentToolsService {
           while (true) {
             final docs = await db.query(
               'documents',
-              columns: ['id', 'name', 'storage_uri', 'sha256'],
+              columns: ['id', 'name', 'storage_uri', 'sha256',
+                'size_bytes', 'deleted_at'],
               limit: 250,
               offset: documentOffset,
               orderBy: 'id',
@@ -877,7 +731,8 @@ class DocumentToolsService {
             }
             File? stagedProviderFile;
             final File file;
-            if (uri.startsWith('content://')) {
+            if (uri.startsWith('content://') ||
+                (Platform.isIOS && uri.startsWith('file://'))) {
               if (backgroundSafe) {
                 throw StateError(
                   'Background full backup cannot read a SAF content URI in a headless worker. Open DocsGrid to create a verified foreground full backup.',
@@ -964,6 +819,7 @@ class DocumentToolsService {
       encoderOpened = false;
       // Structural ZIP checks alone do not prove that the archived bytes
       // match the manifest. Read back the complete output before pruning.
+      await stage('Verifying ZIP and checksums…');
       await validateBackup(output);
       // SAF locations use opaque content:// URIs rather than filesystem paths.
       // Publish the validated archive only after ZIP and manifest checks pass.
@@ -977,11 +833,11 @@ class DocumentToolsService {
           mimeType: 'application/zip',
         );
       }
-      if (!rescueCheckpoint) {
+      // User-created PDF series never expire automatically. The old 4-Full
+      // count retention is unsafe once Incremental files depend on parents.
+      if (!rescueCheckpoint && !includePdfs) {
         await _pruneBackupArchives(
-          backups,
-          keep: includePdfs ? 4 : 14,
-          newestPath: output.path,
+          backups, keep: 14, newestPath: output.path,
         );
       }
       return output;
@@ -1034,11 +890,13 @@ class DocumentToolsService {
 
   /// Lists portable ZIP archives without trusting their filenames as proof
   /// of validity. The restore decoder performs the full manifest/checksum scan.
-  Future<List<File>> listPortableBackupArchives() async {
+  Future<List<File>> listPortableBackupArchives({
+    Map<String, String>? sourceLocations,
+  }) async {
     final storage = StorageLocationService.instance;
-    final locations = Platform.isAndroid
+    final locations = sourceLocations ?? (Platform.isAndroid
         ? await storage.portableDataLocationsIfAvailable()
-        : const <String, String>{};
+        : const <String, String>{});
     final directories = <String, Directory>{};
 
     void addDirectory(Directory directory) {
@@ -1095,6 +953,19 @@ class DocumentToolsService {
           .toList();
       for (final file in entries) {
         files[file.path] = file;
+      }
+      // Manual A-series archives sit exactly one directory below Full/.
+      if (p.basename(directory.path).toLowerCase() == 'full') {
+        await for (final child in directory.list(followLinks: false)) {
+          if (child is! Directory ||
+              !BackupChain.validSeriesName(p.basename(child.path))) continue;
+          await for (final member in child.list(followLinks: false)) {
+            if (member is File &&
+                p.extension(member.path).toLowerCase() == '.zip') {
+              files[member.path] = member;
+            }
+          }
+        }
       }
     }
 
@@ -1182,19 +1053,29 @@ class DocumentToolsService {
 
   Future<Map<String, int>> recoverLoosePortablePdfs({
     void Function(int completed, int total)? onProgress,
+    void Function(String stage, Object error)? onFailure,
+    String? additionalFolderUri,
+    String? additionalDocumentsUri,
   }) async {
     await StorageMigrationGate.waitUntilReady();
-    if (!Platform.isAndroid) {
+    if (!Platform.isAndroid && !Platform.isIOS) {
       throw UnsupportedError(
         'Automatic shared-media recovery is currently Android-only.',
       );
     }
+    if (Platform.isIOS && additionalFolderUri == null && additionalDocumentsUri == null) {
+      throw StateError('Select a readable folder in Apple Files to recover PDFs.');
+    }
 
     final storage = StorageLocationService.instance;
-    final locations = await storage.portableDataLocationsIfAvailable();
+    // iOS recovery scans only the explicitly selected source.
+    final locations = Platform.isIOS
+        ? const <String, String>{}
+        : await storage.portableDataLocationsIfAvailable();
     final documentsRoot = locations['documentsUri'];
     final foldersRoot = locations['libraryUri'];
-    if (documentsRoot == null && foldersRoot == null) {
+    if (documentsRoot == null && foldersRoot == null &&
+        additionalFolderUri == null && additionalDocumentsUri == null) {
       throw StateError(
         'No accessible DocsGrid recovery folders were found. '
         'Restore the existing DocsGrid storage location first.',
@@ -1229,8 +1110,29 @@ class DocumentToolsService {
       }
     }
 
+    if (additionalFolderUri != null) {
+      if (!additionalFolderUri.startsWith('content://') &&
+          !additionalFolderUri.startsWith('file://')) {
+        throw ArgumentError('Recovery folder must be an authorized storage URI.');
+      }
+      roots.add((uri: additionalFolderUri, preserveFolders: true));
+    }
+    if (additionalDocumentsUri != null) {
+      if (!additionalDocumentsUri.startsWith('content://') &&
+          !additionalDocumentsUri.startsWith('file://')) {
+        throw ArgumentError('Recovery documents must be an authorized storage URI.');
+      }
+      roots.add((uri: additionalDocumentsUri, preserveFolders: false));
+    }
+
     final candidates = <Map<String, Object?>>[];
+    final retainedFolderPaths = <String>{};
     final seenUris = <String>{};
+    final failureReport = PdfRecoveryFailureReport();
+    void recordFailure(String stage, Object error) {
+      failureReport.record(stage, error);
+      onFailure?.call(stage, error);
+    }
     var failed = 0;
 
     Future<void> addPortableRoot(
@@ -1238,7 +1140,11 @@ class DocumentToolsService {
       required bool preserveFolders,
     }) async {
       try {
-        final files = await storage.listPdfFilesRecursively(uri);
+        final files = await storage.listPdfFilesRecursively(uri,
+          onFolder: preserveFolders ? (path) {
+            retainedFolderPaths.add(path);
+          } : null,
+        );
         for (final item in files) {
           final name = item['name'] as String? ?? '';
           final fileUri = item['uri'] as String? ?? '';
@@ -1255,10 +1161,13 @@ class DocumentToolsService {
             'folderPath': preserveFolders
                 ? (item['folderPath'] as String? ?? '')
                 : '',
+            'sizeBytes': (item['sizeBytes'] as num?)?.toInt(),
           });
         }
-      } catch (_) {
-        // Preserve partial recovery from other valid DocsGrid roots.
+      } catch (error) {
+        // A readable folder listing does not prove that all nested files can
+        // be read. Preserve the actual provider failure for local diagnosis.
+        recordFailure('Scanning PDF folder', error);
         failed++;
       }
     }
@@ -1321,16 +1230,76 @@ class DocumentToolsService {
       return parentId;
     }
 
+    // Recover empty folders as well as ancestors of PDFs. A path is added
+    // only after a real managed directory was successfully listed.
+    final orderedPaths = retainedFolderPaths.toList()..sort();
+    for (final path in orderedPaths) {
+      try {
+        await ensureFolderPath(path);
+      } catch (error) {
+        failed++;
+        recordFailure('Recovering folder hierarchy', error);
+      }
+    }
     var added = 0;
     var duplicates = 0;
+    var relinked = 0;
     var processed = 0;
     final total = candidates.length;
+    final liveDb = await _database.database;
     onProgress?.call(0, total);
     for (final item in candidates) {
+      var stage = 'Preparing Grid destination folder';
       try {
         final folderId = await ensureFolderPath(item['folderPath'] as String);
+        final uri = item['uri'] as String;
+        // The common reinstall case has all PDF bytes already on disk.
+        // Hash directly using native streaming. Do not stage/copy every
+        // existing PDF merely to relink its old metadata and reminders.
+        stage = 'Reading source PDF checksum';
+        final digest = await storage.sha256Pdf(uri);
+        stage = 'Matching existing Grid records';
+        final matches = await liveDb.query(
+          'documents',
+          columns: ['id', 'storage_uri', 'folder_id'],
+          where: 'sha256 = ? AND deleted_at IS NULL',
+          whereArgs: [digest],
+        );
+        final alreadyLinked = matches.any((row) => row['storage_uri'] == uri);
+        if (alreadyLinked) {
+          duplicates++;
+          continue;
+        }
+        final missing = matches.where((row) =>
+            row['storage_uri'] == null ||
+            (row['storage_uri'] as String).startsWith('missing://')).toList();
+        final matchedFolder = missing.where((row) =>
+            row['folder_id'] == folderId).toList();
+        final candidatesForRelink = matchedFolder.length == 1
+            ? matchedFolder : missing;
+        if (candidatesForRelink.length == 1 && !Platform.isIOS) {
+          final target = candidatesForRelink.single;
+          stage = 'Relinking existing Grid record';
+          await liveDb.update('documents', {
+            'storage_uri': uri,
+            'relative_path': null,
+            if (item['sizeBytes'] is int) 'size_bytes': item['sizeBytes'],
+            'updated_at': DateTime.now().toUtc().toIso8601String(),
+          }, where: 'id = ? AND deleted_at IS NULL',
+             whereArgs: [target['id']]);
+          PortableSnapshotEvents.notifyDataChanged();
+          relinked++;
+          added++;
+          continue;
+        }
+        if (missing.length > 1) {
+          // Ambiguous identical bytes must never steal someone else's tag,
+          // reminder or folder identity.
+          throw StateError('Multiple missing records match this PDF.');
+        }
+        stage = 'Importing verified PDF into Grid';
         final imported = await documentRepository.importExistingSharedPdf(
-          storageUri: item['uri'] as String,
+          storageUri: uri,
           displayName: item['name'] as String,
           targetFolderId: folderId,
         );
@@ -1339,16 +1308,30 @@ class DocumentToolsService {
         } else {
           duplicates++;
         }
-      } catch (_) {
+      } catch (error) {
+        // Do not discard the reason for all-failed SAF or destination cases.
+        // Report it to the local UI only; never upload file paths or content.
         failed++;
+        recordFailure(stage, error);
       } finally {
         processed++;
         onProgress?.call(processed, total);
       }
     }
 
+    if (failed > 0) {
+      // Persist grouped, sanitized causes once per scan instead of writing
+      // the same permission error 81 times. Logging must not alter PDF state.
+      await DiagnosticLogStore.instance.recordMessage(
+        'PDF folder recovery',
+        'added=$added, relinked=$relinked, duplicates=$duplicates, '
+        'failed=$failed. Reasons: ${failureReport.summary}',
+        occurrences: failed,
+      );
+    }
     return {
       'added': added,
+      'relinked': relinked,
       'duplicates': duplicates,
       'failed': failed,
       'folders': createdFolders,
@@ -1388,9 +1371,33 @@ class DocumentToolsService {
   Future<int?> restoreNewestPortableBackup({
     Future<bool> Function(int pdfCount)? confirm,
     Future<bool> Function(Map<String, int> preview)? confirmPlan,
+    Map<String, String>? sourceLocations,
   }) async {
     await StorageMigrationGate.waitUntilReady();
-    final candidates = await listPortableBackupArchives();
+    // A-series from a chosen OLD root must be restored as a verified chain,
+    // not by mistakenly applying I002.zip by itself or ignoring its parent.
+    final oldFullUri = sourceLocations?['fullBackupsUri'];
+    if (oldFullUri != null && oldFullUri.startsWith('file://')) {
+      final oldFullRoot = Directory(Uri.parse(oldFullUri).toFilePath());
+      if (await oldFullRoot.exists()) {
+        final series = await BackupChain.folders(oldFullRoot);
+        for (final folder in series.reversed) {
+          List<File> verified;
+          try {
+            verified = await BackupChain.verified(folder);
+          } catch (_) {
+            // A damaged series is never partially applied.
+            continue;
+          }
+          if (verified.isNotEmpty) {
+            return restoreBackup(verified.last,
+              confirm: confirm, confirmPlan: confirmPlan);
+          }
+        }
+      }
+    }
+    final candidates = await listPortableBackupArchives(
+        sourceLocations: sourceLocations);
     if (candidates.isEmpty) {
       throw StateError('No portable DocsGrid backup ZIP was found.');
     }
@@ -1413,7 +1420,7 @@ class DocumentToolsService {
                 : await _readPortableBackupType(candidate);
         classified.add((
           file: candidate,
-          priority: type == 'full' ? 0 : 1,
+          priority: type == 'full' || type == 'incremental' ? 0 : 1,
           modified: await candidate.lastModified(),
         ));
       } catch (_) {
@@ -1551,10 +1558,27 @@ class DocumentToolsService {
     BackupRestoreMode mode = BackupRestoreMode.merge,
     Set<BackupRestoreSection>? selection,
     void Function(String message)? onProgress,
-  }) => _withRecoveryLock(() => _restoreBackupLocked(
-    zipFile, confirm: confirm, mode: mode, selection: selection,
-    confirmPlan: confirmPlan, onProgress: onProgress,
-  ));
+  }) => _withRecoveryLock(() async {
+    File? temporaryFull;
+    try {
+      // No Incremental may be applied without its verified original and
+      // every required parent. The existing Full restore is reused unchanged.
+      final m = await BackupChain.manifest(zipFile);
+      if (m['backupType'] == 'incremental') {
+        temporaryFull = await BackupChain.compose(
+            zipFile, await getTemporaryDirectory());
+      }
+      return await _restoreBackupLocked(
+        temporaryFull ?? zipFile,
+        confirm: confirm, mode: mode, selection: selection,
+        confirmPlan: confirmPlan, onProgress: onProgress,
+      );
+    } finally {
+      if (temporaryFull != null) {
+        try { await temporaryFull.parent.delete(recursive: true); } catch (_) {}
+      }
+    }
+  });
 
 Future<int?> _restoreBackupLocked(
     File zipFile, {
@@ -1591,7 +1615,7 @@ Future<int?> _restoreBackupLocked(
           hasRows('documents') ||
           hasRows('folders') ||
           hasCustomCategories ||
-          hasRows('tags') ||
+          (backup.rowsByTable['tags'] ?? const <Map<String,Object?>>[]).any((row) => !DocumentDefaults.isDefaultTagId(row['id'] as String)) ||
           hasRows('document_tags') ||
           hasRows('reminders') ||
           hasRows('history') ||
@@ -2440,7 +2464,8 @@ Future<int?> _restoreBackupLocked(
           final name = row['name'] as String;
           if (existingCollectionNames.contains(name.toLowerCase())) continue;
           final oldId = row['id'] as String;
-          final copy = Map<String, Object?>.from(row)
+          final copy = SmartCollectionSelection.remap(row, documentIds: documentIdMap,
+            categoryIds: categoryIdMap, tagIds: tagIdMap)
             ..['id'] = existingCollectionIds.contains(oldId) ? _uuid.v4() : oldId;
           queueInsert('smart_collections', copy);
           existingCollectionIds.add(copy['id'] as String);
@@ -2454,6 +2479,7 @@ Future<int?> _restoreBackupLocked(
           if (pending >= 500) await flushBatch();
         }
         await flushBatch();
+        await DocumentDefaults.seed(txn);
         if ((await txn.rawQuery('PRAGMA foreign_key_check')).isNotEmpty) {
           throw StateError('Restored database contains inconsistent references.');
         }
@@ -2825,6 +2851,17 @@ Future<int?> _restoreBackupLocked(
   /// Internal diagnostics; no additional dashboard or snapshot format change.
   static Map<String, Object?> snapshotDiagnostics = {};
 
+  /// Periodic maintenance also runs when metadata has not changed. Only
+  /// application-owned, fully verified and expired snapshots are eligible.
+  Future<void> cleanExpiredPortableSnapshots() => _withRecoveryLock(() async {
+    await StorageMigrationGate.waitUntilReady();
+    final locations = await StorageLocationService.instance
+        .portableDataLocationsIfAvailable();
+    final databaseUri = locations['databaseUri'];
+    if (databaseUri == null) return;
+    await _prunePortableSnapshots(databaseUri, '');
+  });
+
   Future<void> _prunePortableSnapshots(String databaseUri, String publishedUri) async {
     final storage = StorageLocationService.instance;
     final entries = await storage.listDirectory(databaseUri);
@@ -2943,9 +2980,13 @@ Future<int?> _restoreBackupLocked(
   /// Returns the newest fully verified snapshot, skipping incomplete or
   /// damaged snapshots left by an interrupted export. A broken newest folder
   /// must not hide an older recoverable snapshot.
-  Future<Map<String, Object?>?> _findLatestVerifiedPortableSnapshot() async {
+  Future<Map<String, Object?>?> _findLatestVerifiedPortableSnapshot({
+    Map<String, String>? sourceLocations,
+  }) async {
     final storage = StorageLocationService.instance;
-    final locations = await storage.portableDataLocations();
+    // Explicit recovery sources are read-only; the active Grid destination
+    // must remain independent of the chosen backup/source location.
+    final locations = sourceLocations ?? await storage.portableDataLocations();
     final databaseUris = <String>[locations['databaseUri']!];
     final legacyUri = locations['legacyRootUri'];
     if (legacyUri != null && legacyUri.startsWith('file://')) {
@@ -3024,9 +3065,11 @@ Future<int?> _restoreBackupLocked(
     return bestSnapshot;
   }
 
-  Future<String?> verifyLatestPortableMetadataSnapshot() =>
-      _withRecoveryLock(() async {
-        final snapshot = await _findLatestVerifiedPortableSnapshot();
+  Future<String?> verifyLatestPortableMetadataSnapshot({
+    Map<String, String>? sourceLocations,
+  }) => _withRecoveryLock(() async {
+        final snapshot = await _findLatestVerifiedPortableSnapshot(
+          sourceLocations: sourceLocations);
         return snapshot?['name'] as String?;
       });
 
@@ -3035,16 +3078,20 @@ Future<int?> _restoreBackupLocked(
   /// SHA-256 from the currently selected library and are never overwritten.
   Future<Map<String, int>> restoreLatestPortableMetadataSnapshot({
     void Function(int completed, int total)? onProgress,
+    Map<String, String>? sourceLocations,
   }) => _withRecoveryLock(() =>
-      _restoreLatestPortableMetadataSnapshotLocked(onProgress: onProgress));
+      _restoreLatestPortableMetadataSnapshotLocked(
+          onProgress: onProgress, sourceLocations: sourceLocations));
 
   Future<Map<String, int>> _restoreLatestPortableMetadataSnapshotLocked({
     void Function(int completed, int total)? onProgress,
+    Map<String, String>? sourceLocations,
   }) async {
     await StorageMigrationGate.waitUntilReady();
     final storage = StorageLocationService.instance;
     final locations = await storage.portableDataLocations();
-    final snapshot = await _findLatestVerifiedPortableSnapshot();
+    final snapshot = await _findLatestVerifiedPortableSnapshot(
+        sourceLocations: sourceLocations);
     if (snapshot == null) {
       throw StateError('No complete, verified portable recovery snapshot was found.');
     }
@@ -3107,6 +3154,12 @@ Future<int?> _restoreBackupLocked(
       locations['libraryUri']!,
       if (locations['documentsUri'] != null)
         locations['documentsUri']!,
+      // Read PDF bytes from the selected OLD source too, without changing
+      // where the live Grid will create new PDFs or future backups.
+      if (sourceLocations?['libraryUri'] != null)
+        sourceLocations!['libraryUri']!,
+      if (sourceLocations?['documentsUri'] != null)
+        sourceLocations!['documentsUri']!,
     ];
 
     // A reinstall may initialize a new canonical com.docsgrid root while the
@@ -3473,7 +3526,8 @@ Future<int?> _restoreBackupLocked(
         if (existingCollectionNames.contains(name.toLowerCase())) continue;
         final id = row['id'] as String;
         await txn.insert('smart_collections', {
-          ...row,
+          ...SmartCollectionSelection.remap(row, documentIds: documentIdMap,
+            categoryIds: categoryIdMap, tagIds: tagIdMap),
           'id': existingCollectionIds.contains(id) ? _uuid.v4() : id,
         }, conflictAlgorithm: ConflictAlgorithm.ignore);
         existingCollectionNames.add(name.toLowerCase());
@@ -3481,6 +3535,7 @@ Future<int?> _restoreBackupLocked(
       for (final row in rowsByTable['settings']!) {
         await txn.insert('settings', row, conflictAlgorithm: ConflictAlgorithm.ignore);
       }
+      await DocumentDefaults.seed(txn);
     });
     } catch (_) {
       await rollbackCreatedFolders();
@@ -3705,13 +3760,9 @@ Future<int?> _restoreBackupLocked(
 
       final rawFiles = manifest['files'];
       if (rawFiles is! List) throw StateError('Backup file manifest is invalid.');
-      final locations = Platform.isAndroid
-          ? await StorageLocationService.instance.portableDataLocationsIfAvailable()
-          : const <String, String>{};
-      final temporaryUri = locations['tempUri'];
-      final temporaryDirectory = temporaryUri != null && temporaryUri.startsWith('file://')
-          ? Directory(Uri.parse(temporaryUri).toFilePath())
-          : Directory.systemTemp;
+      // Restore staging contains user PDFs and metadata; never use shared Temp.
+      final temporaryDirectory = Platform.isAndroid || Platform.isIOS
+          ? await getTemporaryDirectory() : Directory.systemTemp;
       await temporaryDirectory.create(recursive: true);
       staging = await temporaryDirectory.createTemp('docsgrid_restore_');
       final stagedPdfPaths = <String, String>{};
@@ -3769,8 +3820,36 @@ Future<int?> _restoreBackupLocked(
       final backupType = manifest['backupType'] ?? 'full';
       final databaseOnly = backupType == 'database';
       final rescue = backupType == 'rescue';
-      if (backupType != 'full' && !databaseOnly && !rescue) {
+      final incremental = backupType == 'incremental';
+      if (backupType != 'full' && !databaseOnly && !rescue && !incremental) {
         throw StateError('Unsupported backup payload type.');
+      }
+      if (incremental) {
+        if (manifest['seriesId'] is! String ||
+            manifest['backupName'] is! String ||
+            manifest['parentName'] is! String ||
+            !(manifest['backupName'] as String).startsWith('I')) {
+          throw StateError('Incremental backup parent is invalid.');
+        }
+        final ledger = BackupChain.fingerprints(manifest);
+        if (ledger.length != documentIds.length ||
+            !ledger.keys.toSet().containsAll(documentIds)) {
+          throw StateError('Incomplete incremental document ledger.');
+        }
+        final deleted = manifest['deletedDocumentIds'];
+        if (deleted is! List || deleted.any((id) =>
+            id is! String ||
+            (documentIds.contains(id) &&
+                rowsByTable['documents']!.any((row) =>
+                    row['id'] == id && row['deleted_at'] == null)))) {
+          throw StateError('Incremental deletion ledger is invalid.');
+        }
+        for (final row in rowsByTable['documents']!) {
+          if (row['sha256'] != null &&
+              ledger[row['id']]?['sha256'] != row['sha256']) {
+            throw StateError('Incremental fingerprint does not match metadata.');
+          }
+        }
       }
       if (rescue) {
         final missingRecords = manifest['missingPdfs'];
@@ -3790,7 +3869,7 @@ Future<int?> _restoreBackupLocked(
             missingIds.length + seenDocuments.length != documentIds.length) {
           throw StateError('Rescue checkpoint does not account for every PDF.');
         }
-      } else if (!databaseOnly &&
+      } else if (!databaseOnly && !incremental &&
           (seenDocuments.length != documentIds.length ||
            !seenDocuments.containsAll(documentIds))) {
         throw StateError('Backup contains orphaned PDF entries: every document must have exactly one PDF entry.');
@@ -3853,9 +3932,3 @@ class _ValidatedBackup {
 
 
 
-/// Raised when the OCR owner route is dismissed before indexing completes.
-class OcrIndexCancelled implements Exception {
-  const OcrIndexCancelled();
-  @override
-  String toString() => 'OCR indexing was cancelled because its screen was closed.';
-}

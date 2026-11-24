@@ -15,6 +15,7 @@ class ReminderRecord {
     required this.documentId,
     required this.documentName,
     required this.recurrenceRule,
+    this.snoozedUntil,
   });
 
   final String id;
@@ -26,6 +27,7 @@ class ReminderRecord {
   final String? documentId;
   final String? documentName;
   final String? recurrenceRule;
+  final DateTime? snoozedUntil;
 
   factory ReminderRecord.fromMap(Map<String, Object?> row) => ReminderRecord(
     id: row['id'] as String,
@@ -37,6 +39,7 @@ class ReminderRecord {
     documentId: row['document_id'] as String?,
     documentName: row['document_name'] as String?,
     recurrenceRule: row['recurrence_rule'] as String?,
+    snoozedUntil: DateTime.tryParse(row['snoozed_until'] as String? ?? '')?.toLocal(),
   );
 }
 
@@ -241,6 +244,8 @@ class ReminderRepository {
     }, where: 'id = ?', whereArgs: [reminder.id]);
     _refreshPortableSnapshot();
     try {
+      // A one-time reminder must not still alert at its original time.
+      if (reminder.recurrenceRule == null) await ReminderNotifications.instance.cancel(reminder.id);
       await ReminderNotifications.instance.scheduleSnooze(
         id: reminder.id, title: reminder.title, body: reminder.note, at: when,
         documentId: reminder.documentId,
