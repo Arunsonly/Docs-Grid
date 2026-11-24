@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -5,6 +6,7 @@ import 'package:sqflite/sqflite.dart';
 
 import '../../../core/database/app_database.dart';
 import '../../../core/storage/storage_location_service.dart';
+import '../../../core/storage/portable_snapshot_events.dart';
 import '../data/document_repository.dart';
 import '../../categories/data/category_repository.dart';
 
@@ -91,217 +93,48 @@ class _SmartCollectionsScreenState extends State<SmartCollectionsScreen> {
     return (rows.first['total'] as int?) ?? 0;
   }
 
-  Future<void> _create() async {
-    final name = TextEditingController();
-    final query = TextEditingController();
-    var starred = false;
-    var recent = false;
-    final categories = await _categoryRepository.listCategories();
-    final tags = await _categoryRepository.listTags();
-    String selectedCategory = '';
-    final selectedTags = <String>{};
-    final saved = await showDialog<bool>(
-      context: context,
-      builder: (dialogContext) => StatefulBuilder(
-        builder: (context, refresh) => AlertDialog(
-          title: const Text('New Smart Collection'),
-          content: SingleChildScrollView(child: Column(mainAxisSize: MainAxisSize.min, children: [
-            TextField(controller: name, autofocus: true, decoration: const InputDecoration(labelText: 'Collection name')),
-            TextField(controller: query, decoration: const InputDecoration(labelText: 'PDF name contains (optional)')),
-            CheckboxListTile(contentPadding: EdgeInsets.zero, value: starred, title: const Text('Starred PDFs only'), onChanged: (v) => refresh(() => starred = v ?? false)),
-            CheckboxListTile(contentPadding: EdgeInsets.zero, value: recent, title: const Text('Recently opened only'), onChanged: (v) => refresh(() => recent = v ?? false)),
-            DropdownButtonFormField<String>(
-              value: selectedCategory,
-              decoration: const InputDecoration(labelText: 'Category'),
-              items: [
-                const DropdownMenuItem(value: '', child: Text('Any category')),
-                for (final category in categories)
-                  DropdownMenuItem(value: category.id, child: Text(category.name)),
-              ],
-              onChanged: (value) => refresh(() => selectedCategory = value ?? ''),
-            ),
-            if (tags.isNotEmpty)
-              Align(
-                alignment: Alignment.centerLeft,
-                child: Padding(
-                  padding: const EdgeInsets.only(top: 12),
-                  child: Wrap(
-                    spacing: 6,
-                    children: [
-                      for (final tag in tags)
-                        FilterChip(
-                          label: Text(tag.name),
-                          selected: selectedTags.contains(tag.id),
-                          onSelected: (value) => refresh(() {
-                            if (value) {
-                              selectedTags.add(tag.id);
-                            } else {
-                              selectedTags.remove(tag.id);
-                            }
-                          }),
-                        ),
-                    ],
-                  ),
-                ),
-              ),
-          ])),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')),
-            FilledButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Save collection')),
-          ],
-        ),
-      ),
-    );
-    if (saved != true) { name.dispose(); query.dispose(); return; }
-    final label = name.text.trim();
-    if (label.isEmpty) {
-      name.dispose(); query.dispose();
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Enter a collection name.')));
-      return;
-    }
+  Future<void> _create() => _editCollection();
+
+  Future<void> _edit(Map<String, Object?> item) => _editCollection(item);
+
+  Future<void> _editCollection([Map<String, Object?>? item]) async {
     try {
-      final db = await _db;
-      await _ensureTable(db);
-      final duplicates = await db.query(
-        'smart_collections',
-        columns: ['id'],
-        where: 'name = ?',
-        whereArgs: [label],
-        limit: 1,
+      final categories = await _categoryRepository.listCategories();
+      final tags = await _categoryRepository.listTags();
+      if (!mounted) return;
+      final draft = await showDialog<Map<String, Object?>>(
+        context: context,
+        builder: (_) => _SmartCollectionEditor(
+          initial: item, categories: categories, tags: tags,
+          repository: _categoryRepository, count: _count,
+        ),
       );
+      if (draft == null || !mounted) return;
+      final db = await _db;
+      final duplicates = await db.query('smart_collections', columns: ['id'],
+        where: item == null ? 'name = ? COLLATE NOCASE' :
+            'name = ? COLLATE NOCASE AND id != ?',
+        whereArgs: [draft['name'], if (item != null) item['id']], limit: 1);
       if (duplicates.isNotEmpty) {
         if (mounted) ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('A Smart Collection with this name already exists.')),
-        );
+          const SnackBar(content: Text('A Smart Collection with this name already exists.')));
         return;
       }
       final now = DateTime.now().toUtc().toIso8601String();
-      await db.insert('smart_collections', {
-        'id': '${DateTime.now().microsecondsSinceEpoch}',
-        'name': label,
-        'query_text': query.text.trim(),
-        'favorites_only': starred ? 1 : 0,
-        'recent_only': recent ? 1 : 0,
-        'category_id': selectedCategory.isEmpty ? null : selectedCategory,
-        'tag_ids_json': jsonEncode(selectedTags.toList()..sort()),
-        'created_at': now,
-        'updated_at': now,
-      });
-      await _load();
-    } catch (error) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not save collection: $error')));
-    } finally {
-      name.dispose(); query.dispose();
-    }
-  }
-
-  Future<void> _edit(Map<String, Object?> item) async {
-    final name = TextEditingController(text: item['name'] as String? ?? '');
-    final query = TextEditingController(text: item['query_text'] as String? ?? '');
-    var starred = item['favorites_only'] == 1;
-    var recent = item['recent_only'] == 1;
-    final categories = await _categoryRepository.listCategories();
-    final tags = await _categoryRepository.listTags();
-    final savedCategory = item['category_id'] as String? ?? '';
-    String selectedCategory = categories.any((category) => category.id == savedCategory)
-        ? savedCategory
-        : '';
-    final selectedTags = _tagIds(item['tag_ids_json'])
-        .where((id) => tags.any((tag) => tag.id == id))
-        .toSet();
-    final saved = await showDialog<bool>(
-      context: context,
-      builder: (dialogContext) => StatefulBuilder(
-        builder: (context, refresh) => AlertDialog(
-          title: const Text('Edit Smart Collection'),
-          content: SingleChildScrollView(child: Column(mainAxisSize: MainAxisSize.min, children: [
-            TextField(controller: name, autofocus: true, decoration: const InputDecoration(labelText: 'Collection name')),
-            TextField(controller: query, decoration: const InputDecoration(labelText: 'PDF name contains (optional)')),
-            CheckboxListTile(contentPadding: EdgeInsets.zero, value: starred, title: const Text('Starred PDFs only'), onChanged: (v) => refresh(() => starred = v ?? false)),
-            CheckboxListTile(contentPadding: EdgeInsets.zero, value: recent, title: const Text('Recently opened only'), onChanged: (v) => refresh(() => recent = v ?? false)),
-            DropdownButtonFormField<String>(
-              value: selectedCategory,
-              decoration: const InputDecoration(labelText: 'Category'),
-              items: [
-                const DropdownMenuItem(value: '', child: Text('Any category')),
-                for (final category in categories)
-                  DropdownMenuItem(value: category.id, child: Text(category.name)),
-              ],
-              onChanged: (value) => refresh(() => selectedCategory = value ?? ''),
-            ),
-            if (tags.isNotEmpty)
-              Align(
-                alignment: Alignment.centerLeft,
-                child: Padding(
-                  padding: const EdgeInsets.only(top: 12),
-                  child: Wrap(
-                    spacing: 6,
-                    children: [
-                      for (final tag in tags)
-                        FilterChip(
-                          label: Text(tag.name),
-                          selected: selectedTags.contains(tag.id),
-                          onSelected: (value) => refresh(() {
-                            if (value) {
-                              selectedTags.add(tag.id);
-                            } else {
-                              selectedTags.remove(tag.id);
-                            }
-                          }),
-                        ),
-                    ],
-                  ),
-                ),
-              ),
-          ])),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')),
-            FilledButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Save changes')),
-          ],
-        ),
-      ),
-    );
-    await WidgetsBinding.instance.endOfFrame;
-    final label = name.text.trim();
-    final search = query.text.trim();
-    name.dispose();
-    query.dispose();
-    if (saved != true) return;
-    if (label.isEmpty) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Enter a collection name.')),
-      );
-      return;
-    }
-    try {
-      final db = await _db;
-      final duplicates = await db.query(
-        'smart_collections',
-        columns: ['id'],
-        where: 'name = ? AND id != ?',
-        whereArgs: [label, item['id']],
-        limit: 1,
-      );
-      if (duplicates.isNotEmpty) {
-        if (mounted) ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('A Smart Collection with this name already exists.')),
-        );
-        return;
+      if (item == null) {
+        await db.insert('smart_collections', {
+          ...draft, 'id': DateTime.now().microsecondsSinceEpoch.toString(),
+          'created_at': now, 'updated_at': now,
+        });
+      } else {
+        await db.update('smart_collections', {...draft, 'updated_at': now},
+            where: 'id = ?', whereArgs: [item['id']]);
       }
-      await db.update('smart_collections', {
-        'name': label,
-        'query_text': search,
-        'favorites_only': starred ? 1 : 0,
-        'recent_only': recent ? 1 : 0,
-        'category_id': selectedCategory.isEmpty ? null : selectedCategory,
-        'tag_ids_json': jsonEncode(selectedTags.toList()..sort()),
-        'updated_at': DateTime.now().toUtc().toIso8601String(),
-      }, where: 'id = ?', whereArgs: [item['id']]);
+      PortableSnapshotEvents.notifyDataChanged();
       await _load();
     } catch (error) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Could not update collection: $error')),
-      );
+        SnackBar(content: Text('Could not save collection: $error')));
     }
   }
 
@@ -317,11 +150,13 @@ class _SmartCollectionsScreenState extends State<SmartCollectionsScreen> {
     if (ok != true) return;
     final db = await _db;
     await db.delete('smart_collections', where: 'id = ?', whereArgs: [item['id']]);
+    PortableSnapshotEvents.notifyDataChanged();
     await _load();
   }
 
   Future<void> _open(Map<String, Object?> item) async {
     await Navigator.of(context).push(MaterialPageRoute(builder: (_) => _SmartCollectionResults(collection: item)));
+    if (mounted) await _load();
   }
 
   @override
@@ -329,7 +164,7 @@ class _SmartCollectionsScreenState extends State<SmartCollectionsScreen> {
     appBar: AppBar(title: const Text('Smart Collections')),
     floatingActionButton: FloatingActionButton.extended(onPressed: _create, icon: const Icon(Icons.add), label: const Text('New collection')),
     body: _loading ? const Center(child: CircularProgressIndicator()) : _collections.isEmpty
-      ? const Center(child: Padding(padding: EdgeInsets.all(28), child: Text('No Smart Collections yet. Create a saved filter for starred, recent, or name-matched PDFs. Your files stay in their original folders.')))
+      ? const Center(child: Padding(padding: EdgeInsets.all(28), child: Text('No Smart Collections yet. Create a saved filter using PDF name, category or tags. Only Grid PDFs are included; files stay in their original folders.')))
       : ListView.separated(
           padding: const EdgeInsets.fromLTRB(12, 12, 12, 96),
           itemCount: _collections.length,
@@ -344,8 +179,7 @@ class _SmartCollectionsScreenState extends State<SmartCollectionsScreen> {
                   title: Text(item['name'] as String),
                   subtitle: Text([
                     if ((item['query_text'] as String).isNotEmpty) 'Name: ${item['query_text']}',
-                    if (item['favorites_only'] == 1) 'Starred',
-                    if (item['recent_only'] == 1) 'Recent',
+                    if (item['favorites_only'] == 1 || item['recent_only'] == 1) 'Legacy filter',
                     if ((item['category_id'] as String? ?? '').isNotEmpty) 'Category',
                     if (_tagIds(item['tag_ids_json']).isNotEmpty) '${_tagIds(item['tag_ids_json']).length} tags',
                     'Dynamic filter · no file copies',
@@ -453,5 +287,213 @@ class _SmartCollectionResultsState extends State<_SmartCollectionResults> {
             );
           },
         ),
+  );
+}
+
+class _SmartCollectionEditor extends StatefulWidget {
+  const _SmartCollectionEditor({
+    required this.initial, required this.categories, required this.tags,
+    required this.repository, required this.count,
+  });
+  final Map<String, Object?>? initial;
+  final List<CategoryRecord> categories;
+  final List<TagRecord> tags;
+  final CategoryRepository repository;
+  final Future<int> Function(Map<String, Object?>) count;
+
+  @override
+  State<_SmartCollectionEditor> createState() => _SmartCollectionEditorState();
+}
+
+class _SmartCollectionEditorState extends State<_SmartCollectionEditor> {
+  late final TextEditingController _name;
+  late final TextEditingController _query;
+  late List<TagRecord> _tags;
+  late String _category;
+  late Set<String> _selected;
+  Timer? _debounce;
+  int _generation = 0;
+  int? _matching;
+  bool _previewError = false;
+  bool _creatingTag = false;
+  bool _saving = false;
+
+  bool get _legacy => widget.initial?['favorites_only'] == 1 ||
+      widget.initial?['recent_only'] == 1;
+  bool get _hasRule => _query.text.trim().isNotEmpty ||
+      _category.isNotEmpty || _selected.isNotEmpty;
+
+  @override
+  void initState() {
+    super.initState();
+    final item = widget.initial;
+    _name = TextEditingController(text: item?['name'] as String? ?? '');
+    _query = TextEditingController(text: item?['query_text'] as String? ?? '');
+    _tags = [...widget.tags];
+    final savedCategory = item?['category_id'] as String? ?? '';
+    _category = widget.categories.any((c) => c.id == savedCategory) ? savedCategory : '';
+    _selected = <String>{};
+    try {
+      final decoded = jsonDecode(item?['tag_ids_json'] as String? ?? '[]');
+      if (decoded is List) {
+        _selected.addAll(decoded.whereType<String>().where((id) => _tags.any((t) => t.id == id)));
+      }
+    } catch (_) {}
+    _schedulePreview();
+  }
+
+  Map<String, Object?> _draft() => {
+    'name': _name.text.trim(),
+    'query_text': _query.text.trim(),
+    'category_id': _category.isEmpty ? null : _category,
+    'tag_ids_json': jsonEncode(_selected.toList()..sort()),
+    'favorites_only': 0,
+    'recent_only': 0,
+  };
+
+  void _schedulePreview() {
+    _debounce?.cancel();
+    final generation = ++_generation;
+    final draft = _draft();
+    setState(() { _matching = null; _previewError = false; });
+    _debounce = Timer(const Duration(milliseconds: 200), () async {
+      try {
+        final count = await widget.count(draft);
+        if (!mounted || generation != _generation) return;
+        setState(() => _matching = count);
+      } catch (_) {
+        if (!mounted || generation != _generation) return;
+        setState(() => _previewError = true);
+      }
+    });
+  }
+
+  Future<void> _addTag() async {
+    if (_creatingTag) return;
+    setState(() => _creatingTag = true);
+    var value = '';
+    try {
+      final name = await showDialog<String>(context: context, builder: (ctx) =>
+        AlertDialog(title: const Text('New tag'),
+          content: TextField(autofocus: true, onChanged: (v) => value = v,
+              decoration: const InputDecoration(labelText: 'Tag name')),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+            FilledButton(onPressed: () => Navigator.pop(ctx, value.trim()), child: const Text('Create tag')),
+          ],
+        ));
+      if (name == null || name.isEmpty || !mounted) return;
+      final tag = await widget.repository.createTag(name);
+      if (!mounted) return;
+      setState(() {
+        _tags.add(tag);
+        _tags.sort((a,b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+        _selected.add(tag.id);
+      });
+      _schedulePreview();
+    } catch (error) {
+      if (mounted) {
+        await showDialog<void>(context: context, builder: (ctx) => AlertDialog(
+          title: const Text('Could not create tag'), content: Text(error.toString()),
+          actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('OK'))],
+        ));
+      }
+    } finally {
+      if (mounted) setState(() => _creatingTag = false);
+    }
+  }
+
+  Future<void> _save() async {
+    if (_saving || _creatingTag || _name.text.trim().isEmpty) return;
+    setState(() => _saving = true);
+    try {
+      if (!_hasRule) {
+        final confirmed = await showDialog<bool>(context: context, builder: (ctx) =>
+          AlertDialog(title: const Text('No filter selected'),
+            content: const Text('This collection will show all Grid PDFs. Add a name, category or tag filter to narrow it down. Save anyway?'),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Keep editing')),
+              FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Save all PDFs')),
+            ],
+          ));
+        if (confirmed != true || !mounted) return;
+      }
+      if (mounted) Navigator.pop(context, _draft());
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  @override
+  void dispose() {
+    _debounce?.cancel();
+    _name.dispose();
+    _query.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: Text(widget.initial == null ? 'New Smart Collection' : 'Edit Smart Collection'),
+    content: SingleChildScrollView(child: Column(
+      mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const Text('Grid PDFs only · files stay in their original folders'),
+        const SizedBox(height: 12),
+        TextField(controller: _name, autofocus: true,
+          onChanged: (_) => setState(() {}),
+          decoration: const InputDecoration(labelText: 'Collection name')),
+        TextField(controller: _query, onChanged: (_) => _schedulePreview(),
+          decoration: const InputDecoration(labelText: 'PDF name contains (optional)')),
+        const SizedBox(height: 12),
+        DropdownButtonFormField<String>(
+          value: _category, isExpanded: true,
+          decoration: const InputDecoration(labelText: 'Category'),
+          items: [
+            const DropdownMenuItem(value: '', child: Text('Any category')),
+            for (final category in widget.categories)
+              DropdownMenuItem(value: category.id, child: Text(category.name)),
+          ],
+          onChanged: (value) {
+            _category = value ?? '';
+            _schedulePreview();
+          },
+        ),
+        const SizedBox(height: 12),
+        Row(children: [
+          const Expanded(child: Text('Tags', style: TextStyle(fontWeight: FontWeight.w600))),
+          TextButton.icon(onPressed: _creatingTag || _saving ? null : _addTag,
+            icon: const Icon(Icons.add), label: const Text('New tag')),
+        ]),
+        if (_tags.isEmpty) const Text('No tags yet. Create a tag to use as a filter.'),
+        Wrap(spacing: 6, runSpacing: 4, children: [
+          for (final tag in _tags) FilterChip(
+            label: Text(tag.name), selected: _selected.contains(tag.id),
+            onSelected: (selected) {
+              if (selected) { _selected.add(tag.id); } else { _selected.remove(tag.id); }
+              _schedulePreview();
+            },
+          ),
+        ]),
+        const SizedBox(height: 6),
+        const Text('All selected tags must match. Assign tags to PDFs in Grid.'),
+        const Divider(height: 24),
+        if (_legacy) const Padding(padding: EdgeInsets.only(bottom: 8),
+          child: Text('Saving changes removes this collection’s old starred/recent filter. Cancel to keep it.')),
+        if (!_hasRule) const Padding(padding: EdgeInsets.only(bottom: 8),
+          child: Text('No filter selected: all Grid PDFs will match.')),
+        if (_previewError)
+          TextButton(onPressed: _schedulePreview, child: const Text('Preview unavailable · Retry'))
+        else if (_matching == null)
+          const Text('Checking matching PDFs…')
+        else
+          Text('$_matching matching Grid PDFs', style: Theme.of(context).textTheme.titleMedium),
+      ],
+    )),
+    actions: [
+      TextButton(onPressed: _saving ? null : () => Navigator.pop(context), child: const Text('Cancel')),
+      FilledButton(onPressed: _saving || _creatingTag || _name.text.trim().isEmpty ? null : _save,
+        child: Text(widget.initial == null ? 'Save collection' : 'Save changes')),
+    ],
   );
 }
