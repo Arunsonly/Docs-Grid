@@ -161,7 +161,21 @@ class BackupAutomation {
 
   /// Runs due backups while the Activity/native storage bridge is available.
   /// This is also the safe fallback for SAF-backed PDFs skipped by a headless worker.
+  static bool _iosForegroundBackupRunning = false;
+
   static Future<void> runDueForegroundBackups() async {
+    if (Platform.isIOS) {
+      if (_iosForegroundBackupRunning) return;
+      _iosForegroundBackupRunning = true;
+      try {
+        if (!await AppDatabase.instance.hasPortableUserData()) return;
+        if (isBackupDue(status: await readStatus(full:false), now: DateTime.now().toUtc(),
+            interval: const Duration(hours:24), retryCooldown: const Duration(hours:6))) {
+          await _runForegroundBackup(includePdfs:false);
+        }
+      } finally { _iosForegroundBackupRunning = false; }
+      return;
+    }
     if (!Platform.isAndroid) return;
     // Do not create a meaningless 3–4 KB database ZIP on a fresh install.
     // The first scheduled backup begins after the user has stored real data.

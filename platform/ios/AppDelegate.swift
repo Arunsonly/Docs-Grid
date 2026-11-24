@@ -2,6 +2,7 @@ import UIKit
 import Flutter
 import UniformTypeIdentifiers
 import CryptoKit
+import UserNotifications
 
 @main
 @objc class AppDelegate: FlutterAppDelegate, UIDocumentPickerDelegate, UIDocumentInteractionControllerDelegate {
@@ -10,6 +11,8 @@ import CryptoKit
     private let bookmarkListKey = "docsgrid_storage_bookmarks"
     private let phoneFolderBookmarkKey = "docsgrid_phone_browse_bookmark"
     private var pendingFolderIsPhone = false
+    private var pendingFolderIsAuxiliary = false
+    private var pendingFolderIsExport = false
     private var pendingFolderResult: FlutterResult?
     private var documentController: UIDocumentInteractionController?
     private var previewScopedURL: URL?
@@ -31,6 +34,9 @@ import CryptoKit
                 }
                 if call.method == "chooseFolder" ||
                     call.method == "choosePhoneFolder" ||
+                    call.method == "chooseBackupExportFolder" ||
+                    call.method == "choosePdfRecoveryFolder" ||
+                    call.method == "chooseBackupChainFolder" ||
                     call.method == "openPdf" {
                     self.handle(call, result: result)
                 } else {
@@ -57,6 +63,13 @@ import CryptoKit
                 binaryMessenger: controller.binaryMessenger
             )
             notificationChannel.setMethodCallHandler { call, result in
+                if call.method == "isReminderSoundEnabled" {
+                    UNUserNotificationCenter.current().getNotificationSettings { settings in
+                        let enabled = settings.soundSetting == .enabled
+                        DispatchQueue.main.async { result(enabled) }
+                    }
+                    return
+                }
                 guard call.method == "openSettings" else {
                     result(FlutterMethodNotImplemented)
                     return
@@ -83,13 +96,15 @@ import CryptoKit
         do {
             let args = call.arguments as? [String: Any] ?? [:]
             switch call.method {
-            case "chooseFolder", "choosePhoneFolder":
+            case "chooseFolder", "choosePhoneFolder", "chooseBackupExportFolder", "choosePdfRecoveryFolder", "chooseBackupChainFolder":
                 guard pendingFolderResult == nil else {
                     result(FlutterError(code: "BUSY", message: "Folder picker is already open.", details: nil))
                     return
                 }
                 pendingFolderResult = result
                 pendingFolderIsPhone = call.method == "choosePhoneFolder"
+                pendingFolderIsAuxiliary = call.method != "chooseFolder" && call.method != "choosePhoneFolder"
+                pendingFolderIsExport = call.method == "chooseBackupExportFolder"
                 let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.folder], asCopy: false)
                 picker.delegate = self
                 picker.allowsMultipleSelection = false
@@ -193,10 +208,13 @@ import CryptoKit
                 let parent = try urlArg(args, "parentUri")
                 let name = try stringArg(args, "name")
                 result(try copyPdf(source: source, parent: parent, name: name).absoluteString)
-            case "copyPdfToPath":
+            case "copyPdfToPath", "copyStorageFileToPath":
                 let source = try urlArg(args, "sourceUri")
                 let destinationPath = try stringArg(args, "destinationPath")
                 let destination = URL(fileURLWithPath: destinationPath)
+                guard isInsideAppContainer(destination.resolvingSymlinksInPath()) else {
+                    throw storageError("The staging destination must be inside DocsGrid.")
+                }
                 try withAllBookmarkAccess {
                     let accessed = source.startAccessingSecurityScopedResource()
                     defer { if accessed { source.stopAccessingSecurityScopedResource() } }
@@ -230,6 +248,27 @@ import CryptoKit
                     try FileManager.default.moveItem(at: temporary, to: destination)
                 }
                 result(true)
+            case "copyFileToStorage":
+                let source = URL(fileURLWithPath: try stringArg(args, "sourcePath"))
+                let parent = try urlArg(args, "parentUri")
+                let name = try stringArg(args, "name")
+                guard isInsideAppContainer(source.resolvingSymlinksInPath()) else {
+                    throw storageError("Only DocsGrid-owned staged files can be exported.")
+                }
+                result(try exportVerifiedFile(source: source, parent: parent, name: name).absoluteString)
+            case "samePhysicalPdf":
+                let first = try urlArg(args, "sourceUri")
+                let second = try urlArg(args, "otherUri")
+                let same = try withAllBookmarkAccess {
+                    if first.resolvingSymlinksInPath().standardizedFileURL == second.resolvingSymlinksInPath().standardizedFileURL { return true }
+                    let a = try first.resourceValues(forKeys: [.fileResourceIdentifierKey]).fileResourceIdentifier
+                    let b = try second.resourceValues(forKeys: [.fileResourceIdentifierKey]).fileResourceIdentifier
+                    guard let a = a as? NSObject, let b = b as? NSObject else {
+                        throw storageError("The Files provider did not expose a safe file identity.")
+                    }
+                    return a.isEqual(b)
+                }
+                result(same)
             case "sha256Pdf":
                 let url = try urlArg(args, "uri")
                 result(try sha256Pdf(url: url))
@@ -656,21 +695,55 @@ import CryptoKit
         }
     }
 
+    // Publish a ZIP only after verification, without replacing an existing file.
+    private func exportVerifiedFile(source: URL, parent: URL, name: String) throws -> URL {
+        try validateLeafName(name)
+        return try withAllBookmarkAccess {
+            let digest = try sha256Pdf(url: source)
+            let target = parent.appendingPathComponent(name)
+            let temporary = parent.appendingPathComponent(".docsgrid-export-\(UUID().uuidString).part")
+            defer { try? FileManager.default.removeItem(at: temporary) }
+            let coordinator = NSFileCoordinator(filePresenter: nil)
+            var coordinationError: NSError?
+            var failure: Error?
+            coordinator.coordinate(writingItemAt: target, options: [], error: &coordinationError) { coordinated in
+                do {
+                    guard !FileManager.default.fileExists(atPath: coordinated.path) else {
+                        throw storageError("An export with this name already exists. Nothing was replaced.")
+                    }
+                    try FileManager.default.copyItem(at: source, to: temporary)
+                    guard try sha256Pdf(url: temporary) == digest else {
+                        throw storageError("Export checksum verification failed.")
+                    }
+                    try FileManager.default.moveItem(at: temporary, to: coordinated)
+                } catch { failure = error }
+            }
+            if let coordinationError { throw coordinationError }
+            if let failure { throw failure }
+            return target
+        }
+    }
+
     private func listDirectory(url: URL) throws -> [[String: Any]] {
         try withAllBookmarkAccess {
             let values = try FileManager.default.contentsOfDirectory(
                 at: url,
-                includingPropertiesForKeys: [.isDirectoryKey, .fileSizeKey],
+                includingPropertiesForKeys: [.isDirectoryKey, .fileSizeKey, .contentModificationDateKey],
                 options: [.skipsHiddenFiles]
             )
             return try values.map { child in
-                let resource = try child.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey])
-                return [
+                let resource = try child.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey, .contentModificationDateKey])
+                var row: [String: Any] = [
                     "name": child.lastPathComponent,
                     "uri": child.absoluteString,
                     "isDirectory": resource.isDirectory ?? false,
-                    "size": resource.fileSize ?? 0
+                    "size": resource.fileSize ?? 0,
+                    "sizeKnown": resource.fileSize != nil
                 ]
+                if let modified = resource.contentModificationDate {
+                    row["lastModified"] = Int64(modified.timeIntervalSince1970 * 1000)
+                }
+                return row
             }
         }
     }
@@ -802,12 +875,19 @@ import CryptoKit
         guard let url = urls.first, let callback = pendingFolderResult else { return }
         pendingFolderResult = nil
         let isPhoneFolder = pendingFolderIsPhone
+        let isAuxiliary = pendingFolderIsAuxiliary
+        let isExport = pendingFolderIsExport
         pendingFolderIsPhone = false
+        pendingFolderIsAuxiliary = false
+        pendingFolderIsExport = false
         do {
             let accessed = url.startAccessingSecurityScopedResource()
             defer { if accessed { url.stopAccessingSecurityScopedResource() } }
             guard accessed || isInsideAppContainer(url) else {
                 throw storageError("Files did not grant access to the selected folder.")
+            }
+            if isExport && isInsideAppContainer(url.resolvingSymlinksInPath()) {
+                throw storageError("Choose a folder outside DocsGrid, such as iCloud Drive, for independent recovery.")
             }
             let data = try url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
             var bookmarks = bookmarkDataList()
@@ -815,8 +895,10 @@ import CryptoKit
             UserDefaults.standard.set(bookmarks, forKey: bookmarkListKey)
             // The Files browse permission must NEVER redirect Grid's
             // separately selected PDF/backup storage.
-            UserDefaults.standard.set(data, forKey: isPhoneFolder
-                ? phoneFolderBookmarkKey : currentBookmarkKey)
+            if !isAuxiliary {
+                UserDefaults.standard.set(data, forKey: isPhoneFolder
+                    ? phoneFolderBookmarkKey : currentBookmarkKey)
+            }
             callback(["uri": url.absoluteString, "name": url.lastPathComponent])
         } catch {
             callback(FlutterError(code: "PERMISSION", message: error.localizedDescription, details: nil))
@@ -827,6 +909,8 @@ import CryptoKit
         let callback = pendingFolderResult
         pendingFolderResult = nil
         pendingFolderIsPhone = false
+        pendingFolderIsAuxiliary = false
+        pendingFolderIsExport = false
         callback?(nil)
     }
 

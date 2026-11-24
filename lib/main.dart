@@ -540,6 +540,14 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
       return;
     }
 
+    if (Platform.isIOS) {
+      try {
+        if (await AppDatabase.instance.hasPortableUserData()) {
+          await prefs.setBool('docsgrid_restore_prompt_shown', true);
+          return;
+        }
+      } catch (_) { /* Keep the explicit recovery option available. */ }
+    }
     if (!mounted) return;
     final restoreChoice = await showDialog<String>(
       context: context,
@@ -588,7 +596,7 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
       await Navigator.of(context).push(MaterialPageRoute(builder: (_) => Scaffold(
         appBar: AppBar(title: const Text('Recover existing PDFs')),
         body: const DocumentToolsScreen(
-          quickAction: 'recover_loose_pdfs',
+          quickAction: Platform.isIOS ? 'recover_selected_pdfs' : 'recover_loose_pdfs',
           section: 'backup_restore',
         ),
       )));
@@ -609,7 +617,7 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
     if (!mounted) return;
     await prefs.setBool('docsgrid_restore_prompt_shown', true);
     await prefs.remove('docsgrid_restore_prompt_snoozed_until');
-    final restoreAction =
+    final restoreAction = Platform.isIOS ? 'restore_zip' :
         hasPortableBackups ? 'restore_latest_backup' : 'restore_portable';
     // The previous Offstage route hid both recovery progress and its outcome.
     await Navigator.of(context).push(MaterialPageRoute(

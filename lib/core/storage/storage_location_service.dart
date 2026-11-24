@@ -463,7 +463,26 @@ class StorageLocationService {
   /// Returns an empty map when Android's optional all-files permission is not granted.
   /// This lets ordinary imports and folder operations retain their SAF/private fallback.
   /// Other platform/storage errors still propagate and are not silently hidden.
+  /// iOS local archive paths are separate from the selected Files library.
+  static Future<Map<String, String>> iosPrivateArchiveLocations() async {
+    final documents = await getApplicationDocumentsDirectory();
+    final support = await getApplicationSupportDirectory();
+    final root = p.join(documents.path, 'DocsGrid');
+    final backups = p.join(root, 'Backups');
+    final recovery = p.join(support.path, 'docsgrid', 'recovery');
+    return {
+      'rootUri': Uri.directory(root).toString(),
+      'backupsUri': Uri.directory(backups).toString(),
+      'fullBackupsUri': Uri.directory(p.join(backups, 'Full')).toString(),
+      'databaseBackupsUri': Uri.directory(p.join(backups, 'Database')).toString(),
+      'recoveryUri': Uri.directory(recovery).toString(),
+    };
+  }
+
   Future<Map<String, String>> portableDataLocationsIfAvailable() async {
+    if (Platform.isIOS && await selectedFolder() == null) {
+      return const <String, String>{};
+    }
     if (Platform.isAndroid && !await hasAllFilesAccess()) {
       // A previously selected SAF recovery tree is valid without all-files
       // access. Only fall back when the native layer reports that no
@@ -587,8 +606,8 @@ class StorageLocationService {
   /// application's managed storage root or creating a destination folder.
   /// User-approved external SAF destination. Does not change Grid storage.
   Future<Map<String, String>?> chooseBackupExportFolder() async {
-    if (!Platform.isAndroid) {
-      throw UnsupportedError('Backup export picker is Android-only.');
+    if (!Platform.isAndroid && !Platform.isIOS) {
+      throw UnsupportedError('Backup export picker is unavailable on this platform.');
     }
     final result = await _channel.invokeMapMethod<String, dynamic>(
         'chooseBackupExportFolder');
@@ -602,8 +621,8 @@ class StorageLocationService {
 
   /// Read-only selection of an exported A001 folder; no active-root changes.
   Future<Map<String, String>?> chooseBackupChainFolder() async {
-    if (!Platform.isAndroid) {
-      throw UnsupportedError('Backup series folder picker is Android-only.');
+    if (!Platform.isAndroid && !Platform.isIOS) {
+      throw UnsupportedError('Backup series folder picker is unavailable on this platform.');
     }
     final result = await _channel.invokeMapMethod<String, dynamic>(
         'chooseBackupChainFolder');
@@ -612,8 +631,8 @@ class StorageLocationService {
   }
 
   Future<Map<String, String>?> choosePdfRecoveryFolder() async {
-    if (!Platform.isAndroid) {
-      throw UnsupportedError('PDF folder recovery is Android-only.');
+    if (!Platform.isAndroid && !Platform.isIOS) {
+      throw UnsupportedError('PDF folder recovery is unavailable on this platform.');
     }
     final result = await _channel.invokeMapMethod<String, dynamic>(
         'choosePdfRecoveryFolder');

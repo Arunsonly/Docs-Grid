@@ -73,6 +73,8 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
             selectedSource: widget.initialRecoverySource); break;
         case 'restore_latest_backup': _restoreNewestPortableBackup(); break;
         case 'recover_loose_pdfs': _recoverLoosePortablePdfs(); break;
+        case 'recover_selected_pdfs': _recoverSelectedPdfFolder(); break;
+        case 'restore_zip': _restoreBackup(); break;
       }
     });
   }
@@ -206,7 +208,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
         'Verified backup created: ${p.basename(archive.path)}');
     // iOS currently has a private backup archive and native export, rather
     // than Android's persistent local Full archive browser. Preserve sharing.
-    if (!Platform.isAndroid && !widget.forceAndroidBackupForTesting) {
+    if (!Platform.isAndroid && !Platform.isIOS && !widget.forceAndroidBackupForTesting) {
       await _tools.shareFile(archive.path, text: 'DocsGrid Full backup');
       return;
     }
@@ -238,11 +240,14 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
           const ListTile(title: Text('Export to')),
           ListTile(leading: const Icon(Icons.folder_open),
             title: const Text('Save to folder'),
-            subtitle: const Text('Internal storage, SD card or USB'),
+            subtitle: Text(Platform.isIOS
+                ? 'Choose an independent iCloud Drive or Apple Files folder'
+                : 'Internal storage, SD card or USB'),
             onTap: () => Navigator.pop(ctx, 'folder')),
           ListTile(leading: const Icon(Icons.ios_share_outlined),
             title: const Text('Share Backup'),
-            subtitle: const Text('Google Drive, Quick Share and other apps'),
+            subtitle: Text(Platform.isIOS ? 'Save to Files, AirDrop or other apps'
+                : 'Google Drive, Quick Share and other apps'),
             onTap: () => Navigator.pop(ctx, 'share')),
         ])),
     );
@@ -416,11 +421,11 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
         mainAxisSize: MainAxisSize.min, children: [
           const ListTile(title: Text('Emergency Recovery'),
             subtitle: Text('Original files will not be deleted or overwritten.')),
-          ListTile(leading: const Icon(Icons.folder_open),
+          if (!Platform.isIOS) ListTile(leading: const Icon(Icons.folder_open),
             title: const Text('Scan DocsGrid Storage'),
             subtitle: const Text('Find existing folders, PDFs and recovery metadata.'),
             onTap: () => Navigator.pop(ctx, 'scan')),
-          ListTile(leading: const Icon(Icons.folder_outlined),
+          if (!Platform.isIOS) ListTile(leading: const Icon(Icons.folder_outlined),
             title: const Text('Choose Folder'),
             subtitle: const Text('Select a previous DocsGrid storage folder.'),
             onTap: () => Navigator.pop(ctx, 'old')),
@@ -1433,7 +1438,8 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
             title: const Text('Database Backup'),
             subtitle: Text(
               (Platform.isAndroid || widget.forceAndroidBackupForTesting
-                ? 'Automatic • Every 24 hours' : 'Manual database backup') +
+                ? 'Automatic • Every 24 hours' : Platform.isIOS
+                    ? 'Automatic when app opens • Manual' : 'Manual database backup') +
               '\nLast successful backup: ' + (_lastDatabaseBackup == null ? '—'
                 : MaterialLocalizations.of(context).formatShortDate(_lastDatabaseBackup!) +
                   ' ' + MaterialLocalizations.of(context).formatTimeOfDay(
@@ -1451,7 +1457,7 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
           trailing: const Icon(Icons.chevron_right),
           onTap: _busy ? null : () => _restoreBackup(),
         )),
-        if (Platform.isAndroid || widget.forceAndroidBackupForTesting) ...[
+        if (Platform.isAndroid || Platform.isIOS || widget.forceAndroidBackupForTesting) ...[
           const SizedBox(height: 8),
           Card(child: ListTile(
             leading: const Icon(Icons.create_new_folder_outlined),

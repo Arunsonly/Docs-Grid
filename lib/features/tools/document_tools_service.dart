@@ -751,8 +751,9 @@ class DocumentToolsService {
   });
 
   Future<List<BackupChainUsage>> manualBackupUsage() async {
-    final locations = await StorageLocationService.instance
-        .portableDataLocationsIfAvailable();
+    final locations = Platform.isIOS
+        ? await StorageLocationService.iosPrivateArchiveLocations()
+        : await StorageLocationService.instance.portableDataLocationsIfAvailable();
     final uri = locations['fullBackupsUri'];
     if (uri == null || !uri.startsWith('file://')) return const [];
     return BackupChain.usage(Directory(Uri.parse(uri).toFilePath()));
@@ -809,11 +810,14 @@ class DocumentToolsService {
   Future<int> exportManualBackupSeries(
       String id, String destinationTreeUri) =>
       _withRecoveryLock(() async {
-    if (!destinationTreeUri.startsWith('content://')) {
+    if (!destinationTreeUri.startsWith('content://') &&
+        !(Platform.isIOS && destinationTreeUri.startsWith('file://'))) {
       throw ArgumentError('Choose a writable external folder.');
     }
     final storage = StorageLocationService.instance;
-    final locations = await storage.portableDataLocationsIfAvailable();
+    final locations = Platform.isIOS
+        ? await StorageLocationService.iosPrivateArchiveLocations()
+        : await storage.portableDataLocationsIfAvailable();
     final rootUri = locations['fullBackupsUri'];
     if (rootUri == null || !rootUri.startsWith('file://')) {
       throw StateError('The local Full Backup folder is not available.');
@@ -866,8 +870,9 @@ class DocumentToolsService {
   });
 
   Future<void> shareManualBackupSeries(String seriesId) async {
-    final locations = await StorageLocationService.instance
-        .portableDataLocationsIfAvailable();
+    final locations = Platform.isIOS
+        ? await StorageLocationService.iosPrivateArchiveLocations()
+        : await StorageLocationService.instance.portableDataLocationsIfAvailable();
     final uri = locations['fullBackupsUri'];
     if (uri == null || !uri.startsWith('file://')) {
       throw StateError('Select a readable DocsGrid backup.');
@@ -897,8 +902,9 @@ class DocumentToolsService {
 
   Future<int> deleteManualBackupSeries(String seriesId) =>
       _withRecoveryLock(() async {
-    final locations = await StorageLocationService.instance
-        .portableDataLocationsIfAvailable();
+    final locations = Platform.isIOS
+        ? await StorageLocationService.iosPrivateArchiveLocations()
+        : await StorageLocationService.instance.portableDataLocationsIfAvailable();
     final uri = locations['fullBackupsUri'];
     if (uri == null || !uri.startsWith('file://')) {
       throw StateError('Backup folder is not accessible.');
@@ -1215,7 +1221,8 @@ class DocumentToolsService {
             }
             File? stagedProviderFile;
             final File file;
-            if (uri.startsWith('content://')) {
+            if (uri.startsWith('content://') ||
+                (Platform.isIOS && uri.startsWith('file://'))) {
               if (backgroundSafe) {
                 throw StateError(
                   'Background full backup cannot read a SAF content URI in a headless worker. Open DocsGrid to create a verified foreground full backup.',
@@ -1565,14 +1572,20 @@ class DocumentToolsService {
     String? additionalDocumentsUri,
   }) async {
     await StorageMigrationGate.waitUntilReady();
-    if (!Platform.isAndroid) {
+    if (!Platform.isAndroid && !Platform.isIOS) {
       throw UnsupportedError(
         'Automatic shared-media recovery is currently Android-only.',
       );
     }
+    if (Platform.isIOS && additionalFolderUri == null && additionalDocumentsUri == null) {
+      throw StateError('Select a readable folder in Apple Files to recover PDFs.');
+    }
 
     final storage = StorageLocationService.instance;
-    final locations = await storage.portableDataLocationsIfAvailable();
+    // iOS recovery scans only the explicitly selected source.
+    final locations = Platform.isIOS
+        ? const <String, String>{}
+        : await storage.portableDataLocationsIfAvailable();
     final documentsRoot = locations['documentsUri'];
     final foldersRoot = locations['libraryUri'];
     if (documentsRoot == null && foldersRoot == null &&
@@ -1778,7 +1791,7 @@ class DocumentToolsService {
             row['folder_id'] == folderId).toList();
         final candidatesForRelink = matchedFolder.length == 1
             ? matchedFolder : missing;
-        if (candidatesForRelink.length == 1) {
+        if (candidatesForRelink.length == 1 && !Platform.isIOS) {
           final target = candidatesForRelink.single;
           stage = 'Relinking existing Grid record';
           await liveDb.update('documents', {

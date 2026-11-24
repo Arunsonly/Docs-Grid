@@ -102,10 +102,29 @@ class _StorageInformationScreenState extends State<StorageInformationScreen> {
       try {
         free=await const MethodChannel('docsgrid/storage').invokeMethod<int>('getFreeStorageBytes');
       } catch (_) {}
-      final locations=await StorageLocationService.instance.portableDataLocationsIfAvailable();
+      final locations=Platform.isIOS
+          ? await StorageLocationService.iosPrivateArchiveLocations()
+          : await StorageLocationService.instance.portableDataLocationsIfAvailable();
       ({int bytes,int zipFiles})? backups;
       try {
-        backups=await _portableBytes([locations['backupsUri'],locations['databaseUri'],locations['recoveryUri']]).timeout(const Duration(seconds:15));
+        if (Platform.isIOS) {
+          var bytes=0, zipFiles=0;
+          for (final key in ['backupsUri','recoveryUri']) {
+            final uri=locations[key];
+            if (uri==null) continue;
+            final dir=Directory(Uri.parse(uri).toFilePath());
+            if (!await dir.exists()) continue;
+            await for (final entry in dir.list(recursive:true,followLinks:false)) {
+              if(entry is File) {
+                bytes+=await entry.length();
+                if(entry.path.toLowerCase().endsWith('.zip')) zipFiles++;
+              }
+            }
+          }
+          backups=(bytes:bytes,zipFiles:zipFiles);
+        } else {
+          backups=await _portableBytes([locations['backupsUri'],locations['databaseUri'],locations['recoveryUri']]).timeout(const Duration(seconds:15));
+        }
       } catch (_) {}
       if(!mounted) return;
       setState(() {
