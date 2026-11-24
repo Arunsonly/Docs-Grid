@@ -526,7 +526,18 @@ class StorageLocationService {
       return GridStorageBoundary(activeRootUri: current['rootUri']);
     } catch (_) {
       final cached = await cachedPortableDataLocations();
-      return GridStorageBoundary(activeRootUri: cached['rootUri']);
+      if (cached['rootUri'] != null) {
+        return GridStorageBoundary(activeRootUri: cached['rootUri']);
+      }
+      if (Platform.isIOS) {
+        // Before an Apple Files folder is chosen, Grid's existing fallback
+        // stores its PDFs under the app Documents/DocsGrid/PDFs directory.
+        // Never display that private Grid tree in the Files browse tab.
+        final base = await getApplicationDocumentsDirectory();
+        return GridStorageBoundary(activeRootUri:
+            Uri.file(p.join(base.path, 'DocsGrid', 'PDFs')).toString());
+      }
+      return GridStorageBoundary();
     }
   }
 
