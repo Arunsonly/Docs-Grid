@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Fast unit tests for the offline cold-launch output parser (no ADB needed)."""
 import unittest
+import xml.etree.ElementTree as ET
+
+from smoke_android_fresh_grid import find_grid_tab, grid_screen_visible
 
 from benchmark_android_cold_launch import parse_ttid, summarize
 
@@ -43,6 +46,32 @@ class StartupParserTests(unittest.TestCase):
     def test_empty_samples_fail(self):
         with self.assertRaises(ValueError):
             summarize([])
+
+
+class FreshGridNavigationTests(unittest.TestCase):
+    def test_actual_grid_destination_wins_over_home_recent_filter(self):
+        # Labels observed in the failing CI hierarchy, in the same order.
+        home = ET.fromstring(
+            '<hierarchy><node text="Grid" bounds="[0,800][300,900]"/>'
+            '<node content-desc="Grid storage&#10;0 B"/>'
+            '<node content-desc="Phone&#10;Tab 1 of 3"/>'
+            '<node content-desc="Home&#10;Tab 2 of 3" selected="true"/>'
+            '<node content-desc="Grid&#10;Tab 3 of 3" '
+            'clickable="true" enabled="true" bounds="[720,2200][1080,2400]"/>'
+            '</hierarchy>')
+        current = list(home.iter("node"))
+        tab = find_grid_tab(current)
+        self.assertIsNotNone(tab)
+        self.assertEqual(tab.get("bounds"), "[720,2200][1080,2400]")
+        self.assertFalse(grid_screen_visible(current))
+
+    def test_plain_grid_label_is_not_navigation(self):
+        node = ET.Element("node", {"text": "Grid", "clickable": "true"})
+        self.assertIsNone(find_grid_tab([node]))
+
+    def test_grid_loading_screen_is_separate_from_home(self):
+        node = ET.Element("node", {"text": "Search folders or PDF names"})
+        self.assertTrue(grid_screen_visible([node]))
 
 
 if __name__ == "__main__":

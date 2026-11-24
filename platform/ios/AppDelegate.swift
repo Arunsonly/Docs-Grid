@@ -8,6 +8,8 @@ import CryptoKit
     private let channelName = "docsgrid/storage"
     private let currentBookmarkKey = "docsgrid_storage_bookmark"
     private let bookmarkListKey = "docsgrid_storage_bookmarks"
+    private let phoneFolderBookmarkKey = "docsgrid_phone_browse_bookmark"
+    private var pendingFolderIsPhone = false
     private var pendingFolderResult: FlutterResult?
     private var documentController: UIDocumentInteractionController?
     private var previewScopedURL: URL?
@@ -27,7 +29,9 @@ import CryptoKit
                     result(FlutterError(code: "UNAVAILABLE", message: "DocsGrid storage is unavailable.", details: nil))
                     return
                 }
-                if call.method == "chooseFolder" || call.method == "openPdf" {
+                if call.method == "chooseFolder" ||
+                    call.method == "choosePhoneFolder" ||
+                    call.method == "openPdf" {
                     self.handle(call, result: result)
                 } else {
                     // Bound pending provider operations. Reject immediately on
@@ -79,17 +83,29 @@ import CryptoKit
         do {
             let args = call.arguments as? [String: Any] ?? [:]
             switch call.method {
-            case "chooseFolder":
+            case "chooseFolder", "choosePhoneFolder":
                 guard pendingFolderResult == nil else {
                     result(FlutterError(code: "BUSY", message: "Folder picker is already open.", details: nil))
                     return
                 }
                 pendingFolderResult = result
+                pendingFolderIsPhone = call.method == "choosePhoneFolder"
                 let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.folder], asCopy: false)
                 picker.delegate = self
                 picker.allowsMultipleSelection = false
                 picker.modalPresentationStyle = .formSheet
                 window?.rootViewController?.present(picker, animated: true)
+            case "getAccessibleScanRoots":
+                // iOS cannot enumerate all device storage. Only scan the
+                // independently granted Apple Files browsing folder.
+                if let folder = try selectedPhoneFolder() {
+                    result([folder])
+                } else {
+                    result([])
+                }
+            case "getFreeStorageBytes":
+                let attributes = try FileManager.default.attributesOfFileSystem(forPath: NSHomeDirectory())
+                result(attributes[.systemFreeSize] as? NSNumber)
             case "getPortableDataLocations":
                 guard let selected = try selectedFolder(), let root = URL(string: selected["uri"] ?? "") else {
                     throw storageError("Choose a DocsGrid storage folder first.")
@@ -102,6 +118,7 @@ import CryptoKit
                 let database = try ensureDirectory(parent: docsGrid, name: "Database")
                 let recovery = try ensureDirectory(parent: docsGrid, name: "Recovery")
                 result([
+                    "rootUri": docsGrid.absoluteString,
                     "databaseUri": database.absoluteString,
                     "recoveryUri": recovery.absoluteString,
                     "libraryUri": folders.absoluteString,
@@ -539,6 +556,37 @@ import CryptoKit
         return ["uri": root.absoluteString, "name": root.lastPathComponent]
     }
 
+    private func selectedPhoneFolder() throws -> [String: String]? {
+        guard let data = UserDefaults.standard.data(forKey: phoneFolderBookmarkKey)
+        else { return nil }
+        var stale = false
+        let root = try URL(resolvingBookmarkData: data, options: [],
+                           relativeTo: nil, bookmarkDataIsStale: &stale)
+        let accessed = root.startAccessingSecurityScopedResource()
+        defer { if accessed { root.stopAccessingSecurityScopedResource() } }
+        guard accessed || isInsideAppContainer(root) else {
+            throw storageError("The chosen Apple Files browse folder is unavailable. Select it again.")
+        }
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: root.path, isDirectory: &isDirectory),
+              isDirectory.boolValue else {
+            throw storageError("The chosen Files browse folder is no longer available.")
+        }
+        if stale {
+            let refreshed = try root.bookmarkData(options: [],
+                includingResourceValuesForKeys: nil, relativeTo: nil)
+            UserDefaults.standard.set(refreshed, forKey: phoneFolderBookmarkKey)
+            var bookmarks = bookmarkDataList()
+            if let index = bookmarks.firstIndex(of: data) {
+                bookmarks[index] = refreshed
+            } else {
+                bookmarks.append(refreshed)
+            }
+            UserDefaults.standard.set(bookmarks, forKey: bookmarkListKey)
+        }
+        return ["uri": root.absoluteString, "name": root.lastPathComponent]
+    }
+
     private func uniqueURL(parent: URL, requestedName: String) -> URL {
         let base = (requestedName as NSString).deletingPathExtension
         let ext = (requestedName as NSString).pathExtension
@@ -753,6 +801,8 @@ import CryptoKit
     func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
         guard let url = urls.first, let callback = pendingFolderResult else { return }
         pendingFolderResult = nil
+        let isPhoneFolder = pendingFolderIsPhone
+        pendingFolderIsPhone = false
         do {
             let accessed = url.startAccessingSecurityScopedResource()
             defer { if accessed { url.stopAccessingSecurityScopedResource() } }
@@ -763,7 +813,10 @@ import CryptoKit
             var bookmarks = bookmarkDataList()
             if !bookmarks.contains(data) { bookmarks.append(data) }
             UserDefaults.standard.set(bookmarks, forKey: bookmarkListKey)
-            UserDefaults.standard.set(data, forKey: currentBookmarkKey)
+            // The Files browse permission must NEVER redirect Grid's
+            // separately selected PDF/backup storage.
+            UserDefaults.standard.set(data, forKey: isPhoneFolder
+                ? phoneFolderBookmarkKey : currentBookmarkKey)
             callback(["uri": url.absoluteString, "name": url.lastPathComponent])
         } catch {
             callback(FlutterError(code: "PERMISSION", message: error.localizedDescription, details: nil))
@@ -773,6 +826,7 @@ import CryptoKit
     func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
         let callback = pendingFolderResult
         pendingFolderResult = nil
+        pendingFolderIsPhone = false
         callback?(nil)
     }
 

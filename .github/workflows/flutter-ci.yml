@@ -130,6 +130,13 @@ jobs:
                                 r'<application\1android:label="DocsGrid"', text, count=1)
           if count != 1:
               raise SystemExit('Could not set Android application label')
+          # Request Android's optional Keep app data choice during uninstall.
+          # The choice is OS-controlled and does not guarantee shared media survival.
+          if 'android:hasFragileUserData=' not in text:
+              text = text.replace('android:label="DocsGrid"',
+                                  'android:label="DocsGrid" android:hasFragileUserData="true"', 1)
+          if 'android:hasFragileUserData="true"' not in text:
+              raise SystemExit('DocsGrid fragile-user-data manifest setting was not applied')
           android.write_text(text)
           ios = Path('ios/Runner/Info.plist')
           text = ios.read_text()
@@ -429,17 +436,15 @@ jobs:
           profile: pixel_6
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -no-snapshot
-          script: >-
-            python3 scripts/benchmark_android_cold_launch.py
-            --apk artifacts/release/app-release.apk
-            --output startup-results/cold-launch.json
-            --iterations 7 --warmups 1
+          script: |
+            python3 scripts/smoke_android_fresh_grid.py --apk artifacts/release/app-release.apk --output startup-results/fresh-grid.json
+            python3 scripts/benchmark_android_cold_launch.py --apk artifacts/release/app-release.apk --output startup-results/cold-launch.json --iterations 7 --warmups 1
       - name: Upload startup timing baseline and sample data
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: docsgrid-android-cold-launch-baseline
-          path: startup-results/cold-launch.json
+          path: startup-results/*.json
           if-no-files-found: warn
           retention-days: 14
 

@@ -9,6 +9,9 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'old_docsgrid_source_discovery.dart';
+import 'grid_storage_boundary.dart';
+
 /// A best-effort change hint; unknown providers require full reconciliation.
 class StorageChangeNotice {
   const StorageChangeNotice({
@@ -174,6 +177,31 @@ class StorageLocationService {
     return locations;
   }
 
+  /// First-launch discovery reads ONLY pre-existing DocsGrid media folders.
+  /// A generic/empty folder must not trigger a misleading restore prompt.
+  /// If all-files access is unavailable, null means "not inspected", not
+  /// proof that no old data exists; the user can still choose a SAF source.
+  Future<Map<String, String>?> discoverOldDocsGridStorage() async {
+    if (!Platform.isAndroid || !await hasAllFilesAccess()) return null;
+    final locations = await portableDataLocationsIfAvailable();
+    final roots = <Directory>[];
+    for (final key in ['rootUri', 'legacyRootUri']) {
+      final raw = locations[key];
+      if (raw == null || !raw.startsWith('file://')) continue;
+      final directory = Directory(Uri.parse(raw).toFilePath());
+      if (roots.any((existing) => existing.path == directory.path)) continue;
+      roots.add(directory);
+    }
+    // A folder may already contain data created *after* this fresh install.
+    // Such data must never be presented as a previous installation.
+    final installEpochMs = await _channel.invokeMethod<int>(
+        'getDocsGridInstallTime');
+    if (installEpochMs == null || installEpochMs <= 0) return null;
+    return OldDocsGridSourceDiscovery.findIn(roots,
+        currentInstallAtUtc:
+            DateTime.fromMillisecondsSinceEpoch(installEpochMs, isUtc: true));
+  }
+
   Future<Map<String, String>> cachedPortableDataLocations() async {
     final prefs = await SharedPreferences.getInstance();
     final raw = prefs.getString('docsgrid_portable_locations_v1');
@@ -265,11 +293,24 @@ class StorageLocationService {
         part == 'recycle bin');
   }
 
-  /// Public, conservative boundary for Phone Move destinations. The
-  /// pre-existing test helper remains unchanged.
+  /// The default top-level shared Grid root is protected even when a Phone
+  /// Move is initiated through another picker or a stale SAF shortcut.
+  static bool isDirectInternalGridRootUri(String? value) {
+    if (value == null || value.isEmpty) return false;
+    String decoded;
+    try { decoded = Uri.decodeComponent(value); } catch (_) { decoded = value; }
+    final normalized = decoded.replaceAll('\\', '/').toLowerCase();
+    return RegExp(
+        r'(?:/storage/emulated/0/|/storage/self/primary/|(?:^|/)primary:)docsgrid(?:/|$)')
+        .hasMatch(normalized);
+  }
+
+  /// Reject known managed Roots and system Trash before any PDF source may be
+  /// removed. Custom user-chosen Grid roots are also checked dynamically.
   static bool isRestrictedPhoneMoveDestination(String? uri) =>
       isCanonicalPortableRootUri(uri) ||
       isLegacyDocsGridStorageLocation(uri) ||
+      isDirectInternalGridRootUri(uri) ||
       isAndroidTrashPath(uri);
 
   /// Normalizes the native MediaStore response separately from the Android
@@ -473,9 +514,48 @@ class StorageLocationService {
   }
 
   Future<List<Map<String, String>>> accessibleStorageRoots() async {
-    if (!Platform.isAndroid) return const [];
+    if (!Platform.isAndroid && !Platform.isIOS) return const [];
     final values = await _channel.invokeListMethod<dynamic>('getAccessibleScanRoots') ?? const [];
     return normalizeAccessibleStorageRoots(values);
+  }
+
+  /// iOS can browse a user-authorized Files folder separately from the Grid
+  /// storage destination. Android uses its existing storage roots.
+  Future<Map<String, String>?> choosePhoneFolder() async {
+    if (!Platform.isIOS) return null;
+    final selected =
+        await _channel.invokeMapMethod<String, dynamic>('choosePhoneFolder');
+    if (selected == null || selected['uri'] is! String) return null;
+    return {
+      'uri': selected['uri'] as String,
+      'name': selected['name'] as String? ?? 'Files',
+    };
+  }
+
+  /// Resolve the actual managed Grid root, never the generic internal drive.
+  Future<GridStorageBoundary> gridStorageBoundary() async {
+    try {
+      final current = await portableDataLocationsIfAvailable();
+      return GridStorageBoundary(activeRootUri: current['rootUri']);
+    } catch (_) {
+      try {
+        final cached = await cachedPortableDataLocations();
+        if (cached['rootUri'] != null) {
+          return GridStorageBoundary(activeRootUri: cached['rootUri']);
+        }
+        if (Platform.isIOS) {
+          // With no Apple Files Grid root the app-private PDF folder is
+          // excluded instead; no storage or database mutation occurs.
+          final base = await getApplicationDocumentsDirectory();
+          return GridStorageBoundary(activeRootUri:
+              Uri.file(p.join(base.path, 'DocsGrid', 'PDFs')).toString());
+        }
+      } catch (_) {
+        // Missing optional platform storage/preferences during a Phone action
+        // must not block the existing safety checks for known Grid roots.
+      }
+      return GridStorageBoundary();
+    }
   }
 
   /// Checks whether the OS still grants access to the saved external folder.
@@ -503,13 +583,87 @@ class StorageLocationService {
   /// Selects an existing DocsGrid backup tree without creating missing folders.
   /// Android validates Documents/Folders/Database/Recovery and at least one
   /// snapshot before updating the active portable-storage preferences.
+  /// Select any readable PDF folder for recovery without changing the
+  /// application's managed storage root or creating a destination folder.
+  /// User-approved external SAF destination. Does not change Grid storage.
+  Future<Map<String, String>?> chooseBackupExportFolder() async {
+    if (!Platform.isAndroid) {
+      throw UnsupportedError('Backup export picker is Android-only.');
+    }
+    final result = await _channel.invokeMapMethod<String, dynamic>(
+        'chooseBackupExportFolder');
+    if (result == null || result['uri'] is! String) return null;
+    return {
+      'uri': result['uri'] as String,
+      'name': result['name'] is String
+          ? result['name'] as String : 'Selected export folder',
+    };
+  }
+
+  /// Read-only selection of an exported A001 folder; no active-root changes.
+  Future<Map<String, String>?> chooseBackupChainFolder() async {
+    if (!Platform.isAndroid) {
+      throw UnsupportedError('Backup series folder picker is Android-only.');
+    }
+    final result = await _channel.invokeMapMethod<String, dynamic>(
+        'chooseBackupChainFolder');
+    if (result == null || result['uri'] is! String) return null;
+    return {'uri': result['uri'] as String, 'name': 'Selected backup series'};
+  }
+
+  Future<Map<String, String>?> choosePdfRecoveryFolder() async {
+    if (!Platform.isAndroid) {
+      throw UnsupportedError('PDF folder recovery is Android-only.');
+    }
+    final result = await _channel.invokeMapMethod<String, dynamic>(
+        'choosePdfRecoveryFolder');
+    if (result == null || result['uri'] is! String) return null;
+    return {
+      'uri': result['uri'] as String,
+      'name': result['name'] is String
+          ? result['name'] as String : 'Selected PDF folder',
+    };
+  }
+
+  @visibleForTesting
+  static Map<String, String>? normalizeRecoverySource(
+      Map<String, dynamic>? value) {
+    if (value == null || value['uri'] is! String) return null;
+    // Only accept actual validated storage URIs from the native read-only
+    // selector. Never replace active DocsGrid storage preferences.
+    final root = value['uri'] as String;
+    if (!root.startsWith('content://') && !root.startsWith('file://')) {
+      return null;
+    }
+    final result = <String, String>{
+      'uri': root,
+      'name': value['name'] is String ? value['name'] as String : 'DocsGrid',
+    };
+    for (final key in [
+      'rootUri', 'databaseUri', 'documentsUri', 'libraryUri', 'recoveryUri',
+      'backupsUri', 'fullBackupsUri', 'databaseBackupsUri',
+    ]) {
+      final uri = value[key];
+      if (uri is String &&
+          (uri.startsWith('content://') || uri.startsWith('file://'))) {
+        result[key] = uri;
+      }
+    }
+    // Read-only metadata recovery must have an actual source DB location.
+    if (result['databaseUri'] == null ||
+        result['documentsUri'] == null ||
+        result['libraryUri'] == null) {
+      throw StateError('Selected old DocsGrid source has no usable PDF/database paths.');
+    }
+    return result;
+  }
+
   Future<Map<String, String>?> chooseRecoveryFolder() async {
     if (!Platform.isAndroid) {
       throw UnsupportedError('Selecting an existing portable recovery tree is currently supported on Android only. Existing data has not been changed.');
     }
     final value = await _channel.invokeMapMethod<String, dynamic>('chooseRecoveryFolder');
-    if (value == null || value['uri'] == null) return null;
-    return {'uri': value['uri'] as String, 'name': (value['name'] as String?) ?? 'DocsGrid'};
+    return normalizeRecoverySource(value);
   }
 
   Future<String> savePdf({
@@ -799,6 +953,7 @@ class StorageLocationService {
     int maxEntries = 50000,
     int maxDepth = 64,
     bool includeEmptyFolders = false,
+    void Function(String relativePath)? onFolder,
   }) async {
     final pending = <({String uri, String path, int depth})>[
       (uri: rootUri, path: '', depth: 0),
@@ -813,6 +968,7 @@ class StorageLocationService {
         throw StateError('The selected folder is nested too deeply to index safely.');
       }
       final children = await listDirectory(current.uri);
+      if (current.path.isNotEmpty) onFolder?.call(current.path);
       for (final child in children) {
         visitedEntries++;
         if (visitedEntries > maxEntries) {
@@ -859,7 +1015,8 @@ class StorageLocationService {
   /// within the explicitly granted SAF root. Empty folder branches are omitted.
   Future<List<Map<String, Object?>>> listStorageTreeRecursively(
     String rootUri, {int maxEntries = 50000, int maxDepth = 64,
-    bool includeEmptyFolders = false, String rootLabel = ''}) async {
+    bool includeEmptyFolders = false, String rootLabel = '',
+    GridStorageBoundary? excludeGrid}) async {
     final pending = <({String uri, String path, int depth})>[
       (uri: rootUri, path: '', depth: 0),
     ];
@@ -931,18 +1088,18 @@ class StorageLocationService {
           final uri = child['uri'] as String;
           if (child['isDirectory'] == true) {
             final path = current.path.isEmpty ? name : '${current.path}/$name';
-            if (isExcludedStorageDirectoryPath(path)) continue;
-            allFolders.add(path);
-            // Never show DocsGrid-managed Grid PDFs in the Phone browser.
-            // Retain the previous path exclusion for recovery compatibility.
-            if (path == 'Android/media/com.docsgrid.mobile' ||
-                path.startsWith('Android/media/com.docsgrid.mobile/') ||
-                path == 'Android/media/com.docsgrid' ||
-                path.startsWith('Android/media/com.docsgrid/')) {
+            if (isExcludedStorageDirectoryPath(path) ||
+                (excludeGrid?.isManagedPath(path,
+                    scanRootUri: rootUri, rootLabel: rootLabel) ?? false)) {
               continue;
             }
+            allFolders.add(path);
             pending.add((uri: uri, path: path, depth: current.depth + 1));
           } else if (name.toLowerCase().endsWith('.pdf')) {
+            if (excludeGrid?.isManagedPath(current.path,
+                scanRootUri: rootUri, rootLabel: rootLabel) ?? false) {
+              continue;
+            }
             final size = (child['sizeBytes'] as num?)?.toInt() ??
                 (child['size'] as num?)?.toInt() ?? 0;
             final sizeKnown = child['sizeKnown'] as bool? ?? true;
@@ -1019,6 +1176,18 @@ class StorageLocationService {
 
   /// Enumerates only immediate children. Returned URIs remain opaque platform
   /// handles; callers must never convert them into filesystem paths.
+  /// A local Android Grid directory can be checked without enumerating PDFs.
+  /// SAF/iOS retain the existing provider validation and permission semantics.
+  Future<void> verifyGridDirectory(String uri) async {
+    if (Platform.isAndroid && uri.startsWith('file://')) {
+      final verified = await _channel.invokeMethod<bool>(
+          'checkLocalGridDirectory', {'uri': uri});
+      if (verified != true) throw StateError('Grid directory could not be verified.');
+      return;
+    }
+    await listDirectory(uri);
+  }
+
   Future<List<Map<String, Object?>>> listDirectory(String uri) async {
     final result = await _channel.invokeListMethod<dynamic>('listDirectory', {'uri': uri});
     if (result == null) throw StateError('The platform could not list the selected folder.');
