@@ -8,7 +8,21 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+class _FakeArchive implements File {
+  @override
+  String get path => '/fake/DocsGrid/Backups/Full/DocsGrid_full.zip';
+  @override
+  Future<int> length() async => 120;
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
 class _FakeBackupService extends DocumentToolsService {
+  @override
+  Future<Map<String, int>> fullBackupPreview() async => {
+    'documents': 10, 'folders': 3, 'categories': 8,
+    'tags': 2, 'reminders': 1, 'pdfBytes': 100,
+  };
   final Completer<List<BackupChainUsage>> slowOptionalRecount =
       Completer<List<BackupChainUsage>>();
   int usageCalls = 0;
@@ -34,7 +48,7 @@ class _FakeBackupService extends DocumentToolsService {
     await Future<void>.delayed(const Duration(milliseconds: 20));
     onStage?.call('Verifying ZIP and checksums…');
     stages.add('verification');
-    return File('/fake/DocsGrid/Backups/Full/DocsGrid_full.zip');
+    return _FakeArchive();
   }
 }
 
