@@ -27,7 +27,50 @@ ReminderRecord reminder({
   snoozedUntil: snoozedUntil,
 );
 
+class _InboxRepository extends ReminderRepository {
+  _InboxRepository(this.items);
+  final List<ReminderRecord> items;
+  @override
+  Future<List<ReminderRecord>> list() async => List.of(items);
+  @override
+  Future<void> setEnabled(ReminderRecord reminder,bool enabled) async {
+    items.removeWhere((r)=>r.id==reminder.id);
+  }
+  @override
+  Future<void> complete(String id) async {items.removeWhere((r)=>r.id==id);}
+  @override
+  Future<void> delete(String id) async {items.removeWhere((r)=>r.id==id);}
+}
+
 void main() {
+  testWidgets('bell menu removes disabled, completed and deleted reminders immediately',(tester) async {
+    final repo=_InboxRepository([
+      reminder(id:'a',title:'Disable this',at:DateTime.now()),
+      reminder(id:'b',title:'Complete this',at:DateTime.now()),
+      reminder(id:'c',title:'Delete this',at:DateTime.now()),
+    ]);
+    var changes=0;
+    await tester.pumpWidget(MaterialApp(home:Scaffold(body:ReminderInboxSheet(
+      reminders:repo.list(),repository:repo,onChanged:()=>changes++,
+      onOpenDocument:(_){},onOpenAll:(){},
+    ))));
+    await tester.pumpAndSettle();
+    for(final item in [('a','Disable','Disable this'),('b','Mark completed','Complete this'),('c','Delete','Delete this')]) {
+      await tester.tap(find.descendant(of:find.byKey(ValueKey('reminder-inbox-'+item.$1)),
+        matching:find.byType(PopupMenuButton<String>)));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text(item.$2));
+      await tester.pumpAndSettle();
+      if(item.$1=='c'){
+        await tester.tap(find.widgetWithText(FilledButton,'Delete'));
+        await tester.pumpAndSettle();
+      }
+      expect(find.text(item.$3),findsNothing);
+    }
+    expect(changes,3);
+    expect(find.text('No active reminders.'),findsOneWidget);
+  });
+
   test('badge counts due one-time reminders but not disabled/completed/upcoming',
       () {
     final now = DateTime(2026, 11, 24, 9);

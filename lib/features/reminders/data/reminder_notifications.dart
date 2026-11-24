@@ -193,7 +193,7 @@ class ReminderNotifications {
       final at = DateTime.parse(row['remind_at_utc'] as String).toLocal();
       final recurrence = row['recurrence_rule'] as String?;
       final snoozed = DateTime.tryParse(row['snoozed_until'] as String? ?? '');
-      if (!(recurrence == null && snoozed != null && snoozed.isAfter(DateTime.now())) && nextScheduledOccurrence(
+      if (!(recurrence == null && snoozed != null) && nextScheduledOccurrence(
             at: at, now: DateTime.now(), recurrence: recurrence,
           ) != null) {
         activeIds.add(_id(row['id'] as String));
@@ -216,7 +216,7 @@ class ReminderNotifications {
       }
       try {
         final until = DateTime.tryParse(row['snoozed_until'] as String? ?? '');
-        if (!(row['recurrence_rule'] == null && until != null && until.isAfter(DateTime.now()))) await schedule(
+        if (!(row['recurrence_rule'] == null && until != null)) await schedule(
           id: row['id'] as String,
           title: row['title'] as String,
           body: row['note'] as String?,

@@ -9,6 +9,7 @@ import '../../../core/database/document_defaults.dart';
 import '../../../core/storage/storage_location_service.dart';
 import '../../../core/storage/portable_snapshot_events.dart';
 import '../data/document_repository.dart';
+import 'pdf_details_dialog.dart';
 import '../data/smart_collection_selection.dart';
 import '../../categories/data/category_repository.dart';
 
@@ -84,6 +85,9 @@ class _SmartCollectionsScreenState extends State<SmartCollectionsScreen> {
   Future<int> _count(Map<String, Object?> collection) async =>
       SmartCollectionSelection(collection).count(await _db);
 
+  Future<List<Map<String,Object?>>> _candidates(Map<String,Object?> collection) async =>
+      SmartCollectionSelection(collection).candidates(await _db);
+
   Future<void> _toggleHidden(Map<String,Object?> item) async {
     final id = item['id'] as String;
     final hidden = {..._hidden};
@@ -113,7 +117,7 @@ class _SmartCollectionsScreenState extends State<SmartCollectionsScreen> {
         context: context,
         builder: (_) => _SmartCollectionEditor(
           initial: item, categories: categories, tags: tags,
-          repository: _categoryRepository, count: _count,
+          repository: _categoryRepository, count: _count, candidates: _candidates,
         ),
       );
       if (draft == null || !mounted) return;
@@ -177,7 +181,9 @@ class _SmartCollectionsScreenState extends State<SmartCollectionsScreen> {
         subtitle: Text(builtIn ? (item['rule_label'] as String) + (hidden ? ' · Hidden' : '') :
           [if ((item['category_id'] as String? ?? '').isNotEmpty) 'Category',
            if (_tagIds(item['tag_ids_json']).isNotEmpty) '${_tagIds(item['tag_ids_json']).length} tags',
-           'Automatic · no file copies'].join(' · ')),
+           if (SmartCollectionSelection(item).nameRule.isNotEmpty) 'Name: '+SmartCollectionSelection(item).nameRule,
+           SmartCollectionSelection(item).mode == 'manual_v2' ? 'Chosen PDFs only' : SmartCollectionSelection(item).mode == 'hybrid_v2' ? 'Automatic + chosen PDFs' : 'Automatic',
+           'No file copies'].join(' · ')),
         trailing: Row(mainAxisSize:MainAxisSize.min,children:[
           Text(snapshot.hasError ? '—' : snapshot.hasData ? snapshot.data.toString() : '…'),
           if (builtIn)
@@ -279,6 +285,12 @@ class _SmartCollectionResultsState extends State<_SmartCollectionResults> {
               leading: Icon(row['is_favorite'] == 1 ? Icons.star : Icons.picture_as_pdf_outlined),
               title: Text('${row['name']}.pdf', maxLines: 1, overflow: TextOverflow.ellipsis),
               subtitle: Text(size),
+              trailing: PopupMenuButton<String>(
+                itemBuilder: (_) => const [PopupMenuItem(value:'details',child:Text('Details'))],
+                onSelected: (_) async {
+                  final doc=await DocumentRepository().getById(row['id'] as String);
+                  if(doc!=null && mounted) await PdfDetailsDialog.showGrid(context,doc);
+                }),
               onTap: () => _openPdf(row),
             );
           },
@@ -289,13 +301,14 @@ class _SmartCollectionResultsState extends State<_SmartCollectionResults> {
 class _SmartCollectionEditor extends StatefulWidget {
   const _SmartCollectionEditor({
     required this.initial, required this.categories, required this.tags,
-    required this.repository, required this.count,
+    required this.repository, required this.count, required this.candidates,
   });
   final Map<String, Object?>? initial;
   final List<CategoryRecord> categories;
   final List<TagRecord> tags;
   final CategoryRepository repository;
   final Future<int> Function(Map<String, Object?>) count;
+  final Future<List<Map<String,Object?>>> Function(Map<String,Object?>) candidates;
 
   @override
   State<_SmartCollectionEditor> createState() => _SmartCollectionEditorState();
@@ -303,6 +316,10 @@ class _SmartCollectionEditor extends StatefulWidget {
 
 class _SmartCollectionEditorState extends State<_SmartCollectionEditor> {
   late final TextEditingController _name;
+  late final TextEditingController _query;
+  String _mode = 'auto_v2';
+  Set<String> _included = {}, _excluded = {};
+  bool _choosing = false;
   late List<TagRecord> _tags;
   late String _category;
   late Set<String> _selected;
@@ -313,13 +330,20 @@ class _SmartCollectionEditorState extends State<_SmartCollectionEditor> {
   bool _creatingTag = false;
   bool _saving = false;
 
-  bool get _hasRule => _category.isNotEmpty || _selected.isNotEmpty;
+  bool get _hasRule => _category.isNotEmpty || _selected.isNotEmpty || _query.text.trim().isNotEmpty;
 
   @override
   void initState() {
     super.initState();
     final item = widget.initial;
     _name = TextEditingController(text: item?['name'] as String? ?? '');
+    final old = SmartCollectionSelection(item ?? {});
+    _query = TextEditingController(text:old.nameRule);
+    if(old.mode == 'manual_v2' || old.mode == 'hybrid_v2') {
+      _mode = old.mode;
+      _included = SmartCollectionSelection.ids(item?['included_ids_json']);
+      _excluded = SmartCollectionSelection.ids(item?['excluded_ids_json']);
+    }
     _tags = [...widget.tags];
     final savedCategory = item?['category_id'] as String? ?? '';
     _category = widget.categories.any((c) => c.id == savedCategory) ? savedCategory : '';
@@ -335,10 +359,10 @@ class _SmartCollectionEditorState extends State<_SmartCollectionEditor> {
 
   Map<String, Object?> _draft() => {
     'name': _name.text.trim(),
-    'query_text': '',
-    'selection_mode': 'automatic',
-    'included_ids_json': '[]',
-    'excluded_ids_json': '[]',
+    'query_text': _query.text.trim(),
+    'selection_mode': _mode,
+    'included_ids_json': jsonEncode(_included.toList()..sort()),
+    'excluded_ids_json': jsonEncode(_excluded.toList()..sort()),
     'category_id': _category.isEmpty ? null : _category,
     'tag_ids_json': jsonEncode(_selected.toList()..sort()),
     'favorites_only': 0,
@@ -397,14 +421,65 @@ class _SmartCollectionEditorState extends State<_SmartCollectionEditor> {
     }
   }
 
+  Future<void> _choosePdfs() async {
+    if (_choosing) return;
+    setState(()=>_choosing=true);
+    try {
+      final draft = _draft();
+      final rows = await widget.candidates(draft);
+      if(!mounted) return;
+      final chosen = await showDialog<({Set<String> ids,bool automatic})>(
+        context:context,builder:(_)=>_CollectionChooser(
+          rows:rows, initial:SmartCollectionSelection(draft).chosenIds(rows),
+          automatic:_mode!='manual_v2'));
+      if(chosen==null||!mounted) return;
+      if(!chosen.automatic) {
+        _mode='manual_v2';
+        // Preserve temporarily unavailable IDs when editing a fixed collection.
+        final visible=rows.map((r)=>r['id'] as String).toSet();
+        _included={..._included.difference(visible),...chosen.ids};
+        _excluded.clear();
+      } else {
+        final oldMode=_mode;
+        _mode='hybrid_v2';
+        if(oldMode!='hybrid_v2') {_included.clear(); _excluded.clear();}
+        for(final row in rows) {
+          final id=row['id'] as String;
+          final matches=row['rule_match']==1;
+          if(chosen.ids.contains(id)) {
+            _excluded.remove(id);
+            if(!matches) _included.add(id);
+          } else {
+            _included.remove(id);
+            if(matches) _excluded.add(id);
+          }
+        }
+      }
+      _schedulePreview();
+    } catch(error) {
+      if(mounted) await showDialog<void>(context:context,builder:(ctx)=>AlertDialog(
+        title:const Text('Could not load Grid PDFs'),content:Text(error.toString()),
+        actions:[TextButton(onPressed:()=>Navigator.pop(ctx),child:const Text('Close'))]));
+    } finally {
+      if(mounted) setState(()=>_choosing=false);
+    }
+  }
+
+  void _resetSelection() {
+    _mode='auto_v2';
+    _included.clear();
+    _excluded.clear();
+    _schedulePreview();
+  }
+
   Future<void> _save() async {
-    if (_saving || _creatingTag || _name.text.trim().isEmpty) return;
+    if (_saving || _creatingTag || _choosing || _name.text.trim().isEmpty) return;
     setState(() => _saving = true);
     try {
-      if (!_hasRule) {
+      if (_mode != 'manual_v2' && !_hasRule) {
         final confirmed = await showDialog<bool>(context: context, builder: (ctx) =>
           AlertDialog(title: const Text('No filter selected'),
-            content: const Text('Without category or tag rules, all Grid PDFs match. Save anyway?'),
+            content: const Text('Without name, category or tag rules, all Grid PDFs match (except your manual exclusions). Save anyway?'),
             actions: [
               TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Keep editing')),
               FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Save all PDFs')),
@@ -422,6 +497,7 @@ class _SmartCollectionEditorState extends State<_SmartCollectionEditor> {
   void dispose() {
     _debounce?.cancel();
     _name.dispose();
+    _query.dispose();
     super.dispose();
   }
 
@@ -437,6 +513,8 @@ class _SmartCollectionEditorState extends State<_SmartCollectionEditor> {
           onChanged: (_) => setState(() {}),
           decoration: const InputDecoration(labelText: 'Collection name')),
         const SizedBox(height: 12),
+        TextField(controller:_query,onChanged:(_)=>_schedulePreview(),
+          decoration:const InputDecoration(labelText:'PDF name contains (optional)')),
         const SizedBox(height: 12),
         DropdownButtonFormField<String>(
           value: _category, isExpanded: true,
@@ -470,8 +548,8 @@ class _SmartCollectionEditorState extends State<_SmartCollectionEditor> {
         const SizedBox(height: 6),
         const Text('All selected tags must match. Assign tags to PDFs in Grid.'),
         const Divider(height: 24),
-        const Text('Current and future matching Grid PDFs are included automatically.'),
-        if (!_hasRule) const Padding(padding: EdgeInsets.only(bottom: 8),
+        Text(_mode=='manual_v2'?'Only the PDFs you chose are included.':_mode=='hybrid_v2'?'Future matches join automatically; your selections and exclusions are retained.':'Current and future matching Grid PDFs are included automatically.'),
+        if (_mode!='manual_v2' && !_hasRule) const Padding(padding: EdgeInsets.only(bottom: 8),
           child: Text('No filter selected: all Grid PDFs will match.')),
         if (_previewError)
           TextButton(onPressed: _schedulePreview, child: const Text('Preview unavailable · Retry'))
@@ -479,12 +557,64 @@ class _SmartCollectionEditorState extends State<_SmartCollectionEditor> {
           const Text('Checking matching PDFs…')
         else
           Text('$_matching PDFs in collection', style: Theme.of(context).textTheme.titleMedium),
+        OutlinedButton.icon(onPressed:_choosing||_saving||_creatingTag?null:_choosePdfs,
+          icon:const Icon(Icons.checklist),label:const Text('Choose PDFs')),
+        if(_mode!='auto_v2') TextButton(onPressed:_choosing||_saving?null:_resetSelection,child:const Text('Reset to automatic matching')),
       ],
     )),
     actions: [
       TextButton(onPressed: _saving ? null : () => Navigator.pop(context), child: const Text('Cancel')),
-      FilledButton(onPressed: _saving || _creatingTag || _name.text.trim().isEmpty ? null : _save,
+      FilledButton(onPressed: _saving || _creatingTag || _choosing || _name.text.trim().isEmpty ? null : _save,
         child: Text(widget.initial == null ? 'Save collection' : 'Save changes')),
     ],
   );
+}
+
+
+class _CollectionChooser extends StatefulWidget {
+  const _CollectionChooser({required this.rows,required this.initial,required this.automatic});
+  final List<Map<String,Object?>> rows;
+  final Set<String> initial;
+  final bool automatic;
+  @override
+  State<_CollectionChooser> createState()=>_CollectionChooserState();
+}
+class _CollectionChooserState extends State<_CollectionChooser> {
+  late final Set<String> _chosen={...widget.initial};
+  late bool _automatic=widget.automatic;
+  bool _matchesOnly=true;
+  String _query='';
+  @override
+  Widget build(BuildContext context) {
+    final visible=widget.rows.where((row)=>
+      (!_matchesOnly||row['rule_match']==1||_chosen.contains(row['id'])) &&
+      (row['name'] as String).toLowerCase().contains(_query)).toList();
+    return AlertDialog(title:const Text('Choose Grid PDFs'),
+      content:SizedBox(width:480,height:MediaQuery.sizeOf(context).height*0.50,
+        child:Column(children:[
+          Text('${_chosen.length} selected'),
+          SwitchListTile(contentPadding:EdgeInsets.zero,title:const Text('Include future matching PDFs'),
+            value:_automatic,onChanged:(v)=>setState(()=>_automatic=v)),
+          TextField(onChanged:(v)=>setState(()=>_query=v.trim().toLowerCase()),
+            decoration:const InputDecoration(prefixIcon:Icon(Icons.search),hintText:'Find PDF by name')),
+          CheckboxListTile(dense:true,contentPadding:EdgeInsets.zero,title:const Text('Show matching PDFs only'),
+            value:_matchesOnly,onChanged:(v)=>setState(()=>_matchesOnly=v??true)),
+          Row(children:[
+            TextButton(onPressed:()=>setState(()=>_chosen.addAll(visible.map((r)=>r['id'] as String))),child:const Text('Select shown')),
+            TextButton(onPressed:()=>setState(()=>_chosen.removeAll(visible.map((r)=>r['id'] as String))),child:const Text('Clear shown')),
+          ]),
+          Expanded(child:visible.isEmpty?const Center(child:Text('No PDFs match.')):ListView.builder(
+            itemCount:visible.length,itemBuilder:(_,i){
+              final row=visible[i], id=row['id'] as String;
+              return CheckboxListTile(value:_chosen.contains(id),
+                title:Text(PdfDetailsDialog.fullName(row['name'] as String)),
+                subtitle:Text(row['rule_match']==1?'Matches rule':'Outside rule'),
+                onChanged:(v)=>setState((){if(v==true){_chosen.add(id);}else{_chosen.remove(id);}}));
+            })),
+        ])),
+      actions:[
+        TextButton(onPressed:()=>Navigator.pop(context),child:const Text('Cancel')),
+        FilledButton(onPressed:()=>Navigator.pop(context,(ids:_chosen,automatic:_automatic)),child:const Text('Done')),
+      ]);
+  }
 }

@@ -12,12 +12,13 @@ void main() {
     expect(source, contains('widget.count(draft)'));
     expect(source, contains("Text('No filter selected'"));
     expect(source, contains("Text('Save all PDFs'"));
-    expect(source, isNot(contains('PDF name contains (optional)')));
+    expect(source, contains('PDF name contains (optional)'));
     expect(source, contains('SmartCollectionSelection(collection).count'));
     expect(source, isNot(contains('Smart + Manual')));
     expect(source, isNot(contains('Selection mode')));
-    expect(source, isNot(contains('Choose PDFs')));
-    expect(source, contains("'selection_mode': 'automatic'"));
+    expect(source, contains('Choose PDFs'));
+    expect(source, contains('Include future matching PDFs'));
+    expect(source, contains("String _mode = 'auto_v2'"));
     expect(source, contains("'favorites_only': 0"));
     expect(source, contains("'recent_only': 0"));
   });

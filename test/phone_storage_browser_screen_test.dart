@@ -217,6 +217,24 @@ void main() {
     expect(find.textContaining('124.0 KB'), findsOneWidget);
   });
 
+  testWidgets('name search never matches PDFs or child folders solely by ancestor path', (tester) async {
+    setTestViewport(tester);
+    await tester.pumpWidget(MaterialApp(home:PhoneStorageBrowserScreen(
+      rootName:'Internal Storage', entries:const [
+        {'name':'Unrelated.pdf','uri':'content://unrelated','folderPath':'Internal/Insurance','isDirectory':false},
+        {'name':'Also unrelated.pdf','uri':'content://child','folderPath':'Internal/Insurance/Child','isDirectory':false},
+        {'name':'Insurance Certificate.pdf','uri':'content://certificate','folderPath':'Internal/Download','isDirectory':false},
+      ], onOpenPdf:(_,__) async {},
+    )));
+    await tester.enterText(find.byType(TextField),'Insurance');
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('phone-folder-Insurance')),findsOneWidget);
+    expect(find.byKey(const ValueKey('phone-folder-Insurance/Child')),findsNothing);
+    expect(find.text('Insurance Certificate.pdf'),findsOneWidget);
+    expect(find.text('Unrelated.pdf'),findsNothing);
+    expect(find.text('Also unrelated.pdf'),findsNothing);
+  });
+
   testWidgets('search finds PDFs across phone folders from the root view',
       (tester) async {
     setTestViewport(tester);

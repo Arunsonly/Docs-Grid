@@ -38,6 +38,19 @@ void main() {
     await check(rule, ['b','new']);
     await check({}, ['a','b','c','new']);
   });
+  test('explicit new name and chosen PDF rules, automatic additions and trash exclusion', () async {
+    final rule = {'selection_mode':'auto_v2','query_text':'PDF a','category_id':'insurance'};
+    await check(rule, ['a']);
+    await check({...rule,'query_text':'PDF _'}, []);
+    await check({...rule,'selection_mode':'manual_v2','included_ids_json':'["b","trash"]'}, ['b']);
+    final hybrid = {'selection_mode':'hybrid_v2','query_text':'PDF','category_id':'insurance',
+      'included_ids_json':'["c"]','excluded_ids_json':'["b","trash"]'};
+    await check(hybrid, ['a','c']);
+    await db.insert('documents', {'id':'next','name':'PDF new','category_id':'insurance'});
+    await check(hybrid, ['a','c','next']);
+    await db.update('documents', {'name':'Renamed'},where:'id = ?',whereArgs:['c']);
+    await check(hybrid, ['a','c','next']);
+  });
   test('backup remaps saved IDs', () {
     final mapped = SmartCollectionSelection.remap({
       'category_id':'oldc','tag_ids_json':'["oldt"]',
