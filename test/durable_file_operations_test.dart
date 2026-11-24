@@ -367,7 +367,7 @@ void main() {
     );
   });
 
-  test('v11 development DB upgrades to v12 without deleting documents', () async {
+  test('v11 development DB upgrades to current schema without deleting documents', () async {
     final directory = await Directory.systemTemp.createTemp('docsgrid-v12-');
     addTearDown(() async {
       if (await directory.exists()) await directory.delete(recursive: true);
@@ -380,16 +380,22 @@ void main() {
       'size_bytes': 1, 'created_at': '2026-11-18T00:00:00Z',
       'updated_at': '2026-11-18T00:00:00Z',
     });
-    // Construct a v11-representative database using production schema
-    // callbacks, not a weaker hand-built collection of tables.
+    // Construct a v11 development database using production callbacks.
+    // Keep the newer collection columns to exercise idempotent migration
+    // when a development database already contains part of the schema.
     await initial.execute('DROP TABLE file_operation_journal');
     await initial.execute('DROP INDEX IF EXISTS idx_file_operation_journal_state');
-    await initial.delete('schema_migrations', where: 'version = ?', whereArgs: [12]);
+    await initial.delete('schema_migrations', where: 'version > ?', whereArgs: [11]);
     await initial.setVersion(11);
     await initial.close();
     final upgraded = await AppDatabase.instance.openProductionSchemaForTesting(path);
     addTearDown(upgraded.close);
-    expect(await upgraded.getVersion(), 12);
+    expect(await upgraded.getVersion(), AppDatabase.schemaVersion);
+    final migrations = await upgraded.query('schema_migrations', columns: ['version']);
+    expect(migrations.map((row) => row['version']), containsAll([12, 13]));
+    final collectionColumns = await upgraded.rawQuery('PRAGMA table_info(smart_collections)');
+    expect(collectionColumns.map((row) => row['name']),
+        containsAll(['selection_mode', 'included_ids_json', 'excluded_ids_json']));
     expect(await upgraded.query('documents', where: 'id = ?', whereArgs: ['preserved-pdf']),
         hasLength(1));
     expect(await upgraded.rawQuery('PRAGMA foreign_key_check'), isEmpty);

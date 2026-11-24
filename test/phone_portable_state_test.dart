@@ -131,6 +131,38 @@ void main() {
     }), throwsFormatException);
   });
 
+  test('database backup captures only safe display settings', () async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('dark_mode', true);
+    await prefs.setBool('docsgrid_grid_tab_tiles_v1', true);
+    await prefs.setBool('docsgrid_enable_ocr_search_v1', false);
+    await prefs.setString('docsgrid_portable_locations_v1', 'secret-file-uri');
+    final captured = await PhonePortableState.capture();
+    final display = captured['displayPrefs'] as Map;
+    expect(display['dark_mode'], true);
+    expect(display['docsgrid_grid_tab_tiles_v1'], true);
+    expect(display.containsKey('docsgrid_portable_locations_v1'), false);
+
+    SharedPreferences.setMockInitialValues({});
+    await PhonePortableState.restoreAsPending(captured);
+    final restored = await SharedPreferences.getInstance();
+    expect(restored.getBool('dark_mode'), true);
+    expect(restored.getBool('docsgrid_enable_ocr_search_v1'), false);
+    expect(restored.getString('docsgrid_portable_locations_v1'), isNull);
+  });
+
+  test('rejects untrusted preference keys and wrong value types', () {
+    for (final prefs in [
+      {'docsgrid_portable_locations_v1': 'content://secret'},
+      {'dark_mode': 'false'},
+    ]) {
+      expect(() => PhonePortableState.validate({
+        'format': PhonePortableState.format, 'version': 1,
+        'stars': [], 'recent': [], 'displayPrefs': prefs,
+      }), throwsFormatException);
+    }
+  });
+
   test('captured sorting preferences are portable but do not overwrite local', () async {
     final prefs = await SharedPreferences.getInstance();
     const original = '{"field":"name","ascending":true,"explicit":true}';

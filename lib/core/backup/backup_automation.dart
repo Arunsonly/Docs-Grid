@@ -1,4 +1,6 @@
+import 'dart:async';
 import 'dart:convert';
+import '../diagnostics/diagnostic_log_store.dart';
 import 'dart:io';
 import 'dart:ui' show DartPluginRegistrant;
 
@@ -23,20 +25,16 @@ void docsGridBackgroundDispatcher() {
     WidgetsFlutterBinding.ensureInitialized();
     DartPluginRegistrant.ensureInitialized();
 
-    final includePdfs = task == docsGridWeeklyFullBackupTask;
-    if (!includePdfs && task != docsGridDailyDatabaseBackupTask) {
-      return true;
-    }
-
+    // Full PDF archives are user-initiated only. Ignore legacy queued work.
+    if (task != docsGridDailyDatabaseBackupTask) return true;
     final prefs = await SharedPreferences.getInstance();
-    final statusKey = includePdfs ? _weeklyStatusKey : _dailyStatusKey;
+    const statusKey = _dailyStatusKey;
     final attemptedAt = DateTime.now().toUtc().toIso8601String();
     try {
       final locations = await StorageLocationService.instance
           .cachedPortableDataLocations();
-      final destination = includePdfs
-          ? (locations['fullBackupsUri'] ?? locations['backupsUri'])
-          : (locations['databaseBackupsUri'] ?? locations['backupsUri']);
+      final destination = locations['databaseBackupsUri'] ??
+          locations['backupsUri'];
       if (destination == null || !destination.startsWith('file://')) {
         await prefs.setString(statusKey, jsonEncode({
           'status': 'needs_foreground_setup',
@@ -47,7 +45,7 @@ void docsGridBackgroundDispatcher() {
       }
 
       final archive = await DocumentToolsService().createBackup(
-        includePdfs: includePdfs,
+        includePdfs: false,
         backgroundSafe: true,
       );
       await prefs.setString(statusKey, jsonEncode({
@@ -61,6 +59,8 @@ void docsGridBackgroundDispatcher() {
       }));
       return true;
     } catch (error) {
+      await DiagnosticLogStore.instance.recordError(
+          'Background database backup', error);
       final message = error.toString();
       await prefs.setString(statusKey, jsonEncode({
         'status': 'needs_foreground_retry',
@@ -109,19 +109,9 @@ class BackupAutomation {
         ),
       );
     }
-    if (!await Workmanager().isScheduledByUniqueName(
-      docsGridWeeklyFullBackupTask,
-    )) {
-      await Workmanager().registerPeriodicTask(
-        docsGridWeeklyFullBackupTask,
-        docsGridWeeklyFullBackupTask,
-        frequency: const Duration(days: 7),
-        constraints: Constraints(
-          requiresBatteryNotLow: true,
-          requiresStorageNotLow: true,
-        ),
-      );
-    }
+    // Remove the periodic Full task that earlier DocsGrid versions registered.
+    // This is idempotent; manual Full/Incremental backups are never scheduled.
+    await Workmanager().cancelByUniqueName(docsGridWeeklyFullBackupTask);
   }
 
   static Future<Map<String, Object?>> readStatus({required bool full}) async {
@@ -136,6 +126,23 @@ class BackupAutomation {
     } catch (_) {
       return const <String, Object?>{'status': 'unknown'};
     }
+  }
+
+  /// Record a successful user-initiated database ZIP using the same status
+  /// format as the daily worker. The verified archive is already published.
+  static Future<void> recordManualDatabaseBackup(
+      File archive, DateTime completed) async {
+    final prefs = await SharedPreferences.getInstance();
+    final stamp = completed.toUtc().toIso8601String();
+    final bytes = await archive.length();
+    await prefs.setString(_dailyStatusKey, jsonEncode({
+      'status': 'success',
+      'attemptedAtUtc': stamp,
+      'completedAtUtc': stamp,
+      'archiveName': archive.uri.pathSegments.isEmpty
+          ? archive.path : archive.uri.pathSegments.last,
+      'archiveBytes': bytes,
+    }));
   }
 
   /// A failed/unsupported task is retried with backoff instead of repeating
@@ -155,7 +162,23 @@ class BackupAutomation {
 
   /// Runs due backups while the Activity/native storage bridge is available.
   /// This is also the safe fallback for SAF-backed PDFs skipped by a headless worker.
+  static bool _iosForegroundBackupRunning = false;
+
   static Future<void> runDueForegroundBackups() async {
+    if (Platform.isIOS) {
+      if (_iosForegroundBackupRunning) return;
+      _iosForegroundBackupRunning = true;
+      try {
+        if (!await AppDatabase.instance.hasPortableUserData()) return;
+        if (isBackupDue(status: await readStatus(full:false), now: DateTime.now().toUtc(),
+            interval: const Duration(hours:24), retryCooldown: const Duration(hours:6))) {
+          await _runForegroundBackup(includePdfs:false);
+        }
+      } catch (error) {
+        unawaited(DiagnosticLogStore.instance.recordError('iOS foreground backup check', error));
+      } finally { _iosForegroundBackupRunning = false; }
+      return;
+    }
     if (!Platform.isAndroid) return;
     // Do not create a meaningless 3–4 KB database ZIP on a fresh install.
     // The first scheduled backup begins after the user has stored real data.
@@ -164,10 +187,8 @@ class BackupAutomation {
     try {
       final locations = await storage.portableDataLocationsIfAvailable();
       final databaseUri = locations['databaseBackupsUri'] ?? locations['backupsUri'];
-      final fullUri = locations['fullBackupsUri'] ?? locations['backupsUri'];
-      // SAF-only trees can still use metadata snapshots and restore existing
-      // PDFs in place, but ZIP publishing requires a file-backed destination.
-      if (databaseUri == null || fullUri == null) return;
+      // Scheduled backups never need access to the user's PDF backup folder.
+      if (databaseUri == null) return;
 
       final now = DateTime.now().toUtc();
       final daily = await readStatus(full: false);
@@ -180,15 +201,6 @@ class BackupAutomation {
         await _runForegroundBackup(includePdfs: false);
       }
 
-      final weekly = await readStatus(full: true);
-      if (isBackupDue(
-        status: weekly,
-        now: now,
-        interval: const Duration(days: 7),
-        retryCooldown: const Duration(hours: 24),
-      )) {
-        await _runForegroundBackup(includePdfs: true);
-      }
     } catch (_) {
       // User PDF access remains usable when backup storage is unavailable.
     }
@@ -211,7 +223,16 @@ class BackupAutomation {
             : archive.uri.pathSegments.last,
         'archiveBytes': await archive.length(),
       }));
+      if (Platform.isIOS) {
+        try {
+          await DocumentToolsService().publishIosRecoveryArchive(archive);
+        } catch (error) {
+          await DiagnosticLogStore.instance.recordError('iOS external database backup', error);
+        }
+      }
     } catch (error) {
+      await DiagnosticLogStore.instance.recordError(
+          'Foreground database backup', error);
       await prefs.setString(key, jsonEncode({
         'status': 'failed',
         'attemptedAtUtc': attemptedAt,

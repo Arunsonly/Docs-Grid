@@ -250,7 +250,7 @@ class DocumentRepository {
 
   /// Returns the latest document activity: opened PDFs use last_opened_at;
   /// never-opened PDFs use created_at so recently added files also appear.
-  Future<List<DocumentRecord>> recentActivity({int limit = 20}) async {
+  Future<List<DocumentRecord>> recentActivity({int limit = 20, DateTime? since}) async {
     if (limit < 1 || limit > 100) {
       throw ArgumentError.value(limit, 'limit', 'Must be between 1 and 100.');
     }
@@ -262,10 +262,12 @@ class DocumentRepository {
       FROM documents d
       LEFT JOIN categories c ON c.id = d.category_id
       WHERE d.deleted_at IS NULL
+        AND (? IS NULL OR COALESCE(d.last_opened_at, d.created_at) > ?)
       ORDER BY COALESCE(d.last_opened_at, d.created_at) DESC,
                d.name COLLATE NOCASE ASC, d.id ASC
       LIMIT ?
-    ''', [limit]);
+    ''', [since?.toUtc().toIso8601String(),
+          since?.toUtc().toIso8601String(), limit]);
     return rows.map(DocumentRecord.fromMap).toList(growable: false);
   }
 
@@ -1123,7 +1125,7 @@ class DocumentRepository {
       final db = await _database.database;
       final duplicates = await db.query(
         'documents',
-        columns: ['id', 'storage_uri', 'metadata_json'],
+        columns: ['id', 'storage_uri', 'metadata_json', 'folder_id'],
         where: 'sha256 = ? AND deleted_at IS NULL',
         whereArgs: [digest],
         limit: 1,
@@ -1166,11 +1168,14 @@ class DocumentRepository {
         }
         metadata.remove('docsGridRecoveryStatus');
         final relinkedAt = DateTime.now().toUtc().toIso8601String();
+        final relinkUri = Platform.isIOS
+            ? await _copyIosRecoveredPdf(staged, displayName, duplicate['folder_id'] as String?, digest)
+            : storageUri;
         await db.transaction((txn) async {
           final count = await txn.update(
             'documents',
             {
-              'storage_uri': storageUri,
+              'storage_uri': relinkUri,
               'relative_path': null,
               'size_bytes': size,
               'sha256': digest,
@@ -1183,7 +1188,7 @@ class DocumentRepository {
           if (count > 0) {
             await _recordHistory(txn, duplicate['id'] as String,
                 'relinked_after_reinstall', {
-              'storage_uri': storageUri,
+              'storage_uri': relinkUri,
               'previous_storage_uri': previousUri,
             });
           }
@@ -1213,7 +1218,10 @@ class DocumentRepository {
       }
       var recoveredUri = storageUri;
       var storedName = _safePdfName(displayName);
-      if (destinationUri != null) {
+      if (Platform.isIOS) {
+        recoveredUri = await _copyIosRecoveredPdf(staged, storedName, targetFolderId, digest);
+        storedName = p.basename(Uri.parse(recoveredUri).toFilePath());
+      } else if (destinationUri != null) {
         var placed = false;
         final baseName = p.basenameWithoutExtension(storedName);
         for (var suffix = 0; suffix < 100; suffix++) {
@@ -1288,6 +1296,23 @@ class DocumentRepository {
       return true;
     } finally {
       if (await staged.exists()) await staged.delete();
+    }
+  }
+
+  Future<String> _copyIosRecoveredPdf(File staged, String name, String? folderId, String digest) async {
+    final directory = await _privateFolderFor(folderId);
+    final target = await _uniqueFile(directory, _safePdfName(name));
+    final temporary = File(p.join(directory.path, '.recovery_${_uuid.v4()}.part'));
+    try {
+      await staged.copy(temporary.path);
+      if ((await sha256.bind(temporary.openRead()).first).toString() != digest) {
+        throw StateError('Recovered PDF did not pass SHA-256 verification.');
+      }
+      if (await target.exists()) throw StateError('Recovery destination changed. Retry without replacing files.');
+      await temporary.rename(target.path);
+      return target.uri.toString();
+    } finally {
+      if (await temporary.exists()) await temporary.delete();
     }
   }
 

@@ -1,5 +1,4 @@
 import 'package:docs_grid/core/database/app_database.dart';
-import 'package:docs_grid/core/settings/ocr_search_preferences.dart';
 import 'package:docs_grid/features/tools/document_tools_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -91,10 +90,8 @@ void main() {
 
   tearDown(() async => database.close());
 
-  test('Settings ON alone reads no files; explicit OCR indexes and searches PDF text',
+  test('Retained OCR engine only indexes on an explicit call',
       () async {
-    expect(await OcrSearchPreferences.isEnabled(), isFalse);
-    await OcrSearchPreferences.setEnabled(true);
     expect(service.calls, isEmpty);
     expect(await service.searchText('982731'), isEmpty);
     // File-name search cannot match a reference that appears only inside PDF.
@@ -115,7 +112,6 @@ void main() {
     // Search again without rescanning an already indexed PDF.
     await service.indexPendingPdfsForSearch();
     expect(service.calls, ['a']);
-    expect(await OcrSearchPreferences.isEnabled(), isTrue);
   });
 
   test('cancellation stops subsequent PDFs without removing existing indexes',

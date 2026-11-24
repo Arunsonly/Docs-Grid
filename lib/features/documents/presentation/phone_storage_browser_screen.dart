@@ -1,3 +1,4 @@
+import 'pdf_details_dialog.dart';
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -738,6 +739,8 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
       await widget.onSharePdf?.call(uri, name);
     } else if (action == 'favorite') {
       await widget.onToggleStarPdf?.call(uri, name);
+    } else if (action == 'details') {
+      await PdfDetailsDialog.showPhone(context, entry);
     } else if (action == 'location') {
       await _showFileLocation(entry);
     } else if (action == 'trash') {
@@ -1021,6 +1024,7 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
           if (widget.onTrashPdf != null)
             const PopupMenuItem(value: 'trash', child: Text('Delete')),
           const PopupMenuItem(value: 'location', child: Text('File Location')),
+          const PopupMenuItem(value: 'details', child: Text('Details')),
         ],
       ),
       onLongPress: () => _startPdfSelection(entry),
@@ -1043,7 +1047,7 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
     final folderPaths = folders.keys
         .where((path) => query.isEmpty ||
             (!_ocrSelected &&
-             (selectedPath != null || path.toLowerCase().contains(query))))
+             (selectedPath != null || _folderName(path).toLowerCase().contains(query))))
         .toList(growable: false);
     // A selected folder renders its already sorted direct children.
     // At the root without a search, count PDFs without sorting all of them.
@@ -1058,8 +1062,7 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
     } else {
       matchingPdfs = _pdfs.where((entry) {
         final name = (entry['name'] as String).toLowerCase();
-        final folderPath = _normalizedFolderPath(entry).toLowerCase();
-        return name.contains(query) || folderPath.contains(query);
+        return name.contains(query);
       }).toList(growable: false)..sort(_comparePdfs);
     }
 

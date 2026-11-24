@@ -1,3 +1,4 @@
+import 'pdf_details_dialog.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -8,6 +9,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../data/document_repository.dart';
 import '../data/home_dashboard_cache.dart';
+import '../data/grid_recent_history.dart';
 import '../data/phone_recent_history.dart';
 import '../data/phone_pdf_move_service.dart';
 import '../data/phone_pdf_delta.dart';
@@ -17,6 +19,7 @@ import '../data/phone_star_repository.dart';
 import '../data/phone_portable_state.dart';
 import '../data/phone_trash_origin.dart';
 import '../../../core/storage/storage_location_service.dart';
+import '../../../core/storage/grid_storage_boundary.dart';
 import '../../../core/storage/portable_snapshot_events.dart';
 import '../../categories/data/category_repository.dart';
 import '../../folders/data/folder_repository.dart';
@@ -24,6 +27,7 @@ import '../../tools/document_tools_service.dart';
 import 'document_thumbnail.dart';
 import 'ocr_search_mode_control.dart';
 import 'phone_storage_browser_screen.dart';
+import 'recycle_bin_dialog.dart';
 import 'phone_move_folder_picker.dart';
 import '../../folders/presentation/folders_screen.dart';
 import '../../reminders/data/reminder_repository.dart';
@@ -52,6 +56,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       !widget.phoneOnly && !widget.favoritesOnly && !widget.recentOnly;
   final _repository = DocumentRepository();
   final _homeCache = HomeDashboardCache();
+  GridStorageBoundary _gridBoundary = GridStorageBoundary();
   final _categoryRepository = CategoryRepository();
   final _folderRepository = FolderRepository();
   final _tools = DocumentToolsService();
@@ -106,6 +111,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
   int _trashFolderCount = 0;
   List<Map<String, Object?>> _phoneRecent = [];
   List<DocumentRecord> _gridRecent = [];
+  int _recentLoadGeneration = 0;
   bool _showStarredRecent = false;
   List<DocumentRecord> _starredRecent = [];
   List<Map<String, Object?>> _phoneStarred = [];
@@ -466,8 +472,8 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       }
       final updated = change['entries'] as List<Map<String, Object?>>;
       final patch = PhonePdfDelta.apply(
-        existing: _phoneEntries,
-        updates: updated,
+        existing: _gridBoundary.filterEntries(_phoneEntries),
+        updates: _gridBoundary.filterEntries(updated),
         touchedMediaUris: change['touchedMediaUris'] as List<String>,
         touchedLocalPaths: change['touchedLocalPaths'] as List<String>,
       );
@@ -476,7 +482,8 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         ..._phoneLastMediaVolumes,
         ...observedVolumes,
       };
-      if (!patch.changed) return;
+      if (!patch.changed &&
+          patch.entries.length == _phoneEntries.length) return;
       setState(() => _phoneEntries = patch.entries);
       // This is a proven complete MediaStore baseline plus scoped changes,
       // not a partial scan; keep Recent discovery and the saved cache in sync.
@@ -748,16 +755,27 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       await _scanPhoneStorage(openBrowser: true);
       return;
     }
+    // iOS has no Android-style whole-phone scan. Ask for a Files folder
+    // explicitly when the user opens Phone from Home for the first time.
+    if (Platform.isIOS && _phoneLastRoots.isEmpty) {
+      final picked =
+          await StorageLocationService.instance.choosePhoneFolder();
+      if (picked == null) return;
+      await _scanPhoneStorage(openBrowser: true);
+      return;
+    }
     // Reuse the dashboard's completed scan. Opening its detailed browser must
     // not walk the whole storage tree a second time.
     if (_phoneScanCompleted) {
-      await _showRecursiveStoragePdfs('Internal Storage', _phoneEntries);
+      await _showRecursiveStoragePdfs(
+          Platform.isIOS ? 'Files' : 'Internal Storage', _phoneEntries);
       return;
     }
     await _scanPhoneStorage(openBrowser: true);
   }
 
-  Future<bool> _restorePhoneStorageIndexCache(List<Map<String, String>> roots) async {
+  Future<bool> _restorePhoneStorageIndexCache(
+      List<Map<String, String>> roots, GridStorageBoundary boundary) async {
     try {
       final prefs = await SharedPreferences.getInstance();
       String? raw = prefs.getString('docsgrid_phone_storage_index_v1');
@@ -783,12 +801,14 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       final decoded = jsonDecode(raw);
       final signature = roots.map((root) => root['uri']!).join('|');
       if (decoded is! Map || decoded['rootSignature'] != signature ||
+          decoded['gridRootSignature'] != boundary.signature ||
           decoded['entries'] is! List) return false;
       // The cache is scoped to the currently granted roots; make that
       // signature available to per-folder previews before the live scan ends.
       _phoneLastRoots = roots;
-      final cached = (decoded['entries'] as List).whereType<Map>()
-          .map((entry) => Map<String, Object?>.from(entry)).toList(growable: false);
+      final cached = boundary.filterEntries(
+          (decoded['entries'] as List).whereType<Map>()
+              .map((entry) => Map<String, Object?>.from(entry)));
       if (!mounted) return false;
       setState(() { _phoneEntries = cached; _phoneScanCompleted = true; });
       return true;
@@ -806,8 +826,9 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       final prefs = await SharedPreferences.getInstance();
       final payload = jsonEncode({
         'rootSignature': roots.map((root) => root['uri']!).join('|'),
+        'gridRootSignature': _gridBoundary.signature,
         'mediaStoreVolumes': mediaStoreVolumes,
-        'entries': entries,
+        'entries': _gridBoundary.filterEntries(entries),
         'cachedAtUtc': DateTime.now().toUtc().toIso8601String(),
       });
       await prefs.setString('docsgrid_phone_storage_index_v1', payload);
@@ -917,6 +938,10 @@ class _DocumentsScreenState extends State<DocumentsScreen>
     _phoneMediaStoreReady = false;
     if (mounted) setState(() { _phoneScanLoading = true; _phoneScanCompleted = false; });
     try {
+      // Always resolve the currently selected Grid root before exposing cached
+      // or freshly indexed Phone files. This does not move or delete PDFs.
+      final boundary = await storage.gridStorageBoundary();
+      _gridBoundary = boundary;
       var hasAllFilesAccess = false;
       if (Platform.isAndroid) {
         try {
@@ -952,7 +977,16 @@ class _DocumentsScreenState extends State<DocumentsScreen>
           return;
         }
       }
-      final roots = await storage.accessibleStorageRoots();
+      var roots = await storage.accessibleStorageRoots();
+      if (roots.isEmpty && Platform.isIOS && widget.phoneOnly &&
+          widget.active) {
+        // Apple Files access is folder-scoped, not a whole-device index.
+        // Browsing must not replace the separately selected Grid root.
+        final chosen = await storage.choosePhoneFolder();
+        if (chosen != null) {
+          roots = await storage.accessibleStorageRoots();
+        }
+      }
       if (roots.isEmpty) {
         if (mounted) setState(() {
           _phoneEntries = [];
@@ -963,7 +997,8 @@ class _DocumentsScreenState extends State<DocumentsScreen>
 
       // The cached tree is rendered immediately. MediaStore then supplies a
       // fast current index for shared volumes, including removable volumes.
-      final cacheRestored = await _restorePhoneStorageIndexCache(roots);
+      final cacheRestored =
+          await _restorePhoneStorageIndexCache(roots, boundary);
       var mediaStoreComplete = false;
       var mediaStoreVolumes = <String, Object?>{};
       final entries = <Map<String, Object?>>[];
@@ -973,7 +1008,8 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       if (Platform.isAndroid && hasAllFilesAccess) {
         try {
           final index = await storage.queryPhonePdfIndex();
-          final indexed = index['entries'] as List<Map<String, Object?>>;
+          final indexed = boundary.filterEntries(
+              index['entries'] as List<Map<String, Object?>>);
           final complete = index['complete'] == true;
           if (complete) {
             mediaStoreComplete = true;
@@ -1030,7 +1066,8 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         final firstLevelEntries = <Map<String, Object?>>[];
         for (var index = 0; index < roots.length; index++) {
           final root = roots[index];
-          final label = index == 0 ? 'Internal' : root['name']!;
+          final label = Platform.isAndroid && index == 0
+              ? 'Internal' : root['name']!;
           try {
             final children = await storage.listDirectory(root['uri']!);
             for (final child in children) {
@@ -1057,7 +1094,10 @@ class _DocumentsScreenState extends State<DocumentsScreen>
           }
         }
         if (!mounted) return;
-        if (!cacheRestored) setState(() => _phoneEntries = firstLevelEntries);
+        if (!cacheRestored) {
+          setState(() => _phoneEntries =
+              boundary.filterEntries(firstLevelEntries));
+        }
       }
 
       var inaccessibleRoots = 0;
@@ -1072,12 +1112,14 @@ class _DocumentsScreenState extends State<DocumentsScreen>
             Platform.isAndroid && hasAllFilesAccess) {
           // Native file-tree recursion is the safe fallback for failed volumes.
         }
-        final label = index == 0 ? 'Internal' : root['name']!;
+        final label = Platform.isAndroid && index == 0
+            ? 'Internal' : root['name']!;
         try {
           final found = await storage.listStorageTreeRecursively(
             uri,
             rootLabel: label,
             includeEmptyFolders: false,
+            excludeGrid: boundary,
           );
           // Only successfully scanned, entirely accessible SAF/file roots
           // may advance the discovery baseline. Otherwise a permission change
@@ -1090,6 +1132,8 @@ class _DocumentsScreenState extends State<DocumentsScreen>
                 .toList(growable: false);
           }
           for (final item in found) {
+            if (boundary.isManagedEntry(item,
+                scanRootUri: uri, rootLabel: label)) continue;
             final itemUri = item['uri'] as String? ?? '';
             if (item['isDirectory'] != true &&
                 itemUri.isNotEmpty &&
@@ -1138,11 +1182,13 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       _phoneLastMediaVolumes = mediaStoreVolumes;
       _phoneLastRoots = roots;
       setState(() {
-        _phoneEntries=entries;
+        _phoneEntries=boundary.filterEntries(entries);
         _phoneScanCompleted = true;
       });
       if (openBrowser && !widget.phoneOnly) {
-        await _showRecursiveStoragePdfs('Internal Storage', entries);
+        await _showRecursiveStoragePdfs(
+            Platform.isIOS ? 'Files' : 'Internal Storage',
+            boundary.filterEntries(entries));
       }
       if(inaccessibleRoots>0 && mounted) _message('$inaccessibleRoots granted location(s) could not be read; they were not marked empty.');
     } catch(error) {
@@ -1190,15 +1236,17 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         starredUris: _phoneStarredUris,
         onTrashPdf: _trashPhonePdf,
         initialPath: initialPath,
-        cacheScope: _phoneLastRoots
-            .map((root) => root['uri'] ?? '').join('|'),
+        cacheScope: '${_phoneLastRoots.map((root) => root['uri'] ?? '').join('|')}'
+            '|grid:${_gridBoundary.signature}',
       ),
     ));
   }
 
   Future<void> _loadPhoneStarred() async {
     try {
-      final items = await PhoneStarRepository.list();
+      final boundary =
+          await StorageLocationService.instance.gridStorageBoundary();
+      final items = boundary.filterEntries(await PhoneStarRepository.list());
       if (mounted) {
         setState(() {
           _phoneStarred = items;
@@ -1226,23 +1274,35 @@ class _DocumentsScreenState extends State<DocumentsScreen>
   }
 
   Future<void> _clearRecentActivity() async {
+    // Capture the cutoff before clearing so PDFs created/opened afterwards
+    // can appear in Recent, without deleting the PDFs themselves.
+    final cutoff = DateTime.now().toUtc();
+    ++_recentLoadGeneration; // An older async read must not refill Recent.
     try {
       await PhoneRecentHistory.clearRecent();
       await _repository.clearOpenedHistory();
+      await GridRecentHistory.markCleared(cutoff);
+      await _homeCache.saveRecentNames(const []);
       if (!mounted) return;
-      setState(() => _phoneRecent = []);
+      setState(() {
+        _phoneRecent = [];
+        _gridRecent = [];
+        _cachedGridRecentNames = const [];
+        _liveGridRecentLoaded = true;
+      });
       await _loadRecentDocuments();
       if (_showStarredRecent) await _loadAllStarred();
-      if (mounted) _message('Recent cleared. PDF files were not deleted.');
+      // Deliberately no success Snackbar for either Phone or Grid Recent.
     } catch (error) {
       if (mounted) _message('Could not clear Recent: $error');
     }
   }
 
-  Future<List<DocumentRecord>> _loadAllRecentGrid() =>
-      // The repository caps this query at 100 rows. Requesting 100,000 throws
-      // and used to leave Recent selection looking blank.
-      _repository.recentActivity(limit: 100);
+  Future<List<DocumentRecord>> _loadAllRecentGrid() async {
+    // Use the same durable cutoff in the full Recent picker and Home panel.
+    final since = await GridRecentHistory.lastClearedAt();
+    return _repository.recentActivity(limit: 100, since: since);
+  }
 
   List<PopupMenuEntry<String>> _phoneRecentMenu(Map<String, Object?> item) => [
     const PopupMenuItem(value: 'share', child: Text('Share PDF')),
@@ -1256,6 +1316,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
     const PopupMenuItem(value: 'move', child: Text('Move to Grid')),
     const PopupMenuItem(value: 'trash', child: Text('Delete')),
     const PopupMenuItem(value: 'location', child: Text('File Location')),
+    const PopupMenuItem(value: 'details', child: Text('Details')),
   ];
 
   Future<void> _handlePhoneRecentAction(Map<String, Object?> item, String action) async {
@@ -1274,6 +1335,9 @@ class _DocumentsScreenState extends State<DocumentsScreen>
     } else if (action == 'rename') {
       await _renamePhonePdf(uri, name);
       await _loadRecentDocuments();
+    } else if (action == 'details') {
+      final matches = _phoneEntries.where((row) => row['uri'] == uri);
+      await PdfDetailsDialog.showPhone(context, {...item, if (matches.isNotEmpty) ...matches.first});
     } else if (action == 'location') {
       await _showPhoneFileLocation(uri, name);
     }
@@ -1322,7 +1386,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         ..._phoneRecent.where((entry) => entry['uri'] == uri),
       ];
       final entry = matching.isEmpty ? null : matching.first;
-      final added = await PhoneStarRepository.toggle(
+      await PhoneStarRepository.toggle(
         uri: uri,
         name: name,
         folderPath: (entry?['folderPath'] ?? entry?['path']) as String?,
@@ -1330,7 +1394,6 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       );
       await _loadPhoneStarred();
       if (_showStarredRecent) await _loadAllStarred();
-      if (mounted) _message(added ? 'Added to Star.' : 'Removed from Star.');
     } catch (error) {
       if (mounted) _message('Could not update Phone Star: $error');
     }
@@ -1385,11 +1448,8 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       await _loadTrashSummary();
       await _refreshDashboardSummary();
     }
-    if (mounted) {
-      _message(
-        'Moved ${movedUris.length} of ${chosen.length} PDFs to Recycle Bin'
-        '${failed > 0 ? ' · $failed kept' : ''}',
-      );
+    if (mounted && failed > 0) {
+      _message('$failed Phone PDFs were kept because they could not be archived.');
     }
     return movedUris.isNotEmpty;
   }
@@ -1458,9 +1518,14 @@ class _DocumentsScreenState extends State<DocumentsScreen>
     const PopupMenuItem(value: 'rename', child: Text('Rename')),
     const PopupMenuItem(value: 'move', child: Text('Move to folder')),
     const PopupMenuItem(value: 'trash', child: Text('Move to Recycle Bin')),
+    const PopupMenuItem(value: 'details', child: Text('Details')),
   ];
 
   Future<void> _handleRecentAction(DocumentRecord document, String action) async {
+    if (action == 'details') {
+      await PdfDetailsDialog.showGrid(context, document);
+      return;
+    }
     if (action == 'favorite') {
       await _repository.setFavorite(document, !document.isFavorite);
       await _loadAllStarred();
@@ -1493,7 +1558,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
   }
 
   Future<void> _openRecentSelection(DocumentRecord first) async {
-    final action = await Navigator.of(context).push<String>(MaterialPageRoute(
+    await Navigator.of(context).push<String>(MaterialPageRoute(
       builder: (_) => _RecentSelectionScreen(
         initialDocument: first,
         loadItems: _showStarredRecent ? _repository.listAllStarred : _loadAllRecentGrid,
@@ -1507,9 +1572,6 @@ class _DocumentsScreenState extends State<DocumentsScreen>
     ));
     await _loadRecentDocuments();
     await _loadAllStarred();
-    if (action == 'rename' && mounted) {
-      _message('Rename completed.');
-    }
   }
 
   Future<void> _bulkMoveDocuments(List<DocumentRecord> selected) async {
@@ -1527,22 +1589,23 @@ class _DocumentsScreenState extends State<DocumentsScreen>
     );
     if (destination == null) return;
     final result = await _repository.moveManyToFolder(selected, destination.isEmpty ? null : destination);
-    if (mounted) _message('Moved ${result['moved']} of ${selected.length} PDFs');
+    if (mounted && (result['moved'] as int? ?? 0) != selected.length) {
+      _message('Some PDFs could not be moved. Check their storage access.');
+    }
   }
 
   Future<void> _bulkCopyDocuments(List<DocumentRecord> selected) async {
-    var copied = 0;
     final failures = <String>[];
     for (final document in selected) {
       try {
         await _repository.copyDocument(document, targetFolderId: document.folderId);
-        copied++;
       } catch (error) {
         failures.add('${document.name}: $error');
       }
     }
-    if (mounted) _message('Copied $copied of ${selected.length} PDFs'
-        '${failures.isEmpty ? '' : ' · ${failures.length} failed'}');
+    if (mounted && failures.isNotEmpty) {
+      _message('${failures.length} of ${selected.length} PDFs could not be copied. ${failures.first}');
+    }
   }
 
   Future<bool> _bulkDeleteDocuments(List<DocumentRecord> selected) async {
@@ -1553,7 +1616,6 @@ class _DocumentsScreenState extends State<DocumentsScreen>
     if (!confirmed) return false;
     await _repository.moveManyToTrash(selected);
     if (mounted) {
-      _message('Moved ${selected.length} PDFs to Recycle Bin');
       await _refreshDashboardSummary();
     }
     return true;
@@ -1636,7 +1698,6 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       );
       await _loadPhoneStarred();
       await _loadRecentDocuments();
-      if (mounted) _message('Phone reference re-linked.');
     } catch (error) {
       if (mounted) _message('Phone PDF could not be re-linked: $error');
     }
@@ -1705,11 +1766,17 @@ class _DocumentsScreenState extends State<DocumentsScreen>
   }
 
   Future<void> _loadRecentDocuments() async {
+    final generation = ++_recentLoadGeneration;
     if (_isStartupHome) StartupTimeline.mark('home_recent_start');
     try {
-      // Include both opened documents and newly added documents. The list
-      // is capped at 20 so the dashboard's Recent panel can scroll independently.
-      final recentDocuments = await _repository.recentActivity(limit: 20);
+      // The cutoff is presentation-only: it hides older Grid Recent entries,
+      // not stored documents. Reopening or adding a PDF makes it recent again.
+      final boundary =
+          await StorageLocationService.instance.gridStorageBoundary();
+      _gridBoundary = boundary;
+      final since = await GridRecentHistory.lastClearedAt();
+      final recentDocuments =
+          await _repository.recentActivity(limit: 20, since: since);
       final prefs = await SharedPreferences.getInstance();
       final saved = prefs.getStringList('docsgrid_phone_recent_v1') ?? const <String>[];
       final phone = <Map<String, Object?>>[];
@@ -1726,11 +1793,13 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       final unlinkedRecent = (await PhonePortableState.pending())
           .where((item) => item['wasRecent'] == true)
           .toList(growable: false);
-      if (!mounted) return;
+      final visiblePhone = boundary.filterEntries(
+          [...unlinkedRecent, ...phone]);
+      if (!mounted || generation != _recentLoadGeneration) return;
       setState(() {
         _gridRecent = recentDocuments;
-        _phoneRecent = [...unlinkedRecent, ...phone]
-            .take(20).toList(growable: false);
+        _phoneRecent =
+            visiblePhone.take(20).toList(growable: false);
         _liveGridRecentLoaded = true;
         _cachedGridRecentNames = const [];
       });
@@ -1872,10 +1941,9 @@ class _DocumentsScreenState extends State<DocumentsScreen>
     await _refreshDashboardSummary();
     if (!mounted) return;
     final failures = result['failures'] as List<String>;
-    final failureSummary = failures.isEmpty ? '' : ' · ${failures.length} failed';
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text('Moved ${result['moved']} of ${selected.length} PDFs$failureSummary'),
-    ));
+    if (failures.isNotEmpty) {
+      _message('${failures.length} selected PDFs could not be moved. ${failures.first}');
+    }
   }
 
   Future<void> _open(DocumentRecord document) async {
@@ -1908,11 +1976,6 @@ class _DocumentsScreenState extends State<DocumentsScreen>
     try {
       await _repository.relinkDocument(document);
       await _patchDocument(document.id);
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('PDF relinked and verified successfully.')),
-        );
-      }
     } catch (error) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -1998,222 +2061,37 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         remindAt: selected,
         documentId: document.id,
       );
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Reminder saved for this PDF.')));
     } catch (error) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not save reminder: $error')));
     }
   }
 
   Future<void> _showTrash() async {
-    var trashed = await _repository.listTrash();
-    var trashedFolders = await _folderRepository.listTrashFolderRoots();
+    final trashed = await _repository.listTrash();
+    final trashedFolders = await _folderRepository.listTrashFolderRoots();
     if (!mounted) return;
     await showDialog<void>(
       context: context,
-      builder: (dialogContext) => StatefulBuilder(
-        builder: (context, refreshDialog) => AlertDialog(
-          title: const Text('Recycle Bin'),
-          content: SizedBox(
-            width: double.maxFinite,
-            height: 420,
-            child: trashed.isEmpty && trashedFolders.isEmpty
-                ? const Center(child: Text('Recycle Bin is empty.'))
-                : ListView(
-                    shrinkWrap: true,
-                    children: [
-                      if (trashedFolders.isNotEmpty) ...[
-                        const Padding(
-                          padding: EdgeInsets.only(top: 4, bottom: 6),
-                          child: Text('FOLDERS', style: TextStyle(fontWeight: FontWeight.w700)),
-                        ),
-                        for (final folder in trashedFolders)
-                          ListTile(
-                            contentPadding: EdgeInsets.zero,
-                            leading: const Icon(Icons.folder_outlined),
-                            title: Text(folder['name'] as String? ?? 'Folder',
-                                maxLines: 1, overflow: TextOverflow.ellipsis),
-                            subtitle: Text(
-                              '${folder['folder_count'] ?? 1} folders · ${folder['pdf_count'] ?? 0} PDFs · Deleted ${folder['deleted_at'] ?? ''}',
-                              maxLines: 2, overflow: TextOverflow.ellipsis,
-                            ),
-                            onTap: () async {
-                              try {
-                                final contents = await _folderRepository.trashFolderContents(
-                                  folder['id'] as String,
-                                );
-                                if (!dialogContext.mounted) return;
-                                final items = (contents['folders'] as List)
-                                    .cast<Map<String, Object?>>();
-                                final pdfs = (contents['documents'] as List)
-                                    .cast<Map<String, Object?>>();
-                                await showDialog<void>(
-                                  context: dialogContext,
-                                  builder: (detailContext) => AlertDialog(
-                                    title: Text(contents['rootName'] as String? ?? 'Deleted folder'),
-                                    content: SizedBox(
-                                      width: double.maxFinite,
-                                      height: 360,
-                                      child: ListView(
-                                        children: [
-                                          const Text('FOLDERS', style: TextStyle(fontWeight: FontWeight.w700)),
-                                          for (final item in items)
-                                            ListTile(
-                                              dense: true,
-                                              leading: const Icon(Icons.folder_outlined),
-                                              title: Text(item['path'] as String? ?? ''),
-                                            ),
-                                          const Divider(),
-                                          const Text('PDF FILES', style: TextStyle(fontWeight: FontWeight.w700)),
-                                          for (final pdf in pdfs)
-                                            ListTile(
-                                              dense: true,
-                                              leading: const Icon(Icons.picture_as_pdf_outlined),
-                                              title: Text(pdf['name'] as String? ?? 'PDF'),
-                                              subtitle: Text('${pdf['size_bytes'] ?? 0} bytes'),
-                                            ),
-                                        ],
-                                      ),
-                                    ),
-                                    actions: [
-                                      TextButton(
-                                        onPressed: () => Navigator.pop(detailContext),
-                                        child: const Text('Close'),
-                                      ),
-                                    ],
-                                  ),
-                                );
-                              } catch (error) {
-                                if (mounted) _message('Could not inspect deleted folder: $error');
-                              }
-                            },
-                            trailing: PopupMenuButton<String>(
-                              onSelected: (action) async {
-                                final id = folder['id'] as String;
-                                try {
-                                  if (action == 'restore') {
-                                    final restored = await _folderRepository.restoreTrashFolderTree(id);
-                                    refreshDialog(() => trashedFolders.removeWhere((item) => item['id'] == id));
-                                    await _load();
-                                    await _loadRecentDocuments();
-                                    await _refreshDashboardSummary();
-                                    if (mounted) _message('Folder restored with $restored PDF(s).');
-                                  } else if (action == 'delete') {
-                                    final confirmed = await showDialog<bool>(
-                                      context: dialogContext,
-                                      builder: (confirmContext) => AlertDialog(
-                                        title: const Text('Delete folder permanently?'),
-                                        content: Text(
-                                          'The folder tree and its ${folder['pdf_count'] ?? 0} managed PDFs will be permanently deleted. Untracked items are protected.',
-                                        ),
-                                        actions: [
-                                          TextButton(
-                                            onPressed: () => Navigator.pop(confirmContext, false),
-                                            child: const Text('Cancel'),
-                                          ),
-                                          FilledButton(
-                                            onPressed: () => Navigator.pop(confirmContext, true),
-                                            child: const Text('Delete permanently'),
-                                          ),
-                                        ],
-                                      ),
-                                    );
-                                    if (confirmed == true) {
-                                      await _folderRepository.permanentlyDeleteTrashFolderTree(id);
-                                      refreshDialog(() => trashedFolders.removeWhere((item) => item['id'] == id));
-                                      await _refreshDashboardSummary();
-                                    }
-                                  }
-                                } catch (error) {
-                                  if (mounted) _message('Folder Recycle Bin action failed: $error');
-                                }
-                              },
-                              itemBuilder: (_) => const [
-                                PopupMenuItem(value: 'restore', child: Text('Restore folder')),
-                                PopupMenuItem(value: 'delete', child: Text('Delete permanently')),
-                              ],
-                            ),
-                          ),
-                      ],
-                      if (trashed.isNotEmpty) ...[
-                        const Divider(),
-                        const Padding(
-                          padding: EdgeInsets.only(top: 4, bottom: 6),
-                          child: Text('PDF FILES', style: TextStyle(fontWeight: FontWeight.w700)),
-                        ),
-                        for (var index = 0; index < trashed.length; index++)
-                          ListTile(
-                            contentPadding: EdgeInsets.zero,
-                            leading: const Icon(Icons.picture_as_pdf_outlined),
-                            title: Text('${trashed[index].name}.pdf',
-                                maxLines: 1, overflow: TextOverflow.ellipsis),
-                            subtitle: const Text('PDF moved to Recycle Bin'),
-                            trailing: PopupMenuButton<String>(
-                              onSelected: (action) async {
-                                final document = trashed[index];
-                                try {
-                                  if (action == 'restore') {
-                                    await _repository.restoreFromTrash(document);
-                                    refreshDialog(() => trashed.removeAt(index));
-                                    await _load();
-                                    await _scanPhoneStorage(openBrowser: false);
-                                    await _loadRecentDocuments();
-                                    await _refreshDashboardSummary();
-                                    if (mounted && document.source ==
-                                        'phone_storage_recycle_bin') {
-                                      _message(
-                                        'PDF restored to its original Phone folder.',
-                                      );
-                                    }
-                                  } else if (action == 'delete') {
-                                    final confirmed = await showDialog<bool>(
-                                      context: dialogContext,
-                                      builder: (confirmContext) => AlertDialog(
-                                        title: const Text('Delete permanently?'),
-                                        content: Text('${document.name}.pdf will be erased from this device.'),
-                                        actions: [
-                                          TextButton(
-                                            onPressed: () => Navigator.pop(confirmContext, false),
-                                            child: const Text('Cancel'),
-                                          ),
-                                          FilledButton(
-                                            onPressed: () => Navigator.pop(confirmContext, true),
-                                            child: const Text('Delete'),
-                                          ),
-                                        ],
-                                      ),
-                                    );
-                                    if (confirmed == true) {
-                                      await _repository.permanentlyDelete(document);
-                                      refreshDialog(() => trashed.removeAt(index));
-                                      await _load();
-                                      await _scanPhoneStorage(openBrowser: false);
-                                      await _refreshDashboardSummary();
-                                    }
-                                  }
-                                } catch (error) {
-                                  if (mounted) _message('PDF Recycle Bin action failed: $error');
-                                }
-                              },
-                              itemBuilder: (_) => const [
-                                PopupMenuItem(value: 'restore', child: Text('Restore')),
-                                PopupMenuItem(value: 'delete', child: Text('Delete permanently')),
-                              ],
-                            ),
-                          ),
-                      ],
-                    ],
-                  ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dialogContext),
-              child: const Text('Close'),
-            ),
-          ],
-        ),
+      builder: (_) => RecycleBinDialog(
+        folders: trashedFolders,
+        pdfs: trashed,
+        inspectFolder: _folderRepository.trashFolderContents,
+        restoreFolder: (id) async {
+          await _folderRepository.restoreTrashFolderTree(id);
+        },
+        deleteFolder: _folderRepository.permanentlyDeleteTrashFolderTree,
+        restorePdf: _repository.restoreFromTrash,
+        deletePdf: _repository.permanentlyDelete,
+        onChanged: ({required bool pdfChanged}) async {
+          if (!mounted) return;
+          await _load();
+          if (pdfChanged) await _scanPhoneStorage(openBrowser: false);
+          await _loadRecentDocuments();
+          await _refreshDashboardSummary();
+        },
       ),
     );
-    await _refreshDashboardSummary();
+    if (mounted) await _refreshDashboardSummary();
   }
 
   Future<void> _chooseCategory(DocumentRecord document) async {
@@ -2339,7 +2217,6 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       );
       if (!mounted) return false;
       if (moved) {
-        _message('PDF moved to Recycle Bin.');
         try { await PhoneStarRepository.remove(uri); } catch (_) {}
         await _loadPhoneStarred();
         final prefs = await SharedPreferences.getInstance();
@@ -2417,7 +2294,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       await _loadPhoneStarred();
       await _scanPhoneStorage(openBrowser: false);
       await _refreshDashboardSummary();
-      if (mounted) _message(shortcutWarning ?? 'PDF renamed.');
+      if (mounted && shortcutWarning != null) _message(shortcutWarning);
       return true;
     } catch (error) {
       if (mounted) _message('Could not rename PDF: $error');
@@ -2468,6 +2345,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         heightFactor: 0.75,
         child: PhoneMoveFolderPicker(
           roots: roots,
+          excludedGrid: _gridBoundary,
           sourceFolderPath: '',
           listDirectory: storage.listDirectory,
           createDirectory: (parent, folderName) =>
@@ -2529,9 +2407,8 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         // Next storage refresh reconciles an already verified move.
       }
     }
-    if (mounted) {
-      _message('Moved ${movedSources.length} of ${selected.length} Phone PDFs'
-          '${failed == 0 ? '.' : '; $failed kept in the original folder.'}');
+    if (mounted && failed > 0) {
+      _message('$failed Phone PDFs were kept in their original folders.');
     }
     return movedSources.isNotEmpty;
   }
@@ -2594,9 +2471,8 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         await _refreshDashboardSummary();
       }
     } catch (_) {}
-    if (mounted) {
-      _message('Archived ${movedSources.length} of ${selected.length} PDFs. '
-          '${kept == 0 ? 'All selected originals archived.' : '$kept originals kept safely.'}');
+    if (mounted && kept > 0) {
+      _message('$kept Phone PDF originals were kept safely.');
     }
     return movedSources.isNotEmpty;
   }
@@ -2722,9 +2598,9 @@ class _DocumentsScreenState extends State<DocumentsScreen>
             _recentFilter = 'grid';
           });
           await _loadRecentDocuments();
-          _message(recentSaved
-              ? 'Moved $name to Grid. It is now in Grid Recent.'
-              : 'Moved $name to Grid, but could not save the Phone Recent cleanup.');
+          if (!recentSaved) {
+            _message('PDF moved, but Phone Recent cleanup could not be saved.');
+          }
         }
       } else if (result.duplicates > 0 && mounted) {
         _message('This PDF already exists in Grid. The Phone original was kept.');
@@ -2774,6 +2650,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         heightFactor: 0.75,
         child: PhoneMoveFolderPicker(
           roots: roots,
+          excludedGrid: _gridBoundary,
           sourceFolderPath: sourceFolderPath,
           listDirectory: storage.listDirectory,
           createDirectory: (parent, folderName) =>
@@ -2816,7 +2693,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         _phoneEntries = _phoneEntries.where((row) => row['uri'] != uri)
             .toList(growable: false);
       });
-      _message('Moved $name to ${destination.path}.');
+      // Success is visible immediately in the refreshed Phone list.
     }
     try {
       if (mounted) {
@@ -2976,7 +2853,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
   Widget build(BuildContext context) {
     if (widget.phoneOnly) {
       return PhoneStorageBrowserScreen(
-        rootName: 'Internal Storage',
+        rootName: Platform.isIOS ? 'Files' : 'Internal Storage',
         entries: _phoneEntries,
         onOpenPdf: _openExternalStoragePdf,
         onMovePdf: _movePhonePdfToGrid,
@@ -2993,8 +2870,8 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         embedded: true,
         active: widget.active,
         onBackAtRoot: widget.onBackAtRoot,
-        cacheScope: _phoneLastRoots
-            .map((root) => root['uri'] ?? '').join('|'),
+        cacheScope: '${_phoneLastRoots.map((root) => root['uri'] ?? '').join('|')}'
+            '|grid:${_gridBoundary.signature}',
         // Keep the last usable index visible while refresh continues silently.
         isLoading: _phoneScanLoading && _phoneEntries.isEmpty,
         onRefresh: () => _scanPhoneStorage(openBrowser: true),
@@ -3541,9 +3418,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       if (uri.isEmpty || gridLocations.contains(uri)) return false;
 
       final name = (entry['name'] as String? ?? '').toLowerCase();
-      final folder = (entry['folderPath'] as String? ?? '').toLowerCase();
-      final searchable = '$name $folder';
-      return terms.every(searchable.contains);
+      return terms.every(name.contains);
     }).toList(growable: false)
       ..sort((a, b) {
         final folderA = (a['folderPath'] as String? ?? '').toLowerCase();
@@ -3657,6 +3532,8 @@ class _DocumentsScreenState extends State<DocumentsScreen>
               await _movePhonePdfToGrid(uri, name);
             } else if (action == 'trash') {
               await _trashPhonePdf(uri, name);
+            } else if (action == 'details') {
+              await PdfDetailsDialog.showPhone(context, entry);
             } else if (action == 'location') {
               if (!mounted) return;
               await showDialog<void>(
@@ -3682,6 +3559,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
             const PopupMenuItem(value: 'move_grid', child: Text('Move to Grid')),
             const PopupMenuItem(value: 'trash', child: Text('Delete')),
             const PopupMenuItem(value: 'location', child: Text('File Location')),
+            const PopupMenuItem(value: 'details', child: Text('Details')),
           ],
         ),
       ),
@@ -3762,6 +3640,8 @@ class _DocumentsScreenState extends State<DocumentsScreen>
               await _relink(document);
             } else if (value == 'trash') {
               await _trash(document);
+            } else if (value == 'details') {
+              await PdfDetailsDialog.showGrid(context, document);
             }
           },
           itemBuilder: (_) => [
@@ -3774,6 +3654,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
             const PopupMenuItem(value: 'relink', child: Text('Relink PDF')),
             const PopupMenuItem(value: 'move', child: Text('Move to folder')),
             const PopupMenuItem(value: 'trash', child: Text('Move to Recycle Bin')),
+            const PopupMenuItem(value: 'details', child: Text('Details')),
           ],
         ),
       ),
