@@ -1570,6 +1570,7 @@ class DocumentToolsService {
     }
 
     final candidates = <Map<String, Object?>>[];
+    final retainedFolderPaths = <String>{};
     final seenUris = <String>{};
     final failureReport = PdfRecoveryFailureReport();
     void recordFailure(String stage, Object error) {
@@ -1583,7 +1584,11 @@ class DocumentToolsService {
       required bool preserveFolders,
     }) async {
       try {
-        final files = await storage.listPdfFilesRecursively(uri);
+        final files = await storage.listPdfFilesRecursively(uri,
+          onFolder: preserveFolders ? (path) {
+            retainedFolderPaths.add(path);
+          } : null,
+        );
         for (final item in files) {
           final name = item['name'] as String? ?? '';
           final fileUri = item['uri'] as String? ?? '';
@@ -1669,6 +1674,17 @@ class DocumentToolsService {
       return parentId;
     }
 
+    // Recover empty folders as well as ancestors of PDFs. A path is added
+    // only after a real managed directory was successfully listed.
+    final orderedPaths = retainedFolderPaths.toList()..sort();
+    for (final path in orderedPaths) {
+      try {
+        await ensureFolderPath(path);
+      } catch (error) {
+        failed++;
+        recordFailure('Recovering folder hierarchy', error);
+      }
+    }
     var added = 0;
     var duplicates = 0;
     var relinked = 0;

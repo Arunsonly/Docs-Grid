@@ -108,6 +108,22 @@ void main() {
     expect(result?['detectedPdfs'], 'true');
   });
 
+  test('PDF saved seconds before a clean reinstall is still discovered', () async {
+    final old = Directory(p.join(temporary.path, 'DocsGrid'));
+    final pdf = File(p.join(old.path, 'My Files', 'Folders', 'Insurance',
+        '2026', 'policy.pdf'));
+    await pdf.parent.create(recursive: true);
+    await Directory(p.join(old.path, 'System')).create();
+    await pdf.writeAsString('%PDF-1.4');
+    final installed = DateTime.utc(2026, 11, 24, 5);
+    await pdf.setLastModified(installed.subtract(const Duration(seconds: 10)));
+    final found = await OldDocsGridSourceDiscovery.inspect(old,
+        currentInstallAtUtc: installed);
+    expect(found?['detectedPdfs'], 'true');
+    expect(found?['libraryUri'], contains('Folders'));
+    expect(await pdf.readAsString(), '%PDF-1.4');
+  });
+
   test('a random unrelated folder is NOT a valid DocsGrid source', () async {
     final other = Directory(p.join(temporary.path, 'Downloads'));
     await other.create();

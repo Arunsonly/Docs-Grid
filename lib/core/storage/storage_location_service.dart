@@ -953,6 +953,7 @@ class StorageLocationService {
     int maxEntries = 50000,
     int maxDepth = 64,
     bool includeEmptyFolders = false,
+    void Function(String relativePath)? onFolder,
   }) async {
     final pending = <({String uri, String path, int depth})>[
       (uri: rootUri, path: '', depth: 0),
@@ -967,6 +968,7 @@ class StorageLocationService {
         throw StateError('The selected folder is nested too deeply to index safely.');
       }
       final children = await listDirectory(current.uri);
+      if (current.path.isNotEmpty) onFolder?.call(current.path);
       for (final child in children) {
         visitedEntries++;
         if (visitedEntries > maxEntries) {

@@ -482,6 +482,22 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
         return;
       }
 
+      // A clean reinstall has lost Android's special storage permission.
+      // Do not send the user into a read-only SAF source restore before the
+      // active Grid destination is writable. Resume automatic discovery once
+      // Android Settings returns with permission granted.
+      if (!storageInspected) {
+        await Navigator.of(context).push(MaterialPageRoute(
+          builder: (_) => Scaffold(
+            appBar: AppBar(title: const Text('Restore previous DocsGrid data')),
+            body: const DocumentToolsScreen(
+              quickAction: 'restore_portable', section: 'backup_restore',
+            ),
+          ),
+        ));
+        return;
+      }
+
       final choice = await showDialog<String>(
         context: context,
         builder: (ctx) => AlertDialog(

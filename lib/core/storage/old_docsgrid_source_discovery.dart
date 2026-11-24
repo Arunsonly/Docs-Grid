@@ -68,7 +68,7 @@ class OldDocsGridSourceDiscovery {
 
   static bool _predatesInstall(DateTime modified, DateTime? installedAt) =>
       installedAt == null || modified.toUtc().isBefore(
-          installedAt.toUtc().subtract(const Duration(seconds: 60)));
+          installedAt.toUtc());
 
   static Future<bool> _hasCompletedSnapshot(
       Directory database, DateTime? installedAt) async {

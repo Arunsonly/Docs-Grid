@@ -46,6 +46,8 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
   String? _message;
   bool _hasSearched = false;
   bool _awaitingAllFilesPermission = false;
+  bool _resumeAutoDetect = true;
+  Map<String, String>? _resumeRecoverySource;
   List<BackupChainUsage> _manualBackupSets = const [];
   bool _backupUsageReady = false;
 
@@ -709,6 +711,8 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
       );
       if (useLoosePdfs == true) {
         final recovered = await _tools.recoverLoosePortablePdfs(
+          additionalFolderUri: sourceLocations?['libraryUri'],
+          additionalDocumentsUri: sourceLocations?['documentsUri'],
           onProgress: (completed, total) {
             if (mounted) setState(() => _message = 'Recovering PDFs: $completed of $total');
           },
@@ -724,23 +728,45 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
   }) => _run(() async {
     final storage = StorageLocationService.instance;
     Map<String, String>? recoverySource = selectedSource;
-    if (autoDetect) {
-      // Find the existing Android/media/DocsGrid tree automatically. Android
-      // requires its special all-files access switch for this personal-use build.
-      if (Platform.isAndroid && !await storage.hasAllFilesAccess()) {
-        _awaitingAllFilesPermission = true;
+    // A readable source SAF grant is not a writable active Grid destination.
+    // Both selected-source and auto-detected recovery need this preflight.
+    if (Platform.isAndroid && !await storage.hasAllFilesAccess()) {
+      if (!mounted) return;
+      final allow = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Allow storage access to restore'),
+          content: const Text('Android removes storage permission after a clean '
+              'reinstall. Allow DocsGrid full internal storage access, then return. '
+              'Recovery will continue using your existing folders and PDFs. '
+              'No original files will be deleted.'),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('Not now')),
+            FilledButton(onPressed: () => Navigator.pop(ctx, true),
+                child: const Text('Open settings')),
+          ],
+        ),
+      );
+      if (allow != true || !mounted) return;
+      _resumeAutoDetect = autoDetect;
+      _resumeRecoverySource = selectedSource;
+      _awaitingAllFilesPermission = true;
+      if (mounted) setState(() => _message =
+          'Allow Full internal storage access and return to resume recovery.');
+      try {
         await storage.requestAllFilesAccess();
-        if (mounted) {
-          setState(() => _message =
-              'Allow Full internal storage access for DocsGrid. Recovery will scan automatically when you return.');
-        }
-        return;
+      } catch (_) {
+        _awaitingAllFilesPermission = false;
+        rethrow;
       }
+      return;
+    }
+    if (autoDetect) {
       await storage.portableDataLocations();
-      final portableBackups = await _tools.listPortableBackupArchives();
-      if (portableBackups.isNotEmpty) {
-        await _restoreNewestPortableBackupBody();
-        return;
+      if (Platform.isAndroid) {
+        // Prefer the old managed root, even when the new active root is empty.
+        recoverySource ??= await storage.discoverOldDocsGridStorage();
       }
     } else if (recoverySource == null) {
       recoverySource = await storage.chooseRecoveryFolder();
@@ -777,19 +803,29 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
         return;
       }
     }
+    if (snapshot == null && recoverySource == null && autoDetect) {
+      final archives = await _tools.listPortableBackupArchives();
+      if (archives.isNotEmpty) {
+        await _restoreNewestPortableBackupBody();
+        return;
+      }
+    }
     if (snapshot == null) {
       if (!Platform.isAndroid) {
         throw StateError('No verified DocsGrid snapshot was found in the selected folder.');
       }
+      final failures = PdfRecoveryFailureReport();
       final recovered = await _tools.recoverLoosePortablePdfs(
         additionalFolderUri: recoverySource?['libraryUri'],
         additionalDocumentsUri: recoverySource?['documentsUri'],
+        onFailure: failures.record,
         onProgress: (completed, total) {
           if (mounted) setState(() => _message = 'Recovering PDFs: $completed of $total');
         },
       );
       await _showRecoveryResult(RecoveryResultData.fromPdfFolder(
         recovered,
+        failureReasons: failures.totalFailures > 0 ? failures.summary : null,
         note: 'Other app metadata requires a verified snapshot or backup.',
       ));
       return;
@@ -1059,7 +1095,13 @@ class _DocumentToolsScreenState extends State<DocumentToolsScreen>
     unawaited(() async {
       try {
         if (await StorageLocationService.instance.hasAllFilesAccess() && mounted) {
-          await _restorePortableSnapshot(autoDetect: true);
+          final source = _resumeRecoverySource;
+          _resumeRecoverySource = null;
+          await _restorePortableSnapshot(autoDetect: _resumeAutoDetect,
+              selectedSource: source);
+        } else if (mounted) {
+          setState(() => _message = 'Storage access was not granted. '
+              'Your existing PDFs are unchanged. Choose Recover old storage to retry.');
         }
       } catch (error) {
         if (mounted) setState(() => _message = 'Could not verify storage permission: $error');
