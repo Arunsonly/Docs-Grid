@@ -827,8 +827,10 @@ class MainActivity : FlutterActivity() {
                                         (java.io.File(preferredRoot, "My Files").exists() ||
                                          java.io.File(preferredRoot, "System").exists()) -> preferredRoot
                                     previousRoot.isDirectory &&
-                                        (java.io.File(previousRoot, "My Files").exists() ||
-                                         java.io.File(previousRoot, "System").exists()) -> previousRoot
+                                        listOf("My Files", "System", "Documents",
+                                            "Folders", "Database", "Recovery").any { child ->
+                                            java.io.File(previousRoot, child).isDirectory
+                                        } -> previousRoot
                                     else -> preferredRoot
                                 }
                                 val myFiles = java.io.File(root, "My Files")
