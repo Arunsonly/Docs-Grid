@@ -4201,7 +4201,8 @@ Future<int?> _restoreBackupLocked(
       final rawFiles = manifest['files'];
       if (rawFiles is! List) throw StateError('Backup file manifest is invalid.');
       // Restore staging contains user PDFs and metadata; never use shared Temp.
-      final temporaryDirectory = await getTemporaryDirectory();
+      final temporaryDirectory = Platform.isAndroid || Platform.isIOS
+          ? await getTemporaryDirectory() : Directory.systemTemp;
       await temporaryDirectory.create(recursive: true);
       staging = await temporaryDirectory.createTemp('docsgrid_restore_');
       final stagedPdfPaths = <String, String>{};

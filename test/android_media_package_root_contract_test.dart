@@ -50,8 +50,25 @@ void main() {
     final tools = File('lib/features/tools/document_tools_service.dart')
         .readAsStringSync();
     expect(tools, contains('final temp = await getTemporaryDirectory();'));
-    expect(tools, contains('final temporaryDirectory = await getTemporaryDirectory();'));
+    expect(tools, contains('final temporaryDirectory = Platform.isAndroid || Platform.isIOS'));
+    expect(tools, contains('? await getTemporaryDirectory() : Directory.systemTemp;'));
     expect(tools, isNot(contains("['tempUri']")));
+  });
+
+  test('local Grid checks do not enumerate folder children or use the scan pool', () {
+    expect(native, contains('gridDirectoryExecutor.execute'));
+    expect(native, contains('gridDirectoryExecutor.shutdown()'));
+    final begin = native.indexOf('"checkLocalGridDirectory" -> {');
+    final end = native.indexOf('"listDirectory" -> {', begin);
+    final check = native.substring(begin, end);
+    expect(check, contains('fileForUri(uri)'));
+    expect(check, contains('Os.stat(directory.path)'));
+    expect(check, contains('Os.access(directory.path'));
+    expect(check, isNot(contains('listFiles')));
+    expect(storage, contains('Future<void> verifyGridDirectory(String uri)'));
+    final repo = File('lib/features/folders/data/folder_repository.dart')
+        .readAsStringSync();
+    expect(repo, contains('await storage.verifyGridDirectory(uri);'));
   });
 
   test('Phone MediaStore and recursive browsing never duplicate new Grid files', () {

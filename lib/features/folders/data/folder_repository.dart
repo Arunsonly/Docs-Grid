@@ -150,7 +150,7 @@ class FolderRepository {
         try {
           // Always consult the real provider. A cached folder preview cannot
           // prove an external folder still exists or its grant is valid.
-          await storage.listDirectory(uri);
+          await storage.verifyGridDirectory(uri);
           visible[index] = true;
         } on PlatformException catch (error) {
           final details = '${error.message ?? ''} ${error.details ?? ''}';
@@ -185,7 +185,7 @@ class FolderRepository {
           continue;
         }
         try {
-          await storage.listDirectory(uri);
+          await storage.verifyGridDirectory(uri);
           sequential.add(folder);
         } on PlatformException catch (error) {
           final details = '${error.message ?? ''} ${error.details ?? ''}';

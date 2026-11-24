@@ -36,6 +36,8 @@ class MainActivity : FlutterActivity() {
     // Storage providers may perform a remote query for every directory.
     // A small bounded pool keeps scans responsive without creating unbounded IO.
     private val storageExecutor = ThreadPoolExecutor(4, 4, 0L, TimeUnit.MILLISECONDS, ArrayBlockingQueue<Runnable>(64))
+    // Cheap Grid directory checks must not queue behind PDF scans or copies.
+    private val gridDirectoryExecutor = ThreadPoolExecutor(2, 2, 0L, TimeUnit.MILLISECONDS, ArrayBlockingQueue<Runnable>(32))
     private val mainHandler = Handler(Looper.getMainLooper())
     private val channelName = "docsgrid/storage"
     private val requestChooseFolder = 4817
@@ -121,6 +123,14 @@ class MainActivity : FlutterActivity() {
                     call.method == "chooseBackupExportFolder" || call.method == "openPdf"
                 if (mainThreadOnly) {
                     handleStorageCall(call, result)
+                } else if (call.method == "checkLocalGridDirectory") {
+                    try {
+                        gridDirectoryExecutor.execute {
+                            handleStorageCall(call, onMainThreadResult(result))
+                        }
+                    } catch (_: RejectedExecutionException) {
+                        result.error("BUSY", "Grid directory checks are busy. Please retry.", null)
+                    }
                 } else if (call.method == "consumeSharedPdfs") {
                     // Clear the Activity intent only after the bounded queue
                     // accepts the work, so an incoming share is not discarded.
@@ -1130,6 +1140,27 @@ class MainActivity : FlutterActivity() {
                                 }
                                 result.success(String(bytes, Charsets.UTF_8))
                             }
+                            "checkLocalGridDirectory" -> {
+                                val uri = Uri.parse(call.argument<String>("uri")!!)
+                                val directory = fileForUri(uri)
+                                // Check permissions and directory type without enumerating children.
+                                val stat = try {
+                                    Os.stat(directory.path)
+                                } catch (error: android.system.ErrnoException) {
+                                    if (error.errno == android.system.OsConstants.ENOENT ||
+                                        error.errno == android.system.OsConstants.ENOTDIR) {
+                                        throw java.io.FileNotFoundException("Missing directory: ${directory.path}")
+                                    }
+                                    throw error
+                                }
+                                if (!android.system.OsConstants.S_ISDIR(stat.st_mode)) {
+                                    throw IllegalStateException("The selected storage item is not a folder.")
+                                }
+                                if (!Os.access(directory.path, android.system.OsConstants.R_OK or android.system.OsConstants.X_OK)) {
+                                    throw SecurityException("Android could not access this directory.")
+                                }
+                                result.success(true)
+                            }
                             "listDirectory" -> {
                                 val uri = Uri.parse(call.argument<String>("uri")!!)
                                 result.success(if (uri.scheme == "file") listFileDirectory(uri) else listDirectory(uri))
@@ -1296,6 +1327,7 @@ class MainActivity : FlutterActivity() {
     override fun onDestroy() {
         storageObservationForeground = false
         unregisterStorageChangeObservers()
+        gridDirectoryExecutor.shutdown()
         storageExecutor.shutdown()
         super.onDestroy()
     }

@@ -1176,6 +1176,18 @@ class StorageLocationService {
 
   /// Enumerates only immediate children. Returned URIs remain opaque platform
   /// handles; callers must never convert them into filesystem paths.
+  /// A local Android Grid directory can be checked without enumerating PDFs.
+  /// SAF/iOS retain the existing provider validation and permission semantics.
+  Future<void> verifyGridDirectory(String uri) async {
+    if (Platform.isAndroid && uri.startsWith('file://')) {
+      final verified = await _channel.invokeMethod<bool>(
+          'checkLocalGridDirectory', {'uri': uri});
+      if (verified != true) throw StateError('Grid directory could not be verified.');
+      return;
+    }
+    await listDirectory(uri);
+  }
+
   Future<List<Map<String, Object?>>> listDirectory(String uri) async {
     final result = await _channel.invokeListMethod<dynamic>('listDirectory', {'uri': uri});
     if (result == null) throw StateError('The platform could not list the selected folder.');

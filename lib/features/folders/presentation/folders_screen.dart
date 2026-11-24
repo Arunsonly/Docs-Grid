@@ -123,6 +123,7 @@ class _FoldersScreenState extends State<FoldersScreen>
   Completer<void>? _gridPreviewInvalidationDone;
   bool _gridContentRefreshPending = false;
   bool _gridContentRefreshScheduled = false;
+  Object? _gridReadToken;
   // Only prepare metadata of the first two likely child folders, and only
   // after the current screen has loaded and the user has stopped scrolling.
   Timer? _idleFolderPrefetchTimer;
@@ -185,12 +186,13 @@ class _FoldersScreenState extends State<FoldersScreen>
   // and deferring hidden-tab work until the next activation.
   void _scheduleGridContentRefresh() {
     if (!mounted || !_gridContentRefreshPending || !widget.active ||
-        !_gridScreenForeground || _gridContentRefreshScheduled) return;
+        !_gridScreenForeground || _gridContentRefreshScheduled ||
+        _gridReadToken != null) return;
     _gridContentRefreshScheduled = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _gridContentRefreshScheduled = false;
       if (!mounted || !_gridContentRefreshPending || !widget.active ||
-          !_gridScreenForeground) return;
+          !_gridScreenForeground || _gridReadToken != null) return;
       setState(_load);
     });
     // addPostFrameCallback alone does not request a frame while idle.
@@ -418,7 +420,7 @@ class _FoldersScreenState extends State<FoldersScreen>
     } else if (!oldWidget.active && widget.active) {
       // didUpdateWidget is followed by build, so no extra setState/frame is
       // needed. The first visible Grid frame uses newly assigned futures.
-      if (_gridContentRefreshPending) {
+      if (_gridContentRefreshPending && _gridReadToken == null) {
         _load();
       } else {
         _queueIdleFolderPrefetch();
@@ -553,6 +555,18 @@ class _FoldersScreenState extends State<FoldersScreen>
     final epoch = _folderLoadEpoch;
     final previewRevision = _folderPreviewRevision;
     final documentFuture = _documentsFuture;
+    // Do not restart an in-flight read for every recovered PDF. Keep one
+    // pending refresh, and run it after both bounded reads settle. Attach
+    // error handlers immediately, even while the outer FutureBuilder waits.
+    final token = Object();
+    _gridReadToken = token;
+    unawaited(Future.wait<Object?>([folderFuture, documentFuture])
+        .then<void>((_) {}, onError: (Object _, StackTrace __) {})
+        .whenComplete(() {
+      if (!mounted || !identical(_gridReadToken, token)) return;
+      _gridReadToken = null;
+      _scheduleGridContentRefresh();
+    }));
     if (_searchQuery.trim().isEmpty) {
       // A saved preview is display-only until SQLite/provider validation.
       if (!_suppressFolderPreviews.contains(FolderPreviewCache.gridKey(folderId))) {

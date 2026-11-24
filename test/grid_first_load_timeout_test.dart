@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:docs_grid/core/storage/portable_snapshot_events.dart';
 import 'package:docs_grid/features/documents/data/document_repository.dart';
 import 'package:docs_grid/features/folders/data/folder_repository.dart';
 import 'package:docs_grid/features/folders/domain/folder.dart';
@@ -81,6 +82,24 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('All Your Docs. One Smart Place.'), findsOneWidget);
     expect(folders.calls, greaterThanOrEqualTo(2));
+  });
+
+  testWidgets('recovery events do not continuously restart a slow Grid read', (tester) async {
+    final folders = _SometimesStalledFolders(stallFirst: true);
+    final docs = _SometimesStalledPdfs();
+    await openGrid(tester, folders, docs);
+    for (var i = 0; i < 3; i++) {
+      PortableSnapshotEvents.notifyDataChanged(affectedFolderIds: <String?>{null});
+      await tester.pump(const Duration(milliseconds: 50));
+    }
+    expect(folders.calls, 1);
+    folders.firstRead.complete(<Folder>[]);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 150));
+    await tester.pumpAndSettle();
+    expect(folders.calls, 2);
+    expect(find.text('All Your Docs. One Smart Place.'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox.shrink());
   });
 
   testWidgets('fresh Grid retries a stalled first PDF page', (tester) async {
