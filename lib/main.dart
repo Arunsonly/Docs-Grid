@@ -820,7 +820,9 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
                   )
                 : const SizedBox.shrink(),
             DocumentsScreen(
-              key: const ValueKey('home-tab'),
+              key: Platform.isIOS
+                  ? ValueKey('home-tab-ios-$_iosPhoneBrowseRevision')
+                  : const ValueKey('home-tab'),
               active: _selectedIndex == 1,
               onBackAtRoot: _backgroundApp,
             ),
