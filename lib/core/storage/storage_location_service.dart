@@ -293,11 +293,24 @@ class StorageLocationService {
         part == 'recycle bin');
   }
 
-  /// Public, conservative boundary for Phone Move destinations. The
-  /// pre-existing test helper remains unchanged.
+  /// The default top-level shared Grid root is protected even when a Phone
+  /// Move is initiated through another picker or a stale SAF shortcut.
+  static bool isDirectInternalGridRootUri(String? value) {
+    if (value == null || value.isEmpty) return false;
+    String decoded;
+    try { decoded = Uri.decodeComponent(value); } catch (_) { decoded = value; }
+    final normalized = decoded.replaceAll('\\', '/').toLowerCase();
+    return RegExp(
+        r'(?:/storage/emulated/0/|/storage/self/primary/|(?:^|/)primary:)docsgrid(?:/|$)')
+        .hasMatch(normalized);
+  }
+
+  /// Reject known managed Roots and system Trash before any PDF source may be
+  /// removed. Custom user-chosen Grid roots are also checked dynamically.
   static bool isRestrictedPhoneMoveDestination(String? uri) =>
       isCanonicalPortableRootUri(uri) ||
       isLegacyDocsGridStorageLocation(uri) ||
+      isDirectInternalGridRootUri(uri) ||
       isAndroidTrashPath(uri);
 
   /// Normalizes the native MediaStore response separately from the Android
@@ -525,17 +538,21 @@ class StorageLocationService {
       final current = await portableDataLocationsIfAvailable();
       return GridStorageBoundary(activeRootUri: current['rootUri']);
     } catch (_) {
-      final cached = await cachedPortableDataLocations();
-      if (cached['rootUri'] != null) {
-        return GridStorageBoundary(activeRootUri: cached['rootUri']);
-      }
-      if (Platform.isIOS) {
-        // Before an Apple Files folder is chosen, Grid's existing fallback
-        // stores its PDFs under the app Documents/DocsGrid/PDFs directory.
-        // Never display that private Grid tree in the Files browse tab.
-        final base = await getApplicationDocumentsDirectory();
-        return GridStorageBoundary(activeRootUri:
-            Uri.file(p.join(base.path, 'DocsGrid', 'PDFs')).toString());
+      try {
+        final cached = await cachedPortableDataLocations();
+        if (cached['rootUri'] != null) {
+          return GridStorageBoundary(activeRootUri: cached['rootUri']);
+        }
+        if (Platform.isIOS) {
+          // With no Apple Files Grid root the app-private PDF folder is
+          // excluded instead; no storage or database mutation occurs.
+          final base = await getApplicationDocumentsDirectory();
+          return GridStorageBoundary(activeRootUri:
+              Uri.file(p.join(base.path, 'DocsGrid', 'PDFs')).toString());
+        }
+      } catch (_) {
+        // Missing optional platform storage/preferences during a Phone action
+        // must not block the existing safety checks for known Grid roots.
       }
       return GridStorageBoundary();
     }
