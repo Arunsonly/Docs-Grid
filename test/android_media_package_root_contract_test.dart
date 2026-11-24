@@ -20,6 +20,8 @@ void main() {
     expect(native, contains('val previousRoot = java.io.File(mediaRoot, packageName).canonicalFile'));
     expect(native, contains('existingSavedRoot != null && existingSavedRoot.isDirectory'));
     expect(native, contains('previousRoot.isDirectory &&'));
+    expect(native, contains('listOf("My Files", "System", "Documents",'));
+    expect(native, contains('"Folders", "Database", "Recovery").any'));
     expect(native, contains('val myFiles = java.io.File(root, "My Files")'));
     expect(native, contains('val unfiled = java.io.File(myFiles, "Unfiled")'));
     expect(native, contains('val folders = java.io.File(myFiles, "Folders")'));
