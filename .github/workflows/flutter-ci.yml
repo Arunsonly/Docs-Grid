@@ -736,8 +736,30 @@ jobs:
           mkdir -p signed
           "$SIGNER" sign --ks "$KEY" --ks-type PKCS12 --ks-key-alias "$ANDROID_KEY_ALIAS" --ks-pass env:ANDROID_KEYSTORE_PASSWORD --key-pass env:ANDROID_KEY_PASSWORD --out signed/DocsGrid-signed.apk input/app-release.apk
           "$SIGNER" verify --verbose --print-certs signed/DocsGrid-signed.apk > signed/signing-verification.txt
-          grep -Fx 'Signer #1 certificate SHA-256 digest: 6bdcf7b2702812d6bdb38b3dddc45d998004c08dd7935bd9b720b696241b74c8' signed/signing-verification.txt
-          grep -Fx 'Number of signers: 1' signed/signing-verification.txt
+          echo 'APK signing and cryptographic verification completed.'
+          cat signed/signing-verification.txt
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+          report = Path('signed/signing-verification.txt').read_text()
+          expected = '6bdcf7b2702812d6bdb38b3dddc45d998004c08dd7935bd9b720b696241b74c8'
+          digests = re.findall(r'^Signer #([0-9]+) certificate SHA-256 digest:\s*([0-9a-fA-F:]+)\s*
+          "$TOOLS/zipalign" -c -P 16 4 signed/DocsGrid-signed.apk
+          echo 'Checking APK package identity'
+          "$TOOLS/aapt" dump badging signed/DocsGrid-signed.apk > signed/package-verification.txt
+          grep -F "package: name='com.docsgrid.mobile'" signed/package-verification.txt
+          sha256sum signed/DocsGrid-signed.apk > signed/SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: docsgrid-permanent-signed-apk
+          path: signed/
+          if-no-files-found: error
+, report, re.M)
+          if len(digests) != 1 or digests[0][0] != '1' or digests[0][1].replace(':', '').lower() != expected:
+              raise SystemExit('ERROR: unexpected signer count or certificate fingerprint')
+          print('Permanent certificate fingerprint verified.')
+          PY
+          echo 'Checking APK alignment'
           "$TOOLS/zipalign" -c -P 16 4 signed/DocsGrid-signed.apk
           "$TOOLS/aapt" dump badging signed/DocsGrid-signed.apk > signed/package-verification.txt
           grep -F "package: name='com.docsgrid.mobile'" signed/package-verification.txt
