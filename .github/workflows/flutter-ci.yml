@@ -376,7 +376,14 @@ jobs:
       - name: Build internal performance-evaluation Release APK
         run: |
           set -euo pipefail
-          flutter build apk --release
+          if [ "$GITHUB_REF" = refs/heads/development ] && [ "$GITHUB_EVENT_NAME" = push ]; then
+            # Stable across retries; strictly increasing for new runs of this workflow.
+            VERSION_CODE=$((10000 + GITHUB_RUN_NUMBER))
+            test "$VERSION_CODE" -le 2100000000
+            flutter build apk --release --build-number="$VERSION_CODE"
+          else
+            flutter build apk --release
+          fi
           test -s build/app/outputs/flutter-apk/app-release.apk
       - name: Validate Release APK integrity, identity and signing
         run: |
@@ -754,6 +761,8 @@ jobs:
           echo 'Checking APK package identity'
           "$TOOLS/aapt" dump badging signed/DocsGrid-signed.apk > signed/package-verification.txt
           grep -F "package: name='com.docsgrid.mobile'" signed/package-verification.txt
+          EXPECTED_VERSION_CODE=$((10000 + GITHUB_RUN_NUMBER))
+          grep -F "versionCode='$EXPECTED_VERSION_CODE'" signed/package-verification.txt
           sha256sum signed/DocsGrid-signed.apk > signed/SHA256SUMS
       - uses: actions/upload-artifact@v4
         with:
