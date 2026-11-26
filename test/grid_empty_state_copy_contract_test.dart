@@ -18,7 +18,9 @@ void main() {
   });
 
   test('empty message applies only to empty unsearched root', () {
-    expect(source, contains('if (folders.isEmpty && documents.isEmpty &&'));
+    expect(source, contains('if (displayedFolders.isEmpty && documents.isEmpty &&'));
+    expect(source, contains('(_isReorderingFolders || !folder.externallyEmptied)'));
+    expect(source, contains('(!_pagedDocumentsMode || _pagedTotalCount == 0) &&'));
     expect(source, contains('query.isEmpty) {'));
     expect(source, contains('_currentFolderId == null'));
     expect(source, contains("'This folder is empty'"));
