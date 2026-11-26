@@ -147,6 +147,13 @@ void main() {
     await apply([changed]);
     expect(probes, [changed, changed]);
     expect(hashed, isEmpty);
+    final plan = await db.rawQuery(
+      'EXPLAIN QUERY PLAN SELECT * FROM documents INDEXED BY idx_grid_storage_uri '
+      'WHERE deleted_at IS NULL AND storage_uri IN (?, ?)',
+      [changed, Uri.file(changed).toString()],
+    );
+    expect(plan.map((r) => r['detail']).join(' '), contains('idx_grid_storage_uri'));
+    expect(await folders.countDirectChildren(null), 2);
     expect(await documents.countInFolder(folder), 3999);
     expect(await db.query('grid_external_missing'), hasLength(1));
     expect((await db.rawQuery('SELECT COUNT(*) AS n FROM documents')).single['n'], 4000);
