@@ -2392,8 +2392,8 @@ class _FoldersScreenState extends State<FoldersScreen>
                   final query = _searchQuery.trim().toLowerCase();
                   final folderSource = _isReorderingFolders ? _draftFolderOrder : folders;
                   final displayedFolders = folderSource
-                      .where((folder) => !folder.externallyEmptied && (query.isEmpty ||
-                          folder.name.toLowerCase().contains(query)))
+                      .where((folder) => (_isReorderingFolders || !folder.externallyEmptied) &&
+                          (query.isEmpty || folder.name.toLowerCase().contains(query)))
                       .toList(growable: true);
                   final displayedDocuments = documents
                       .where((document) => query.isEmpty ||
