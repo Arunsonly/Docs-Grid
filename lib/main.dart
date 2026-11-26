@@ -23,6 +23,7 @@ import 'features/tools/document_tools_screen.dart' show DocumentToolsScreen;
 import 'features/tools/document_tools_service.dart';
 import 'core/database/app_database.dart';
 import 'core/storage/portable_snapshot_events.dart';
+import 'core/storage/grid_external_index.dart';
 import 'core/backup/backup_automation.dart';
 import 'core/diagnostics/startup_timeline.dart';
 import 'core/diagnostics/diagnostic_log_store.dart';
@@ -156,6 +157,7 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
   Timer? _snapshotCleanupPoll;
   DateTime? _lastSnapshotCleanup;
   bool _snapshotWriteInFlight = false;
+  final _gridExternalSync = GridExternalSync();
 
   @override
   void initState() {
@@ -183,6 +185,7 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
       // No automatic migration on launch: moving legacy PDFs must require
       // an explicit action in Settings and must never delete an original.
       // Initialize best-effort Android background jobs without blocking first paint.
+      if (mounted) _gridExternalSync.start();
       unawaited(BackupAutomation.initializeAndroid());
       _schedulePortableSnapshot();
       unawaited(_refreshReminderSchedules());
@@ -200,6 +203,7 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
+      _gridExternalSync.refreshWatches();
       unawaited(_refreshReminderSchedules());
       unawaited(_consumeSharedPdfs());
       _schedulePortableSnapshot();
@@ -378,6 +382,7 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _gridExternalSync.dispose();
     _snapshotChangesSubscription?.cancel();
     _snapshotDebounce?.cancel();
     _snapshotPoll?.cancel();
