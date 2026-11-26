@@ -7,12 +7,13 @@ import 'folder_preview_cache.dart';
 /// previews. An empty set means a metadata-only change which does not affect
 /// saved folder names, direct PDF counts or sizes.
 class GridFolderChange {
-  GridFolderChange(Set<String?>? affectedFolderIds)
+  GridFolderChange(Set<String?>? affectedFolderIds, {this.precise = false})
       : affectedFolderIds = affectedFolderIds == null
             ? null
             : Set<String?>.unmodifiable(affectedFolderIds);
 
   final Set<String?>? affectedFolderIds;
+  final bool precise;
   bool get invalidateAll => affectedFolderIds == null;
 
   bool affects(String? folderId) =>
@@ -60,13 +61,21 @@ class PortableSnapshotEvents {
   /// Passing a *verified* affected set invalidates only those preview keys;
   /// an empty set leaves previews intact (e.g. opening/favoriting a PDF).
   /// Existing portable snapshot events fire exactly as before.
-  static void notifyDataChanged({Set<String?>? affectedFolderIds}) {
+  static void notifyDataChanged({Set<String?>? affectedFolderIds,
+    bool preciseGridFolders = false}) {
     if (!_changes.isClosed) _changes.add(null);
+    notifyGridPreviewChanged(affectedFolderIds, precise: preciseGridFolders);
+  }
+
+  // Local availability is derived, not portable metadata. Do not wake up
+  // snapshot writers and unrelated Home readers for external delete/restore.
+  static void notifyGridPreviewChanged(Set<String?>? affectedFolderIds,
+      {bool precise = false}) {
     if (!_gridPreviewChanges.isClosed) {
       if (!_gridPreviewChanges.hasListener) {
         _invalidateWhenGridIsUnmounted(affectedFolderIds);
       }
-      _gridPreviewChanges.add(GridFolderChange(affectedFolderIds));
+      _gridPreviewChanges.add(GridFolderChange(affectedFolderIds, precise: precise));
     }
   }
 }
