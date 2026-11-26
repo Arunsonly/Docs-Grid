@@ -21,10 +21,15 @@ class GridExternalIndex {
     final pending = _schema[db];
     if (pending != null) return pending;
     final creation = db.transaction((txn) async {
-      await txn.execute('CREATE INDEX IF NOT EXISTS idx_grid_storage_uri ON documents(storage_uri)');
+      final columns = (await txn.rawQuery('PRAGMA table_info(documents)')).map((row) => row['name']).toSet();
+      if (columns.contains('storage_uri')) {
+        await txn.execute('CREATE INDEX IF NOT EXISTS idx_grid_storage_uri ON documents(storage_uri)');
+      }
       await txn.execute('CREATE TABLE IF NOT EXISTS $_table (document_id TEXT PRIMARY KEY, storage_uri TEXT NOT NULL)');
       await txn.execute('CREATE TRIGGER IF NOT EXISTS grid_external_clear_insert AFTER INSERT ON documents BEGIN DELETE FROM $_table WHERE document_id = NEW.id; END');
-      await txn.execute('CREATE TRIGGER IF NOT EXISTS grid_external_clear_update AFTER UPDATE OF storage_uri, deleted_at ON documents WHEN OLD.storage_uri IS NOT NEW.storage_uri OR OLD.deleted_at IS NOT NEW.deleted_at BEGIN DELETE FROM $_table WHERE document_id = NEW.id; END');
+      final fields = columns.contains('storage_uri') ? 'storage_uri, deleted_at' : 'deleted_at';
+      final locatorChange = columns.contains('storage_uri') ? 'OLD.storage_uri IS NOT NEW.storage_uri OR ' : '';
+      await txn.execute('CREATE TRIGGER IF NOT EXISTS grid_external_clear_update AFTER UPDATE OF $fields ON documents WHEN ${locatorChange}OLD.deleted_at IS NOT NEW.deleted_at BEGIN DELETE FROM $_table WHERE document_id = NEW.id; END');
       await txn.execute('CREATE TRIGGER IF NOT EXISTS grid_external_clear_delete AFTER DELETE ON documents BEGIN DELETE FROM $_table WHERE document_id = OLD.id; END');
     });
     _schema[db] = creation;
@@ -32,7 +37,7 @@ class GridExternalIndex {
   }
 
   static String visible(String alias) =>
-      'NOT EXISTS (SELECT 1 FROM $_table gm WHERE gm.document_id = $alias.id AND gm.storage_uri = $alias.storage_uri)';
+      'NOT EXISTS (SELECT 1 FROM $_table gm WHERE gm.document_id = $alias.id)';
 
   static String? localPath(String? value) {
     if (value == null || value.isEmpty) return null;
