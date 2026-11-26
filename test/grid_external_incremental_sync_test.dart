@@ -1,0 +1,178 @@
+import 'dart:io';
+import 'package:docs_grid/core/database/app_database.dart';
+import 'package:docs_grid/core/storage/grid_external_index.dart';
+import 'package:docs_grid/features/documents/data/document_repository.dart';
+import 'package:docs_grid/features/folders/data/folder_repository.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+
+void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+  setUpAll(() {
+    sqfliteFfiInit();
+    databaseFactory = databaseFactoryFfi;
+  });
+  const stamp = '2026-11-26T00:00:00Z';
+  final hash = List.filled(64, 'a').join();
+  const folder = 'folder-a';
+  const oldPath = '/storage/emulated/0/DocsGrid/My Files/Folders/Policy/old.pdf';
+  const newPath = '/storage/emulated/0/DocsGrid/My Files/Folders/Policy/new.pdf';
+  late Database db;
+  late GridExternalIndex index;
+  late DocumentRepository documents;
+  late FolderRepository folders;
+  late Map<String, String> states;
+  late Map<String, String> hashes;
+  late List<String> probes;
+  late List<String> hashed;
+
+  setUp(() async {
+    db = await AppDatabase.instance.openProductionSchemaForTesting(inMemoryDatabasePath);
+    final appDb = AppDatabase.forTesting(() async => db);
+    index = GridExternalIndex(db);
+    documents = DocumentRepository(database: appDb);
+    folders = FolderRepository(database: appDb);
+    states = {};
+    hashes = {};
+    probes = [];
+    hashed = [];
+    await db.insert('folders', {'id': folder, 'name': 'Policy', 'created_at': stamp, 'updated_at': stamp});
+    await db.insert('folders', {'id': 'intentionally-empty', 'name': 'Empty', 'created_at': stamp, 'updated_at': stamp});
+  });
+
+  tearDown(() async => db.close());
+
+  Future<void> add(String id, String path, {String? digest}) async {
+    await db.insert('documents', {
+      'id': id, 'name': 'Policy $id', 'folder_id': folder,
+      'storage_uri': Uri.file(path).toString(), 'size_bytes': 100,
+      'sha256': digest ?? hash, 'is_favorite': 1,
+      'metadata_json': '{"note":"preserve me"}',
+      'created_at': stamp, 'updated_at': stamp,
+    });
+  }
+
+  Future<GridExternalResult> apply(List<String> paths) => index.applyPaths(
+    paths,
+    probe: (path) async {
+      probes.add(path);
+      return {'state': states[path] ?? 'unknown', 'uri': Uri.file(path).toString(),
+        'size': 100, 'modified': 42};
+    },
+    digest: (path) async {
+      hashed.add(path);
+      return hashes[path] ?? hash;
+    },
+  );
+
+  test('delete changes only derived visibility; restore preserves identity and metadata', () async {
+    await add('original', oldPath);
+    final original = (await db.query('documents', where: 'id = ?', whereArgs: ['original'])).single;
+    states[oldPath] = 'missing';
+    final change = await apply([oldPath]);
+    expect(change.affected, {folder, null});
+    expect(await documents.countInFolder(folder), 0);
+    expect((await documents.listInFolderPage(folder)).records, isEmpty);
+    expect(await documents.list(query: 'Policy'), isEmpty);
+    final root = await folders.childrenOf(null);
+    expect(root.singleWhere((f) => f.id == folder).externallyEmptied, isTrue);
+    expect(root.singleWhere((f) => f.id == 'intentionally-empty').externallyEmptied, isFalse);
+    expect((await db.query('documents', where: 'id = ?', whereArgs: ['original'])).single, original);
+    expect(hashed, isEmpty);
+    // A replacement at the same name must not inherit the original metadata.
+    states[oldPath] = 'available';
+    hashes[oldPath] = List.filled(64, 'b').join();
+    expect((await apply([oldPath])).affected, isEmpty);
+    expect(await documents.countInFolder(folder), 0);
+    hashes[oldPath] = hash;
+    await apply([oldPath]);
+    expect(await documents.countInFolder(folder), 1);
+    expect((await documents.listInFolder(folder)).single.id, 'original');
+    expect((await db.query('documents', where: 'id = ?', whereArgs: ['original'])).single, original);
+    expect((await folders.childrenOf(null)).singleWhere((f) => f.id == folder).externallyEmptied, isFalse);
+  });
+
+  test('permission or unknown errors never hide a PDF', () async {
+    await add('original', oldPath);
+    states[oldPath] = 'unknown';
+    final result = await apply([oldPath]);
+    expect(result.affected, isEmpty);
+    expect(await documents.countInFolder(folder), 1);
+    expect(hashed, isEmpty);
+    expect(await db.query('grid_external_missing'), isEmpty);
+  });
+
+  test('same-folder rename requires matching hash and absent original; id is preserved', () async {
+    await add('original', oldPath);
+    states[oldPath] = 'missing';
+    states[newPath] = 'available';
+    final result = await apply([newPath, oldPath]);
+    expect(result.renamed, isTrue);
+    final row = (await db.query('documents', where: 'id = ?', whereArgs: ['original'])).single;
+    expect(row['storage_uri'], Uri.file(newPath).toString());
+    expect(row['name'], 'new');
+    expect(row['folder_id'], folder);
+    expect(row['sha256'], hash);
+    expect(row['deleted_at'], isNull);
+    expect(row['is_favorite'], 1);
+    expect(row['metadata_json'], '{"note":"preserve me"}');
+    expect(await documents.countInFolder(folder), 1);
+    expect(await db.query('grid_external_missing'), isEmpty);
+    expect(await db.query('history', where: 'document_id = ?', whereArgs: ['original']), hasLength(1));
+  });
+
+  test('an unrelated PDF cannot be relinked or silently imported', () async {
+    await add('original', oldPath);
+    states[oldPath] = 'missing';
+    states[newPath] = 'available';
+    hashes[newPath] = List.filled(64, 'c').join();
+    final result = await apply([oldPath, newPath]);
+    expect(result.renamed, isFalse);
+    expect(await documents.countInFolder(folder), 0);
+    expect(await db.query('documents'), hasLength(1));
+  });
+
+  test('4000-PDF folder: only the changed PDF is probed and no bytes are hashed for delete', () async {
+    final batch = db.batch();
+    for (var i = 0; i < 4000; i++) {
+      batch.insert('documents', {
+        'id': 'pdf-$i', 'name': 'PDF $i', 'folder_id': folder,
+        'storage_uri': Uri.file('/storage/emulated/0/DocsGrid/My Files/Folders/Policy/$i.pdf').toString(),
+        'size_bytes': 100, 'created_at': stamp, 'updated_at': stamp,
+      });
+    }
+    await batch.commit(noResult: true);
+    const changed = '/storage/emulated/0/DocsGrid/My Files/Folders/Policy/1200.pdf';
+    states[changed] = 'missing';
+    await apply([changed]);
+    expect(probes, [changed, changed]);
+    expect(hashed, isEmpty);
+    expect(await documents.countInFolder(folder), 3999);
+    expect(await db.query('grid_external_missing'), hasLength(1));
+    expect((await db.rawQuery('SELECT COUNT(*) AS n FROM documents')).single['n'], 4000);
+  });
+
+  test('ordinary app storage locator updates clear stale derived visibility', () async {
+    await add('original', oldPath);
+    states[oldPath] = 'missing';
+    await apply([oldPath]);
+    await db.update('documents', {'storage_uri': Uri.file(newPath).toString()},
+      where: 'id = ?', whereArgs: ['original']);
+    expect(await db.query('grid_external_missing'), isEmpty);
+    expect(await documents.countInFolder(folder), 1);
+  });
+
+  test('native watcher uses existing folder paths; no PDF directory enumeration', () {
+    final source = File('platform/android/MainActivity.kt').readAsStringSync();
+    final start = source.indexOf('private fun setGridWatches(');
+    final end = source.indexOf('private fun probeGridPdf(', start);
+    expect(start, greaterThanOrEqualTo(0));
+    expect(end, greaterThan(start));
+    final watcher = source.substring(start, end);
+    expect(watcher, contains('FileObserver(path, gridWatchMask)'));
+    expect(watcher, isNot(contains('listFiles(')));
+    expect(watcher, isNot(contains('walkTopDown(')));
+    final pause = source.substring(source.indexOf('override fun onPause()'), source.indexOf('private fun registerStorageChangeObservers()'));
+    expect(pause, isNot(contains('stopGridWatches()')));
+  });
+}
