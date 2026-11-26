@@ -138,7 +138,7 @@ class GridExternalIndex {
         candidate = sameFolder.single;
       }
       final row = candidate;
-      if (row == null || row['sha256'] != hash) continue;
+      if (row['sha256'] != hash) continue;
       final previous = localPath(row['storage_uri'] as String?);
       if (previous == null) continue;
       final isRename = previous != item.key;
@@ -181,6 +181,7 @@ class GridExternalSync {
   StreamSubscription<dynamic>? _subscription;
   StreamSubscription<void>? _librarySubscription;
   final _paths = <String>{};
+  final _retries = <String, int>{};
   Timer? _debounce, _watchDebounce;
   bool _working = false, _watching = false, _watchPending = false, _disposed = false;
 
@@ -188,6 +189,7 @@ class GridExternalSync {
     if (!Platform.isAndroid || _disposed || _subscription != null) return;
     _subscription = _events.receiveBroadcastStream().listen((dynamic event) {
       if (_disposed || event is! String) return;
+      _retries.remove(event);
       _paths.add(event);
       _scheduleDrain();
     }, onError: (Object _) {});
@@ -236,6 +238,7 @@ class GridExternalSync {
       final result = await GridExternalIndex(db).applyPaths(paths,
         probe: (path) async => (await _channel.invokeMapMethod<String, Object?>('probe', path)) ?? const {'state': 'unknown'},
         digest: (path) => StorageLocationService.instance.sha256Pdf(Uri.file(path).toString()));
+      for (final path in paths) { _retries.remove(path); }
       if (result.affected.isNotEmpty) {
         if (result.renamed) {
           PortableSnapshotEvents.notifyDataChanged(affectedFolderIds: result.affected, preciseGridFolders: true);
@@ -244,7 +247,18 @@ class GridExternalSync {
         }
       }
     } catch (_) {
-      // No destructive fallback; retain original records.
+      // Retry transient database failures at most twice, never scan storage.
+      if (!_disposed) {
+        for (final path in paths) {
+          final attempts = (_retries[path] ?? 0) + 1;
+          if (attempts <= 2) {
+            _retries[path] = attempts;
+            _paths.add(path);
+          } else {
+            _retries.remove(path);
+          }
+        }
+      }
     } finally {
       _working = false;
       if (_paths.isNotEmpty && !_disposed) _scheduleDrain();
@@ -258,5 +272,6 @@ class GridExternalSync {
     _subscription?.cancel();
     _librarySubscription?.cancel();
     _paths.clear();
+    _retries.clear();
   }
 }
