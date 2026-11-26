@@ -217,12 +217,22 @@ class FolderRepository {
   /// never replace the normal physically validated childrenOf result.
   Future<int> countDirectChildren(String? parentId) async {
     final db = await _database.database;
-    final rows = await db.rawQuery(
-      parentId == null
-          ? 'SELECT COUNT(*) AS total FROM folders WHERE parent_id IS NULL AND deleted_at IS NULL'
-          : 'SELECT COUNT(*) AS total FROM folders WHERE parent_id = ? AND deleted_at IS NULL',
-      parentId == null ? const <Object?>[] : <Object?>[parentId],
-    );
+    await GridExternalIndex.ensureSchema(db);
+    final rows = await db.rawQuery('''
+      SELECT COUNT(*) AS total FROM folders f
+      WHERE f.deleted_at IS NULL
+        AND ${parentId == null ? 'f.parent_id IS NULL' : 'f.parent_id = ?'}
+        AND NOT (
+          EXISTS (SELECT 1 FROM documents hidden
+            INNER JOIN grid_external_missing gm ON gm.document_id = hidden.id
+            WHERE hidden.folder_id = f.id AND hidden.deleted_at IS NULL)
+          AND NOT EXISTS (SELECT 1 FROM documents d
+            WHERE d.folder_id = f.id AND d.deleted_at IS NULL
+              AND ${GridExternalIndex.visible('d')})
+          AND NOT EXISTS (SELECT 1 FROM folders child
+            WHERE child.parent_id = f.id AND child.deleted_at IS NULL)
+        )
+      ''', parentId == null ? const <Object?>[] : <Object?>[parentId]);
     return (rows.first['total'] as num).toInt();
   }
 
