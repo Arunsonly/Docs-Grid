@@ -3,6 +3,14 @@ import 'package:docs_grid/core/storage/storage_location_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('storage change listeners share the same native broadcast stream', () {
+    final service = StorageLocationService.instance;
+    final phone = service.storageChanges;
+    final grid = service.storageChanges;
+    expect(phone.isBroadcast, isTrue);
+    expect(identical(phone, grid), isTrue);
+  });
+
   Map<String, Object?> pdf(
     String uri, String name, String folder, {
     int size = 100,
