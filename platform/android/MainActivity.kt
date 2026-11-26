@@ -67,6 +67,115 @@ class MainActivity : FlutterActivity() {
     private val localPdfWatchEvents = FileObserver.CLOSE_WRITE or FileObserver.MOVED_TO or
         FileObserver.MOVED_FROM or FileObserver.DELETE
 
+    @Volatile private var gridWatchSink: EventChannel.EventSink? = null
+    private val gridWatchLock = Any()
+    private val gridWatchers = linkedMapOf<String, FileObserver>()
+    private val gridWatchMask = FileObserver.CLOSE_WRITE or FileObserver.MOVED_TO or
+        FileObserver.MOVED_FROM or FileObserver.DELETE or FileObserver.DELETE_SELF or FileObserver.MOVE_SELF
+
+    // Restrict the observer to managed user-visible documents; never watch
+    // System, backup, temporary, thumbnail, or private operational folders.
+    private fun gridLocalRoots(): List<java.io.File> {
+        if (android.os.Build.VERSION.SDK_INT >= 30 && !Environment.isExternalStorageManager()) return emptyList()
+        val saved = getSharedPreferences("docsgrid_storage", MODE_PRIVATE)
+            .getString("docsgrid_uri", null) ?: return emptyList()
+        val uri = Uri.parse(saved)
+        if (uri.scheme != "file") return emptyList()
+        val root = java.io.File(uri.path ?: return emptyList()).canonicalFile
+        return listOf("My Files", "Folders", "Documents").map { java.io.File(root, it).canonicalFile }
+    }
+
+    private fun isGridLocalPath(file: java.io.File, roots: List<java.io.File>): Boolean =
+        roots.any { root -> file == root || file.path.startsWith(root.path + java.io.File.separator) }
+
+    private fun stopGridWatches() {
+        synchronized(gridWatchLock) {
+            for (observer in gridWatchers.values) {
+                try { observer.stopWatching() } catch (_: Exception) {}
+            }
+            gridWatchers.clear()
+        }
+    }
+
+    private fun setGridWatches(paths: List<String>): Map<String, Any> {
+        val roots = gridLocalRoots()
+        val prefs = getSharedPreferences("docsgrid_storage", MODE_PRIVATE)
+        val candidates = linkedSetOf<String>()
+        for (key in listOf("documents_uri", "folders_uri")) {
+            val saved = prefs.getString(key, null) ?: continue
+            val uri = Uri.parse(saved)
+            if (uri.scheme == "file") uri.path?.let { candidates.add(it) }
+        }
+        candidates.addAll(paths)
+        val desired = linkedSetOf<String>()
+        for (path in candidates) {
+            if (desired.size >= 1024) break
+            try {
+                val dir = java.io.File(path).canonicalFile
+                if (isGridLocalPath(dir, roots) && dir.isDirectory && dir.canRead()) desired.add(dir.path)
+            } catch (_: Exception) {}
+        }
+        synchronized(gridWatchLock) {
+            if (gridWatchSink == null) return mapOf("watched" to 0)
+            for (path in gridWatchers.keys.toList()) {
+                if (path !in desired) {
+                    try { gridWatchers.remove(path)?.stopWatching() } catch (_: Exception) {}
+                }
+            }
+            for (path in desired) {
+                if (gridWatchers.containsKey(path)) continue
+                try {
+                    @Suppress("DEPRECATION")
+                    val observer = object : FileObserver(path, gridWatchMask) {
+                        override fun onEvent(event: Int, child: String?) {
+                            if ((event and (FileObserver.DELETE_SELF or FileObserver.MOVE_SELF)) != 0) {
+                                synchronized(gridWatchLock) {
+                                    if (gridWatchers[path] === this) {
+                                        gridWatchers.remove(path)
+                                        try { stopWatching() } catch (_: Exception) {}
+                                    }
+                                }
+                                return
+                            }
+                            if (child == null || !child.endsWith(".pdf", true) ||
+                                child.contains('/') || child == "." || child == "..") return
+                            val changed = java.io.File(path, child).absolutePath
+                            mainHandler.post { gridWatchSink?.success(changed) }
+                        }
+                    }
+                    observer.startWatching()
+                    gridWatchers[path] = observer
+                } catch (_: Exception) {
+                    // No inference about missing files from an unavailable observer.
+                }
+            }
+            return mapOf("watched" to gridWatchers.size, "candidates" to candidates.size)
+        }
+    }
+
+    private fun probeGridPdf(path: String): Map<String, Any> {
+        val unknown = mapOf("state" to "unknown")
+        try {
+            val file = java.io.File(path).canonicalFile
+            if (!file.name.endsWith(".pdf", true) || !isGridLocalPath(file, gridLocalRoots())) return unknown
+            val parent = file.parentFile ?: return unknown
+            // Missing permission, an inaccessible provider, or a missing parent
+            // is not evidence that this individual PDF has been deleted.
+            if (!Os.access(parent.path, android.system.OsConstants.R_OK or android.system.OsConstants.X_OK)) return unknown
+            val uri = Uri.fromFile(file).toString()
+            val stat = try { Os.stat(file.path) } catch (error: android.system.ErrnoException) {
+                if (error.errno == android.system.OsConstants.ENOENT &&
+                    Os.access(parent.path, android.system.OsConstants.R_OK or android.system.OsConstants.X_OK)) {
+                    return mapOf("state" to "missing", "uri" to uri)
+                }
+                return unknown
+            }
+            if (!android.system.OsConstants.S_ISREG(stat.st_mode) ||
+                !Os.access(file.path, android.system.OsConstants.R_OK)) return unknown
+            return mapOf("state" to "available", "uri" to uri, "size" to stat.st_size, "modified" to stat.st_mtime)
+        } catch (_: Exception) { return unknown }
+    }
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "docsgrid/app_lifecycle")
@@ -131,6 +240,36 @@ class MainActivity : FlutterActivity() {
                         }
                     }
                     else -> result.notImplemented()
+                }
+            }
+        // Grid watchers remain active during Activity pause while the process
+        // survives. They are independent of Phone's foreground-only observer.
+        EventChannel(flutterEngine.dartExecutor.binaryMessenger, "docsgrid/grid_external_events")
+            .setStreamHandler(object : EventChannel.StreamHandler {
+                override fun onListen(arguments: Any?, events: EventChannel.EventSink?) { gridWatchSink = events }
+                override fun onCancel(arguments: Any?) { gridWatchSink = null; stopGridWatches() }
+            })
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "docsgrid/grid_external")
+            .setMethodCallHandler { call, result ->
+                if (call.method != "setWatches" && call.method != "probe") {
+                    result.notImplemented()
+                } else {
+                    try {
+                        gridDirectoryExecutor.execute {
+                            val reply = onMainThreadResult(result)
+                            try {
+                                when (call.method) {
+                                    "setWatches" -> {
+                                        val paths = (call.arguments as? List<*>)?.filterIsInstance<String>() ?: emptyList()
+                                        reply.success(setGridWatches(paths))
+                                    }
+                                    "probe" -> reply.success(probeGridPdf(call.arguments as? String ?: ""))
+                                }
+                            } catch (error: Exception) { reply.error("GRID_STORAGE_ERROR", error.message, null) }
+                        }
+                    } catch (_: RejectedExecutionException) {
+                        result.error("BUSY", "Grid storage observer is busy.", null)
+                    }
                 }
             }
         EventChannel(flutterEngine.dartExecutor.binaryMessenger, "docsgrid/storage_changes")
@@ -1357,6 +1496,8 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun onDestroy() {
+        gridWatchSink = null
+        stopGridWatches()
         storageObservationForeground = false
         unregisterStorageChangeObservers()
         gridDirectoryExecutor.shutdown()
