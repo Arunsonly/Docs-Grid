@@ -26,6 +26,7 @@ class GridFolderChange {
 class PortableSnapshotEvents {
   PortableSnapshotEvents._();
 
+  static final StreamController<void> _gridWatchRefreshes = StreamController<void>.broadcast(sync: true);
   static final StreamController<void> _changes =
       StreamController<void>.broadcast(sync: true);
   static final StreamController<GridFolderChange> _gridPreviewChanges =
@@ -54,6 +55,7 @@ class PortableSnapshotEvents {
   }
 
   static Stream<void> get changes => _changes.stream;
+  static Stream<void> get gridWatchRefreshes => _gridWatchRefreshes.stream;
   static Stream<GridFolderChange> get gridPreviewChanges =>
       _gridPreviewChanges.stream;
 
@@ -64,6 +66,9 @@ class PortableSnapshotEvents {
   static void notifyDataChanged({Set<String?>? affectedFolderIds,
     bool preciseGridFolders = false}) {
     if (!_changes.isClosed) _changes.add(null);
+    if (!preciseGridFolders && (affectedFolderIds == null || affectedFolderIds.isNotEmpty)) {
+      _gridWatchRefreshes.add(null);
+    }
     notifyGridPreviewChanged(affectedFolderIds, precise: preciseGridFolders);
   }
 
