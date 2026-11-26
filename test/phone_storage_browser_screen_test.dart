@@ -645,7 +645,7 @@ void main() {
     expect(find.text('Policy.pdf'), findsOneWidget);
   });
 
-  testWidgets('Internal root folder stays visible when its only PDF is recycled',
+  testWidgets('Internal root folder is hidden when its only PDF is recycled',
       (tester) async {
     setTestViewport(tester);
     await tester.pumpWidget(MaterialApp(
@@ -667,11 +667,11 @@ void main() {
         onOpenPdf: (_, __) async {},
       )),
     ));
-    expect(find.text('Internal'), findsOneWidget);
-    expect(find.text('0 PDFs · 1 in Recycle Bin'), findsOneWidget);
+    expect(find.text('Internal'), findsNothing);
+    expect(find.text('0 PDFs · 1 in Recycle Bin'), findsNothing);
   });
 
-  testWidgets('Phone folder stays visible when its last PDF is in Recycle Bin',
+  testWidgets('Phone folder is hidden when its last PDF is in Recycle Bin',
       (tester) async {
     setTestViewport(tester);
     await tester.pumpWidget(MaterialApp(
@@ -694,11 +694,8 @@ void main() {
         onOpenPdf: (_, __) async {},
       )),
     ));
-    expect(find.text('My Policies'), findsOneWidget);
-    expect(find.text('0 PDFs · 2 in Recycle Bin'), findsOneWidget);
-    await tester.tap(find.text('My Policies'));
-    await tester.pumpAndSettle();
-    expect(find.text('0 PDFs'), findsOneWidget);
+    expect(find.text('My Policies'), findsNothing);
+    expect(find.text('0 PDFs · 2 in Recycle Bin'), findsNothing);
     expect(find.byType(DocumentThumbnail), findsNothing);
   });
 

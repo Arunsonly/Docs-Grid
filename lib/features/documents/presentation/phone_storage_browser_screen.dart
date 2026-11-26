@@ -397,7 +397,7 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
       final path = _normalizedDirectoryPath(entry);
       if (path.isEmpty) continue;
       final count = (entry['pdfCount'] as num?)?.toInt() ?? 0;
-      if (count > 0 || entry['isPending'] == true) {
+      if (count > 0) {
         grouped.putIfAbsent(path, () => <Map<String, Object?>>[]);
         final directoryDate = _modifiedAt(entry);
         final previous = lastModifiedByFolder[path];
@@ -801,13 +801,14 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
 
   Widget _buildFolderTile(String path, List<Map<String, Object?>> files) {
     final directory = _directoryFor(path);
-    final bytes = (directory?['sizeBytes'] as num?)?.toInt() ??
-        files.fold<int>(
+    final liveBytes = files.fold<int>(
           0,
           (sum, file) => sum + ((file['sizeBytes'] as num?)?.toInt() ?? 0),
         );
-    final count = (directory?['pdfCount'] as num?)?.toInt() ?? files.length;
-    final inRecycleBin = (directory?['trashPdfCount'] as num?)?.toInt() ?? 0;
+    final summaryBytes = (directory?['sizeBytes'] as num?)?.toInt() ?? 0;
+    final bytes = summaryBytes > liveBytes ? summaryBytes : liveBytes;
+    final summaryCount = (directory?['pdfCount'] as num?)?.toInt() ?? 0;
+    final count = summaryCount > files.length ? summaryCount : files.length;
     return ListTile(
       key: ValueKey('phone-folder-$path'),
       leading: const Icon(Icons.folder_outlined),
@@ -816,9 +817,7 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
       ),
-      subtitle: Text(inRecycleBin == 0
-          ? '$count PDFs · ${_formatSize(bytes)}'
-          : '$count PDFs · $inRecycleBin in Recycle Bin'),
+      subtitle: Text('$count PDFs · ${_formatSize(bytes)}'),
       onTap: () => _selectFolder(path),
       trailing: PopupMenuButton<String>(
         tooltip: 'Folder details and actions',
