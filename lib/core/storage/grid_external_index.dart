@@ -99,6 +99,7 @@ class GridExternalIndex {
     }
     for (final item in observations.entries) {
       if (item.value['state'] != 'missing') continue;
+      if ((await _safeProbe(item.key, probe))['state'] != 'missing') continue;
       await db.transaction((txn) async {
         for (final row in await _at(txn, item.key, item.value['uri'] as String?)) {
           if (await _busy(txn, row)) continue;
@@ -178,7 +179,7 @@ class GridExternalSync {
   static const _channel = MethodChannel('docsgrid/grid_external');
   static const _events = EventChannel('docsgrid/grid_external_events');
   StreamSubscription<dynamic>? _subscription;
-  StreamSubscription<GridFolderChange>? _librarySubscription;
+  StreamSubscription<void>? _librarySubscription;
   final _paths = <String>{};
   Timer? _debounce, _watchDebounce;
   bool _working = false, _watching = false, _watchPending = false, _disposed = false;
@@ -190,9 +191,7 @@ class GridExternalSync {
       _paths.add(event);
       _scheduleDrain();
     }, onError: (Object _) {});
-    _librarySubscription = PortableSnapshotEvents.gridPreviewChanges.listen((change) {
-      if (!change.precise && (change.affectedFolderIds == null || change.affectedFolderIds!.isNotEmpty)) refreshWatches();
-    });
+    _librarySubscription = PortableSnapshotEvents.gridWatchRefreshes.listen((_) => refreshWatches());
     refreshWatches();
   }
 
