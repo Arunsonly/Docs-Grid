@@ -197,8 +197,10 @@ class _FoldersScreenState extends State<FoldersScreen>
     // when the current folder's own document IDs did not change. Global
     // search results can also change for any nonempty structural event.
     final affected = changed == null
-        ? null : <String?>{...changed, _currentFolderId};
-    _gridContentRefreshPending = true;
+        ? null : change.precise && _searchQuery.trim().isEmpty
+            ? changed : <String?>{...changed, _currentFolderId};
+    final refreshCurrent = affected == null || affected.contains(_currentFolderId);
+    if (refreshCurrent) _gridContentRefreshPending = true;
     final revision = ++_folderPreviewRevision;
     final currentKey = FolderPreviewCache.gridKey(_currentFolderId);
     final keys = affected?.map(FolderPreviewCache.gridKey).toSet();
@@ -606,7 +608,7 @@ class _FoldersScreenState extends State<FoldersScreen>
     Future<List<DocumentRecord>> documentsFuture,
   ) async {
     try {
-      final folders = await foldersFuture;
+      final folders = (await foldersFuture).where((f) => !f.externallyEmptied).toList();
       final documents = await documentsFuture;
       if (!mounted || epoch != _folderLoadEpoch ||
           previewRevision != _folderPreviewRevision ||
@@ -727,7 +729,7 @@ class _FoldersScreenState extends State<FoldersScreen>
             totalFolderCount: childCount,
             items: [
               for (final folder in subfolders)
-                FolderPreviewItem(
+                if (!folder.externallyEmptied) FolderPreviewItem(
                   name: folder.name,
                   isFolder: true,
                   pdfCount: folder.pdfCount,
@@ -2390,8 +2392,8 @@ class _FoldersScreenState extends State<FoldersScreen>
                   final query = _searchQuery.trim().toLowerCase();
                   final folderSource = _isReorderingFolders ? _draftFolderOrder : folders;
                   final displayedFolders = folderSource
-                      .where((folder) => query.isEmpty ||
-                          folder.name.toLowerCase().contains(query))
+                      .where((folder) => !folder.externallyEmptied && (query.isEmpty ||
+                          folder.name.toLowerCase().contains(query)))
                       .toList(growable: true);
                   final displayedDocuments = documents
                       .where((document) => query.isEmpty ||
@@ -2415,7 +2417,7 @@ class _FoldersScreenState extends State<FoldersScreen>
                       ascending: _sortAscending,
                     ));
                   }
-                  if (folders.isEmpty && documents.isEmpty &&
+                  if (displayedFolders.isEmpty && documents.isEmpty &&
                       (!_pagedDocumentsMode || _pagedTotalCount == 0) &&
                       query.isEmpty) {
                     return Center(
