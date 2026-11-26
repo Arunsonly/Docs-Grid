@@ -71,9 +71,15 @@ class StorageLocationService {
   }
 
   /// The event is a hint, not a deletion instruction. Unknown events reconcile.
-  Stream<StorageChangeNotice> get storageChanges =>
+  // Share one native EventChannel subscription across Home, Phone and Grid.
+  // Creating a new receiveBroadcastStream per listener replaces the native
+  // event sink; cancellation of one tab can then silence all other tabs.
+  // The broadcast stream starts on its first listener and stops on its last.
+  late final Stream<StorageChangeNotice> _storageChanges =
       _changesChannel.receiveBroadcastStream()
           .map<StorageChangeNotice>(StorageChangeNotice.fromPlatform);
+
+  Stream<StorageChangeNotice> get storageChanges => _storageChanges;
 
   /// Only an explicit native NOT_FOUND result permits creating a provider child.
   /// Permission, provider and I/O failures must propagate without side effects.
