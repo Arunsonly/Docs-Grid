@@ -264,6 +264,7 @@ class MainActivity : FlutterActivity() {
                                         reply.success(setGridWatches(paths))
                                     }
                                     "probe" -> reply.success(probeGridPdf(call.arguments as? String ?: ""))
+                                    else -> reply.notImplemented()
                                 }
                             } catch (error: Exception) { reply.error("GRID_STORAGE_ERROR", error.message, null) }
                         }
