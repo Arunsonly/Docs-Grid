@@ -13,6 +13,7 @@ import '../../../core/database/app_database.dart';
 import '../../../core/storage/durable_file_operations.dart';
 import '../../../core/storage/storage_location_service.dart';
 import '../../../core/storage/portable_snapshot_events.dart';
+import '../../../core/storage/grid_external_index.dart';
 import '../../../core/storage/storage_migration_gate.dart';
 import '../domain/folder.dart';
 
@@ -109,13 +110,21 @@ class FolderRepository {
       throw ArgumentError.value(previewLimit, 'previewLimit', 'Must be 1..24');
     }
     final db = await _database.database;
+    await GridExternalIndex.ensureSchema(db);
     final rows = await db.rawQuery(
       '''
       SELECT f.*, COUNT(d.id) AS pdf_count,
-        COALESCE(SUM(d.size_bytes), 0) AS pdf_bytes
+        COALESCE(SUM(d.size_bytes), 0) AS pdf_bytes,
+        CASE WHEN COUNT(d.id) = 0
+          AND EXISTS (SELECT 1 FROM documents hidden
+            INNER JOIN grid_external_missing gm ON gm.document_id = hidden.id
+            WHERE hidden.folder_id = f.id AND hidden.deleted_at IS NULL)
+          AND NOT EXISTS (SELECT 1 FROM folders child
+            WHERE child.parent_id = f.id AND child.deleted_at IS NULL)
+        THEN 1 ELSE 0 END AS externally_emptied
       FROM folders f
       LEFT JOIN documents d
-        ON d.folder_id = f.id AND d.deleted_at IS NULL
+        ON d.folder_id = f.id AND d.deleted_at IS NULL AND ${GridExternalIndex.visible('d')}
       WHERE ${parentId == null ? 'f.parent_id IS NULL' : 'f.parent_id = ?'}
         AND f.deleted_at IS NULL
       GROUP BY f.id
