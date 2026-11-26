@@ -14,6 +14,7 @@ import 'share_import_receipts.dart';
 import '../../../core/storage/byte_stream_file.dart';
 import '../../../core/storage/storage_location_service.dart';
 import '../../../core/storage/portable_snapshot_events.dart';
+import '../../../core/storage/grid_external_index.dart';
 import '../../../core/storage/storage_migration_gate.dart';
 import '../../folders/data/folder_repository.dart';
 import 'phone_trash_origin.dart';
@@ -361,8 +362,10 @@ class DocumentRepository {
   Future<List<DocumentRecord>> list({String query = '', bool favoritesOnly = false, bool recentOnly = false}) async {
     final db = await _database.database;
     final normalizedQuery = query.trim();
+    if (normalizedQuery.isNotEmpty) await GridExternalIndex.ensureSchema(db);
     final where = <String>[
       'd.deleted_at IS NULL',
+      if (normalizedQuery.isNotEmpty) GridExternalIndex.visible('d'),
       if (recentOnly) 'd.last_opened_at IS NOT NULL',
     ];
     final args = <Object?>[];
@@ -418,8 +421,10 @@ class DocumentRepository {
       throw ArgumentError('Both cursor fields must be supplied together.');
     }
     final db = await _database.database;
+    await GridExternalIndex.ensureSchema(db);
     final where = <String>[
       'd.deleted_at IS NULL',
+      GridExternalIndex.visible('d'),
       if (folderId == null) 'd.folder_id IS NULL' else 'd.folder_id = ?',
       if (afterName != null)
         '(d.name COLLATE NOCASE > ? OR '
@@ -457,10 +462,11 @@ class DocumentRepository {
   /// Accurate total PDF count independent of how many pages the user viewed.
   Future<int> countInFolder(String? folderId) async {
     final db = await _database.database;
+    await GridExternalIndex.ensureSchema(db);
     final rows = await db.rawQuery(
       folderId == null
-          ? 'SELECT COUNT(*) AS total FROM documents WHERE deleted_at IS NULL AND folder_id IS NULL'
-          : 'SELECT COUNT(*) AS total FROM documents WHERE deleted_at IS NULL AND folder_id = ?',
+          ? "SELECT COUNT(*) AS total FROM documents d WHERE deleted_at IS NULL AND folder_id IS NULL AND ${GridExternalIndex.visible('d')}"
+          : "SELECT COUNT(*) AS total FROM documents d WHERE deleted_at IS NULL AND folder_id = ? AND ${GridExternalIndex.visible('d')}",
       folderId == null ? const <Object?>[] : <Object?>[folderId],
     );
     return (rows.first['total'] as num).toInt();
@@ -468,6 +474,7 @@ class DocumentRepository {
 
   Future<List<DocumentRecord>> listInFolder(String? folderId) async {
     final db = await _database.database;
+    await GridExternalIndex.ensureSchema(db);
     final rows = await db.rawQuery(
       '''
       SELECT d.*, c.name AS category_name,
@@ -475,7 +482,7 @@ class DocumentRepository {
           INNER JOIN tags t ON t.id = dt.tag_id WHERE dt.document_id = d.id) AS tag_names
       FROM documents d
       LEFT JOIN categories c ON c.id = d.category_id
-      WHERE d.deleted_at IS NULL AND ${folderId == null ? 'd.folder_id IS NULL' : 'd.folder_id = ?'}
+      WHERE d.deleted_at IS NULL AND ${GridExternalIndex.visible('d')} AND ${folderId == null ? 'd.folder_id IS NULL' : 'd.folder_id = ?'}
       ORDER BY d.name COLLATE NOCASE ASC
       ''',
       folderId == null ? [] : [folderId],
