@@ -51,9 +51,12 @@ class GridExternalIndex {
 
   Future<List<Map<String, Object?>>> _at(DatabaseExecutor executor, String path, String? nativeUri) {
     final locations = <String>{path, Uri.file(path).toString(), if (nativeUri != null) nativeUri}.toList();
-    return executor.query('documents',
-      where: 'deleted_at IS NULL AND storage_uri IN (${List.filled(locations.length, '?').join(',')})',
-      whereArgs: locations);
+    // SQLite can otherwise prefer the deleted_at index and walk every
+    // active record. Force the exact storage locator index for this lookup.
+    return executor.rawQuery(
+      'SELECT * FROM documents INDEXED BY idx_grid_storage_uri '
+      'WHERE deleted_at IS NULL AND storage_uri IN (${List.filled(locations.length, '?').join(',')})',
+      locations);
   }
 
   Future<bool> _busy(DatabaseExecutor txn, Map<String, Object?> row) async {
