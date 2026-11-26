@@ -8,6 +8,7 @@ class Folder {
     this.storageUri,
     this.pdfCount = 0,
     this.pdfBytes = 0,
+    this.externallyEmptied = false,
   });
 
   final String id;
@@ -16,6 +17,7 @@ class Folder {
   final String? storageUri;
   final int pdfCount;
   final int pdfBytes;
+  final bool externallyEmptied;
   final DateTime createdAt;
   final DateTime updatedAt;
 
@@ -26,6 +28,7 @@ class Folder {
         storageUri: map['storage_uri_or_relative_path'] as String?,
         pdfCount: (map['pdf_count'] as num?)?.toInt() ?? 0,
         pdfBytes: (map['pdf_bytes'] as num?)?.toInt() ?? 0,
+        externallyEmptied: map['externally_emptied'] == 1,
         createdAt: DateTime.parse(map['created_at'] as String),
         updatedAt: DateTime.parse(map['updated_at'] as String),
       );
