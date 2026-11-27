@@ -2467,7 +2467,9 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       } catch (error) {
         if (mounted) _message('Storage refresh needs attention: $error');
       }
-      if (mounted && (duplicates > 0 || failed > 0 || !recentSaved)) {
+      if (mounted && selected.length == 1 && duplicates > 0) {
+        _message('This PDF already exists in Grid. The Phone original was kept.');
+      } else if (mounted && (duplicates > 0 || failed > 0 || !recentSaved)) {
         _message('Moved ${movedSources.length} of ${selected.length} PDFs to Grid. '
             '${duplicates > 0 ? "$duplicates duplicate originals kept. " : ""}'
             '${failed > 0 ? "$failed moves not confirmed; check both locations. " : ""}'
