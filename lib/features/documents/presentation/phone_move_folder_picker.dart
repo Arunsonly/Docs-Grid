@@ -1,15 +1,21 @@
 import 'package:flutter/material.dart';
 
 import '../../../core/storage/storage_location_service.dart';
+import '../../../core/storage/grid_storage_boundary.dart';
 
 class PhoneFolderDestination {
-  const PhoneFolderDestination({required this.uri, required this.path});
+  const PhoneFolderDestination({required this.uri, required this.path})
+      : isGrid = false;
+  const PhoneFolderDestination.grid()
+      : uri = '', path = 'Grid Storage', isGrid = true;
   final String uri;
   final String path;
+  final bool isGrid;
 }
 
-/// Existing Phone/SD/SAF destinations only; never changes DocsGrid's selected
-/// library root. Lists one folder level at a time, not the complete phone tree.
+/// Physical Phone/SD/SAF destinations plus an optional typed Grid choice.
+/// Grid is handled by the managed import flow, never as a physical Phone URI.
+/// Lists one folder level at a time, not the complete phone tree.
 class PhoneMoveFolderPicker extends StatefulWidget {
   const PhoneMoveFolderPicker({
     super.key,
@@ -17,12 +23,16 @@ class PhoneMoveFolderPicker extends StatefulWidget {
     required this.listDirectory,
     required this.createDirectory,
     this.sourceFolderPath = '',
+    this.excludedGrid,
+    this.allowGridDestination = false,
   });
 
   final List<Map<String, String>> roots;
   final Future<List<Map<String, Object?>>> Function(String uri) listDirectory;
   final Future<String> Function(String parentUri, String name) createDirectory;
   final String sourceFolderPath;
+  final GridStorageBoundary? excludedGrid;
+  final bool allowGridDestination;
 
   @override
   State<PhoneMoveFolderPicker> createState() => _PhoneMoveFolderPickerState();
@@ -37,7 +47,8 @@ class _PhoneMoveFolderPickerState extends State<PhoneMoveFolderPicker> {
 
   bool _safeFolderUri(String uri) =>
       uri.isNotEmpty &&
-      !StorageLocationService.isRestrictedPhoneMoveDestination(uri);
+      !StorageLocationService.isRestrictedPhoneMoveDestination(uri) &&
+      !(widget.excludedGrid?.isManagedPath(uri) ?? false);
 
   PhoneFolderDestination? get _selected =>
       _ancestors.isEmpty ? null : _ancestors.last;
@@ -157,9 +168,9 @@ class _PhoneMoveFolderPickerState extends State<PhoneMoveFolderPicker> {
                 IconButton(key: const ValueKey('phone-move-back'),
                     tooltip: 'Parent folder',
                     onPressed: _back, icon: const Icon(Icons.arrow_back)),
-              const Expanded(
-                child: Text('Move to Phone folder',
-                  style: TextStyle(fontSize: 19, fontWeight: FontWeight.w700)),
+              Expanded(
+                child: Text(widget.allowGridDestination ? 'Move to folder' : 'Move to Phone folder',
+                  style: const TextStyle(fontSize: 19, fontWeight: FontWeight.w700)),
               ),
               IconButton(tooltip: 'Cancel',
                 onPressed: () => Navigator.of(context).pop(),
@@ -167,7 +178,9 @@ class _PhoneMoveFolderPickerState extends State<PhoneMoveFolderPicker> {
             ]),
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 10),
-              child: Text(selected?.path ?? 'Choose internal storage or an accessible location',
+              child: Text(selected?.path ?? (widget.allowGridDestination
+                  ? 'Choose Phone or Grid Storage'
+                  : 'Choose internal storage or an accessible location'),
                 maxLines: 2, overflow: TextOverflow.ellipsis,
                 style: Theme.of(context).textTheme.bodyMedium),
             ),
@@ -187,6 +200,15 @@ class _PhoneMoveFolderPickerState extends State<PhoneMoveFolderPicker> {
                                 path: root['name'] ?? 'Phone storage',
                               )),
                             ),
+                        if (widget.allowGridDestination)
+                          ListTile(
+                            key: const ValueKey('phone-move-grid-destination'),
+                            leading: const Icon(Icons.grid_view_outlined),
+                            title: const Text('Grid Storage'),
+                            trailing: const Icon(Icons.chevron_right),
+                            onTap: () => Navigator.pop(context,
+                                const PhoneFolderDestination.grid()),
+                          ),
                         if (widget.roots.isEmpty)
                           const ListTile(title: Text('No authorized Phone folders.')),
                       ],
