@@ -77,6 +77,42 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('batch picker offers Grid independently from physical Phone folders',
+      (tester) async {
+    PhoneFolderDestination? selected;
+    var reads = 0;
+    await tester.pumpWidget(MaterialApp(home: Scaffold(body: Builder(
+      builder: (context) => ElevatedButton(
+        onPressed: () async {
+          selected = await showModalBottomSheet<PhoneFolderDestination>(
+            context: context,
+            isScrollControlled: true,
+            builder: (_) => FractionallySizedBox(
+              heightFactor: 0.75,
+              child: PhoneMoveFolderPicker(
+                roots: const [{'uri': 'file:///root', 'name': 'Internal storage'}],
+                allowGridDestination: true,
+                listDirectory: (_) async { reads++; return []; },
+                createDirectory: (_, __) async => throw StateError('Not needed'),
+              ),
+            ),
+          );
+        },
+        child: const Text('Open picker'),
+      ),
+    ))));
+    await tester.tap(find.text('Open picker'));
+    await tester.pumpAndSettle();
+    expect(find.text('Internal storage'), findsOneWidget);
+    expect(find.text('Grid Storage'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('phone-move-grid-destination')));
+    await tester.pumpAndSettle();
+    expect(selected?.isGrid, isTrue);
+    expect(selected?.uri, isEmpty);
+    expect(reads, 0);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('picker cancellation makes no move or file-storage operation',
       (tester) async {
     var calls = 0;
