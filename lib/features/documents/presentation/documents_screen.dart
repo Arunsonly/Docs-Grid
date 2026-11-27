@@ -2142,30 +2142,22 @@ class _DocumentsScreenState extends State<DocumentsScreen>
     );
   }
 
-  /// Phone multi-select Move chooses one destination and runs the already
-  /// checksum-verified move service for each source. No Grid metadata changes.
+  /// Select one destination for the entire Phone selection. Grid is routed
+  /// through the managed import service; physical Phone moves remain separate.
   Future<bool> _movePhoneSelectedWithinPhone(
     List<Map<String, Object?>> selected,
   ) async {
     if (selected.isEmpty) return false;
-    if (selected.length == 1) {
-      final entry = selected.single;
-      return _movePhonePdfWithinPhone(
-          entry['uri'] as String, entry['name'] as String);
-    }
     final storage = StorageLocationService.instance;
-    final List<Map<String, String>> roots;
+    List<Map<String, String>> roots = [];
     try {
       roots = await storage.accessibleStorageRoots();
-    } catch (error) {
-      if (mounted) _message('Could not list Phone folders: $error');
-      return false;
+    } catch (_) {
+      // Grid remains available even when Phone roots cannot be enumerated.
     }
     if (!mounted) return false;
-    if (roots.isEmpty) {
-      _message('No accessible Phone folders. Check storage access.');
-      return false;
-    }
+    final sourcePaths = selected.map((row) =>
+        (row['folderPath'] ?? row['path'] ?? '').toString()).toSet();
     final destination = await showModalBottomSheet<PhoneFolderDestination>(
       context: context,
       isScrollControlled: true,
@@ -2175,7 +2167,8 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         child: PhoneMoveFolderPicker(
           roots: roots,
           excludedGrid: _gridBoundary,
-          sourceFolderPath: '',
+          sourceFolderPath: sourcePaths.length == 1 ? sourcePaths.single : '',
+          allowGridDestination: true,
           listDirectory: storage.listDirectory,
           createDirectory: (parent, folderName) =>
               storage.createDirectory(parentUri: parent, name: folderName),
@@ -2183,6 +2176,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       ),
     );
     if (destination == null || !mounted) return false;
+    if (destination.isGrid) return _movePhonePdfsToGrid(selected);
     final movedSources = <String>{};
     var failed = 0;
     for (final entry in selected) {
@@ -2314,14 +2308,18 @@ class _DocumentsScreenState extends State<DocumentsScreen>
     }
   }
 
-  Future<bool> _movePhonePdfToGrid(String uri, String name) async {
+  Future<bool> _movePhonePdfToGrid(String uri, String name) =>
+      _movePhonePdfsToGrid([{'uri': uri, 'name': name}]);
+
+  Future<String?> _chooseGridMoveDestination(int count) async {
     var folders = await _folderRepository.allFoldersWithPaths();
+    if (!mounted) return null;
     var selectedFolderId = '';
     final destination = await showDialog<String?>(
       context: context,
       builder: (dialogContext) => StatefulBuilder(
         builder: (context, refresh) => AlertDialog(
-          title: const Text('Move PDF to Grid'),
+          title: Text(count == 1 ? 'Move PDF to Grid' : 'Move $count PDFs to Grid'),
           content: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -2397,52 +2395,86 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         ),
       ),
     );
-    if (destination == null) return false;
+    return destination;
+  }
+
+  /// Each original is removed only by the existing verified Grid import.
+  /// One destination is selected, then refresh Phone and Grid once per batch.
+  Future<bool> _movePhonePdfsToGrid(
+    List<Map<String, Object?>> selected,
+  ) async {
+    if (selected.isEmpty) return false;
+    String? destination;
     try {
-      final result = await _repository.moveExternalPdfToGrid(
-        sourceUri: uri,
-        displayName: name,
-        targetFolderId: destination.isEmpty ? null : destination,
-      );
-      if (result.added == 1) {
+      destination = await _chooseGridMoveDestination(selected.length);
+    } catch (error) {
+      if (mounted) _message('Could not open Grid folders: $error');
+      return false;
+    }
+    if (destination == null || !mounted) return false;
+    final movedSources = <String>{};
+    var duplicates = 0;
+    var failed = 0;
+    var recentSaved = true;
+    for (final entry in selected) {
+      final uri = entry['uri'] as String;
+      final name = entry['name'] as String;
+      try {
+        final result = await _repository.moveExternalPdfToGrid(
+          sourceUri: uri,
+          displayName: name,
+          targetFolderId: destination.isEmpty ? null : destination,
+        );
+        if (result.added != 1) {
+          if (result.duplicates > 0) {
+            duplicates++;
+          } else {
+            failed++;
+          }
+          continue;
+        }
+        movedSources.add(uri);
         try { await PhoneStarRepository.remove(uri); } catch (_) {}
-        await _loadPhoneStarred();
-        // The source was deleted only after a checksum-verified Grid import.
-        // Persist the removal even if the user switched tabs while moving;
-        // the next Home view must not reload the now-invalid Phone URI.
-        var recentSaved = true;
         try {
           await PhoneRecentHistory.removeMovedSource(uri);
         } catch (_) {
           recentSaved = false;
         }
-        if (mounted) {
-          setState(() {
-            _phoneRecent = _phoneRecent
-                .where((entry) => entry['uri'] != uri)
-                .toList(growable: false);
-            _phoneEntries = _phoneEntries
-                .where((entry) => entry['uri'] != uri)
-                .toList(growable: false);
-            _recentFilter = 'grid';
-          });
-          await _loadRecentDocuments();
-          if (!recentSaved) {
-            _message('PDF moved, but Phone Recent cleanup could not be saved.');
-          }
-        }
-      } else if (result.duplicates > 0 && mounted) {
-        _message('This PDF already exists in Grid. The Phone original was kept.');
+      } catch (_) {
+        // Import may have succeeded before provider deletion failed.
+        // Never delete another copy or claim that the move completed.
+        failed++;
       }
-      if (!mounted) return result.added == 1;
-      await _scanPhoneStorage(openBrowser: false);
-      await _load();
-      await _refreshDashboardSummary();
-      return result.added == 1;
-    } catch (error) {
-      if (mounted) _message('Could not move $name. The Phone original was kept: $error');
-      return false;
     }
+    if (mounted) {
+      if (movedSources.isNotEmpty) {
+        setState(() {
+          _phoneRecent = _phoneRecent.where(
+              (row) => !movedSources.contains(row['uri']))
+              .toList(growable: false);
+          _phoneEntries = _phoneEntries.where(
+              (row) => !movedSources.contains(row['uri']))
+              .toList(growable: false);
+          _recentFilter = 'grid';
+        });
+      }
+      try {
+        await _loadPhoneStarred();
+        await _loadRecentDocuments();
+        await _scanPhoneStorage(openBrowser: false);
+        await _load();
+        await _refreshDashboardSummary();
+      } catch (error) {
+        if (mounted) _message('Storage refresh needs attention: $error');
+      }
+      if (mounted && (duplicates > 0 || failed > 0 || !recentSaved)) {
+        _message('Moved ${movedSources.length} of ${selected.length} PDFs to Grid. '
+            '${duplicates > 0 ? "$duplicates duplicate originals kept. " : ""}'
+            '${failed > 0 ? "$failed moves not confirmed; check both locations. " : ""}'
+            '${recentSaved ? "" : "Phone Recent cleanup needs attention."}');
+      }
+    }
+    return movedSources.isNotEmpty;
   }
 
   /// The Phone three-dot Move action changes only the physical Phone file.
