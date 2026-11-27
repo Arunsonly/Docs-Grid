@@ -121,6 +121,86 @@ void main() {
     expect(backupEvents, 0);
   });
 
+  test('cold local reconciliation skips an unchanged directory and repairs missed delete and restore', () async {
+    await add('original', oldPath);
+    final directory = File(oldPath).parent.path;
+    var stampNow = 'one';
+    var available = true;
+    var reads = 0;
+    var skips = 0;
+    Future<Map<String, Object?>> snapshot(String uri, String? known) async {
+      expect(uri, directory);
+      if (known == stampNow) {
+        skips++;
+        return {'complete': true, 'unchanged': true, 'stamp': stampNow};
+      }
+      reads++;
+      return {'complete': true, 'stamp': stampNow, 'entries': [
+        if (available) {'uri': Uri.file(oldPath).toString(), 'name': 'old.pdf',
+          'size': 100, 'sizeKnown': true, 'lastModified': 42},
+      ]};
+    }
+    Future<GridExternalResult> reconcile() => index.reconcileDirectory(
+      directory: directory, folderId: folder, snapshot: snapshot,
+      digest: (path) async { hashed.add(path); return hash; });
+    expect((await reconcile()).affected, isEmpty);
+    expect((await reconcile()).affected, isEmpty);
+    expect(reads, 1);
+    expect(skips, 1);
+    stampNow = 'two';
+    available = false;
+    expect((await reconcile()).affected, {folder, null});
+    expect(await documents.recentActivity(), isEmpty);
+    expect(hashed, isEmpty);
+    stampNow = 'three';
+    available = true;
+    expect((await reconcile()).affected, {folder, null});
+    expect((await documents.recentActivity()).single.id, 'original');
+    expect(hashed, [oldPath]);
+  });
+
+  test('SAF scoped snapshots hide only verified absent PDFs and preserve stable-ID renames', () async {
+    const directory = 'content://provider/tree/root/document/folder';
+    const uri = 'content://provider/tree/root/document/pdf-id';
+    await add('original', oldPath);
+    await db.update('documents', {'storage_uri': uri, 'name': 'old'},
+        where: 'id = ?', whereArgs: ['original']);
+    await add('unrelated', newPath);
+    var name = 'old.pdf';
+    var available = true;
+    var complete = true;
+    Future<Map<String, Object?>> snapshot(String requested, String? known) async {
+      expect(requested, directory);
+      return {'complete': complete, 'stamp': '', 'entries': [
+        if (available) {'uri': uri, 'name': name, 'size': 100,
+          'sizeKnown': true, 'lastModified': 42},
+      ]};
+    }
+    Future<GridExternalResult> reconcile() => index.reconcileDirectory(
+      directory: directory, folderId: folder, snapshot: snapshot,
+      digest: (path) async { hashed.add(path); return hash; });
+    await reconcile();
+    available = false;
+    complete = false;
+    expect((await reconcile()).affected, isEmpty);
+    expect(await documents.countInFolder(folder), 2);
+    complete = true;
+    expect((await reconcile()).affected, {folder, null});
+    expect(await documents.countInFolder(folder), 1);
+    expect((await documents.recentActivity()).single.id, 'unrelated');
+    available = true;
+    await reconcile();
+    expect(await documents.countInFolder(folder), 2);
+    name = 'renamed.pdf';
+    final renamed = await reconcile();
+    expect(renamed.renamed, isTrue);
+    final row = (await db.query('documents', where: 'id = ?', whereArgs: ['original'])).single;
+    expect(row['storage_uri'], uri);
+    expect(row['name'], 'renamed');
+    expect(row['sha256'], hash);
+    expect((await reconcile()).renamed, isFalse);
+  });
+
   test('permission or unknown errors never hide a PDF', () async {
     await add('original', oldPath);
     states[oldPath] = 'unknown';

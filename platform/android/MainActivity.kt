@@ -283,7 +283,8 @@ class MainActivity : FlutterActivity() {
                     "size" to st.st_size, "sizeKnown" to true, "lastModified" to child.lastModified()))
             }
             if (before != stamp()) return incomplete
-            return mapOf("complete" to true, "stamp" to before, "entries" to entries)
+            val safeStamp = if (System.currentTimeMillis() - directory.lastModified() > 2000L) before else ""
+            return mapOf("complete" to true, "stamp" to safeStamp, "entries" to entries)
         } catch (_: Exception) { return incomplete }
     }
 

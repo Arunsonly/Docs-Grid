@@ -283,11 +283,16 @@ class GridExternalIndex {
     // Only plausible replacement/rename candidates are hashed. Never hash
     // every PDF in a directory merely to detect deletion.
     if (missingSizes.isNotEmpty) {
+      final candidates = <String>[];
       for (final item in entries.entries) {
         if (!expected.containsKey(item.key) &&
             (missingSizes.contains(0) || item.value['sizeKnown'] != true ||
-             missingSizes.contains(item.value['size']))) changed.add(item.key);
+             missingSizes.contains(item.value['size']))) candidates.add(item.key);
+        if (candidates.length > 32) break;
       }
+      // A mass/ambiguous change must not turn a metadata reconciliation
+      // into an unbounded full-PDF hashing operation.
+      if (candidates.length <= 32) changed.addAll(candidates);
     }
     final all = <String>{...expected.keys, ...entries.keys};
     if (changed.isNotEmpty) {
@@ -318,11 +323,16 @@ class GridExternalIndex {
       // A changed pass deliberately leaves the stamp invalid so a later
       // cold/resume reconciliation can retry locked or unmatched records.
       // Persist only names whose rename was actually accepted by SQLite.
-      final names = <String, String>{...previousNames};
+      final names = <String, String>{for (final entry in previousNames.entries) if (expected.containsKey(entry.key)) entry.key: entry.value};
       for (final entry in verified.entries) {
+        final name = entry.value['name'] as String;
+        if (!changed.contains(entry.key)) {
+          if (expected.containsKey(entry.key)) names[entry.key] = name;
+          continue;
+        }
+        // Only changed locators need a fresh SQLite lookup.
         final actual = await _at(db, entry.key, entry.value['uri'] as String?);
         if (actual.length != 1) continue;
-        final name = entry.value['name'] as String;
         if (previousNames[entry.key] == null ||
             actual.single['name'] == p.basenameWithoutExtension(name)) {
           names[entry.key] = name;
@@ -333,7 +343,7 @@ class GridExternalIndex {
       return result;
     }
     await db.insert(_checkpoints, {'directory_uri': directory, 'stamp': stamp,
-      'names_json': jsonEncode({...previousNames, for (final entry in entries.entries) if (expected.containsKey(entry.key)) entry.key: entry.value['name']})},
+      'names_json': jsonEncode({for (final entry in previousNames.entries) if (expected.containsKey(entry.key)) entry.key: entry.value, for (final entry in entries.entries) if (expected.containsKey(entry.key)) entry.key: entry.value['name']})},
       conflictAlgorithm: ConflictAlgorithm.replace);
     return empty;
   }
