@@ -203,7 +203,7 @@ class _DocsGridHomeState extends State<DocsGridHome> with WidgetsBindingObserver
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
-      _gridExternalSync.refreshWatches();
+      _gridExternalSync.refreshWatches(reconcile: true);
       unawaited(_refreshReminderSchedules());
       unawaited(_consumeSharedPdfs());
       _schedulePortableSnapshot();

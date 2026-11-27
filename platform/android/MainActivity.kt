@@ -70,6 +70,7 @@ class MainActivity : FlutterActivity() {
     @Volatile private var gridWatchSink: EventChannel.EventSink? = null
     private val gridWatchLock = Any()
     private val gridWatchers = linkedMapOf<String, FileObserver>()
+    private val gridSafWatchers = linkedMapOf<String, ContentObserver>()
     private val gridWatchMask = FileObserver.CLOSE_WRITE or FileObserver.MOVED_TO or
         FileObserver.MOVED_FROM or FileObserver.DELETE or FileObserver.DELETE_SELF or FileObserver.MOVE_SELF
 
@@ -94,6 +95,10 @@ class MainActivity : FlutterActivity() {
                 try { observer.stopWatching() } catch (_: Exception) {}
             }
             gridWatchers.clear()
+            for (observer in gridSafWatchers.values) {
+                try { contentResolver.unregisterContentObserver(observer) } catch (_: Exception) {}
+            }
+            gridSafWatchers.clear()
         }
     }
 
@@ -101,16 +106,23 @@ class MainActivity : FlutterActivity() {
         val roots = gridLocalRoots()
         val prefs = getSharedPreferences("docsgrid_storage", MODE_PRIVATE)
         val candidates = linkedSetOf<String>()
-        for (key in listOf("documents_uri", "folders_uri")) {
-            val saved = prefs.getString(key, null) ?: continue
+        val unfiled = prefs.getString("documents_uri", null)
+            ?: prefs.getString("tree_uri", null)
+        for (saved in listOfNotNull(unfiled, prefs.getString("folders_uri", null))) {
             val uri = Uri.parse(saved)
             if (uri.scheme == "file") uri.path?.let { candidates.add(it) }
+            else if (uri.scheme == "content") candidates.add(saved)
         }
         candidates.addAll(paths)
         val desired = linkedSetOf<String>()
+        val safDesired = linkedSetOf<String>()
         for (path in candidates) {
-            if (desired.size >= 1024) break
+            if (desired.size + safDesired.size >= 1024) break
             try {
+                if (path.startsWith("content://")) {
+                    if (gridSafAllowed(Uri.parse(path))) safDesired.add(path)
+                    continue
+                }
                 val dir = java.io.File(path).canonicalFile
                 if (isGridLocalPath(dir, roots) && dir.isDirectory && dir.canRead()) desired.add(dir.path)
             } catch (_: Exception) {}
@@ -135,6 +147,7 @@ class MainActivity : FlutterActivity() {
                                         try { stopWatching() } catch (_: Exception) {}
                                     }
                                 }
+                                mainHandler.post { gridWatchSink?.success(mapOf("directory" to path)) }
                                 return
                             }
                             if (child == null || !child.endsWith(".pdf", true) ||
@@ -149,8 +162,129 @@ class MainActivity : FlutterActivity() {
                     // No inference about missing files from an unavailable observer.
                 }
             }
-            return mapOf("watched" to gridWatchers.size, "candidates" to candidates.size)
+            for (uri in gridSafWatchers.keys.toList()) {
+                if (uri !in safDesired) {
+                    try { gridSafWatchers.remove(uri)?.let { contentResolver.unregisterContentObserver(it) } } catch (_: Exception) {}
+                }
+            }
+            for (value in safDesired) {
+                if (gridSafWatchers.containsKey(value)) continue
+                try {
+                    val uri = Uri.parse(value)
+                    val parent = resolveParentUri(uri)
+                    val children = DocumentsContract.buildChildDocumentsUriUsingTree(uri, DocumentsContract.getDocumentId(parent))
+                    val observer = object : ContentObserver(mainHandler) {
+                        override fun onChange(selfChange: Boolean) {
+                            gridWatchSink?.success(mapOf("directory" to value))
+                        }
+                        override fun onChange(selfChange: Boolean, changedUri: Uri?) {
+                            gridWatchSink?.success(mapOf("directory" to value))
+                        }
+                    }
+                    contentResolver.registerContentObserver(children, true, observer)
+                    try {
+                        contentResolver.registerContentObserver(parent, true, observer)
+                    } catch (_: Exception) {}
+                    gridSafWatchers[value] = observer
+                } catch (_: Exception) {}
+            }
+            return mapOf("watched" to gridWatchers.size, "safWatched" to gridSafWatchers.size,
+                "candidates" to candidates.size, "unfiled" to (unfiled ?: ""))
         }
+    }
+
+    private fun gridSafAllowed(uri: Uri): Boolean {
+        if (uri.scheme != "content" || !DocumentsContract.isTreeUri(uri)) return false
+        return try {
+            val treeId = DocumentsContract.getTreeDocumentId(uri)
+            val prefs = getSharedPreferences("docsgrid_storage", MODE_PRIVATE)
+            val roots = listOfNotNull(prefs.getString("docsgrid_uri", null),
+                prefs.getString("documents_uri", null), prefs.getString("tree_uri", null))
+            val configured = roots.any { value ->
+                val root = Uri.parse(value)
+                root.scheme == "content" && root.authority == uri.authority &&
+                    DocumentsContract.isTreeUri(root) && DocumentsContract.getTreeDocumentId(root) == treeId
+            }
+            configured && contentResolver.persistedUriPermissions.any {
+                it.isReadPermission && it.uri.authority == uri.authority &&
+                    DocumentsContract.isTreeUri(it.uri) && DocumentsContract.getTreeDocumentId(it.uri) == treeId
+            }
+        } catch (_: Exception) { false }
+    }
+
+    // A complete scoped metadata snapshot, never a recursive walk or PDF read.
+    // Local directory stamps avoid re-enumeration after a cold process restart.
+    private fun snapshotGridDirectory(value: String, knownStamp: String?): Map<String, Any> {
+        val incomplete = mapOf("complete" to false)
+        try {
+            if (value.startsWith("content://")) {
+                val uri = Uri.parse(value)
+                if (!gridSafAllowed(uri)) return incomplete
+                val parent = resolveParentUri(uri)
+                val parentOk = contentResolver.query(parent,
+                    arrayOf(DocumentsContract.Document.COLUMN_MIME_TYPE), null, null, null)?.use {
+                    it.moveToFirst() && it.getString(0) == DocumentsContract.Document.MIME_TYPE_DIR &&
+                        !it.extras.getBoolean("loading", false) && it.extras.getString("error").isNullOrEmpty()
+                } ?: false
+                if (!parentOk) return incomplete
+                val children = DocumentsContract.buildChildDocumentsUriUsingTree(uri, DocumentsContract.getDocumentId(parent))
+                val entries = mutableListOf<Map<String, Any>>()
+                val complete = contentResolver.query(children, arrayOf(
+                    DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                    DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                    DocumentsContract.Document.COLUMN_MIME_TYPE,
+                    DocumentsContract.Document.COLUMN_SIZE,
+                    DocumentsContract.Document.COLUMN_LAST_MODIFIED), null, null, null)?.use { cursor ->
+                    if (cursor.extras.getBoolean("loading", false) || !cursor.extras.getString("error").isNullOrEmpty()) return@use false
+                    val id = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
+                    val name = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+                    val mime = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_MIME_TYPE)
+                    val size = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_SIZE)
+                    val modified = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_LAST_MODIFIED)
+                    if (id < 0 || name < 0 || mime < 0) return@use false
+                    while (cursor.moveToNext()) {
+                        if (cursor.isNull(id) || cursor.isNull(name) || cursor.isNull(mime)) return@use false
+                        val filename = cursor.getString(name)
+                        val kind = cursor.getString(mime)
+                        if (kind == DocumentsContract.Document.MIME_TYPE_DIR ||
+                            (!filename.endsWith(".pdf", true) && kind != "application/pdf")) continue
+                        if (entries.size >= 20000) return@use false
+                        val hasSize = size >= 0 && !cursor.isNull(size) && cursor.getLong(size) >= 0
+                        entries.add(mapOf("uri" to DocumentsContract.buildDocumentUriUsingTree(uri, cursor.getString(id)).toString(),
+                            "name" to filename, "size" to (if (hasSize) cursor.getLong(size) else 0L),
+                            "sizeKnown" to hasSize,
+                            "lastModified" to (if (modified >= 0 && !cursor.isNull(modified)) cursor.getLong(modified) else 0L)))
+                    }
+                    !cursor.extras.getBoolean("loading", false) && cursor.extras.getString("error").isNullOrEmpty()
+                } ?: false
+                return if (complete) mapOf("complete" to true, "entries" to entries, "stamp" to "") else incomplete
+            }
+            val directory = java.io.File(value).canonicalFile
+            if (!isGridLocalPath(directory, gridLocalRoots()) || !directory.isDirectory ||
+                !Os.access(directory.path, android.system.OsConstants.R_OK or android.system.OsConstants.X_OK)) return incomplete
+            fun stamp(): String {
+                val st = Os.stat(directory.path)
+                return "${st.st_dev}:${st.st_ino}:${st.st_mtime}:${st.st_ctime}:${directory.lastModified()}"
+            }
+            val before = stamp()
+            // Timestamp granularity can hide changes made within the same tick.
+            // Avoid skipping a recently modified directory.
+            if (knownStamp == before && System.currentTimeMillis() - directory.lastModified() > 2000L) {
+                return mapOf("complete" to true, "unchanged" to true, "stamp" to before)
+            }
+            val children = directory.listFiles() ?: return incomplete
+            val entries = mutableListOf<Map<String, Any>>()
+            for (child in children) {
+                if (!child.name.endsWith(".pdf", true)) continue
+                val st = Os.stat(child.path)
+                if (!android.system.OsConstants.S_ISREG(st.st_mode)) continue
+                if (entries.size >= 20000) return incomplete
+                entries.add(mapOf("uri" to Uri.fromFile(child).toString(), "name" to child.name,
+                    "size" to st.st_size, "sizeKnown" to true, "lastModified" to child.lastModified()))
+            }
+            if (before != stamp()) return incomplete
+            return mapOf("complete" to true, "stamp" to before, "entries" to entries)
+        } catch (_: Exception) { return incomplete }
     }
 
     private fun probeGridPdf(path: String): Map<String, Any> {
@@ -251,7 +385,7 @@ class MainActivity : FlutterActivity() {
             })
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "docsgrid/grid_external")
             .setMethodCallHandler { call, result ->
-                if (call.method != "setWatches" && call.method != "probe") {
+                if (call.method != "setWatches" && call.method != "probe" && call.method != "snapshotDirectory") {
                     result.notImplemented()
                 } else {
                     try {
@@ -264,6 +398,8 @@ class MainActivity : FlutterActivity() {
                                         reply.success(setGridWatches(paths))
                                     }
                                     "probe" -> reply.success(probeGridPdf(call.arguments as? String ?: ""))
+                                    "snapshotDirectory" -> reply.success(snapshotGridDirectory(
+                                        call.argument<String>("directory") ?: "", call.argument<String>("knownStamp")))
                                     else -> reply.notImplemented()
                                 }
                             } catch (error: Exception) { reply.error("GRID_STORAGE_ERROR", error.message, null) }

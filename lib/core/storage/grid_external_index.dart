@@ -193,7 +193,7 @@ class GridExternalIndex {
   Future<GridExternalResult> reconcileDirectory({
     required String directory,
     required String? folderId,
-    required Future<Map<String, Object?>> Function(String) snapshot,
+    required Future<Map<String, Object?>> Function(String, String?) snapshot,
     required Future<String> Function(String) digest,
     bool force = false,
   }) async {
@@ -201,7 +201,7 @@ class GridExternalIndex {
     final empty = GridExternalResult(<String?>{}, false);
     final checkpoints = await db.query(_checkpoints, where: 'directory_uri = ?', whereArgs: [directory], limit: 1);
     final old = checkpoints.isEmpty ? null : checkpoints.single;
-    final first = await snapshot(directory);
+    final first = await snapshot(directory, force ? null : old?['stamp'] as String?);
     if (first['complete'] != true) return empty;
     final stamp = first['stamp'] as String? ?? '';
     if (!force && stamp.isNotEmpty && old?['stamp'] == stamp && first['unchanged'] == true) return empty;
@@ -224,8 +224,29 @@ class GridExternalIndex {
       if (key == null) continue;
       if (localDir != null) {
         if (localPath(key) == null || p.dirname(key) != localDir) continue;
-      } else if (!key.startsWith('content://') || Uri.parse(key).authority != Uri.parse(directory).authority) {
-        continue;
+      } else {
+        if (!key.startsWith('content://')) continue;
+        final uri = Uri.parse(key);
+        final parent = Uri.parse(directory);
+        final a = uri.pathSegments;
+        final b = parent.pathSegments;
+        if (uri.authority != parent.authority || a.length < 4 || b.length < 2 ||
+            a[0] != 'tree' || b[0] != 'tree' || a[1] != b[1]) continue;
+        // An unfiled row can also belong to a previously selected SAF tree.
+        // Do not infer absence for an opaque root locator never seen in this directory.
+        if (folderId == null && !entries.containsKey(key)) {
+          final parentId = b.length >= 4 ? b[3] : b[1];
+          final documentId = a[3];
+          final prior = old?['names_json'] as String?;
+          bool known = false;
+          if (prior != null) {
+            try {
+              final decoded = jsonDecode(prior);
+              known = decoded is Map && decoded.containsKey(key);
+            } catch (_) {}
+          }
+          if (!known && !documentId.startsWith('$parentId/')) continue;
+        }
       }
       if (expected.containsKey(key)) return empty;
       expected[key] = row;
@@ -251,7 +272,7 @@ class GridExternalIndex {
     for (final item in expected.entries) {
       final entry = entries[item.key];
       if (entry == null) {
-        changed.add(item.key);
+        if (!hidden.contains(item.value['id'])) changed.add(item.key);
         final size = item.value['size_bytes'] as int? ?? 0;
         missingSizes.add(size);
       } else if (hidden.contains(item.value['id']) ||
@@ -273,7 +294,7 @@ class GridExternalIndex {
       // Confirm a second authoritative snapshot matches the first before
       // inferring missing files. An incomplete/loading/changed provider is
       // deferred, not misinterpreted as deletion.
-      final second = await snapshot(directory);
+      final second = await snapshot(directory, null);
       if (second['complete'] != true || second['entries'] is! List) return empty;
       final verified = <String, Map<String, Object?>>{};
       for (final item in second['entries'] as List) {
@@ -294,12 +315,25 @@ class GridExternalIndex {
           return {'state': 'available', 'uri': item['uri'], 'size': item['size'],
             'modified': item['lastModified'], 'name': item['name'], 'previousName': previousNames[key]};
         }, digest: digest);
-      // Retain the checkpoint only after a complete pass; retry missing/locked
-      // candidates on a future scoped reconciliation if still necessary.
+      // A changed pass deliberately leaves the stamp invalid so a later
+      // cold/resume reconciliation can retry locked or unmatched records.
+      // Persist only names whose rename was actually accepted by SQLite.
+      final names = <String, String>{...previousNames};
+      for (final entry in verified.entries) {
+        final actual = await _at(db, entry.key, entry.value['uri'] as String?);
+        if (actual.length != 1) continue;
+        final name = entry.value['name'] as String;
+        if (previousNames[entry.key] == null ||
+            actual.single['name'] == p.basenameWithoutExtension(name)) {
+          names[entry.key] = name;
+        }
+      }
+      await db.insert(_checkpoints, {'directory_uri': directory, 'stamp': '',
+        'names_json': jsonEncode(names)}, conflictAlgorithm: ConflictAlgorithm.replace);
       return result;
     }
     await db.insert(_checkpoints, {'directory_uri': directory, 'stamp': stamp,
-      'names_json': jsonEncode({for (final entry in entries.entries) if (expected.containsKey(entry.key)) entry.key: entry.value['name']})},
+      'names_json': jsonEncode({...previousNames, for (final entry in entries.entries) if (expected.containsKey(entry.key)) entry.key: entry.value['name']})},
       conflictAlgorithm: ConflictAlgorithm.replace);
     return empty;
   }
@@ -319,24 +353,36 @@ class GridExternalSync {
   StreamSubscription<void>? _librarySubscription;
   final _paths = <String>{};
   final _retries = <String, int>{};
+  final _directories = <String, String?>{};
+  final _directoryQueue = <String, bool>{};
+  bool _reconcileRequested = false;
   Timer? _debounce, _watchDebounce;
   bool _working = false, _watching = false, _watchPending = false, _disposed = false;
 
   void start() {
     if (!Platform.isAndroid || _disposed || _subscription != null) return;
     _subscription = _events.receiveBroadcastStream().listen((dynamic event) {
-      if (_disposed || event is! String) return;
-      _retries.remove(event);
-      _paths.add(event);
+      if (_disposed) return;
+      if (event is String) {
+        _retries.remove(event);
+        _paths.add(event);
+      } else if (event is Map && event['directory'] is String) {
+        final directory = GridExternalIndex.locator(event['directory'] as String);
+        if (directory == null || !_directories.containsKey(directory)) return;
+        _directoryQueue[directory] = true;
+      } else {
+        return;
+      }
       _scheduleDrain();
     }, onError: (Object _) {});
     _librarySubscription = PortableSnapshotEvents.gridWatchRefreshes.listen((_) => refreshWatches());
-    refreshWatches();
+    refreshWatches(reconcile: true);
   }
 
-  void refreshWatches() {
+  void refreshWatches({bool reconcile = false}) {
     if (!Platform.isAndroid || _disposed || _subscription == null) return;
     _watchPending = true;
+    _reconcileRequested = _reconcileRequested || reconcile;
     _watchDebounce?.cancel();
     _watchDebounce = Timer(const Duration(milliseconds: 250), () => unawaited(_refresh()));
   }
@@ -345,11 +391,31 @@ class GridExternalSync {
     if (_disposed || _watching || !_watchPending) return;
     _watching = true;
     _watchPending = false;
+    final reconcile = _reconcileRequested;
+    _reconcileRequested = false;
     try {
       final db = await AppDatabase.instance.database;
-      final rows = await db.query('folders', columns: ['storage_uri_or_relative_path'], where: 'deleted_at IS NULL');
-      final directories = rows.map((r) => GridExternalIndex.localPath(r['storage_uri_or_relative_path'] as String?)).whereType<String>().toSet().toList();
-      if (!_disposed) await _channel.invokeMethod<dynamic>('setWatches', directories);
+      final rows = await db.query('folders', columns: ['id', 'storage_uri_or_relative_path'], where: 'deleted_at IS NULL');
+      final directories = <String, String?>{};
+      for (final row in rows) {
+        final key = GridExternalIndex.locator(row['storage_uri_or_relative_path'] as String?);
+        if (key != null) directories[key] = row['id'] as String;
+      }
+      if (_disposed) return;
+      final result = await _channel.invokeMapMethod<String, dynamic>('setWatches', directories.keys.toList());
+      final root = GridExternalIndex.locator(result?['unfiled'] as String?);
+      if (root != null) directories.putIfAbsent(root, () => null);
+      if (_disposed) return;
+      for (final directory in directories.keys) {
+        if (reconcile || !_directories.containsKey(directory)) {
+          _directoryQueue.putIfAbsent(directory, () => false);
+        }
+      }
+      _directories
+        ..clear()
+        ..addAll(directories);
+      _directoryQueue.removeWhere((key, _) => !_directories.containsKey(key));
+      if (_directoryQueue.isNotEmpty) _scheduleDrain();
     } catch (_) {
       // Permission/provider failures do not mutate any record.
     } finally {
@@ -365,22 +431,33 @@ class GridExternalSync {
   }
 
   Future<void> _drain() async {
-    if (_disposed || _working || _paths.isEmpty) return;
+    if (_disposed || _working || (_paths.isEmpty && _directoryQueue.isEmpty)) return;
     _working = true;
     final paths = _paths.take(48).toList();
     _paths.removeAll(paths);
     try {
       await StorageMigrationGate.waitUntilReady();
       final db = await AppDatabase.instance.database;
-      final result = await GridExternalIndex(db).applyPaths(paths,
+      final index = GridExternalIndex(db);
+      final result = await index.applyPaths(paths,
         probe: (path) async => (await _channel.invokeMapMethod<String, Object?>('probe', path)) ?? const {'state': 'unknown'},
         digest: (path) => StorageLocationService.instance.sha256Pdf(Uri.file(path).toString()));
       for (final path in paths) { _retries.remove(path); }
-      if (result.affected.isNotEmpty) {
-        if (result.renamed) {
-          PortableSnapshotEvents.notifyDataChanged(affectedFolderIds: result.affected, preciseGridFolders: true);
-        } else {
-          PortableSnapshotEvents.notifyGridAvailabilityChanged(result.affected);
+      _publish(result);
+      // Process at most one directory per batch, yielding between folders.
+      // Precise local file events always take precedence.
+      if (_directoryQueue.isNotEmpty && !_disposed) {
+        final directory = _directoryQueue.keys.first;
+        final force = _directoryQueue.remove(directory) ?? false;
+        if (_directories.containsKey(directory)) {
+          final reconciled = await index.reconcileDirectory(
+            directory: directory, folderId: _directories[directory], force: force,
+            snapshot: (uri, stamp) async => (await _channel.invokeMapMethod<String, Object?>(
+              'snapshotDirectory', {'directory': uri, 'knownStamp': stamp})) ?? const {'complete': false},
+            digest: (locator) => StorageLocationService.instance.sha256Pdf(
+              GridExternalIndex.localPath(locator) != null ? Uri.file(locator).toString() : locator),
+          );
+          _publish(reconciled);
         }
       }
     } catch (_) {
@@ -398,7 +475,16 @@ class GridExternalSync {
       }
     } finally {
       _working = false;
-      if (_paths.isNotEmpty && !_disposed) _scheduleDrain();
+      if ((_paths.isNotEmpty || _directoryQueue.isNotEmpty) && !_disposed) _scheduleDrain();
+    }
+  }
+
+  void _publish(GridExternalResult result) {
+    if (_disposed || result.affected.isEmpty) return;
+    if (result.renamed) {
+      PortableSnapshotEvents.notifyDataChanged(affectedFolderIds: result.affected, preciseGridFolders: true);
+    } else {
+      PortableSnapshotEvents.notifyGridAvailabilityChanged(result.affected);
     }
   }
 
@@ -410,5 +496,7 @@ class GridExternalSync {
     _librarySubscription?.cancel();
     _paths.clear();
     _retries.clear();
+    _directoryQueue.clear();
+    _directories.clear();
   }
 }
