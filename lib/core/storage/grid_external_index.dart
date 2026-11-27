@@ -366,6 +366,7 @@ class GridExternalSync {
   final _directories = <String, String?>{};
   final _directoryQueue = <String, bool>{};
   bool _reconcileRequested = false;
+  bool _firstRefresh = true;
   Timer? _debounce, _watchDebounce;
   bool _working = false, _watching = false, _watchPending = false, _disposed = false;
 
@@ -416,11 +417,21 @@ class GridExternalSync {
       final root = GridExternalIndex.locator(result?['unfiled'] as String?);
       if (root != null) directories.putIfAbsent(root, () => null);
       if (_disposed) return;
+      final watched = (result?['watchedPaths'] as List?)?.whereType<String>().toSet() ?? <String>{};
+      final newlyWatched = (result?['newlyWatchedPaths'] as List?)?.whereType<String>().toSet() ?? <String>{};
       for (final directory in directories.keys) {
-        if (reconcile || !_directories.containsKey(directory)) {
+        final local = GridExternalIndex.localPath(directory) != null;
+        // A warm resume with a continuously active local FileObserver must
+        // not turn a one-PDF event into a 4,000-file directory enumeration.
+        // Only cold launch, newly watched/unwatched directories, and SAF
+        // providers without a reliable event journal need reconciliation.
+        if (_firstRefresh || !_directories.containsKey(directory) ||
+            (local && newlyWatched.contains(directory)) ||
+            (reconcile && (!local || !watched.contains(directory)))) {
           _directoryQueue.putIfAbsent(directory, () => false);
         }
       }
+      _firstRefresh = false;
       _directories
         ..clear()
         ..addAll(directories);

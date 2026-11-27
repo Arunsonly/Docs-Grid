@@ -288,6 +288,9 @@ void main() {
     expect(watcher, contains('FileObserver(path, gridWatchMask)'));
     expect(watcher, isNot(contains('listFiles(')));
     expect(watcher, isNot(contains('walkTopDown(')));
+    expect(watcher, contains('"watchedPaths" to gridWatchers.keys.toList()'));
+    final dart = File('lib/core/storage/grid_external_index.dart').readAsStringSync();
+    expect(dart, contains('(reconcile && (!local || !watched.contains(directory)))'));
     final pause = source.substring(source.indexOf('override fun onPause()'), source.indexOf('private fun registerStorageChangeObservers()'));
     expect(pause, isNot(contains('stopGridWatches()')));
   });

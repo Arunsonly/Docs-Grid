@@ -129,6 +129,7 @@ class MainActivity : FlutterActivity() {
         }
         synchronized(gridWatchLock) {
             if (gridWatchSink == null) return mapOf("watched" to 0)
+            val newlyWatched = mutableListOf<String>()
             for (path in gridWatchers.keys.toList()) {
                 if (path !in desired) {
                     try { gridWatchers.remove(path)?.stopWatching() } catch (_: Exception) {}
@@ -158,6 +159,7 @@ class MainActivity : FlutterActivity() {
                     }
                     observer.startWatching()
                     gridWatchers[path] = observer
+                    newlyWatched.add(path)
                 } catch (_: Exception) {
                     // No inference about missing files from an unavailable observer.
                 }
@@ -189,12 +191,13 @@ class MainActivity : FlutterActivity() {
                 } catch (_: Exception) {}
             }
             return mapOf("watched" to gridWatchers.size, "safWatched" to gridSafWatchers.size,
+                "watchedPaths" to gridWatchers.keys.toList(), "newlyWatchedPaths" to newlyWatched,
                 "candidates" to candidates.size, "unfiled" to (unfiled ?: ""))
         }
     }
 
     private fun gridSafAllowed(uri: Uri): Boolean {
-        if (uri.scheme != "content" || !DocumentsContract.isTreeUri(uri)) return false
+        if (uri.scheme != "content" || !(uri.pathSegments.firstOrNull() == "tree")) return false
         return try {
             val treeId = DocumentsContract.getTreeDocumentId(uri)
             val prefs = getSharedPreferences("docsgrid_storage", MODE_PRIVATE)
@@ -203,11 +206,11 @@ class MainActivity : FlutterActivity() {
             val configured = roots.any { value ->
                 val root = Uri.parse(value)
                 root.scheme == "content" && root.authority == uri.authority &&
-                    DocumentsContract.isTreeUri(root) && DocumentsContract.getTreeDocumentId(root) == treeId
+                    (root.pathSegments.firstOrNull() == "tree") && DocumentsContract.getTreeDocumentId(root) == treeId
             }
             configured && contentResolver.persistedUriPermissions.any {
                 it.isReadPermission && it.uri.authority == uri.authority &&
-                    DocumentsContract.isTreeUri(it.uri) && DocumentsContract.getTreeDocumentId(it.uri) == treeId
+                    (it.uri.pathSegments.firstOrNull() == "tree") && DocumentsContract.getTreeDocumentId(it.uri) == treeId
             }
         } catch (_: Exception) { false }
     }
