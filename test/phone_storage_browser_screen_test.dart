@@ -357,6 +357,50 @@ void main() {
     expect(find.text('Policies'), findsOneWidget);
   });
 
+  for (final action in ['Rename', 'Delete']) {
+    testWidgets('embedded Phone $action keeps the current folder and refreshes rows',
+        (tester) async {
+      setTestViewport(tester);
+      var entries = <Map<String, Object?>>[
+        {'name': 'Policy.pdf', 'uri': 'content://policy',
+         'folderPath': 'Internal/Policies', 'isDirectory': false},
+      ];
+      var refreshes = 0;
+      await tester.pumpWidget(MaterialApp(home: Scaffold(
+        body: StatefulBuilder(builder: (context, refresh) {
+          return PhoneStorageBrowserScreen(
+            rootName: 'Internal Storage',
+            embedded: true,
+            entries: entries,
+            onOpenPdf: (_, __) async {},
+            onRenamePdf: (_, __) async {
+              refresh(() => entries = [
+                {'name': 'Renamed.pdf', 'uri': 'content://renamed',
+                 'folderPath': 'Internal/Policies', 'isDirectory': false},
+              ]);
+              return true;
+            },
+            onTrashPdf: (_, __) async {
+              refresh(() => entries = []);
+              return true;
+            },
+            onRefresh: () async { refreshes++; },
+          );
+        }),
+      )));
+      await tester.tap(find.byKey(const ValueKey('phone-folder-Policies')));
+      await tester.pumpAndSettle();
+      await selectAction(tester, action);
+      expect(find.byTooltip('Back to folders'), findsOneWidget);
+      expect(find.text('Policies'), findsOneWidget);
+      expect(find.text('Policy.pdf'), findsNothing);
+      expect(find.text(action == 'Rename'
+          ? 'Renamed.pdf' : 'No PDF files in this folder.'), findsOneWidget);
+      expect(refreshes, 1);
+      expect(tester.takeException(), isNull);
+    });
+  }
+
   testWidgets('system back returns to Phone folder list before leaving tab',
       (tester) async {
     setTestViewport(tester);
