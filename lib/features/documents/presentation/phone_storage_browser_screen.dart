@@ -713,7 +713,9 @@ class _PhoneStorageBrowserScreenState extends State<PhoneStorageBrowserScreen> {
     }
     if (!sourceChanged || !mounted) return;
     if (widget.embedded) {
-      setState(() => _selectedFolderPath = null);
+      // A mutation changes the listing, not the user's navigation path.
+      // The folder may legitimately become empty after the last PDF is removed.
+      setState(() => _savedSelectedPreview = null);
       await widget.onRefresh?.call();
     } else {
       Navigator.of(context).pop();
