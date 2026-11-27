@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:docs_grid/features/documents/data/phone_recent_history.dart';
+import 'package:docs_grid/features/documents/data/phone_pdf_delta.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -89,6 +90,28 @@ void main() {
         {alive}, scannedVolumes: {'external_primary'}), 0);
   });
 
+
+  test('verified incremental Phone baseline also prunes Recent without a second scan', () async {
+    final prefs = await SharedPreferences.getInstance();
+    const gone = 'content://media/external_primary/file/71';
+    const alive = 'content://media/external_primary/file/72';
+    const offline = 'content://media/1234-5678/file/73';
+    await prefs.setStringList(PhoneRecentHistory.storageKey,
+        [item(gone, 'Gone.pdf'), item(alive, 'Alive.pdf'), item(offline, 'Offline.pdf')]);
+    final patched = PhonePdfDelta.apply(
+      existing: [
+        {'uri': gone, 'name': 'Gone.pdf', 'volumeName': 'external_primary'},
+        {'uri': alive, 'name': 'Alive.pdf', 'volumeName': 'external_primary'},
+      ],
+      updates: [], touchedMediaUris: [gone], touchedLocalPaths: [],
+    );
+    expect(patched.changed, isTrue);
+    expect(await PhoneRecentHistory.pruneAbsentMediaStoreUris(
+      {for (final entry in patched.entries) entry['uri'] as String},
+      scannedVolumes: {'external_primary'}), 1);
+    expect(prefs.getStringList(PhoneRecentHistory.storageKey),
+      [item(alive, 'Alive.pdf'), item(offline, 'Offline.pdf')]);
+  });
 
   test('an unavailable SD card volume is never pruned', () async {
     final prefs = await SharedPreferences.getInstance();

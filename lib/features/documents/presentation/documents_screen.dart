@@ -357,6 +357,13 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       try {
         if (scopes.isNotEmpty) {
           await PhoneRecentHistory.observeCompletedScans(scopes);
+          // The patched baseline is still complete for the mounted volumes.
+          // Remove stale Phone Recent shortcuts without another storage scan.
+          await PhoneRecentHistory.pruneAbsentMediaStoreUris(
+            {for (final item in patch.entries)
+              if (item['uri'] is String && item['isDirectory'] != true) item['uri'] as String},
+            scannedVolumes: _phoneLastMediaVolumes.keys.toSet(),
+          );
           if (mounted && !widget.phoneOnly) await _loadRecentDocuments();
         }
       } catch (_) {
