@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'package:docs_grid/core/database/app_database.dart';
 import 'package:docs_grid/core/storage/grid_external_index.dart';
+import 'package:docs_grid/core/storage/portable_snapshot_events.dart';
 import 'package:docs_grid/features/documents/data/document_repository.dart';
 import 'package:docs_grid/features/folders/data/folder_repository.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -90,6 +91,34 @@ void main() {
     expect((await documents.listInFolder(folder)).single.id, 'original');
     expect((await db.query('documents', where: 'id = ?', whereArgs: ['original'])).single, original);
     expect((await folders.childrenOf(null)).singleWhere((f) => f.id == folder).externallyEmptied, isFalse);
+  });
+
+  test('external deletion and reappearance update Recent without erasing open history', () async {
+    await add('original', oldPath);
+    await db.update('documents', {'last_opened_at': stamp},
+        where: 'id = ?', whereArgs: ['original']);
+    expect((await documents.recentActivity()).single.id, 'original');
+    expect((await documents.listPage(recentOnly: true)).items.single.id, 'original');
+    var uiEvents = 0;
+    var backupEvents = 0;
+    final ui = PortableSnapshotEvents.libraryChanges.listen((_) => uiEvents++);
+    final backup = PortableSnapshotEvents.changes.listen((_) => backupEvents++);
+    addTearDown(ui.cancel);
+    addTearDown(backup.cancel);
+    states[oldPath] = 'missing';
+    final deleted = await apply([oldPath]);
+    PortableSnapshotEvents.notifyGridAvailabilityChanged(deleted.affected);
+    expect(await documents.recentActivity(), isEmpty);
+    expect((await documents.listPage(recentOnly: true)).items, isEmpty);
+    expect(await documents.list(recentOnly: true), isEmpty);
+    expect((await db.query('documents')).single['last_opened_at'], stamp);
+    states[oldPath] = 'available';
+    final restored = await apply([oldPath]);
+    PortableSnapshotEvents.notifyGridAvailabilityChanged(restored.affected);
+    expect((await documents.recentActivity()).single.id, 'original');
+    expect((await documents.listPage(recentOnly: true)).items.single.id, 'original');
+    expect(uiEvents, 2);
+    expect(backupEvents, 0);
   });
 
   test('permission or unknown errors never hide a PDF', () async {

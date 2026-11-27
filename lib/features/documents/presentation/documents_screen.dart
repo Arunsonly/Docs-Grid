@@ -135,7 +135,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
       _loadViewPreference();
       _loadTrashSummary();
       _loadRecentDocuments();
-      _libraryChangesSubscription = PortableSnapshotEvents.changes.listen((_) {
+      _libraryChangesSubscription = PortableSnapshotEvents.libraryChanges.listen((_) {
         _scheduleLibraryRefresh();
       });
     }
@@ -236,8 +236,7 @@ class _DocumentsScreenState extends State<DocumentsScreen>
   }
 
   void _scheduleLibraryRefresh() {
-    if (!mounted || widget.phoneOnly || widget.favoritesOnly ||
-        widget.recentOnly) return;
+    if (!mounted || widget.phoneOnly || widget.favoritesOnly) return;
     if (!widget.active) {
       _libraryRefreshPendingWhileHidden = true;
       return;
@@ -250,8 +249,10 @@ class _DocumentsScreenState extends State<DocumentsScreen>
         return;
       }
       unawaited(_load());
-      unawaited(_loadRecentDocuments());
-      unawaited(_loadTrashSummary());
+      if (!widget.recentOnly) {
+        unawaited(_loadRecentDocuments());
+        unawaited(_loadTrashSummary());
+      }
     });
   }
 
@@ -3516,19 +3517,34 @@ class _RecentSelectionScreenState extends State<_RecentSelectionScreen> {
   List<DocumentRecord> _items = [];
   bool _loading = true;
   bool _busy = false;
+  int _loadGeneration = 0;
+  StreamSubscription<void>? _changes;
 
   @override
   void initState() {
     super.initState();
+    _changes = PortableSnapshotEvents.libraryChanges.listen((_) => unawaited(_load()));
     _load();
   }
 
+  @override
+  void dispose() {
+    _changes?.cancel();
+    super.dispose();
+  }
+
   Future<void> _load() async {
+    final generation = ++_loadGeneration;
     try {
       final items = await widget.loadItems();
-      if (mounted) setState(() { _items = items; _loading = false; });
+      if (!mounted || generation != _loadGeneration) return;
+      setState(() {
+        _items = items;
+        _selected.retainAll(items.map((item) => item.id).toSet());
+        _loading = false;
+      });
     } catch (_) {
-      if (mounted) setState(() => _loading = false);
+      if (mounted && generation == _loadGeneration) setState(() => _loading = false);
     }
   }
 

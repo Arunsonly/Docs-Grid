@@ -27,6 +27,7 @@ class PortableSnapshotEvents {
   PortableSnapshotEvents._();
 
   static final StreamController<void> _gridWatchRefreshes = StreamController<void>.broadcast(sync: true);
+  static final StreamController<void> _libraryChanges = StreamController<void>.broadcast(sync: true);
   static final StreamController<void> _changes =
       StreamController<void>.broadcast(sync: true);
   static final StreamController<GridFolderChange> _gridPreviewChanges =
@@ -55,6 +56,8 @@ class PortableSnapshotEvents {
   }
 
   static Stream<void> get changes => _changes.stream;
+  // UI-only visibility changes must not schedule portable metadata backups.
+  static Stream<void> get libraryChanges => _libraryChanges.stream;
   static Stream<void> get gridWatchRefreshes => _gridWatchRefreshes.stream;
   static Stream<GridFolderChange> get gridPreviewChanges =>
       _gridPreviewChanges.stream;
@@ -66,14 +69,22 @@ class PortableSnapshotEvents {
   static void notifyDataChanged({Set<String?>? affectedFolderIds,
     bool preciseGridFolders = false}) {
     if (!_changes.isClosed) _changes.add(null);
+    if (!_libraryChanges.isClosed) _libraryChanges.add(null);
     if (!preciseGridFolders && (affectedFolderIds == null || affectedFolderIds.isNotEmpty)) {
       _gridWatchRefreshes.add(null);
     }
     notifyGridPreviewChanged(affectedFolderIds, precise: preciseGridFolders);
   }
 
-  // Local availability is derived, not portable metadata. Do not wake up
-  // snapshot writers and unrelated Home readers for external delete/restore.
+  // External availability affects Grid and Home Recent, but not the durable
+  // library records or portable backup revision.
+  static void notifyGridAvailabilityChanged(Set<String?> affectedFolderIds) {
+    if (affectedFolderIds.isEmpty) return;
+    if (!_libraryChanges.isClosed) _libraryChanges.add(null);
+    notifyGridPreviewChanged(affectedFolderIds, precise: true);
+  }
+
+  // Local availability is derived, not portable metadata.
   static void notifyGridPreviewChanged(Set<String?>? affectedFolderIds,
       {bool precise = false}) {
     if (!_gridPreviewChanges.isClosed) {

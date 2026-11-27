@@ -256,13 +256,14 @@ class DocumentRepository {
       throw ArgumentError.value(limit, 'limit', 'Must be between 1 and 100.');
     }
     final db = await _database.database;
+    await GridExternalIndex.ensureSchema(db);
     final rows = await db.rawQuery('''
       SELECT d.*, c.name AS category_name,
         (SELECT GROUP_CONCAT(t.name, ', ') FROM document_tags dt
           INNER JOIN tags t ON t.id = dt.tag_id WHERE dt.document_id = d.id) AS tag_names
       FROM documents d
       LEFT JOIN categories c ON c.id = d.category_id
-      WHERE d.deleted_at IS NULL
+      WHERE d.deleted_at IS NULL AND ${GridExternalIndex.visible('d')}
         AND (? IS NULL OR COALESCE(d.last_opened_at, d.created_at) > ?)
       ORDER BY COALESCE(d.last_opened_at, d.created_at) DESC,
                d.name COLLATE NOCASE ASC, d.id ASC
@@ -288,7 +289,11 @@ class DocumentRepository {
     final db = await _database.database;
     final where = <String>['d.deleted_at IS NULL'];
     final args = <Object?>[];
-    if (recentOnly) where.add('d.last_opened_at IS NOT NULL');
+    if (recentOnly) {
+      await GridExternalIndex.ensureSchema(db);
+      where.add('d.last_opened_at IS NOT NULL');
+      where.add(GridExternalIndex.visible('d'));
+    }
     if (favoritesOnly) where.add('d.is_favorite = 1');
     final normalizedQuery = query.trim();
     if (normalizedQuery.isNotEmpty) {
@@ -362,10 +367,10 @@ class DocumentRepository {
   Future<List<DocumentRecord>> list({String query = '', bool favoritesOnly = false, bool recentOnly = false}) async {
     final db = await _database.database;
     final normalizedQuery = query.trim();
-    if (normalizedQuery.isNotEmpty) await GridExternalIndex.ensureSchema(db);
+    if (normalizedQuery.isNotEmpty || recentOnly) await GridExternalIndex.ensureSchema(db);
     final where = <String>[
       'd.deleted_at IS NULL',
-      if (normalizedQuery.isNotEmpty) GridExternalIndex.visible('d'),
+      if (normalizedQuery.isNotEmpty || recentOnly) GridExternalIndex.visible('d'),
       if (recentOnly) 'd.last_opened_at IS NOT NULL',
     ];
     final args = <Object?>[];

@@ -246,7 +246,7 @@ class GridExternalSync {
         if (result.renamed) {
           PortableSnapshotEvents.notifyDataChanged(affectedFolderIds: result.affected, preciseGridFolders: true);
         } else {
-          PortableSnapshotEvents.notifyGridPreviewChanged(result.affected, precise: true);
+          PortableSnapshotEvents.notifyGridAvailabilityChanged(result.affected);
         }
       }
     } catch (_) {
