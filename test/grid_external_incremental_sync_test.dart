@@ -281,7 +281,7 @@ void main() {
   test('native watcher uses existing folder paths; no PDF directory enumeration', () {
     final source = File('platform/android/MainActivity.kt').readAsStringSync();
     final start = source.indexOf('private fun setGridWatches(');
-    final end = source.indexOf('private fun probeGridPdf(', start);
+    final end = source.indexOf('private fun gridSafAllowed(', start);
     expect(start, greaterThanOrEqualTo(0));
     expect(end, greaterThan(start));
     final watcher = source.substring(start, end);
